@@ -7,6 +7,7 @@ factory building blocks without duplicating them per repo.
 
 from fastmcp_pvl_core._auth import (
     AuthMode,
+    build_auth,
     build_bearer_auth,
     build_oidc_proxy_auth,
     build_remote_auth,
@@ -21,6 +22,7 @@ __all__ = [
     "AuthMode",
     "ServerConfig",
     "Transport",
+    "build_auth",
     "build_bearer_auth",
     "build_oidc_proxy_auth",
     "build_remote_auth",

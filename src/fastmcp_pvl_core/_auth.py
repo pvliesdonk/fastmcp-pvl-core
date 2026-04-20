@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 import sys
-from typing import TYPE_CHECKING, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from fastmcp_pvl_core._config import ServerConfig
 
@@ -275,4 +275,76 @@ def build_remote_auth(config: ServerConfig) -> RemoteAuthProvider | None:
         token_verifier=verifier,
         authorization_servers=[issuer],
         base_url=config.base_url,
+    )
+
+
+def build_auth(config: ServerConfig) -> Any:
+    """Dispatch to the correct FastMCP auth provider for *config*.
+
+    Resolves the auth mode via :func:`resolve_auth_mode` and composes the
+    individual builders.  In ``multi`` mode, wraps an OIDC provider and a
+    bearer verifier into a single :class:`~fastmcp.server.auth.MultiAuth`
+    with ``required_scopes=[]``.
+
+    Args:
+        config: Populated server configuration.
+
+    Returns:
+        The appropriate auth provider:
+
+        - ``None`` when no auth is configured.
+        - A :class:`~fastmcp.server.auth.StaticTokenVerifier` in
+          ``bearer`` mode.
+        - An :class:`~fastmcp.server.auth.oidc_proxy.OIDCProxy` in
+          ``oidc-proxy`` mode.
+        - A :class:`~fastmcp.server.auth.RemoteAuthProvider` in
+          ``remote`` mode.
+        - A :class:`~fastmcp.server.auth.MultiAuth` in ``multi`` mode,
+          always constructed with ``required_scopes=[]`` (load-bearing —
+          see implementation comment).
+    """
+    mode = resolve_auth_mode(config)
+    if mode == "none":
+        return None
+    if mode == "bearer":
+        return build_bearer_auth(config)
+    if mode == "oidc-proxy":
+        return build_oidc_proxy_auth(config)
+    if mode == "remote":
+        return build_remote_auth(config)
+
+    # mode == "multi"
+    oidc_auth: OIDCProxy | RemoteAuthProvider | None = build_oidc_proxy_auth(
+        config
+    ) or build_remote_auth(config)
+    bearer_auth = build_bearer_auth(config)
+
+    if oidc_auth is None or bearer_auth is None:
+        # One of the two builders returned None despite resolve_auth_mode
+        # reporting "multi" (e.g. remote-auth discovery failed, or httpx
+        # missing).  Fall back to whichever one is available rather than
+        # silently dropping auth entirely.
+        logger.warning(
+            "multi_auth_degraded oidc=%s bearer=%s — falling back to "
+            "whichever auth provider succeeded",
+            oidc_auth is not None,
+            bearer_auth is not None,
+        )
+        return oidc_auth or bearer_auth
+
+    from fastmcp.server.auth import MultiAuth
+
+    # required_scopes=[] is load-bearing: without it, OIDC's ["openid"]
+    # scope propagates to FastMCP's RequireAuthMiddleware and rejects
+    # bearer tokens lacking "openid" with 403 insufficient_scope
+    # (MV PR #249).
+    #
+    # OIDCProxy / RemoteAuthProvider (both OAuthProvider subclasses) MUST
+    # go in server= — passing an OAuthProvider in verifiers= silently
+    # drops its OAuth routes because get_routes/get_well_known_routes
+    # only delegate to self.server.
+    return MultiAuth(
+        server=oidc_auth,
+        verifiers=[bearer_auth],
+        required_scopes=[],
     )
