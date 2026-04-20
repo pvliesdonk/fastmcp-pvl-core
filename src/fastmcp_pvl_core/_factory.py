@@ -124,14 +124,16 @@ def build_event_store(env_prefix: str, config: ServerConfig) -> EventStore:
         Path(directory).mkdir(parents=True, exist_ok=True)
         logger.info("event_store backend=file directory=%s", directory)
 
+        # py-key-value-aio[filetree] is a transitive of fastmcp today, so
+        # this guard is defensive — if a future fastmcp release drops the
+        # extra, the message points operators at the right package.
         try:
             from key_value.aio.stores.filetree import FileTreeStore
         except ImportError as exc:
             raise ImportError(
-                "FileTreeStore requires fastmcp>=3.0 with key-value support. "
-                "Install the optional key-value dependency (e.g. "
-                "'pip install \"fastmcp[key-value]\"') or switch to "
-                "EVENT_STORE_URL='memory://'."
+                "FileTreeStore requires 'py-key-value-aio[filetree]'. "
+                "Install with `pip install 'py-key-value-aio[filetree]'` "
+                "or switch to EVENT_STORE_URL='memory://'."
             ) from exc
 
         storage = FileTreeStore(data_directory=directory)
