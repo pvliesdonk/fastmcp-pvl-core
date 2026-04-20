@@ -5,7 +5,13 @@ middleware wiring, logging setup, config helpers, and server
 factory building blocks without duplicating them per repo.
 """
 
-from fastmcp_pvl_core._auth import AuthMode, resolve_auth_mode
+from fastmcp_pvl_core._auth import (
+    AuthMode,
+    build_bearer_auth,
+    build_oidc_proxy_auth,
+    build_remote_auth,
+    resolve_auth_mode,
+)
 from fastmcp_pvl_core._config import ServerConfig, Transport
 from fastmcp_pvl_core._env import env, parse_bool, parse_list, parse_scopes
 
@@ -15,6 +21,9 @@ __all__ = [
     "AuthMode",
     "ServerConfig",
     "Transport",
+    "build_bearer_auth",
+    "build_oidc_proxy_auth",
+    "build_remote_auth",
     "env",
     "parse_bool",
     "parse_list",

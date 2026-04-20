@@ -11,7 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal
 
-from fastmcp_pvl_core._env import env, parse_scopes
+from fastmcp_pvl_core._env import env, parse_bool, parse_scopes
 
 Transport = Literal["stdio", "http", "sse"]
 
@@ -36,6 +36,7 @@ class ServerConfig:
     oidc_audience: str | None = None
     oidc_required_scopes: tuple[str, ...] = field(default_factory=tuple)
     oidc_jwt_signing_key: str | None = None
+    oidc_verify_access_token: bool = False
 
     event_store_url: str | None = None
     app_domain: str | None = None
@@ -71,6 +72,11 @@ class ServerConfig:
         scopes_raw = env(env_prefix, "OIDC_REQUIRED_SCOPES")
         scopes = tuple(parse_scopes(scopes_raw) or ())
 
+        verify_access_raw = env(env_prefix, "OIDC_VERIFY_ACCESS_TOKEN")
+        verify_access_token = (
+            parse_bool(verify_access_raw) if verify_access_raw is not None else False
+        )
+
         return cls(
             transport=transport,
             host=host,
@@ -83,6 +89,7 @@ class ServerConfig:
             oidc_audience=env(env_prefix, "OIDC_AUDIENCE"),
             oidc_required_scopes=scopes,
             oidc_jwt_signing_key=env(env_prefix, "OIDC_JWT_SIGNING_KEY"),
+            oidc_verify_access_token=verify_access_token,
             event_store_url=env(env_prefix, "EVENT_STORE_URL"),
             app_domain=env(env_prefix, "APP_DOMAIN"),
             auth_mode=env(env_prefix, "AUTH_MODE"),

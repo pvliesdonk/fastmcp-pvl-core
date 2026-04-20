@@ -59,3 +59,9 @@ warn_unused_ignores = true
 asyncio_mode = "auto"
 addopts = "-ra"
 testpaths = ["tests"]
+
+[tool.pyright]
+venvPath = "."
+venv = ".venv"
+pythonVersion = "3.10"
+include = ["src", "tests"]
