@@ -14,6 +14,7 @@ from fastmcp_pvl_core._auth import (
     build_remote_auth,
     resolve_auth_mode,
 )
+from fastmcp_pvl_core._cli import make_serve_parser, normalise_http_path
 from fastmcp_pvl_core._config import ServerConfig, Transport
 from fastmcp_pvl_core._env import env, parse_bool, parse_list, parse_scopes
 from fastmcp_pvl_core._factory import (
@@ -41,6 +42,8 @@ __all__ = [
     "compute_app_domain",
     "configure_logging_from_env",
     "env",
+    "make_serve_parser",
+    "normalise_http_path",
     "parse_bool",
     "parse_list",
     "parse_scopes",
