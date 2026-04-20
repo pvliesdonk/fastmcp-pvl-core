@@ -65,3 +65,18 @@ venvPath = "."
 venv = ".venv"
 pythonVersion = "3.10"
 include = ["src", "tests"]
+
+[tool.semantic_release]
+version_toml = ["pyproject.toml:project.version"]
+version_variables = ["src/fastmcp_pvl_core/__init__.py:__version__"]
+commit_parser = "angular"
+tag_format = "v{version}"
+build_command = "uv build"
+major_on_zero = false
+
+[tool.semantic_release.changelog]
+changelog_file = "CHANGELOG.md"
+
+[tool.semantic_release.commit_parser_options]
+minor_tags = ["feat"]
+patch_tags = ["fix", "perf"]
