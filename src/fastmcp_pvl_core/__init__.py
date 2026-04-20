@@ -15,6 +15,8 @@ from fastmcp_pvl_core._auth import (
 )
 from fastmcp_pvl_core._config import ServerConfig, Transport
 from fastmcp_pvl_core._env import env, parse_bool, parse_list, parse_scopes
+from fastmcp_pvl_core._logging import configure_logging_from_env
+from fastmcp_pvl_core._middleware import wire_middleware_stack
 
 __version__ = "0.0.0"  # PSR overrides at build time
 
@@ -26,9 +28,11 @@ __all__ = [
     "build_bearer_auth",
     "build_oidc_proxy_auth",
     "build_remote_auth",
+    "configure_logging_from_env",
     "env",
     "parse_bool",
     "parse_list",
     "parse_scopes",
     "resolve_auth_mode",
+    "wire_middleware_stack",
 ]
