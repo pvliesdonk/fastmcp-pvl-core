@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 from fastmcp import FastMCP
 from fastmcp.server.middleware.error_handling import ErrorHandlingMiddleware
 from fastmcp.server.middleware.logging import (
@@ -66,9 +68,53 @@ def test_rich_when_rich_explicitly_enabled(monkeypatch):
     assert types[2] is LoggingMiddleware
 
 
-def test_error_handling_middleware_includes_traceback():
-    """Verify ErrorHandlingMiddleware is configured with include_traceback=True."""
+def _error_mw(mcp: FastMCP) -> ErrorHandlingMiddleware:
+    return next(m for m in mcp.middleware if isinstance(m, ErrorHandlingMiddleware))
+
+
+def test_include_traceback_inferred_from_debug_log_level(caplog):
+    """Default (None) infers include_traceback from root logger DEBUG-enabled."""
+    with caplog.at_level("DEBUG"):
+        mcp = FastMCP(name="t")
+        wire_middleware_stack(mcp)
+    assert _error_mw(mcp).include_traceback is True
+
+
+def test_include_traceback_inferred_off_when_root_above_debug():
+    """Default (None) yields False when root logger sits above DEBUG."""
+    root = logging.getLogger()
+    prev = root.level
+    root.setLevel(logging.WARNING)
+    try:
+        mcp = FastMCP(name="t")
+        wire_middleware_stack(mcp)
+        assert _error_mw(mcp).include_traceback is False
+    finally:
+        root.setLevel(prev)
+
+
+def test_include_traceback_explicit_override():
+    """Explicit include_traceback wins over log-level inference."""
+    root = logging.getLogger()
+    prev = root.level
+    root.setLevel(logging.WARNING)
+    try:
+        mcp = FastMCP(name="t")
+        wire_middleware_stack(mcp, include_traceback=True)
+        assert _error_mw(mcp).include_traceback is True
+    finally:
+        root.setLevel(prev)
+
+
+def test_transform_errors_default_false():
+    """Default transform_errors is False (matches MV behavior)."""
     mcp = FastMCP(name="t")
     wire_middleware_stack(mcp)
-    error_mw = next(m for m in mcp.middleware if isinstance(m, ErrorHandlingMiddleware))
-    assert error_mw.include_traceback is True
+    assert _error_mw(mcp).transform_errors is False
+
+
+def test_transform_errors_explicit_true():
+    """transform_errors=True is honored."""
+    mcp = FastMCP(name="t")
+    wire_middleware_stack(mcp, transform_errors=True)
+    assert _error_mw(mcp).transform_errors is True
