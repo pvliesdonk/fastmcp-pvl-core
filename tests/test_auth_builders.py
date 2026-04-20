@@ -109,6 +109,17 @@ class TestBuildOIDCProxyAuth:
             build_oidc_proxy_auth(_oidc_config(oidc_verify_access_token=True))
         assert mock_cls.call_args.kwargs["verify_id_token"] is False
 
+    def test_scope_warning_when_verify_id_token_without_openid(
+        self, caplog: pytest.LogCaptureFixture
+    ):
+        mock_cls = MagicMock()
+        with patch("fastmcp.server.auth.oidc_proxy.OIDCProxy", mock_cls):
+            build_oidc_proxy_auth(_oidc_config(oidc_required_scopes=("profile",)))
+        assert any(
+            "scope_warning" in r.message and r.levelname == "WARNING"
+            for r in caplog.records
+        )
+
     def test_linux_ephemeral_key_warning(self, caplog: pytest.LogCaptureFixture):
         mock_cls = MagicMock()
         with (
@@ -197,9 +208,32 @@ class TestBuildRemoteAuth:
         import httpx
 
         def _raise(*a, **kw):
-            raise RuntimeError("network down")
+            raise httpx.ConnectError("network down")
 
         monkeypatch.setattr(httpx, "get", _raise)
+        auth = build_remote_auth(
+            ServerConfig(
+                base_url="https://x.example",
+                oidc_config_url=(
+                    "https://idp.example/.well-known/openid-configuration"
+                ),
+            )
+        )
+        assert auth is None
+
+    def test_returns_none_when_discovery_json_malformed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        import httpx
+
+        class _BadJSONResp:
+            def raise_for_status(self) -> None:
+                return None
+
+            def json(self) -> object:
+                raise ValueError("not json")
+
+        monkeypatch.setattr(httpx, "get", lambda *a, **kw: _BadJSONResp())
         auth = build_remote_auth(
             ServerConfig(
                 base_url="https://x.example",

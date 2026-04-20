@@ -244,7 +244,7 @@ def build_remote_auth(config: ServerConfig) -> RemoteAuthProvider | None:
         resp = httpx.get(config.oidc_config_url, timeout=10)
         resp.raise_for_status()
         discovery = resp.json()
-    except Exception:
+    except (httpx.HTTPError, ValueError):
         logger.exception(
             "remote_auth_discovery_failed config_url=%s",
             config.oidc_config_url,
