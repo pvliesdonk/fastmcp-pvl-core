@@ -16,8 +16,13 @@ logger = logging.getLogger(__name__)
 
 AuthMode = Literal["none", "bearer", "remote", "oidc-proxy", "multi"]
 
-_VALID_MODES: frozenset[str] = frozenset(
-    {"none", "bearer", "remote", "oidc-proxy", "multi"}
+# The override only accepts the two OIDC modes that can apply to the same
+# underlying configuration.  Bearer / multi / none are unambiguous from
+# field presence, so allowing them as overrides only introduces silent
+# failure modes (e.g. ``AUTH_MODE=bearer`` with no ``BEARER_TOKEN``
+# would start the server unauthenticated).
+_VALID_MODES: frozenset[Literal["remote", "oidc-proxy"]] = frozenset(
+    {"remote", "oidc-proxy"}
 )
 
 
@@ -26,10 +31,14 @@ def resolve_auth_mode(config: ServerConfig) -> AuthMode:
 
     Precedence:
 
-    - If ``config.auth_mode`` is set to a recognized mode string (case
-      and whitespace insensitive), it overrides auto-detection.  An
-      unknown or blank value is ignored with a warning and auto-detect
-      proceeds.
+    - If ``config.auth_mode`` is set, it overrides auto-detection.  The
+      override only accepts ``remote`` or ``oidc-proxy`` — these are the
+      two modes that can apply to the same underlying OIDC
+      configuration (all four OIDC vars set is ambiguous between them,
+      depending on operator intent).  Other values (``bearer``,
+      ``multi``, ``none``, and any unknown string) are ignored with a
+      warning, and auto-detection is used.  The comparison is case- and
+      whitespace-insensitive.
     - ``multi``: both a bearer token and an OIDC flavor are configured.
     - ``bearer``: only ``bearer_token`` set.
     - ``oidc-proxy``: all four OIDC client-credential vars set

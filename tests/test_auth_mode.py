@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from fastmcp_pvl_core import ServerConfig, resolve_auth_mode
 
 
@@ -68,16 +70,12 @@ class TestResolveAuthMode:
 
 
 class TestExplicitOverride:
-    def test_override_bearer_with_no_fields_set(self):
-        # Even with no fields configured, an explicit override returns that mode.
-        assert resolve_auth_mode(_cfg(auth_mode="bearer")) == "bearer"
-
-    def test_override_none_when_bearer_configured(self):
-        # Explicit override trumps auto-detection.
-        assert resolve_auth_mode(_cfg(auth_mode="none", bearer_token="x")) == "none"
-
     def test_override_remote_when_all_four_oidc_vars_set(self):
-        # Explicit 'remote' beats auto-detected 'oidc-proxy'.
+        # Explicit 'remote' beats auto-detected 'oidc-proxy' when all four
+        # OIDC client-credential vars are set.  This is the primary
+        # motivating case for the override: operators who want local JWKS
+        # validation instead of proxied DCR even though credentials are
+        # available.
         assert (
             resolve_auth_mode(
                 _cfg(
@@ -91,12 +89,44 @@ class TestExplicitOverride:
             == "remote"
         )
 
+    def test_override_oidc_proxy_when_only_partial_oidc_config(self):
+        # Matches MV semantics (see markdown_vault_mcp/config.py
+        # ``resolve_auth_mode``): the override forces the mode even when
+        # the downstream builder will fail to construct a provider.
+        # Downstream ``build_oidc_proxy_auth`` is responsible for
+        # reporting missing fields.  ``resolve_auth_mode`` itself does
+        # not gate on field presence.
+        assert (
+            resolve_auth_mode(
+                _cfg(
+                    auth_mode="oidc-proxy",
+                    base_url="https://x",
+                    oidc_config_url="https://idp/.well-known/openid-configuration",
+                )
+            )
+            == "oidc-proxy"
+        )
+
     def test_override_is_case_insensitive_and_trims(self):
         assert resolve_auth_mode(_cfg(auth_mode="  OIDC-PROXY  ")) == "oidc-proxy"
-
-    def test_unknown_override_falls_back_to_auto_detection(self):
-        # Unknown override string is ignored; auto-detect still runs.
-        assert resolve_auth_mode(_cfg(auth_mode="bogus", bearer_token="x")) == "bearer"
+        assert resolve_auth_mode(_cfg(auth_mode="Remote")) == "remote"
 
     def test_blank_override_falls_back_to_auto_detection(self):
         assert resolve_auth_mode(_cfg(auth_mode="   ")) == "none"
+
+    @pytest.mark.parametrize("bad", ["bearer", "multi", "none", "bogus"])
+    def test_unknown_override_falls_back_to_auto_detection(self, bad: str):
+        # ``bearer``, ``multi``, and ``none`` are no longer accepted as
+        # override values — only ``remote`` and ``oidc-proxy`` are.  All
+        # other strings, including these previously-accepted ones, are
+        # rejected with a warning and auto-detection runs instead.
+        # With ``bearer_token`` set, auto-detection yields ``bearer``.
+        assert resolve_auth_mode(_cfg(auth_mode=bad, bearer_token="x")) == "bearer"
+
+    def test_rejected_override_without_autodetect_candidates_returns_none(self):
+        # With no fields configured, the auto-detect fallback for an
+        # unrecognized override is ``none``.  Previously ``auth_mode="bearer"``
+        # would return ``"bearer"`` here and downstream would silently
+        # build no auth provider — the exact silent failure this change
+        # prevents.
+        assert resolve_auth_mode(_cfg(auth_mode="bearer")) == "none"
