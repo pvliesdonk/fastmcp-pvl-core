@@ -25,7 +25,7 @@ from fastmcp_pvl_core._factory import (
 from fastmcp_pvl_core._logging import configure_logging_from_env
 from fastmcp_pvl_core._middleware import wire_middleware_stack
 
-__version__ = "1.0.0-rc.1"  # PSR overrides at build time
+__version__ = "1.0.0"  # PSR overrides at build time
 
 __all__ = [
     "ArtifactStore",
