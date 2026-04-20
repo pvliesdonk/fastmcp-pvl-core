@@ -40,6 +40,8 @@ class ServerConfig:
     event_store_url: str | None = None
     app_domain: str | None = None
 
+    auth_mode: str | None = None
+
     @classmethod
     def from_env(cls, env_prefix: str) -> ServerConfig:
         """Load all fields from ``{env_prefix}_*`` environment variables.
@@ -83,4 +85,5 @@ class ServerConfig:
             oidc_jwt_signing_key=env(env_prefix, "OIDC_JWT_SIGNING_KEY"),
             event_store_url=env(env_prefix, "EVENT_STORE_URL"),
             app_domain=env(env_prefix, "APP_DOMAIN"),
+            auth_mode=env(env_prefix, "AUTH_MODE"),
         )
