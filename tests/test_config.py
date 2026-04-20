@@ -75,6 +75,13 @@ class TestServerConfigFromEnv:
         monkeypatch.setenv("MYAPP_APP_DOMAIN", "mcp.example.com")
         assert ServerConfig.from_env("MYAPP").app_domain == "mcp.example.com"
 
+    def test_oidc_verify_access_token_defaults_to_false(self):
+        assert ServerConfig().oidc_verify_access_token is False
+
+    def test_reads_oidc_verify_access_token(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setenv("MYAPP_OIDC_VERIFY_ACCESS_TOKEN", "true")
+        assert ServerConfig.from_env("MYAPP").oidc_verify_access_token is True
+
     def test_reads_auth_mode(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setenv("MYAPP_AUTH_MODE", "oidc-proxy")
         assert ServerConfig.from_env("MYAPP").auth_mode == "oidc-proxy"
