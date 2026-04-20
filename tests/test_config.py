@@ -75,6 +75,13 @@ class TestServerConfigFromEnv:
         monkeypatch.setenv("MYAPP_APP_DOMAIN", "mcp.example.com")
         assert ServerConfig.from_env("MYAPP").app_domain == "mcp.example.com"
 
+    def test_reads_auth_mode(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setenv("MYAPP_AUTH_MODE", "oidc-proxy")
+        assert ServerConfig.from_env("MYAPP").auth_mode == "oidc-proxy"
+
+    def test_auth_mode_defaults_to_none(self):
+        assert ServerConfig().auth_mode is None
+
     def test_invalid_transport_falls_back_to_stdio(
         self, monkeypatch: pytest.MonkeyPatch
     ):
