@@ -5,6 +5,7 @@ middleware wiring, logging setup, config helpers, and server
 factory building blocks without duplicating them per repo.
 """
 
+from fastmcp_pvl_core._artifacts import ArtifactStore, TokenRecord
 from fastmcp_pvl_core._auth import (
     AuthMode,
     build_auth,
@@ -26,8 +27,10 @@ from fastmcp_pvl_core._middleware import wire_middleware_stack
 __version__ = "0.0.0"  # PSR overrides at build time
 
 __all__ = [
+    "ArtifactStore",
     "AuthMode",
     "ServerConfig",
+    "TokenRecord",
     "Transport",
     "build_auth",
     "build_bearer_auth",
