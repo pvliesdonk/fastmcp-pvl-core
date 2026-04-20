@@ -71,7 +71,11 @@ version_toml = ["pyproject.toml:project.version"]
 version_variables = ["src/fastmcp_pvl_core/__init__.py:__version__"]
 commit_parser = "angular"
 tag_format = "v{version}"
-build_command = "uv build"
+# PSR's build_command runs inside its Docker container (python:3.14-slim)
+# which has no uv. The real wheel/sdist build happens in the workflow's
+# `uv build` step after PSR commits the version bump. Set to an empty
+# no-op so PSR skips its internal build phase.
+build_command = ""
 major_on_zero = false
 
 [tool.semantic_release.changelog]
