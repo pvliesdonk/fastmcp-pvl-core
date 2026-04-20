@@ -15,6 +15,11 @@ from fastmcp_pvl_core._auth import (
 )
 from fastmcp_pvl_core._config import ServerConfig, Transport
 from fastmcp_pvl_core._env import env, parse_bool, parse_list, parse_scopes
+from fastmcp_pvl_core._factory import (
+    build_event_store,
+    build_instructions,
+    compute_app_domain,
+)
 from fastmcp_pvl_core._logging import configure_logging_from_env
 from fastmcp_pvl_core._middleware import wire_middleware_stack
 
@@ -26,8 +31,11 @@ __all__ = [
     "Transport",
     "build_auth",
     "build_bearer_auth",
+    "build_event_store",
+    "build_instructions",
     "build_oidc_proxy_auth",
     "build_remote_auth",
+    "compute_app_domain",
     "configure_logging_from_env",
     "env",
     "parse_bool",
