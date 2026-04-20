@@ -148,9 +148,8 @@ class ArtifactStore:
         if expired:
             logger.debug("artifact_purge count=%d", len(expired))
 
-    @classmethod
+    @staticmethod
     def register_route(
-        cls,
         mcp: FastMCP,
         store: ArtifactStore,
         *,
