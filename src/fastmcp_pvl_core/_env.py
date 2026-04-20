@@ -7,8 +7,15 @@ through :func:`env` to keep naming consistent.
 from __future__ import annotations
 
 import os
+from typing import overload
 
 
+@overload
+def env(prefix: str, name: str) -> str | None: ...
+@overload
+def env(prefix: str, name: str, default: None) -> str | None: ...
+@overload
+def env(prefix: str, name: str, default: str) -> str: ...
 def env(prefix: str, name: str, default: str | None = None) -> str | None:
     """Read ``{PREFIX}_{NAME}`` from the environment.
 

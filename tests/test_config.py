@@ -51,6 +51,8 @@ class TestServerConfigFromEnv:
         )
         monkeypatch.setenv("MYAPP_OIDC_CLIENT_ID", "cid")
         monkeypatch.setenv("MYAPP_OIDC_CLIENT_SECRET", "csecret")
+        monkeypatch.setenv("MYAPP_OIDC_AUDIENCE", "aud.example")
+        monkeypatch.setenv("MYAPP_OIDC_JWT_SIGNING_KEY", "sigkey")
         monkeypatch.setenv("MYAPP_OIDC_REQUIRED_SCOPES", "openid profile")
         config = ServerConfig.from_env("MYAPP")
         assert config.base_url == "https://x.example"
@@ -60,12 +62,24 @@ class TestServerConfigFromEnv:
         )
         assert config.oidc_client_id == "cid"
         assert config.oidc_client_secret == "csecret"
+        assert config.oidc_audience == "aud.example"
+        assert config.oidc_jwt_signing_key == "sigkey"
         assert config.oidc_required_scopes == ("openid", "profile")
 
     def test_reads_event_store_url(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setenv("MYAPP_EVENT_STORE_URL", "file:///data/events")
         config = ServerConfig.from_env("MYAPP")
         assert config.event_store_url == "file:///data/events"
+
+    def test_reads_app_domain(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setenv("MYAPP_APP_DOMAIN", "mcp.example.com")
+        assert ServerConfig.from_env("MYAPP").app_domain == "mcp.example.com"
+
+    def test_invalid_transport_falls_back_to_stdio(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.setenv("MYAPP_TRANSPORT", "websocket")
+        assert ServerConfig.from_env("MYAPP").transport == "stdio"
 
     def test_is_frozen(self):
         config = ServerConfig()

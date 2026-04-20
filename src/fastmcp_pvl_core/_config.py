@@ -55,14 +55,16 @@ class ServerConfig:
             A populated :class:`ServerConfig` instance.
         """
         transport_raw = env(env_prefix, "TRANSPORT", "stdio")
-        if transport_raw not in ("stdio", "http", "sse"):
-            transport_raw = "stdio"
-        transport: Transport = transport_raw  # type: ignore[assignment]
+        transport: Transport
+        if transport_raw == "http":
+            transport = "http"
+        elif transport_raw == "sse":
+            transport = "sse"
+        else:
+            transport = "stdio"
 
         host = env(env_prefix, "HOST", "127.0.0.1")
-        assert host is not None
         port_str = env(env_prefix, "PORT", "8000")
-        assert port_str is not None
 
         scopes_raw = env(env_prefix, "OIDC_REQUIRED_SCOPES")
         scopes = tuple(parse_scopes(scopes_raw) or ())
@@ -82,6 +84,3 @@ class ServerConfig:
             event_store_url=env(env_prefix, "EVENT_STORE_URL"),
             app_domain=env(env_prefix, "APP_DOMAIN"),
         )
-
-
-__all__ = ["ServerConfig", "Transport"]
