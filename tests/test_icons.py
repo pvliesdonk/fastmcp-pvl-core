@@ -58,9 +58,7 @@ class TestRegisterToolIcons:
         _write(tmp_path, "b.png", PNG_BYTES)
         mcp = _make_mcp_with_tool()
 
-        register_tool_icons(
-            mcp, {"ping": ["a.svg", "b.png"]}, static_dir=tmp_path
-        )
+        register_tool_icons(mcp, {"ping": ["a.svg", "b.png"]}, static_dir=tmp_path)
 
         icons = _tool_icons(mcp, "ping")
         assert [i.mimeType for i in icons] == ["image/svg+xml", "image/png"]
@@ -101,9 +99,7 @@ class TestRegisterToolIcons:
         mcp = _make_mcp_with_tool()
 
         with pytest.raises(FileNotFoundError, match="missing.svg"):
-            register_tool_icons(
-                mcp, {"ping": "missing.svg"}, static_dir=tmp_path
-            )
+            register_tool_icons(mcp, {"ping": "missing.svg"}, static_dir=tmp_path)
 
     def test_missing_static_dir_raises(self, tmp_path: Path):
         mcp = _make_mcp_with_tool()
@@ -119,9 +115,7 @@ class TestRegisterToolIcons:
         with pytest.raises(NotADirectoryError):
             register_tool_icons(mcp, {"ping": "x.svg"}, static_dir=regular_file)
 
-    def test_unregistered_tool_raises_and_does_not_mutate(
-        self, tmp_path: Path
-    ):
+    def test_unregistered_tool_raises_and_does_not_mutate(self, tmp_path: Path):
         _write(tmp_path, "ping.svg", SVG_BYTES)
         mcp = _make_mcp_with_tool()
 
@@ -166,9 +160,7 @@ class TestRegisterToolIcons:
         _write(tmp_path, "ping.svg", SVG_BYTES)
         mcp = _make_mcp_with_tool()
 
-        register_tool_icons(
-            mcp, {"ping": Path("ping.svg")}, static_dir=tmp_path
-        )
+        register_tool_icons(mcp, {"ping": Path("ping.svg")}, static_dir=tmp_path)
 
         assert _tool_icons(mcp, "ping")[0].mimeType == "image/svg+xml"
 

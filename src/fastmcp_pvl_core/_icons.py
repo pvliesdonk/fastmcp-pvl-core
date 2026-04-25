@@ -193,6 +193,4 @@ def register_tool_icons(
     for tool_name, targets, icons, filenames in resolved:
         for tool in targets:
             tool.icons = icons
-        logger.info(
-            "icons registered tool=%s files=%s", tool_name, ",".join(filenames)
-        )
+        logger.info("icons registered tool=%s files=%s", tool_name, ",".join(filenames))
