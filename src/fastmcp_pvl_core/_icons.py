@@ -91,6 +91,21 @@ def make_icon(
     )
 
 
+def _is_within(path: Path, base_dir: Path) -> bool:
+    """Return whether ``path`` is at or under ``base_dir``.
+
+    Both arguments must already be resolved (absolute).  Implemented via
+    :meth:`Path.relative_to` because :meth:`Path.is_relative_to` only
+    arrived in 3.9 and we still get the exception-free check via
+    ``try/except``.
+    """
+    try:
+        path.relative_to(base_dir)
+    except ValueError:
+        return False
+    return True
+
+
 IconSpec = str | Path | Sequence[str | Path]
 """Per-tool value type accepted by :func:`register_tool_icons`.
 
@@ -137,7 +152,8 @@ def register_tool_icons(
 
     Raises:
         ValueError: If a tool name in ``mapping`` is not registered on
-            ``mcp``, or a filename has an unsupported extension.
+            ``mcp``, a filename has an unsupported extension, or a relative
+            filename escapes ``static_dir`` via ``..``.
         FileNotFoundError: If ``static_dir`` does not exist or a referenced
             file is missing.
         NotADirectoryError: If ``static_dir`` exists but is not a directory.
@@ -146,18 +162,20 @@ def register_tool_icons(
     # the fastmcp.tools import at package load time.
     from fastmcp.tools.base import Tool
 
-    base_dir = Path(static_dir)
+    base_dir = Path(static_dir).resolve()
     if not base_dir.exists():
         raise FileNotFoundError(f"static_dir does not exist: {base_dir}")
     if not base_dir.is_dir():
         raise NotADirectoryError(f"static_dir is not a directory: {base_dir}")
 
-    # LocalProvider keys components as ``"<prefix>:<name>@<version>"`` (the
-    # ``@`` is always present, version is empty for unversioned tools).
-    # Group tools by name once; the helper applies icons to every registered
-    # version of the named tool.
+    # ``local_provider`` is the public access point on FastMCP; ``_components``
+    # is its internal store keyed as ``"<prefix>:<name>@<version>"`` (the ``@``
+    # is always present; version is empty for unversioned tools). FastMCP does
+    # not expose a public sync ``tools`` accessor today, so we go one level
+    # deep — the public async ``list_tools()`` would force this helper to be
+    # async, which is heavier than the maintenance risk of one private attr.
     tools_by_name: dict[str, list[Tool]] = {}
-    for component in mcp._local_provider._components.values():
+    for component in mcp.local_provider._components.values():
         if isinstance(component, Tool):
             tools_by_name.setdefault(component.name, []).append(component)
 
@@ -181,7 +199,20 @@ def register_tool_icons(
         display: list[str] = []
         for entry in entries:
             entry_path = Path(entry)
-            path = entry_path if entry_path.is_absolute() else base_dir / entry_path
+            if entry_path.is_absolute():
+                # Absolute paths bypass static_dir resolution by design — see
+                # ``IconSpec`` docstring.  Caller takes responsibility for
+                # what's outside static_dir.
+                path = entry_path
+            else:
+                # Relative paths must stay inside static_dir; resolving
+                # collapses ``..`` so we can check containment after the fact.
+                path = (base_dir / entry_path).resolve()
+                if not _is_within(path, base_dir):
+                    raise ValueError(
+                        f"Icon path {str(entry)!r} for tool {tool_name!r} "
+                        f"escapes static_dir ({base_dir})"
+                    )
             if not path.is_file():
                 raise FileNotFoundError(
                     f"Icon file for tool {tool_name!r} not found: {path}"

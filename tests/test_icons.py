@@ -23,7 +23,7 @@ def _write(tmp_path: Path, name: str, data: bytes) -> Path:
 
 
 def _tool_icons(mcp: FastMCP, tool_name: str) -> list:
-    for component in mcp._local_provider._components.values():
+    for component in mcp.local_provider._components.values():
         if getattr(component, "name", None) == tool_name:
             return component.icons or []
     raise KeyError(tool_name)
@@ -176,6 +176,25 @@ class TestRegisterToolIcons:
         assert icons[0].mimeType == "image/svg+xml"
         payload = icons[0].src.split(",", 1)[1]
         assert base64.b64decode(payload) == SVG_BYTES
+
+    def test_relative_path_traversal_rejected(self, tmp_path: Path):
+        # Place the icon outside static_dir so the resolved path actually
+        # exists; the helper must still refuse to read it.
+        outside_dir = tmp_path / "outside"
+        outside_dir.mkdir()
+        (outside_dir / "secret.svg").write_bytes(SVG_BYTES)
+        static_dir = tmp_path / "static"
+        static_dir.mkdir()
+        mcp = _make_mcp_with_tool()
+
+        with pytest.raises(ValueError, match="escapes static_dir"):
+            register_tool_icons(
+                mcp,
+                {"ping": "../outside/secret.svg"},
+                static_dir=static_dir,
+            )
+
+        assert _tool_icons(mcp, "ping") == []
 
     def test_mapping_accepts_mixed_str_and_path_in_list(self, tmp_path: Path):
         _write(tmp_path, "a.svg", SVG_BYTES)
