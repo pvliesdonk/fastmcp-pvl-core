@@ -22,6 +22,7 @@ from fastmcp_pvl_core._factory import (
     build_instructions,
     compute_app_domain,
 )
+from fastmcp_pvl_core._icons import register_tool_icons
 from fastmcp_pvl_core._logging import configure_logging_from_env
 from fastmcp_pvl_core._middleware import wire_middleware_stack
 from fastmcp_pvl_core._server_info import (
@@ -55,6 +56,7 @@ __all__ = [
     "parse_list",
     "parse_scopes",
     "register_server_info_tool",
+    "register_tool_icons",
     "resolve_auth_mode",
     "wire_middleware_stack",
 ]
