@@ -1,10 +1,15 @@
-"""Bulk-attach icons to FastMCP tools from a static directory.
+"""Build :class:`mcp.types.Icon` instances from on-disk files.
 
 Every pvl-family server attaches Lucide icons (and friends) to its tools via
-base64-encoded data URIs.  This module ships a single helper that takes a
-``{tool_name: filename | [filenames]}`` mapping plus a ``static_dir`` and does
-the read → base64 → :class:`mcp.types.Icon` plumbing in one place — see
-issue #16 for the motivation.
+base64-encoded data URIs.  This module ships two helpers — see issue #16 for
+the motivation:
+
+- :func:`make_icon` reads one file and returns a single :class:`Icon` with a
+  ``data:<mime>;base64,<...>`` ``src``.  Use this at decoration time, e.g.
+  ``@mcp.tool(icons=[make_icon(static_dir / "search.svg")])``.
+- :func:`register_tool_icons` is the bulk equivalent: takes a
+  ``{tool_name: filename | [filenames]}`` mapping plus a ``static_dir`` and
+  attaches the resulting icon lists to already-registered tools.
 """
 
 from __future__ import annotations
@@ -38,58 +43,97 @@ Keys are lowercased ``Path.suffix`` values; anything not listed here causes
 """
 
 
-def _load_icon(path: Path) -> Icon:
-    """Read ``path`` and return an :class:`Icon` with a base64 data URI.
+def make_icon(
+    path: str | Path,
+    *,
+    sizes: list[str] | None = None,
+) -> Icon:
+    """Read an icon file and return an :class:`Icon` with a base64 data URI.
+
+    Use this at tool-decoration time when you only need a single icon::
+
+        @mcp.tool(icons=[make_icon(STATIC / "search.svg")])
+        def search(...): ...
+
+    Or call it from your own code when :func:`register_tool_icons` doesn't
+    fit (e.g. you want different icons per tool version).
 
     Args:
-        path: Absolute path to the icon file.  Must exist and have a
-            supported extension (see :data:`_MIME_BY_SUFFIX`).
+        path: Path to the icon file.  Must exist and have a supported
+            extension: ``.svg``, ``.png``, ``.ico``, ``.jpg``/``.jpeg``.
+        sizes: Optional ``["WxH", ...]`` size hints stored on the icon
+            (e.g. ``["48x48", "96x96"]``).  Passed straight through to
+            :class:`mcp.types.Icon`.
 
     Returns:
         An :class:`mcp.types.Icon` whose ``src`` is
-        ``"data:<mime>;base64,<payload>"`` and whose ``mimeType`` matches.
+        ``"data:<mime>;base64,<payload>"`` and whose ``mimeType`` matches
+        the file extension.
 
     Raises:
-        ValueError: If the file's extension is not in
-            :data:`_MIME_BY_SUFFIX`.
+        ValueError: If the file's extension is not supported.
         FileNotFoundError: If the file does not exist.
     """
-    suffix = path.suffix.lower()
+    file_path = Path(path)
+    suffix = file_path.suffix.lower()
     mime = _MIME_BY_SUFFIX.get(suffix)
     if mime is None:
         supported = ", ".join(sorted(_MIME_BY_SUFFIX))
         raise ValueError(
-            f"Unsupported icon extension {suffix!r} for {path}; "
+            f"Unsupported icon extension {suffix!r} for {file_path}; "
             f"supported extensions: {supported}"
         )
-    payload = base64.b64encode(path.read_bytes()).decode("ascii")
-    return Icon(src=f"data:{mime};base64,{payload}", mimeType=mime)
+    payload = base64.b64encode(file_path.read_bytes()).decode("ascii")
+    return Icon(
+        src=f"data:{mime};base64,{payload}",
+        mimeType=mime,
+        sizes=sizes,
+    )
+
+
+IconSpec = str | Path | Sequence[str | Path]
+"""Per-tool value type accepted by :func:`register_tool_icons`.
+
+Either a single filename (``str``/``Path``) or a sequence of filenames.
+Each filename is resolved relative to ``static_dir``; absolute paths are
+accepted as-is.
+"""
 
 
 def register_tool_icons(
     mcp: FastMCP,
-    mapping: Mapping[str, str | Sequence[str]],
+    mapping: Mapping[str, IconSpec],
     *,
     static_dir: str | Path,
 ) -> None:
     """Attach base64-encoded icons to already-registered FastMCP tools.
 
-    Resolves each filename relative to ``static_dir``, reads it, encodes it
-    as ``data:<mime>;base64,<...>``, and assigns the resulting list to the
+    Resolves each filename relative to ``static_dir`` (absolute paths pass
+    through unchanged), reads it, encodes it as
+    ``data:<mime>;base64,<...>``, and assigns the resulting list to the
     matching tool's ``icons`` attribute (replacing any previous icons).
+    Tools registered with multiple versions all receive the same icons.
 
     The mapping is fully validated before any tool is mutated, so a missing
     file or unknown tool name aborts the call without leaving a half-applied
     state.
+
+    For one-off use at decoration time, prefer :func:`make_icon` directly::
+
+        @mcp.tool(icons=[make_icon(STATIC / "search.svg")])
+        def search(...): ...
 
     Args:
         mcp: The :class:`FastMCP` instance whose tools should receive icons.
             Tools must already be registered (e.g. via ``@mcp.tool`` or
             ``mcp.add_tool``) before calling this helper.
         mapping: ``{tool_name: filename}`` or ``{tool_name: [filenames]}``.
-            Filenames are resolved relative to ``static_dir``.  Supported
-            extensions: ``.svg``, ``.png``, ``.ico``, ``.jpg``/``.jpeg``.
-        static_dir: Directory containing the icon files.
+            Filenames may be ``str`` or :class:`~pathlib.Path`.  Relative
+            paths are resolved against ``static_dir``; absolute paths are
+            used as-is.  Supported extensions: ``.svg``, ``.png``, ``.ico``,
+            ``.jpg``/``.jpeg``.
+        static_dir: Directory containing the icon files.  Must exist and be
+            a directory; only used to resolve relative filenames.
 
     Raises:
         ValueError: If a tool name in ``mapping`` is not registered on
@@ -128,16 +172,23 @@ def register_tool_icons(
                 "register_tool_icons()."
             )
 
-        filenames = [files] if isinstance(files, str) else list(files)
+        if isinstance(files, str | Path):
+            entries: list[str | Path] = [files]
+        else:
+            entries = list(files)
+
         icons: list[Icon] = []
-        for filename in filenames:
-            path = base_dir / filename
+        display: list[str] = []
+        for entry in entries:
+            entry_path = Path(entry)
+            path = entry_path if entry_path.is_absolute() else base_dir / entry_path
             if not path.is_file():
                 raise FileNotFoundError(
                     f"Icon file for tool {tool_name!r} not found: {path}"
                 )
-            icons.append(_load_icon(path))
-        resolved.append((tool_name, targets, icons, filenames))
+            icons.append(make_icon(path))
+            display.append(str(entry))
+        resolved.append((tool_name, targets, icons, display))
 
     for tool_name, targets, icons, filenames in resolved:
         for tool in targets:

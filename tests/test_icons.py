@@ -1,4 +1,4 @@
-"""Tests for ``register_tool_icons``."""
+"""Tests for ``make_icon`` and ``register_tool_icons``."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 from fastmcp import FastMCP
 
-from fastmcp_pvl_core import register_tool_icons
+from fastmcp_pvl_core import make_icon, register_tool_icons
 
 SVG_BYTES = b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"></svg>'
 PNG_BYTES = b"\x89PNG\r\n\x1a\nfake-png-payload"
@@ -161,3 +161,88 @@ class TestRegisterToolIcons:
         register_tool_icons(mcp, {"ping": "ping.svg"}, static_dir=str(tmp_path))
 
         assert _tool_icons(mcp, "ping")[0].mimeType == "image/svg+xml"
+
+    def test_mapping_accepts_path_object(self, tmp_path: Path):
+        _write(tmp_path, "ping.svg", SVG_BYTES)
+        mcp = _make_mcp_with_tool()
+
+        register_tool_icons(
+            mcp, {"ping": Path("ping.svg")}, static_dir=tmp_path
+        )
+
+        assert _tool_icons(mcp, "ping")[0].mimeType == "image/svg+xml"
+
+    def test_mapping_accepts_absolute_path(self, tmp_path: Path, tmp_path_factory):
+        # Absolute paths bypass static_dir resolution.
+        elsewhere = tmp_path_factory.mktemp("elsewhere")
+        absolute = _write(elsewhere, "abs.svg", SVG_BYTES)
+        mcp = _make_mcp_with_tool()
+
+        register_tool_icons(mcp, {"ping": absolute}, static_dir=tmp_path)
+
+        icons = _tool_icons(mcp, "ping")
+        assert icons[0].mimeType == "image/svg+xml"
+        payload = icons[0].src.split(",", 1)[1]
+        assert base64.b64decode(payload) == SVG_BYTES
+
+    def test_mapping_accepts_mixed_str_and_path_in_list(self, tmp_path: Path):
+        _write(tmp_path, "a.svg", SVG_BYTES)
+        _write(tmp_path, "b.png", PNG_BYTES)
+        mcp = _make_mcp_with_tool()
+
+        register_tool_icons(
+            mcp,
+            {"ping": ["a.svg", Path("b.png")]},
+            static_dir=tmp_path,
+        )
+
+        icons = _tool_icons(mcp, "ping")
+        assert [i.mimeType for i in icons] == ["image/svg+xml", "image/png"]
+
+
+class TestMakeIcon:
+    def test_svg_returns_data_uri(self, tmp_path: Path):
+        path = _write(tmp_path, "x.svg", SVG_BYTES)
+
+        icon = make_icon(path)
+
+        assert icon.mimeType == "image/svg+xml"
+        assert icon.src.startswith("data:image/svg+xml;base64,")
+        assert base64.b64decode(icon.src.split(",", 1)[1]) == SVG_BYTES
+        assert icon.sizes is None
+
+    def test_accepts_string_path(self, tmp_path: Path):
+        path = _write(tmp_path, "x.png", PNG_BYTES)
+
+        icon = make_icon(str(path))
+
+        assert icon.mimeType == "image/png"
+
+    def test_sizes_passed_through(self, tmp_path: Path):
+        path = _write(tmp_path, "x.svg", SVG_BYTES)
+
+        icon = make_icon(path, sizes=["48x48", "96x96"])
+
+        assert icon.sizes == ["48x48", "96x96"]
+
+    def test_unknown_extension_rejected(self, tmp_path: Path):
+        path = _write(tmp_path, "x.bmp", b"bmp")
+
+        with pytest.raises(ValueError, match=r"\.bmp"):
+            make_icon(path)
+
+    def test_missing_file_raises(self, tmp_path: Path):
+        with pytest.raises(FileNotFoundError):
+            make_icon(tmp_path / "missing.svg")
+
+    def test_usable_at_decoration_time(self, tmp_path: Path):
+        path = _write(tmp_path, "x.svg", SVG_BYTES)
+        mcp = FastMCP("t")
+
+        @mcp.tool(name="search", icons=[make_icon(path)])
+        def _search() -> str:
+            return "ok"
+
+        icons = _tool_icons(mcp, "search")
+        assert len(icons) == 1
+        assert icons[0].mimeType == "image/svg+xml"
