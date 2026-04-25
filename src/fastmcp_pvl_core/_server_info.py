@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import inspect
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -30,8 +30,10 @@ UpstreamResult = Any
   ``Path``-like or numeric values.
 """
 
-UpstreamProvider = Callable[[], UpstreamResult | Awaitable[UpstreamResult]]
-"""Sync or async zero-arg callable returning an :data:`UpstreamResult`."""
+UpstreamProvider = Callable[[], Any]
+"""Sync or async zero-arg callable; the return value (or its awaited
+result, if a coroutine is returned) is interpreted per
+:data:`UpstreamResult`."""
 
 
 _RESERVED_KEYS = frozenset({"server_name", "server_version", "core_version"})
@@ -76,8 +78,10 @@ def register_server_info_tool(
         upstream_label: Key under which the upstream block appears in the
             response.  Defaults to ``"upstream"``.  Must not collide with
             the reserved keys ``server_name``, ``server_version``, or
-            ``core_version``.  Ignored when ``upstream_version`` is
-            ``None``.
+            ``core_version``; this is validated eagerly at registration
+            time, even when ``upstream_version`` is ``None``.  When no
+            provider is configured the label is otherwise unused — no
+            block keyed under it appears in the payload.
         tool_name: Tool name to register.  Defaults to ``"get_server_info"``.
         description: Override for the tool description.  Defaults to a
             built-in description that mentions the wrapper name.  Pass
@@ -135,6 +139,11 @@ def register_server_info_tool(
         else:
             payload[upstream_label] = {"version": str(result)}
         return payload
+
+    # Make tracebacks and repr() reflect the registered tool name rather
+    # than always showing ``get_server_info``.
+    get_server_info.__name__ = tool_name
+    get_server_info.__qualname__ = tool_name
 
     mcp.tool(
         name=tool_name,

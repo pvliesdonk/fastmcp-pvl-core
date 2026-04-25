@@ -109,6 +109,24 @@ class TestRegisterServerInfoTool:
         # Upstream block carries the error instead of a version.
         assert payload["paperless"] == {"error": "upstream is on fire"}
 
+    async def test_async_upstream_failure_returns_structured_error(self):
+        """Failures raised from the awaited path are caught the same way."""
+
+        async def boom_async():
+            raise RuntimeError("async upstream on fire")
+
+        mcp = FastMCP("t")
+        register_server_info_tool(
+            mcp,
+            server_version="1.0.0",
+            server_name="my-mcp",
+            upstream_version=boom_async,
+            upstream_label="up",
+        )
+        payload = await _call(mcp)
+        assert payload["server_name"] == "my-mcp"
+        assert payload["up"] == {"error": "async upstream on fire"}
+
     async def test_upstream_returns_none(self):
         mcp = FastMCP("t")
         register_server_info_tool(
