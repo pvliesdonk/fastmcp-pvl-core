@@ -3,9 +3,30 @@
 Shared FastMCP infrastructure for the `pvliesdonk/*-mcp` server family:
 auth, middleware, logging, config helpers, server-factory building blocks.
 
-## Status
+## Ecosystem
 
-Early 0.x. API may change on minor bumps until 1.0.
+- [`fastmcp-server-template`](https://github.com/pvliesdonk/fastmcp-server-template) —
+  copier template that scaffolds new FastMCP servers on top of this library.
+- Active consumers (as of 2026-04):
+  [`markdown-vault-mcp`](https://github.com/pvliesdonk/markdown-vault-mcp),
+  [`scholar-mcp`](https://github.com/pvliesdonk/scholar-mcp),
+  [`image-generation-mcp`](https://github.com/pvliesdonk/image-generation-mcp).
+- Public API changes here propagate to consumers via periodic
+  `copier update` runs against the template.
+- See the template's README for the update flow and the expected project
+  shape.
+
+## API stability
+
+This package is stable at 1.x and follows
+[semantic versioning](https://semver.org/): breaking changes bump the
+major version, new features bump the minor, bugfixes bump the patch.
+"Public API" means symbols re-exported from the top-level
+`fastmcp_pvl_core` package (see `__all__`), which intentionally
+covers both the runtime surface (auth, middleware, factory builders,
+env/config helpers) and the CLI parser helpers consumed by downstream
+`server.py` entrypoints. Modules prefixed with `_` are internal and
+may change without a major-version bump.
 
 ## Install
 
