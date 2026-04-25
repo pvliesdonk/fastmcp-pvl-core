@@ -23,7 +23,7 @@ from fastmcp_pvl_core._factory import (
     compute_app_domain,
 )
 from fastmcp_pvl_core._icons import IconSpec, make_icon, register_tool_icons
-from fastmcp_pvl_core._logging import configure_logging_from_env
+from fastmcp_pvl_core._logging import SecretMaskFilter, configure_logging_from_env
 from fastmcp_pvl_core._middleware import wire_middleware_stack
 from fastmcp_pvl_core._server_info import (
     UpstreamProvider,
@@ -37,6 +37,7 @@ __all__ = [
     "ArtifactStore",
     "AuthMode",
     "IconSpec",
+    "SecretMaskFilter",
     "ServerConfig",
     "TokenRecord",
     "Transport",

@@ -2,12 +2,17 @@
 
 The ``-v`` CLI flag forces ``DEBUG``; otherwise ``FASTMCP_LOG_LEVEL``
 wins; otherwise ``INFO``.
+
+This module also exposes :class:`SecretMaskFilter`, a reusable
+``logging.Filter`` that redacts ``Authorization: Bearer/Token`` values
+in formatted log messages before they reach handlers.
 """
 
 from __future__ import annotations
 
 import logging
 import os
+import re
 
 from fastmcp.utilities.logging import configure_logging
 
@@ -45,3 +50,52 @@ def configure_logging_from_env(*, verbose: bool = False) -> None:
     level = getattr(logging, level_name, logging.INFO)
     logging.getLogger().setLevel(level)
     configure_logging(level)
+
+
+class SecretMaskFilter(logging.Filter):
+    """Redact ``Authorization: Bearer/Token`` values in log records.
+
+    Attach to a logger to mask secret tokens in formatted messages
+    before they reach handlers — typically wired up by HTTP-client
+    modules that log request/response details at ``DEBUG`` level::
+
+        import logging
+        from fastmcp_pvl_core import SecretMaskFilter
+
+        logger = logging.getLogger(__name__)
+        logger.addFilter(SecretMaskFilter())
+
+    Matches both header-style (``Authorization: Bearer xyz``) and
+    dict-repr (``'Authorization': 'Token xyz'``) representations,
+    case-insensitive on the ``Authorization`` keyword and the
+    ``Bearer`` / ``Token`` scheme name. The scheme name's original
+    casing is preserved in the redacted output (e.g. ``bearer ***``).
+    Records with no match pass through unchanged.
+
+    The filter never suppresses records — it always returns ``True``.
+    """
+
+    # ``Authorization`` is the only keyword we recognise — other custom
+    # auth headers (e.g. ``X-Api-Key``) are out of scope and need their
+    # own filter. ``[^\s'\"]+`` stops the secret capture at whitespace
+    # or quote, which preserves the surrounding dict structure.
+    _PATTERN = re.compile(
+        r"(Authorization['\"]?\s*[:=]\s*['\"]?)(Token|Bearer)\s+[^\s'\"]+",
+        re.IGNORECASE,
+    )
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            original = record.getMessage()
+        except Exception:  # pragma: no cover - defensive
+            # A broken format string upstream must not silence the whole
+            # log stream; let the producer's TypeError surface elsewhere.
+            return True
+        masked = self._PATTERN.sub(r"\1\2 ***", original)
+        if masked != original:
+            # Replace the formatted message and clear args so subsequent
+            # ``getMessage()`` calls return the masked text rather than
+            # re-expanding the original args.
+            record.msg = masked
+            record.args = ()
+        return True
