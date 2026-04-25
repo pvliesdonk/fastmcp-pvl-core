@@ -22,8 +22,11 @@ This package is stable at 1.x and follows
 [semantic versioning](https://semver.org/): breaking changes bump the
 major version, new features bump the minor, bugfixes bump the patch.
 "Public API" means symbols re-exported from the top-level
-`fastmcp_pvl_core` package (see `__all__`); modules prefixed with `_`
-are internal and may change without a major-version bump.
+`fastmcp_pvl_core` package (see `__all__`), which intentionally
+covers both the runtime surface (auth, middleware, factory builders,
+env/config helpers) and the CLI parser helpers consumed by downstream
+`server.py` entrypoints. Modules prefixed with `_` are internal and
+may change without a major-version bump.
 
 ## Install
 
