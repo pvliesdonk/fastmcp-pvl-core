@@ -22,6 +22,7 @@ from fastmcp_pvl_core._factory import (
     build_instructions,
     compute_app_domain,
 )
+from fastmcp_pvl_core._icons import IconSpec, make_icon, register_tool_icons
 from fastmcp_pvl_core._logging import configure_logging_from_env
 from fastmcp_pvl_core._middleware import wire_middleware_stack
 from fastmcp_pvl_core._server_info import (
@@ -35,6 +36,7 @@ __version__ = "1.0.0"  # PSR overrides at build time
 __all__ = [
     "ArtifactStore",
     "AuthMode",
+    "IconSpec",
     "ServerConfig",
     "TokenRecord",
     "Transport",
@@ -49,12 +51,14 @@ __all__ = [
     "compute_app_domain",
     "configure_logging_from_env",
     "env",
+    "make_icon",
     "make_serve_parser",
     "normalise_http_path",
     "parse_bool",
     "parse_list",
     "parse_scopes",
     "register_server_info_tool",
+    "register_tool_icons",
     "resolve_auth_mode",
     "wire_middleware_stack",
 ]
