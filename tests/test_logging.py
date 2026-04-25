@@ -74,6 +74,16 @@ class TestSecretMaskFilter:
         assert "eyJ" not in record.getMessage()
         assert "Bearer ***" in record.getMessage()
 
+    def test_masks_basic_header(self):
+        # Basic auth carries base64-encoded user:password — same exposure
+        # risk as Bearer/Token, so it gets the same redaction.
+        record = _record("Authorization: Basic dXNlcjpwYXNzd29yZA==")
+
+        SecretMaskFilter().filter(record)
+
+        assert "dXNlcjpwYXNzd29yZA" not in record.getMessage()
+        assert "Basic ***" in record.getMessage()
+
     def test_masks_dict_repr_token(self):
         record = _record("headers={'Authorization': 'Token abcdef1234567890'}")
 
@@ -169,10 +179,21 @@ class TestSecretMaskFilter:
 
         assert record.getMessage() == "Token holder is logged in"
 
+    def test_masks_equals_separator(self):
+        # The regex permits "=" as a key/value separator alongside ":";
+        # exercise that path so the alternation isn't dead code.
+        record = _record("Authorization=Token abcdef1234567890")
+
+        SecretMaskFilter().filter(record)
+
+        assert "abcdef1234567890" not in record.getMessage()
+        assert "Token ***" in record.getMessage()
+
     def test_handles_broken_format_string(self):
         # If the producer logged a format string with mismatched args,
-        # getMessage() raises. The filter must not crash — a broken log
-        # line is preferable to suppressing the entire log stream.
-        record = _record("needs one arg=%s", ())
+        # getMessage() raises TypeError during %-formatting. The filter
+        # must catch that and still return True — a broken log line is
+        # preferable to silencing the entire log stream.
+        record = _record("only one placeholder %s", ("a", "b", "c"))
 
         assert SecretMaskFilter().filter(record) is True

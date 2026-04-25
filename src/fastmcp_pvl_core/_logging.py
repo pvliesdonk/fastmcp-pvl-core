@@ -53,9 +53,9 @@ def configure_logging_from_env(*, verbose: bool = False) -> None:
 
 
 class SecretMaskFilter(logging.Filter):
-    """Redact ``Authorization: Bearer/Token`` values in log records.
+    """Redact ``Authorization: Bearer/Token/Basic`` values in log records.
 
-    Attach to a logger to mask secret tokens in formatted messages
+    Attach to a logger to mask secret credentials in formatted messages
     before they reach handlers — typically wired up by HTTP-client
     modules that log request/response details at ``DEBUG`` level::
 
@@ -68,9 +68,9 @@ class SecretMaskFilter(logging.Filter):
     Matches both header-style (``Authorization: Bearer xyz``) and
     dict-repr (``'Authorization': 'Token xyz'``) representations,
     case-insensitive on the ``Authorization`` keyword and the
-    ``Bearer`` / ``Token`` scheme name. The scheme name's original
-    casing is preserved in the redacted output (e.g. ``bearer ***``).
-    Records with no match pass through unchanged.
+    ``Bearer`` / ``Token`` / ``Basic`` scheme name. The scheme name's
+    original casing is preserved in the redacted output (e.g.
+    ``bearer ***``). Records with no match pass through unchanged.
 
     The filter never suppresses records — it always returns ``True``.
     """
@@ -80,14 +80,14 @@ class SecretMaskFilter(logging.Filter):
     # own filter. ``[^\s'\"]+`` stops the secret capture at whitespace
     # or quote, which preserves the surrounding dict structure.
     _PATTERN = re.compile(
-        r"(Authorization['\"]?\s*[:=]\s*['\"]?)(Token|Bearer)\s+[^\s'\"]+",
+        r"(Authorization['\"]?\s*[:=]\s*['\"]?)(Token|Bearer|Basic)\s+[^\s'\"]+",
         re.IGNORECASE,
     )
 
     def filter(self, record: logging.LogRecord) -> bool:
         try:
             original = record.getMessage()
-        except Exception:  # pragma: no cover - defensive
+        except Exception:
             # A broken format string upstream must not silence the whole
             # log stream; let the producer's TypeError surface elsewhere.
             return True
