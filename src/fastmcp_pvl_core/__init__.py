@@ -24,6 +24,7 @@ from fastmcp_pvl_core._factory import (
 )
 from fastmcp_pvl_core._logging import configure_logging_from_env
 from fastmcp_pvl_core._middleware import wire_middleware_stack
+from fastmcp_pvl_core._server_info import register_server_info_tool
 
 __version__ = "1.0.0"  # PSR overrides at build time
 
@@ -47,6 +48,7 @@ __all__ = [
     "parse_bool",
     "parse_list",
     "parse_scopes",
+    "register_server_info_tool",
     "resolve_auth_mode",
     "wire_middleware_stack",
 ]
