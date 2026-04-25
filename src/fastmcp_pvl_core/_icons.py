@@ -29,6 +29,9 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+#: Supported icon file extensions and their MIME types.
+#: Keys are lowercased ``Path.suffix`` values; anything not listed here causes
+#: :func:`make_icon` to raise :class:`ValueError`.
 _MIME_BY_SUFFIX: dict[str, str] = {
     ".svg": "image/svg+xml",
     ".png": "image/png",
@@ -36,11 +39,6 @@ _MIME_BY_SUFFIX: dict[str, str] = {
     ".jpg": "image/jpeg",
     ".jpeg": "image/jpeg",
 }
-"""Supported icon file extensions and their MIME types.
-
-Keys are lowercased ``Path.suffix`` values; anything not listed here causes
-:func:`register_tool_icons` to raise :class:`ValueError`.
-"""
 
 
 def make_icon(
@@ -174,6 +172,7 @@ def register_tool_icons(
     # not expose a public sync ``tools`` accessor today, so we go one level
     # deep — the public async ``list_tools()`` would force this helper to be
     # async, which is heavier than the maintenance risk of one private attr.
+    # Verified against fastmcp >=3,<4 (see pyproject.toml).
     tools_by_name: dict[str, list[Tool]] = {}
     for component in mcp.local_provider._components.values():
         if isinstance(component, Tool):
@@ -213,15 +212,25 @@ def register_tool_icons(
                         f"Icon path {str(entry)!r} for tool {tool_name!r} "
                         f"escapes static_dir ({base_dir})"
                     )
-            if not path.is_file():
+            # Let make_icon do the read; that's the only place that touches
+            # the file, so any FileNotFoundError or ValueError comes straight
+            # from there and we wrap it once with the tool-name context the
+            # caller needs.  This also closes the TOCTOU window that an
+            # ``is_file()`` pre-check would have left open.
+            try:
+                icons.append(make_icon(path))
+            except FileNotFoundError as exc:
                 raise FileNotFoundError(
                     f"Icon file for tool {tool_name!r} not found: {path}"
-                )
-            icons.append(make_icon(path))
+                ) from exc
+            except ValueError as exc:
+                raise ValueError(f"Tool {tool_name!r}: {exc}") from exc
             display.append(str(entry))
         resolved.append((tool_name, targets, icons, display))
 
     for tool_name, targets, icons, filenames in resolved:
+        # Defensive copy: each registered tool gets its own list so an in-place
+        # mutation by one tool/version doesn't leak into the others.
         for tool in targets:
-            tool.icons = icons
+            tool.icons = list(icons)
         logger.info("icons registered tool=%s files=%s", tool_name, ",".join(filenames))

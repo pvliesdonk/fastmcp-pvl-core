@@ -69,6 +69,7 @@ class TestRegisterToolIcons:
             ("p.png", PNG_BYTES, "image/png"),
             ("p.ico", ICO_BYTES, "image/vnd.microsoft.icon"),
             ("p.jpg", JPG_BYTES, "image/jpeg"),
+            ("p.jpeg", JPG_BYTES, "image/jpeg"),
             ("p.JPEG", JPG_BYTES, "image/jpeg"),
         ],
     )
@@ -119,6 +120,9 @@ class TestRegisterToolIcons:
         _write(tmp_path, "ping.svg", SVG_BYTES)
         mcp = _make_mcp_with_tool()
 
+        # Order matters: ``ping`` is validated/resolved first (Python 3.7+
+        # dicts preserve insertion order); ``ghost`` then fails validation
+        # before the mutation phase begins, so ``ping`` must remain unchanged.
         with pytest.raises(ValueError, match="ghost"):
             register_tool_icons(
                 mcp,
@@ -147,6 +151,47 @@ class TestRegisterToolIcons:
         register_tool_icons(mcp, {}, static_dir=tmp_path)
 
         assert _tool_icons(mcp, "ping") == []
+
+    def test_empty_mapping_still_validates_static_dir(self, tmp_path: Path):
+        # Locks current behavior: ``static_dir`` must exist even when there
+        # are no entries to read.  Catches misconfigured paths early; if we
+        # ever decide to relax this, this test should be the one to update.
+        mcp = _make_mcp_with_tool()
+        missing = tmp_path / "nope"
+
+        with pytest.raises(FileNotFoundError, match="nope"):
+            register_tool_icons(mcp, {}, static_dir=missing)
+
+    def test_unknown_extension_error_includes_tool_name(self, tmp_path: Path):
+        _write(tmp_path, "ping.bmp", b"bmp")
+        mcp = _make_mcp_with_tool()
+
+        with pytest.raises(ValueError, match=r"Tool 'ping'"):
+            register_tool_icons(mcp, {"ping": "ping.bmp"}, static_dir=tmp_path)
+
+    def test_each_tool_gets_independent_icons_list(self, tmp_path: Path):
+        _write(tmp_path, "a.svg", SVG_BYTES)
+        mcp = FastMCP("t")
+
+        @mcp.tool(name="alpha")
+        def _alpha() -> str:
+            return "a"
+
+        @mcp.tool(name="beta")
+        def _beta() -> str:
+            return "b"
+
+        register_tool_icons(
+            mcp,
+            {"alpha": "a.svg", "beta": "a.svg"},
+            static_dir=tmp_path,
+        )
+
+        alpha_icons = _tool_icons(mcp, "alpha")
+        beta_icons = _tool_icons(mcp, "beta")
+        # Same content but distinct list objects — defends against in-place
+        # mutation on one tool leaking to the other.
+        assert alpha_icons is not beta_icons
 
     def test_static_dir_accepts_string(self, tmp_path: Path):
         _write(tmp_path, "ping.svg", SVG_BYTES)
