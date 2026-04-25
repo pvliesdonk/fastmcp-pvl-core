@@ -287,6 +287,15 @@ class TestMakeIcon:
         with pytest.raises(ValueError, match=r"\.bmp"):
             make_icon(path)
 
+    def test_uppercase_extension_accepted(self, tmp_path: Path):
+        # Direct coverage for the public make_icon contract: case-insensitive
+        # suffix lookup must hold even when register_tool_icons is bypassed.
+        path = _write(tmp_path, "x.SVG", SVG_BYTES)
+
+        icon = make_icon(path)
+
+        assert icon.mimeType == "image/svg+xml"
+
     def test_missing_file_raises(self, tmp_path: Path):
         with pytest.raises(FileNotFoundError):
             make_icon(tmp_path / "missing.svg")

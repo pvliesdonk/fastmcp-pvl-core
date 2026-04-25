@@ -172,9 +172,20 @@ def register_tool_icons(
     # not expose a public sync ``tools`` accessor today, so we go one level
     # deep — the public async ``list_tools()`` would force this helper to be
     # async, which is heavier than the maintenance risk of one private attr.
-    # Verified against fastmcp >=3,<4 (see pyproject.toml).
+    # Verified against fastmcp >=3,<4 (see pyproject.toml). The guard turns a
+    # future rename into an actionable error rather than a bare AttributeError
+    # that looks like a caller bug.
+    try:
+        components = mcp.local_provider._components
+    except AttributeError as exc:
+        raise RuntimeError(
+            "FastMCP internal API changed: cannot enumerate tools via "
+            "local_provider._components. Please file an issue against "
+            "fastmcp-pvl-core."
+        ) from exc
+
     tools_by_name: dict[str, list[Tool]] = {}
-    for component in mcp.local_provider._components.values():
+    for component in components.values():
         if isinstance(component, Tool):
             tools_by_name.setdefault(component.name, []).append(component)
 
