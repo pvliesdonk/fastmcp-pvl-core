@@ -20,16 +20,22 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-UpstreamResult = str | dict[str, Any] | None
+UpstreamResult = Any
 """What an ``upstream_version`` callable may return.
 
-- ``str`` — bare version string; wrapped as ``{"version": <str>}``.
 - ``dict`` — full upstream block; used as-is.
 - ``None`` — wrapped as ``{"version": None}``.
+- Any other value — coerced via ``str()`` and wrapped as
+  ``{"version": "<str>"}``.  This covers bare version strings as well as
+  ``Path``-like or numeric values.
 """
 
 UpstreamProvider = Callable[[], UpstreamResult | Awaitable[UpstreamResult]]
 """Sync or async zero-arg callable returning an :data:`UpstreamResult`."""
+
+
+_RESERVED_KEYS = frozenset({"server_name", "server_version", "core_version"})
+"""Keys that ``upstream_label`` must not collide with."""
 
 
 def register_server_info_tool(
@@ -64,15 +70,30 @@ def register_server_info_tool(
         server_name: The wrapper's package/distribution name (e.g.
             ``"paperless-mcp"``).
         upstream_version: Optional zero-arg callable (sync or async)
-            returning either a bare version string, a full dict block, or
-            ``None``.  Wrapped automatically.
+            returning a dict (full upstream block), ``None``, or any other
+            value (coerced via ``str()`` and wrapped as
+            ``{"version": "<str>"}``).
         upstream_label: Key under which the upstream block appears in the
-            response.  Defaults to ``"upstream"``.  Ignored when
-            ``upstream_version`` is ``None``.
+            response.  Defaults to ``"upstream"``.  Must not collide with
+            the reserved keys ``server_name``, ``server_version``, or
+            ``core_version``.  Ignored when ``upstream_version`` is
+            ``None``.
         tool_name: Tool name to register.  Defaults to ``"get_server_info"``.
         description: Override for the tool description.  Defaults to a
-            built-in description that mentions the wrapper name.
+            built-in description that mentions the wrapper name.  Pass
+            ``""`` to register an empty description; only ``None`` triggers
+            the default.
+
+    Raises:
+        ValueError: If ``upstream_label`` collides with a reserved payload
+            key (``server_name``, ``server_version``, ``core_version``).
     """
+    if upstream_label in _RESERVED_KEYS:
+        raise ValueError(
+            f"upstream_label {upstream_label!r} conflicts with reserved "
+            f"payload keys {sorted(_RESERVED_KEYS)}"
+        )
+
     # Imported lazily so callers that never use this helper don't pay
     # for the mcp.types import.
     from mcp.types import ToolAnnotations
@@ -117,6 +138,6 @@ def register_server_info_tool(
 
     mcp.tool(
         name=tool_name,
-        description=description or default_description,
+        description=default_description if description is None else description,
         annotations=ToolAnnotations(readOnlyHint=True),
     )(get_server_info)

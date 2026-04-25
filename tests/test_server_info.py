@@ -179,6 +179,42 @@ class TestRegisterServerInfoTool:
         assert target.description is not None
         assert "paperless-mcp" in target.description
 
+    async def test_empty_string_description_not_replaced_by_default(self):
+        """Only None triggers the default; an explicit "" stays empty."""
+        mcp = FastMCP("t")
+        register_server_info_tool(
+            mcp,
+            server_version="1.0.0",
+            server_name="my-mcp",
+            description="",
+        )
+        tools = await mcp.list_tools()
+        target = next(t for t in tools if t.name == "get_server_info")
+        # FastMCP may normalize "" → None, but it must not contain the
+        # default-description boilerplate.
+        assert not target.description or "Report wrapper" not in target.description
+
+    @pytest.mark.parametrize("label", ["server_name", "server_version", "core_version"])
+    def test_upstream_label_collision_with_reserved_key_raises(self, label):
+        with pytest.raises(ValueError, match="reserved"):
+            register_server_info_tool(
+                FastMCP("t"),
+                server_version="1.0.0",
+                server_name="my-mcp",
+                upstream_version=lambda: "v1",
+                upstream_label=label,
+            )
+
+    def test_reserved_label_check_runs_even_without_upstream(self):
+        """Misconfiguration is caught at registration, not deferred."""
+        with pytest.raises(ValueError, match="reserved"):
+            register_server_info_tool(
+                FastMCP("t"),
+                server_version="1.0.0",
+                server_name="my-mcp",
+                upstream_label="server_name",
+            )
+
 
 @pytest.mark.parametrize("upstream_value", [123, 4.2, True])
 async def test_upstream_non_string_non_dict_coerced_to_str(upstream_value):
