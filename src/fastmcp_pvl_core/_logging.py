@@ -4,8 +4,8 @@ The ``-v`` CLI flag forces ``DEBUG``; otherwise ``FASTMCP_LOG_LEVEL``
 wins; otherwise ``INFO``.
 
 This module also exposes :class:`SecretMaskFilter`, a reusable
-``logging.Filter`` that redacts ``Authorization: Bearer/Token`` values
-in formatted log messages before they reach handlers.
+``logging.Filter`` that redacts ``Authorization: Bearer/Token/Basic``
+values in formatted log messages before they reach handlers.
 """
 
 from __future__ import annotations
