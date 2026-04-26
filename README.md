@@ -56,6 +56,14 @@ mcp = FastMCP(
 wire_middleware_stack(mcp)
 ```
 
+## Specs
+
+- [MCP File Exchange v0.3](docs/specs/file-exchange.md) — convention for
+  cross-MCP-server file transfer (`exchange://` URIs over a shared
+  volume + `http` fallback). The protocol surface (`FileRef`,
+  `ExchangeURI`, `register_file_exchange_capability`) ships in
+  `fastmcp_pvl_core`; the runtime is tracked in issue #21.
+
 ## License
 
 MIT
