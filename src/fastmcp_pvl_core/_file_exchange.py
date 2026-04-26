@@ -15,7 +15,7 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 from urllib.parse import unquote
 
 if TYPE_CHECKING:
@@ -31,11 +31,14 @@ class ExchangeURIError(ValueError):
     """Raised when an exchange URI or segment fails spec §6.3 validation."""
 
 
-# Path separators and ASCII control characters (U+0000..U+001F) are
-# rejected per spec §6.3. The trailing/leading-whitespace and
-# .-or-..-only checks are handled separately so error messages can
+# Path separators, ASCII control characters (U+0000..U+001F), and URI
+# delimiters (``?`` query, ``#`` fragment) are rejected per spec §6.3.
+# Excluding ``?`` and ``#`` from segments closes a parser-bypass where a
+# query string or fragment slipped past split('/') and ended up
+# concatenated into the file extension. The trailing/leading-whitespace
+# and .-or-..-only checks are handled separately so error messages can
 # pinpoint the violation.
-_FORBIDDEN_SEGMENT_CHARS = re.compile(r"[/\\\x00-\x1f]")
+_FORBIDDEN_SEGMENT_CHARS = re.compile(r"[/\\\x00-\x1f?#]")
 
 #: Matches a percent-hex escape (``%XX``). Used to detect *residual*
 #: percent-encoding after one URI-decode pass — its presence indicates
@@ -109,11 +112,12 @@ class FileRefPreview:
         if dims_raw is not None:
             if (
                 not isinstance(dims_raw, Mapping)
-                or "width" not in dims_raw
-                or "height" not in dims_raw
+                or dims_raw.get("width") is None
+                or dims_raw.get("height") is None
             ):
                 raise ValueError(
-                    f"preview.dimensions must have 'width' and 'height': {dims_raw!r}"
+                    "preview.dimensions must have non-null 'width' and "
+                    f"'height': {dims_raw!r}"
                 )
             dimensions = (int(dims_raw["width"]), int(dims_raw["height"]))
         metadata_raw = raw.get("metadata")
@@ -174,8 +178,12 @@ class FileRef:
     @classmethod
     def from_dict(cls, raw: Mapping[str, Any]) -> FileRef:
         """Parse from the wire form. Validates required fields and shape."""
+        # ``raw.get(...) is None`` covers both "key absent" and
+        # "key present but explicitly null" — the latter would otherwise
+        # round-trip to ``str(None) == "None"`` for origin_server /
+        # origin_id, which is silent corruption.
         for required in ("origin_server", "origin_id", "transfer"):
-            if required not in raw:
+            if raw.get(required) is None:
                 raise ValueError(
                     f"FileRef missing required field {required!r}: {raw!r}"
                 )
@@ -199,12 +207,16 @@ class FileRef:
                 raise ValueError(f"FileRef.preview must be a mapping: {preview_raw!r}")
             preview = FileRefPreview.from_dict(preview_raw)
 
+        size_bytes_raw = raw.get("size_bytes")
         return cls(
             origin_server=str(raw["origin_server"]),
             origin_id=str(raw["origin_id"]),
             transfer=transfer,
             mime_type=raw.get("mime_type"),
-            size_bytes=raw.get("size_bytes"),
+            # JSON parsers may yield a float (245760.0) for an integer
+            # value; coerce so the dataclass holds the type its
+            # annotation promises.
+            size_bytes=int(size_bytes_raw) if size_bytes_raw is not None else None,
             preview=preview,
         )
 
@@ -280,7 +292,7 @@ class ExchangeURI:
         )
 
     @classmethod
-    def validate_segment(cls, value: str, *, role: str) -> str:
+    def validate_segment(cls, value: str, *, role: Literal["uri", "json_param"]) -> str:
         """Validate one path segment per spec §6.3.
 
         Args:
@@ -297,7 +309,9 @@ class ExchangeURI:
 
         Raises:
             ExchangeURIError: If the segment violates spec §6.3.
-            ValueError: If *role* is not one of ``"uri"`` / ``"json_param"``.
+            ValueError: If *role* is not one of ``"uri"`` / ``"json_param"``
+                (Literal-typed; runtime check defends against callers
+                bypassing the type system).
         """
         if role == "uri":
             decoded = unquote(value)
@@ -328,6 +342,19 @@ class FileExchangeCapability:
         # tuple constraint just to satisfy the frozen/slots layout.
         object.__setattr__(self, "produces", tuple(self.produces))
         object.__setattr__(self, "consumes", tuple(self.consumes))
+
+        # Validate namespace and exchange_id at construction so a bad
+        # value can't propagate silently into capability dicts and
+        # ultimately into exchange:// URIs. Spec §3.7 requires the
+        # general segment rules; spec §3.8 additionally forbids a
+        # leading dot on namespace.
+        ExchangeURI.validate_segment(self.namespace, role="json_param")
+        if self.namespace.startswith("."):
+            raise ExchangeURIError(
+                f"namespace MUST NOT start with a dot: {self.namespace!r}"
+            )
+        if self.exchange_id is not None:
+            ExchangeURI.validate_segment(self.exchange_id, role="json_param")
 
     def to_capability_dict(self) -> dict[str, Any]:
         """Return the dict that lives under ``experimental.file_exchange``."""

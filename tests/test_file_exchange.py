@@ -48,6 +48,12 @@ class TestFileRefPreview:
         with pytest.raises(ValueError, match="width.+height"):
             FileRefPreview.from_dict({"dimensions": {"width": 100}})
 
+    def test_from_dict_rejects_null_dimension_value(self) -> None:
+        # ``int(None)`` raises TypeError — guard with a None check
+        # before coercion so the message stays helpful.
+        with pytest.raises(ValueError, match="non-null"):
+            FileRefPreview.from_dict({"dimensions": {"width": None, "height": 100}})
+
     def test_from_dict_rejects_non_mapping_metadata(self) -> None:
         with pytest.raises(ValueError, match="metadata"):
             FileRefPreview.from_dict({"metadata": "not a mapping"})
@@ -99,6 +105,32 @@ class TestFileRef:
     def test_from_dict_rejects_empty_transfer(self) -> None:
         with pytest.raises(ValueError, match="transfer"):
             FileRef.from_dict({"origin_server": "s", "origin_id": "x", "transfer": {}})
+
+    def test_from_dict_coerces_size_bytes_to_int(self) -> None:
+        # JSON parsers may yield size_bytes as a float (e.g. 245760.0);
+        # the dataclass annotation promises int, so coerce.
+        ref = FileRef.from_dict(
+            {
+                "origin_server": "s",
+                "origin_id": "x",
+                "size_bytes": 245760.0,
+                "transfer": {"http": {}},
+            }
+        )
+
+        assert ref.size_bytes == 245760
+        assert isinstance(ref.size_bytes, int)
+
+    def test_from_dict_rejects_explicit_null_required_field(self) -> None:
+        # ``str(None)`` would silently become ``"None"`` — catch that.
+        with pytest.raises(ValueError, match="origin_server"):
+            FileRef.from_dict(
+                {
+                    "origin_server": None,
+                    "origin_id": "x",
+                    "transfer": {"http": {}},
+                }
+            )
 
     def test_from_dict_rejects_non_mapping_transfer_value(self) -> None:
         with pytest.raises(ValueError, match=r"transfer\['http'\]"):
@@ -159,6 +191,10 @@ class TestExchangeURIParse:
             "exchange://g/n/foo%5Cbar.png",  # encoded backslash
             "exchange://g/n/foo%00.png",  # null byte
             "exchange://g/ /file.png",  # whitespace-only namespace
+            "exchange://g/n/file.png?foo=bar",  # query string slipped in
+            "exchange://g/n/file.png#frag",  # fragment slipped in
+            "exchange://g/n%3Ffoo/file.png",  # encoded ? in namespace
+            "exchange://g/n/file.png%23frag",  # encoded # in ext
         ],
     )
     def test_rejects_path_traversal_and_forbidden_chars(self, uri: str) -> None:
@@ -272,6 +308,31 @@ class TestCapabilityDeclaration:
 
         assert cap.version == FILE_EXCHANGE_SPEC_VERSION
         assert cap.version == "0.3"
+
+    def test_rejects_namespace_starting_with_dot(self) -> None:
+        # Spec §3.8: namespace MUST NOT start with a dot. Catching at
+        # construction prevents propagation into capability dicts and
+        # exchange:// URIs.
+        with pytest.raises(ExchangeURIError, match="dot"):
+            FileExchangeCapability(
+                namespace=".hidden",
+                transfer_methods={"http": {"tool": "fetch"}},
+            )
+
+    def test_rejects_namespace_with_path_separator(self) -> None:
+        with pytest.raises(ExchangeURIError):
+            FileExchangeCapability(
+                namespace="bad/namespace",
+                transfer_methods={"http": {"tool": "fetch"}},
+            )
+
+    def test_rejects_invalid_exchange_id(self) -> None:
+        with pytest.raises(ExchangeURIError):
+            FileExchangeCapability(
+                namespace="ok",
+                exchange_id="bad/id",
+                transfer_methods={"http": {"tool": "fetch"}},
+            )
 
     def test_exchange_id_omitted_when_none(self) -> None:
         cap = FileExchangeCapability(
