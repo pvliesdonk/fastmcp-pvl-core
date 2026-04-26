@@ -496,7 +496,10 @@ class TestFromEnv:
     ) -> None:
         # An explicit MCP_EXCHANGE_ID containing forbidden chars would
         # otherwise persist to .exchange-id and only break later at
-        # write/read time. Fail at config-load instead.
+        # write/read time. Validate BEFORE the resolve/write step so
+        # the rejected value never lands on disk — otherwise the
+        # operator gets stuck with a corrupt .exchange-id even after
+        # fixing the env var.
         with pytest.raises(ExchangeURIError):
             FileExchange.from_env(
                 default_namespace="ns",
@@ -505,6 +508,28 @@ class TestFromEnv:
                     "MCP_EXCHANGE_ID": "bad/group",
                 },
             )
+
+        # Critical post-condition: .exchange-id MUST NOT have been
+        # written. If it had, the next from_env (with a corrected
+        # MCP_EXCHANGE_ID) would read the corrupt value and raise
+        # ExchangeGroupMismatch with no diagnostic pointing at the
+        # stale file.
+        assert not (tmp_path / ".exchange-id").exists()
+
+    def test_init_rejects_invalid_namespace(self, tmp_path: Path) -> None:
+        # Direct instantiation bypasses from_env's validation; the
+        # constructor must still refuse spec-illegal values so
+        # programmatic / test-harness construction can't slip through.
+        with pytest.raises(ExchangeURIError):
+            FileExchange(tmp_path, "g1", "bad/namespace")
+
+    def test_init_rejects_dot_prefix_namespace(self, tmp_path: Path) -> None:
+        with pytest.raises(ExchangeURIError, match="dot"):
+            FileExchange(tmp_path, "g1", ".hidden")
+
+    def test_init_rejects_invalid_exchange_id(self, tmp_path: Path) -> None:
+        with pytest.raises(ExchangeURIError):
+            FileExchange(tmp_path, "bad/group", "ns")
 
     def test_explicit_exchange_id_persists_to_disk(self, tmp_path: Path) -> None:
         fx = FileExchange.from_env(

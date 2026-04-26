@@ -628,6 +628,19 @@ class FileExchange:
                 "FileExchange requires base_dir, exchange_id, and namespace "
                 "to all be set, or all be None"
             )
+        # Direct instantiation bypasses ``from_env``'s validation, so
+        # repeat the segment + dot-prefix checks here. ``from_env``
+        # already runs them upstream — re-validating spec-compliant
+        # values is cheap and the safety net catches bypass paths
+        # (test harness, programmatic construction).
+        if namespace is not None:
+            ExchangeURI.validate_segment(namespace, role="json_param")
+            if namespace.startswith("."):
+                raise ExchangeURIError(
+                    f"namespace MUST NOT start with a dot: {namespace!r}"
+                )
+        if exchange_id is not None:
+            ExchangeURI.validate_segment(exchange_id, role="json_param")
         self._base_dir = base_dir
         self._exchange_id = exchange_id
         self._namespace = namespace
@@ -716,12 +729,19 @@ class FileExchange:
             )
 
         explicit_id = environ.get("MCP_EXCHANGE_ID", "").strip() or None
+        # Validate ``explicit_id`` BEFORE persisting it. An invalid
+        # value reaching ``_resolve_exchange_id`` would link-write
+        # bad content into ``.exchange-id`` first and only raise on
+        # the post-resolve check, leaving the corrupt file behind —
+        # subsequent runs would then read it and disagree with any
+        # corrected MCP_EXCHANGE_ID (forcing the operator to manually
+        # delete .exchange-id with no diagnostic pointing them to it).
+        if explicit_id is not None:
+            ExchangeURI.validate_segment(explicit_id, role="json_param")
         exchange_id = _resolve_exchange_id(base_dir, explicit_id)
-        # Validate the resolved exchange_id: a UUIDv4 always passes,
-        # but an explicit MCP_EXCHANGE_ID containing forbidden chars
-        # (e.g. "foo/bar") would otherwise produce malformed
-        # ``exchange://`` URIs at write time. Fail at config-load
-        # rather than at first write.
+        # Post-resolve validation handles the corrupt-file recovery
+        # case: a pre-fix deployment may have left a malformed value
+        # in .exchange-id; surface it here rather than at first write.
         ExchangeURI.validate_segment(exchange_id, role="json_param")
 
         return cls(
