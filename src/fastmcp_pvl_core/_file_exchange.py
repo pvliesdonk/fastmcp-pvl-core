@@ -1,20 +1,36 @@
-"""MCP File Exchange v0.3 — protocol surface.
+"""MCP File Exchange v0.3 — protocol surface and runtime.
 
-Implements the typed envelope (:class:`FileRef`, :class:`FileRefPreview`),
-the URI parser (:class:`ExchangeURI`), and the capability-declaration
-helper (:func:`register_file_exchange_capability`) for the spec at
-``docs/specs/file-exchange.md``.
+Implements the spec at ``docs/specs/file-exchange.md``:
 
-The runtime side (env detection, atomic writes, exchange-group lifecycle,
-consumer URI resolution) lives in a separate module and is not yet
-implemented — see issue #21.
+- **Protocol surface**: :class:`FileRef`, :class:`FileRefPreview`,
+  :class:`ExchangeURI` (parser + segment validator),
+  :class:`FileExchangeCapability`, and the capability-declaration
+  helper :func:`register_file_exchange_capability`.
+- **Runtime**: :class:`FileExchange` for env-driven group membership,
+  exclusive-create ``.exchange-id`` initialisation, atomic
+  write/read of namespaced files, and producer-side TTL+LRU lifecycle
+  sweep.
+
+Lifecycle constraints from the spec:
+
+- The *producing server* owns its namespace directory's lifecycle
+  exclusively. Only the producer deletes its own files (TTL + LRU
+  eviction via :meth:`FileExchange.sweep`).
+- The *consuming server* treats the exchange directory as read-only —
+  :meth:`FileExchange.read_exchange_uri` never modifies or deletes
+  files. Consumers MUST ignore dotfile names.
 """
 
 from __future__ import annotations
 
+import logging
+import os
 import re
+import time
+import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 from urllib.parse import unquote
 
@@ -432,3 +448,437 @@ def register_file_exchange_capability(
     # Method-assignment is intentional: this is the documented patching
     # point for FastMCP 3.x's missing experimental_capabilities hook.
     ll.create_initialization_options = _patched  # type: ignore[method-assign]
+
+
+# ---------------------------------------------------------------------------
+# Runtime
+# ---------------------------------------------------------------------------
+
+logger = logging.getLogger(__name__)
+
+#: Default TTL for producer-owned exchange files (spec §7 default).
+_DEFAULT_TTL_SECONDS = 3600.0
+
+
+class FileExchangeConfigError(RuntimeError):
+    """File-exchange runtime cannot be configured.
+
+    Raised when ``MCP_EXCHANGE_DIR`` points at an invalid path or a
+    required configuration value (e.g. namespace) is missing.
+    """
+
+
+class ExchangeGroupMismatch(ValueError):  # noqa: N818  -- spec-defined name
+    """Exchange-group identity disagreement.
+
+    Raised when an explicit ``MCP_EXCHANGE_ID`` conflicts with the
+    persisted ``.exchange-id``, or when
+    :meth:`FileExchange.read_exchange_uri` is asked for a URI from a
+    different exchange group.
+    """
+
+
+def _resolve_exchange_id(base_dir: Path, explicit: str | None) -> str:
+    """Read or exclusive-create ``$base_dir/.exchange-id`` (spec §3.5).
+
+    Uses ``O_CREAT | O_EXCL`` so racing servers cannot split-brain — only
+    one wins the create; the rest read the winner's value. ``rename(2)``
+    is *not* used here: POSIX rename silently overwrites, which would
+    quietly corrupt the group identity if two servers initialised
+    simultaneously.
+
+    Args:
+        base_dir: Resolved ``MCP_EXCHANGE_DIR``.
+        explicit: Value of ``MCP_EXCHANGE_ID`` if set; ``None`` means
+            generate a fresh UUIDv4 on first call, read existing
+            otherwise.
+
+    Returns:
+        The exchange-group ID (lowercase by convention; whitespace
+        stripped per spec).
+
+    Raises:
+        ExchangeGroupMismatch: If *explicit* is set and disagrees with
+            the value already persisted on disk.
+    """
+    id_path = base_dir / ".exchange-id"
+    candidate = explicit if explicit is not None else str(uuid.uuid4())
+    payload = candidate.encode("utf-8") + b"\n"
+    try:
+        fd = os.open(str(id_path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+    except FileExistsError:
+        # Lost the create race (or override targets an existing file) —
+        # fall through to read the persisted value. The FileExistsError
+        # itself is not the failure cause for the mismatch path; raise
+        # ``from None`` so the traceback shows only the data-level
+        # disagreement.
+        existing = id_path.read_text(encoding="utf-8").strip()
+        if explicit is not None and existing != explicit:
+            raise ExchangeGroupMismatch(
+                f"MCP_EXCHANGE_ID={explicit!r} conflicts with existing "
+                f"{id_path.name} value {existing!r}"
+            ) from None
+        return existing
+    try:
+        os.write(fd, payload)
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    logger.debug("exchange_id_created path=%s id=%s", id_path, candidate)
+    return candidate
+
+
+class FileExchange:
+    """Producer/consumer runtime for the ``exchange://`` transfer method.
+
+    Constructed via :meth:`from_env`; falls back to a sentinel
+    "not configured" state when ``MCP_EXCHANGE_DIR`` is unset, so
+    callers can always instantiate one and gate exchange-specific
+    code paths on :attr:`is_configured`.
+
+    Producer side:
+        :meth:`write_atomic` — write content via dotfile-temp + POSIX
+        rename, return an ``exchange://`` URI.
+        :meth:`sweep` — TTL eviction (and optional LRU eviction by mtime)
+        across this server's namespace directory. Producers own their
+        namespace's lifecycle; only the producer deletes its own files.
+
+    Consumer side:
+        :meth:`read_exchange_uri` — parse the URI, verify it belongs to
+        this exchange group, read the bytes. Consumers treat the
+        exchange directory as read-only and ignore dotfile names.
+    """
+
+    def __init__(
+        self,
+        base_dir: Path | None,
+        exchange_id: str | None,
+        namespace: str | None,
+        *,
+        ttl_seconds: float = _DEFAULT_TTL_SECONDS,
+        storage_ceiling_bytes: int | None = None,
+    ) -> None:
+        # Either all three are set (configured) or all three are None
+        # (not configured). The two states are exclusive — there is no
+        # partial-config valid state.
+        configured = (
+            base_dir is not None and exchange_id is not None and namespace is not None
+        )
+        partial = (
+            base_dir is not None or exchange_id is not None or namespace is not None
+        ) and not configured
+        if partial:
+            raise FileExchangeConfigError(
+                "FileExchange requires base_dir, exchange_id, and namespace "
+                "to all be set, or all be None"
+            )
+        self._base_dir = base_dir
+        self._exchange_id = exchange_id
+        self._namespace = namespace
+        self._ttl_seconds = float(ttl_seconds)
+        self._storage_ceiling_bytes = storage_ceiling_bytes
+
+    @classmethod
+    def from_env(
+        cls,
+        default_namespace: str | None = None,
+        *,
+        env: Mapping[str, str] | None = None,
+        ttl_seconds: float = _DEFAULT_TTL_SECONDS,
+        storage_ceiling_bytes: int | None = None,
+    ) -> FileExchange:
+        """Build a :class:`FileExchange` from environment variables.
+
+        Reads ``MCP_EXCHANGE_DIR`` (required to participate),
+        ``MCP_EXCHANGE_ID`` (optional override), and
+        ``MCP_EXCHANGE_NAMESPACE`` (optional override). If
+        ``MCP_EXCHANGE_DIR`` is unset/empty, returns an unconfigured
+        instance — callers gate writes on :attr:`is_configured`.
+
+        Namespace resolution: ``MCP_EXCHANGE_NAMESPACE`` env var wins;
+        falls back to ``default_namespace``. The runtime never reaches
+        into FastMCP for the server name; pass it explicitly.
+
+        Args:
+            default_namespace: Namespace to use when
+                ``MCP_EXCHANGE_NAMESPACE`` is unset. Required when the
+                env var is not provided.
+            env: Override the environment mapping (for tests). Defaults
+                to ``os.environ``.
+            ttl_seconds: TTL for files written by this producer
+                (default 1 hour, per spec §7).
+            storage_ceiling_bytes: Optional LRU ceiling for sweep.
+                ``None`` disables LRU eviction.
+
+        Returns:
+            A configured :class:`FileExchange` if ``MCP_EXCHANGE_DIR``
+            is set, otherwise an unconfigured sentinel
+            (:attr:`is_configured` is ``False``).
+
+        Raises:
+            FileExchangeConfigError: ``MCP_EXCHANGE_DIR`` is set but
+                does not point at an existing directory, or no
+                namespace can be resolved.
+            ExchangeGroupMismatch: ``MCP_EXCHANGE_ID`` is set and
+                disagrees with the persisted ``.exchange-id``.
+            ExchangeURIError: The resolved namespace fails spec §6.3
+                segment validation.
+        """
+        environ = dict(env) if env is not None else dict(os.environ)
+        raw_dir = environ.get("MCP_EXCHANGE_DIR", "").strip()
+        if not raw_dir:
+            return cls(
+                None,
+                None,
+                None,
+                ttl_seconds=ttl_seconds,
+                storage_ceiling_bytes=storage_ceiling_bytes,
+            )
+
+        base_dir = Path(raw_dir)
+        if not base_dir.exists():
+            raise FileExchangeConfigError(
+                f"MCP_EXCHANGE_DIR does not exist: {base_dir}"
+            )
+        if not base_dir.is_dir():
+            raise FileExchangeConfigError(
+                f"MCP_EXCHANGE_DIR is not a directory: {base_dir}"
+            )
+        base_dir = base_dir.resolve()
+
+        ns_env = environ.get("MCP_EXCHANGE_NAMESPACE", "").strip()
+        namespace = ns_env or default_namespace
+        if not namespace:
+            raise FileExchangeConfigError(
+                "namespace is required: set MCP_EXCHANGE_NAMESPACE or pass "
+                "default_namespace"
+            )
+        ExchangeURI.validate_segment(namespace, role="json_param")
+        if namespace.startswith("."):
+            raise ExchangeURIError(
+                f"namespace MUST NOT start with a dot: {namespace!r}"
+            )
+
+        explicit_id = environ.get("MCP_EXCHANGE_ID", "").strip() or None
+        exchange_id = _resolve_exchange_id(base_dir, explicit_id)
+
+        return cls(
+            base_dir,
+            exchange_id,
+            namespace,
+            ttl_seconds=ttl_seconds,
+            storage_ceiling_bytes=storage_ceiling_bytes,
+        )
+
+    @property
+    def is_configured(self) -> bool:
+        return self._base_dir is not None
+
+    @property
+    def base_dir(self) -> Path:
+        if self._base_dir is None:
+            raise FileExchangeConfigError("FileExchange is not configured")
+        return self._base_dir
+
+    @property
+    def exchange_id(self) -> str:
+        if self._exchange_id is None:
+            raise FileExchangeConfigError("FileExchange is not configured")
+        return self._exchange_id
+
+    @property
+    def namespace(self) -> str:
+        if self._namespace is None:
+            raise FileExchangeConfigError("FileExchange is not configured")
+        return self._namespace
+
+    def write_atomic(
+        self,
+        *,
+        origin_id: str,
+        ext: str,
+        content: bytes,
+        mime_type: str | None = None,
+    ) -> str:
+        """Write *content* atomically and return its ``exchange://`` URI.
+
+        Validation:
+            ``origin_id`` and ``ext`` are validated as raw JSON params
+            (spec §6.3 — no URI decoding).
+
+        Atomicity:
+            Content is written to ``$ns/.{origin_id}.{ext}.tmp``
+            (dotfile-prefixed so consumers ignore it), fsynced, then
+            POSIX-renamed to ``$ns/{origin_id}.{ext}``. A crash
+            mid-write leaves only the dotfile behind, which consumers
+            silently skip.
+
+        Args:
+            origin_id: File identifier within this namespace.
+            ext: File extension without leading dot (e.g. ``"png"``).
+            content: Raw bytes to persist.
+            mime_type: Advisory; logged only. The on-disk file has no
+                MIME metadata; the producer's tool result carries it.
+
+        Returns:
+            ``exchange://{exchange_id}/{namespace}/{origin_id}.{ext}``
+
+        Raises:
+            FileExchangeConfigError: The runtime is not configured.
+            ExchangeURIError: ``origin_id`` or ``ext`` violates §6.3.
+        """
+        if (
+            self._base_dir is None
+            or self._namespace is None
+            or self._exchange_id is None
+        ):
+            raise FileExchangeConfigError(
+                "FileExchange is not configured; cannot write_atomic"
+            )
+        ExchangeURI.validate_segment(origin_id, role="json_param")
+        ExchangeURI.validate_segment(ext, role="json_param")
+
+        ns_dir = self._base_dir / self._namespace
+        ns_dir.mkdir(mode=0o755, exist_ok=True)
+        final_path = ns_dir / f"{origin_id}.{ext}"
+        tmp_path = ns_dir / f".{origin_id}.{ext}.tmp"
+
+        # Note: O_TRUNC handles the case where a stale tmp from a prior
+        # crash exists at the same name. The dotfile prefix means
+        # consumers can never see the partial state; rename is the
+        # commit point.
+        fd = os.open(
+            str(tmp_path),
+            os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
+            0o644,
+        )
+        try:
+            os.write(fd, content)
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        os.rename(tmp_path, final_path)
+
+        logger.info(
+            "exchange_write namespace=%s origin_id=%s ext=%s size=%d mime=%s",
+            self._namespace,
+            origin_id,
+            ext,
+            len(content),
+            mime_type or "-",
+        )
+        return f"exchange://{self._exchange_id}/{self._namespace}/{origin_id}.{ext}"
+
+    def read_exchange_uri(self, uri: str) -> bytes:
+        """Resolve an ``exchange://`` URI to bytes (spec §3.6 + §3.7).
+
+        Cross-namespace reads are allowed (a consumer can read any
+        namespace under its own ``$MCP_EXCHANGE_DIR``); the only
+        gate is the exchange-group identifier match.
+
+        Raises:
+            FileExchangeConfigError: The runtime is not configured.
+            ExchangeURIError: The URI fails spec §6.3 (path traversal,
+                forbidden chars, double-encoded, dotfile name, etc.).
+            ExchangeGroupMismatch: ``parsed.exchange_id`` differs from
+                this server's exchange-group ID.
+            FileNotFoundError: The file is not present on disk (the
+                producer hasn't written it, it expired, or the URI
+                refers to a never-created file).
+        """
+        if self._base_dir is None or self._exchange_id is None:
+            raise FileExchangeConfigError(
+                "FileExchange is not configured; cannot read_exchange_uri"
+            )
+        parsed = ExchangeURI.parse(uri)
+        if parsed.exchange_id != self._exchange_id:
+            raise ExchangeGroupMismatch(
+                f"exchange group mismatch: local={self._exchange_id!r}, "
+                f"uri={parsed.exchange_id!r}"
+            )
+        # Per spec §5: "Consumers MUST ignore dotfiles." A leading-dot
+        # filename id would point at a producer's in-progress write
+        # (or a never-meant-to-be-public file); refuse rather than
+        # serving partial state.
+        if parsed.id.startswith("."):
+            raise ExchangeURIError(
+                f"filename id starts with dot (dotfiles are not consumer-visible): "
+                f"{parsed.id!r}"
+            )
+        path = self._base_dir / parsed.namespace / parsed.filename
+        return path.read_bytes()
+
+    def sweep(self) -> int:
+        """Evict expired and over-ceiling files from this server's namespace.
+
+        Producer-only operation: only acts on files under
+        ``$base_dir/{self.namespace}/``, never on other namespaces.
+        Idempotent — safe to call from a timer or shutdown hook.
+
+        Eviction order:
+            1. TTL: any non-dotfile older than ``ttl_seconds``.
+            2. LRU: if ``storage_ceiling_bytes`` was set and the
+               survivors still exceed it, oldest-by-mtime first
+               until below the ceiling.
+
+        Restart-resume: the implementation rebuilds its working set
+        from the filesystem on every call rather than relying on an
+        in-memory registry, so it works correctly after a process
+        restart.
+
+        Returns:
+            Number of files evicted.
+        """
+        if self._base_dir is None or self._namespace is None:
+            return 0
+        ns_dir = self._base_dir / self._namespace
+        if not ns_dir.is_dir():
+            return 0
+
+        now = time.time()
+        evicted = 0
+
+        # TTL pass.
+        for entry in list(ns_dir.iterdir()):
+            if entry.name.startswith("."):
+                continue  # producer's own in-progress writes
+            try:
+                stat = entry.stat()
+            except FileNotFoundError:
+                continue
+            if now - stat.st_mtime > self._ttl_seconds:
+                try:
+                    entry.unlink()
+                    evicted += 1
+                except FileNotFoundError:
+                    pass
+
+        # LRU pass — only when a ceiling is configured.
+        ceiling = self._storage_ceiling_bytes
+        if ceiling is not None:
+            survivors: list[tuple[Path, float, int]] = []
+            for entry in ns_dir.iterdir():
+                if entry.name.startswith("."):
+                    continue
+                try:
+                    stat = entry.stat()
+                except FileNotFoundError:
+                    continue
+                survivors.append((entry, stat.st_mtime, stat.st_size))
+            total = sum(size for _, _, size in survivors)
+            survivors.sort(key=lambda triple: triple[1])  # oldest first
+            for path, _, size in survivors:
+                if total <= ceiling:
+                    break
+                try:
+                    path.unlink()
+                    evicted += 1
+                    total -= size
+                except FileNotFoundError:
+                    pass
+
+        if evicted:
+            logger.info(
+                "exchange_sweep namespace=%s evicted=%d", self._namespace, evicted
+            )
+        return evicted
