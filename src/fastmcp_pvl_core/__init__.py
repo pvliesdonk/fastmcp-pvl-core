@@ -51,7 +51,7 @@ from fastmcp_pvl_core._server_info import (
     register_server_info_tool,
 )
 
-__version__ = "1.1.0-rc.1"  # PSR overrides at build time
+__version__ = "1.1.0"  # PSR overrides at build time
 
 __all__ = [
     "ArtifactStore",
