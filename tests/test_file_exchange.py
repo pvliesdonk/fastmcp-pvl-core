@@ -491,6 +491,21 @@ class TestFromEnv:
                 env={"MCP_EXCHANGE_DIR": str(tmp_path)},
             )
 
+    def test_explicit_exchange_id_with_path_separator_rejected(
+        self, tmp_path: Path
+    ) -> None:
+        # An explicit MCP_EXCHANGE_ID containing forbidden chars would
+        # otherwise persist to .exchange-id and only break later at
+        # write/read time. Fail at config-load instead.
+        with pytest.raises(ExchangeURIError):
+            FileExchange.from_env(
+                default_namespace="ns",
+                env={
+                    "MCP_EXCHANGE_DIR": str(tmp_path),
+                    "MCP_EXCHANGE_ID": "bad/group",
+                },
+            )
+
     def test_explicit_exchange_id_persists_to_disk(self, tmp_path: Path) -> None:
         fx = FileExchange.from_env(
             default_namespace="test",
@@ -606,6 +621,21 @@ class TestWriteAtomic:
 
         with pytest.raises(ExchangeURIError):
             fx.write_atomic(origin_id="../escape", ext="png", content=b"")
+
+    def test_rejects_dot_prefix_origin_id(self, tmp_path: Path) -> None:
+        # Storage-leak guard: a dot-prefix filename would be invisible
+        # to consumers (read_exchange_uri rejects it) AND skipped by
+        # sweep, so it would accumulate forever on the shared volume.
+        fx = self._make(tmp_path)
+
+        with pytest.raises(ExchangeURIError, match="dot"):
+            fx.write_atomic(origin_id=".hidden", ext="png", content=b"x")
+
+    def test_rejects_dot_prefix_ext(self, tmp_path: Path) -> None:
+        fx = self._make(tmp_path)
+
+        with pytest.raises(ExchangeURIError, match="dot"):
+            fx.write_atomic(origin_id="x", ext=".png", content=b"x")
 
     def test_rejects_ext_with_dot(self, tmp_path: Path) -> None:
         fx = self._make(tmp_path)

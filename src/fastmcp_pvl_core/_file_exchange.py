@@ -717,6 +717,12 @@ class FileExchange:
 
         explicit_id = environ.get("MCP_EXCHANGE_ID", "").strip() or None
         exchange_id = _resolve_exchange_id(base_dir, explicit_id)
+        # Validate the resolved exchange_id: a UUIDv4 always passes,
+        # but an explicit MCP_EXCHANGE_ID containing forbidden chars
+        # (e.g. "foo/bar") would otherwise produce malformed
+        # ``exchange://`` URIs at write time. Fail at config-load
+        # rather than at first write.
+        ExchangeURI.validate_segment(exchange_id, role="json_param")
 
         return cls(
             base_dir,
@@ -793,6 +799,19 @@ class FileExchange:
             )
         ExchangeURI.validate_segment(origin_id, role="json_param")
         ExchangeURI.validate_segment(ext, role="json_param")
+        # Spec §5: consumers MUST ignore dotfiles, and both
+        # read_exchange_uri and sweep filter dotfile names. Writing a
+        # dot-prefix filename here would create a file no consumer can
+        # ever read AND that sweep silently skips — pure storage leak.
+        # Block at the producer rather than letting the asymmetry
+        # accumulate dead files on the shared volume.
+        if origin_id.startswith("."):
+            raise ExchangeURIError(
+                f"origin_id MUST NOT start with a dot (would create a "
+                f"dotfile invisible to consumers and sweep): {origin_id!r}"
+            )
+        if ext.startswith("."):
+            raise ExchangeURIError(f"ext MUST NOT start with a dot: {ext!r}")
 
         ns_dir = self._base_dir / self._namespace
         ns_dir.mkdir(mode=0o755, exist_ok=True)
@@ -892,9 +911,14 @@ class FileExchange:
             return 0
 
         now = time.time()
+        ceiling = self._storage_ceiling_bytes
         evicted = 0
-
-        # TTL pass.
+        # Single pass: TTL-evict immediately and collect surviving
+        # entries' (path, mtime, size) for the optional LRU pass. Two
+        # passes was an extra full scan + stat() per file for no
+        # functional gain — gemini-code-assist flagged this as a
+        # medium-priority optimisation.
+        survivors: list[tuple[Path, float, int]] = []
         for entry in list(ns_dir.iterdir()):
             if entry.name.startswith("."):
                 continue  # producer's own in-progress writes
@@ -908,19 +932,11 @@ class FileExchange:
                     evicted += 1
                 except FileNotFoundError:
                     pass
+            elif ceiling is not None:
+                survivors.append((entry, stat.st_mtime, stat.st_size))
 
         # LRU pass — only when a ceiling is configured.
-        ceiling = self._storage_ceiling_bytes
-        if ceiling is not None:
-            survivors: list[tuple[Path, float, int]] = []
-            for entry in ns_dir.iterdir():
-                if entry.name.startswith("."):
-                    continue
-                try:
-                    stat = entry.stat()
-                except FileNotFoundError:
-                    continue
-                survivors.append((entry, stat.st_mtime, stat.st_size))
+        if ceiling is not None and survivors:
             total = sum(size for _, _, size in survivors)
             survivors.sort(key=lambda triple: triple[1])  # oldest first
             for path, _, size in survivors:
@@ -929,9 +945,13 @@ class FileExchange:
                 try:
                     path.unlink()
                     evicted += 1
-                    total -= size
                 except FileNotFoundError:
+                    # External delete beat us to it — the file is gone
+                    # so its size shouldn't count toward the running
+                    # total either, otherwise we'd over-evict a
+                    # surviving file to compensate for a phantom byte.
                     pass
+                total -= size
 
         if evicted:
             logger.info(
