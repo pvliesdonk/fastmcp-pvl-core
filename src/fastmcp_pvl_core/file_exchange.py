@@ -693,7 +693,21 @@ def _register_create_download_link(mcp: FastMCP, handle: FileExchangeHandle) -> 
         if record.eager_bytes is not None:
             data = record.eager_bytes
         elif record.eager_path is not None:
-            data = await asyncio.to_thread(record.eager_path.read_bytes)
+            try:
+                data = await asyncio.to_thread(record.eager_path.read_bytes)
+            except FileNotFoundError:
+                # Producer published a Path that has since been deleted
+                # from disk. Surface as a structured transfer_failed so
+                # the client can try other methods rather than crashing
+                # the tool with a raw stack trace.
+                return _transfer_failed(
+                    origin_server=handle.namespace,
+                    origin_id=origin_id,
+                    method="http",
+                    message=(
+                        f"published file no longer exists on disk: {record.eager_path}"
+                    ),
+                )
         elif record.lazy is not None:
             data = await _resolve_lazy(record.lazy)
         else:
@@ -1038,6 +1052,22 @@ async def _consume_http(
                         f"http fetch failed: redirect ({resp.status_code}) not allowed"
                     )
                 resp.raise_for_status()
+                # Fail fast if the server's advertised Content-Length
+                # already exceeds the cap, so we don't waste a single
+                # chunk's worth of bandwidth on a response we'll
+                # reject anyway. The streaming check below stays as
+                # defence in depth for servers that lie about content
+                # length or omit the header.
+                cl_str = resp.headers.get("content-length")
+                if (
+                    cl_str
+                    and cl_str.isdigit()
+                    and int(cl_str) > _DEFAULT_HTTP_FETCH_MAX_BYTES
+                ):
+                    raise FetchTransportError(
+                        f"response exceeds {_DEFAULT_HTTP_FETCH_MAX_BYTES} "
+                        f"bytes (content-length={cl_str})"
+                    )
                 chunks: list[bytes] = []
                 total = 0
                 async for chunk in resp.aiter_bytes():

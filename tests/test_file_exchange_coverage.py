@@ -197,6 +197,46 @@ class TestConsumeHTTP:
         assert out["error"] == "transfer_failed"
         assert "exceeds" in out["message"]
 
+    async def test_content_length_exceeds_cap_fails_fast(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Round-8 fix: when the response advertises a Content-Length
+        # that already exceeds the cap, fail before streaming any
+        # bytes — saves bandwidth and surfaces the rejection earlier.
+        from fastmcp_pvl_core import file_exchange as fx_module
+
+        monkeypatch.setattr(fx_module, "_DEFAULT_HTTP_FETCH_MAX_BYTES", 100)
+        sink_called = False
+
+        async def sink(data: bytes, ctx: FetchContext) -> FetchResult:
+            nonlocal sink_called
+            sink_called = True
+            return FetchResult(bytes_written=len(data))
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            # Advertise a giant content-length but return short body so
+            # the test fails fast on the header check, not the streaming
+            # check (the streaming check would also reject this).
+            return httpx.Response(
+                200,
+                content=b"x" * 50,  # any body — header check fires first
+                headers={"content-length": "999999"},
+            )
+
+        original = httpx.AsyncClient
+
+        def mock_async_client(*args: Any, **kwargs: Any) -> httpx.AsyncClient:
+            kwargs["transport"] = httpx.MockTransport(handler)
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(httpx, "AsyncClient", mock_async_client)
+        mcp = _new_consumer_mcp(monkeypatch, sink)
+
+        out = await _call_fetch(mcp, url="https://example.com/big")
+        assert out["error"] == "transfer_failed"
+        assert "content-length" in out["message"]
+        assert sink_called is False
+
     async def test_3xx_response_returns_transfer_failed(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -528,6 +568,47 @@ class TestSizeCap:
         # Direct callers (without max_bytes) get the unguarded read —
         # only fetch_file passes the cap.
         assert len(fx.read_exchange_uri("exchange://g/image-mcp/big.bin")) == 1000
+
+
+class TestPathDeletedAfterPublish:
+    """Round-8 fix: ``create_download_link`` should return a structured
+    ``transfer_failed`` envelope when the published Path has been
+    deleted from disk between publish and the download-link request,
+    instead of crashing the tool with a raw FileNotFoundError.
+    """
+
+    async def test_eager_path_deleted_returns_transfer_failed(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        import json
+
+        monkeypatch.setenv("TEST_FE_BASE_URL", "http://test.example")
+        mcp = FastMCP("test-fe")
+        h = register_file_exchange(
+            mcp,
+            namespace="image-mcp",
+            env_prefix="TEST_FE",
+            produces=("image/png",),
+            transport="http",
+        )
+        f = tmp_path / "img.png"
+        f.write_bytes(b"PNG-bytes")
+        await h.publish(source=f, mime_type="image/png", origin_id="abc")
+        # Producer's file gets deleted (moved, garbage-collected, etc.)
+        # between publish and the download-link request.
+        f.unlink()
+
+        tool = await mcp.get_tool("create_download_link")
+        result = await tool.run({"origin_id": "abc"})
+        sc = getattr(result, "structured_content", None)
+        out = (
+            sc
+            if isinstance(sc, dict)
+            else json.loads(next(b.text for b in result.content if hasattr(b, "text")))
+        )
+        assert out["error"] == "transfer_failed"
+        assert out["method"] == "http"
+        assert "no longer exists" in out["message"]
 
 
 class TestExpiredRecordThrottleRegression:
