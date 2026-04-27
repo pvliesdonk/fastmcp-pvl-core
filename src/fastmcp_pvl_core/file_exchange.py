@@ -190,8 +190,10 @@ class FileExchangeHandle:
     # than this many seconds ago. The registry is in-process and short-
     # lived per record, so a once-per-30s sweep keeps memory bounded
     # without the O(N) scan running on every download-link request.
-    _expiry_sweep_interval: float = 30.0
-    _last_expiry_sweep: float = 0.0
+    # ``init=False`` keeps these out of the constructor signature —
+    # they're internal scheduler state, not config the caller picks.
+    _expiry_sweep_interval: float = field(default=30.0, init=False)
+    _last_expiry_sweep: float = field(default=0.0, init=False)
 
     @property
     def http_enabled(self) -> bool:
@@ -656,18 +658,21 @@ def _register_create_download_link(mcp: FastMCP, handle: FileExchangeHandle) -> 
                 message=f"origin_id failed validation: {exc}",
             )
 
-        # Drop expired records before lookup so the registry can't grow
-        # unbounded between sweeps and so we surface ``transfer_failed``
-        # for legitimately-expired publishes.
+        # Throttled bulk sweep keeps the registry from growing unbounded
+        # between create_download_link calls (an O(N) operation that
+        # would otherwise run every request). The per-record TTL check
+        # below is what enforces freshness for *this* lookup — the
+        # bulk sweep can return 0 while the requested record is
+        # individually expired, and we still need to refuse to mint a
+        # fresh URL for it.
         handle.expire_publish_registry()
         record = handle.publish_registry.get(origin_id)
-        if record is None:
+        if record is None or record.expires_at < time.time():
             return _transfer_failed(
                 origin_server=handle.namespace,
                 origin_id=origin_id,
                 method="http",
-                message="origin_id is unknown — likely expired or never "
-                "published from this server",
+                message="origin_id is unknown or has expired",
             )
 
         effective_ttl: float

@@ -500,6 +500,47 @@ class TestSizeCap:
         assert len(fx.read_exchange_uri("exchange://g/image-mcp/big.bin")) == 1000
 
 
+class TestExpiredRecordThrottleRegression:
+    """Round-6 finding: the round-5 throttle made
+    ``expire_publish_registry`` skip its sweep within 30 s of the last
+    one, which meant an expired record could still be looked up and
+    served. The fix is an O(1) per-record TTL check after the
+    registry lookup; this test locks it in.
+    """
+
+    async def test_expired_record_refused_inside_throttle_window(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import json
+
+        monkeypatch.setenv("TEST_FE_BASE_URL", "http://test.example")
+        mcp = FastMCP("test-fe")
+        h = register_file_exchange(
+            mcp,
+            namespace="image-mcp",
+            env_prefix="TEST_FE",
+            produces=("image/png",),
+            transport="http",
+        )
+        await h.publish(source=b"x", mime_type="image/png", origin_id="abc")
+        # Set _last_expiry_sweep to "just now" so the throttle skips the
+        # bulk sweep, then backdate the record's individual expires_at.
+        h._last_expiry_sweep = time.time()
+        h.publish_registry["abc"].expires_at = time.time() - 60
+
+        tool = await mcp.get_tool("create_download_link")
+        result = await tool.run({"origin_id": "abc"})
+        sc = getattr(result, "structured_content", None)
+        out = (
+            sc
+            if isinstance(sc, dict)
+            else json.loads(next(b.text for b in result.content if hasattr(b, "text")))
+        )
+        assert out["error"] == "transfer_failed"
+        assert out["method"] == "http"
+        assert "expired" in out["message"]
+
+
 class TestExpiryThrottle:
     """Round-5 finding: ``expire_publish_registry`` runs on every
     create_download_link call; throttle to once per N seconds so the
