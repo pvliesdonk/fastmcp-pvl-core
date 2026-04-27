@@ -34,6 +34,7 @@ logger = logging.getLogger(__name__)
 
 _EXCHANGE_ID_FILE: Final = ".exchange-id"
 _DEFAULT_TTL_SECONDS: Final = 3600.0
+_STREAM_CHUNK_SIZE: Final = 64 * 1024
 
 
 # ---------------------------------------------------------------------------
@@ -297,7 +298,9 @@ class FileExchange:
 
     # ---- producer ----------------------------------------------------------
 
-    def write_atomic(self, *, origin_id: str, ext: str, content: bytes) -> ExchangeURI:
+    def write_atomic(
+        self, *, origin_id: str, ext: str, content: bytes | Path
+    ) -> ExchangeURI:
         """Atomically write ``content`` to ``$base_dir/{namespace}/{id}.{ext}``.
 
         The write goes to a dotfile-prefixed temp path first, then
@@ -311,7 +314,11 @@ class FileExchange:
                 literal ``%`` is preserved.
             ext: File extension (no leading dot). Validated the same
                 way.
-            content: Bytes to write.
+            content: Bytes to write, OR a :class:`pathlib.Path` to a
+                file to copy. The Path form is stream-copied chunk by
+                chunk and never materialises the full file in memory —
+                use it for large producer files that would otherwise
+                push the publisher near the 256 MiB cap.
 
         Returns:
             The resulting :class:`ExchangeURI`.
@@ -361,7 +368,17 @@ class FileExchange:
                 # Buffered write loops until the full payload lands;
                 # raw os.write can do a partial write on large buffers.
                 with os.fdopen(fd, "wb", closefd=False) as f:
-                    f.write(content)
+                    if isinstance(content, bytes):
+                        f.write(content)
+                        bytes_written = len(content)
+                    else:
+                        # Stream from disk in 64 KiB chunks so a 256 MiB
+                        # source file never lands in memory in one piece.
+                        bytes_written = 0
+                        with content.open("rb") as src:
+                            while chunk := src.read(_STREAM_CHUNK_SIZE):
+                                f.write(chunk)
+                                bytes_written += len(chunk)
                     f.flush()
                 os.fsync(fd)
             finally:
@@ -380,7 +397,7 @@ class FileExchange:
             self.namespace,
             origin_id,
             ext,
-            len(content),
+            bytes_written,
         )
         return ExchangeURI(
             exchange_id=self.exchange_id,

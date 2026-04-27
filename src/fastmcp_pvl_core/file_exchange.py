@@ -194,6 +194,10 @@ class FileExchangeHandle:
     # they're internal scheduler state, not config the caller picks.
     _expiry_sweep_interval: float = field(default=30.0, init=False)
     _last_expiry_sweep: float = field(default=0.0, init=False)
+    # Reused httpx client for the consumer ``http`` branch. Lazy-
+    # initialised on first fetch so handles that never consume don't
+    # pay for an idle connection pool. Closed via :meth:`aclose`.
+    _http_client: httpx.AsyncClient | None = field(default=None, init=False)
 
     @property
     def http_enabled(self) -> bool:
@@ -327,17 +331,16 @@ class FileExchangeHandle:
                 raise RuntimeError(
                     "exchange_enabled is True but exchange runtime is None"
                 )
+            payload: bytes | Path
             if eager_bytes is not None:
                 payload = eager_bytes
             elif eager_path is not None:
-                # Read once for the exchange-volume write, but do NOT
-                # cache the bytes in eager_bytes — letting the registry
-                # store ``eager_path`` instead means the http branch
-                # re-reads from disk on demand. Caching would hold the
-                # full file (up to the 256 MiB cap) in memory for the
-                # publish-side TTL window, which is OOM-risky when many
-                # large files are published concurrently.
-                payload = await asyncio.to_thread(eager_path.read_bytes)
+                # Pass the Path through to write_atomic — it streams
+                # from disk in 64 KiB chunks so a 256 MiB source never
+                # lands in memory in one piece. (The http registry
+                # also stores eager_path and re-reads on demand, so the
+                # whole publish→download flow is constant-memory.)
+                payload = eager_path
             else:
                 # Lazy callables are materialised eagerly above when
                 # exchange is on, so reaching here means the input
@@ -388,6 +391,34 @@ class FileExchangeHandle:
         )
 
     # ---- lifecycle --------------------------------------------------------
+
+    def _get_http_client(self) -> httpx.AsyncClient:
+        """Return the shared :class:`httpx.AsyncClient`, creating on demand.
+
+        Reusing one client across all ``fetch_file`` calls enables HTTP
+        keep-alive and TLS-session resumption to the same producer host
+        — repeated cross-server transfers don't pay for a fresh TCP+TLS
+        handshake every time. Lifecycle is owned by :meth:`aclose`.
+        """
+        if self._http_client is None:
+            self._http_client = httpx.AsyncClient(
+                timeout=_DEFAULT_HTTP_FETCH_TIMEOUT,
+                follow_redirects=False,
+            )
+        return self._http_client
+
+    async def aclose(self) -> None:
+        """Release any background resources (currently the http client).
+
+        Safe to call multiple times; no-op when no client was lazily
+        created. Downstream servers that hold this handle for the
+        process lifetime usually don't need to call this — it exists
+        for tests and for embedders that build/tear down handles
+        repeatedly.
+        """
+        if self._http_client is not None:
+            await self._http_client.aclose()
+            self._http_client = None
 
     def expire_publish_registry(self, *, force: bool = False) -> int:
         """Drop registry records past their TTL.
@@ -1037,51 +1068,49 @@ async def _consume_http(
 ) -> dict[str, Any]:
     _ssrf_guard(url)
 
+    client = handle._get_http_client()
     try:
-        async with httpx.AsyncClient(
-            timeout=_DEFAULT_HTTP_FETCH_TIMEOUT, follow_redirects=False
-        ) as client:
-            async with client.stream("GET", url) as resp:
-                # ``raise_for_status`` only raises for 4xx/5xx — a 3xx
-                # redirect with follow_redirects=False would otherwise
-                # stream the redirect body (a small "Moved" HTML page)
-                # as if it were the file content, silently corrupting
-                # what reaches the consumer sink.
-                if resp.is_redirect:
-                    raise FetchTransportError(
-                        f"http fetch failed: redirect ({resp.status_code}) not allowed"
-                    )
-                resp.raise_for_status()
-                # Fail fast if the server's advertised Content-Length
-                # already exceeds the cap, so we don't waste a single
-                # chunk's worth of bandwidth on a response we'll
-                # reject anyway. The streaming check below stays as
-                # defence in depth for servers that lie about content
-                # length or omit the header.
-                cl_str = resp.headers.get("content-length")
-                if (
-                    cl_str
-                    and cl_str.isdigit()
-                    and int(cl_str) > _DEFAULT_HTTP_FETCH_MAX_BYTES
-                ):
-                    raise FetchTransportError(
-                        f"response exceeds {_DEFAULT_HTTP_FETCH_MAX_BYTES} "
-                        f"bytes (content-length={cl_str})"
-                    )
-                chunks: list[bytes] = []
-                total = 0
-                async for chunk in resp.aiter_bytes():
-                    total += len(chunk)
-                    if total > _DEFAULT_HTTP_FETCH_MAX_BYTES:
-                        raise FetchTransportError(
-                            f"response exceeds {_DEFAULT_HTTP_FETCH_MAX_BYTES} bytes"
-                        )
-                    chunks.append(chunk)
-                data = b"".join(chunks)
-                content_type = resp.headers.get("content-type")
-                suggested = _filename_from_disposition(
-                    resp.headers.get("content-disposition")
+        async with client.stream("GET", url) as resp:
+            # ``raise_for_status`` only raises for 4xx/5xx — a 3xx
+            # redirect with follow_redirects=False would otherwise
+            # stream the redirect body (a small "Moved" HTML page)
+            # as if it were the file content, silently corrupting
+            # what reaches the consumer sink.
+            if resp.is_redirect:
+                raise FetchTransportError(
+                    f"http fetch failed: redirect ({resp.status_code}) not allowed"
                 )
+            resp.raise_for_status()
+            # Fail fast if the server's advertised Content-Length
+            # already exceeds the cap, so we don't waste a single
+            # chunk's worth of bandwidth on a response we'll
+            # reject anyway. The streaming check below stays as
+            # defence in depth for servers that lie about content
+            # length or omit the header.
+            cl_str = resp.headers.get("content-length")
+            if (
+                cl_str
+                and cl_str.isdigit()
+                and int(cl_str) > _DEFAULT_HTTP_FETCH_MAX_BYTES
+            ):
+                raise FetchTransportError(
+                    f"response exceeds {_DEFAULT_HTTP_FETCH_MAX_BYTES} "
+                    f"bytes (content-length={cl_str})"
+                )
+            chunks: list[bytes] = []
+            total = 0
+            async for chunk in resp.aiter_bytes():
+                total += len(chunk)
+                if total > _DEFAULT_HTTP_FETCH_MAX_BYTES:
+                    raise FetchTransportError(
+                        f"response exceeds {_DEFAULT_HTTP_FETCH_MAX_BYTES} bytes"
+                    )
+                chunks.append(chunk)
+            data = b"".join(chunks)
+            content_type = resp.headers.get("content-type")
+            suggested = _filename_from_disposition(
+                resp.headers.get("content-disposition")
+            )
     except httpx.HTTPError as exc:
         # Translate the entire httpx error hierarchy (timeouts, connect
         # errors, status errors, transport errors) into our own domain

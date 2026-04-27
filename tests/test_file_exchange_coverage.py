@@ -570,6 +570,95 @@ class TestSizeCap:
         assert len(fx.read_exchange_uri("exchange://g/image-mcp/big.bin")) == 1000
 
 
+class TestStreamingWriteAtomic:
+    """Round-9 fix: ``write_atomic(content=Path)`` stream-copies in
+    64 KiB chunks instead of requiring the whole file in memory.
+    """
+
+    def test_path_source_writes_correct_bytes(self, tmp_path: Path) -> None:
+        (tmp_path / ".exchange-id").write_text("g\n", encoding="utf-8")
+        fx = FileExchange(base_dir=tmp_path, exchange_id="g", namespace="image-mcp")
+        # Source file larger than the chunk size, to exercise the loop.
+        src = tmp_path / "src.bin"
+        body = b"".join(bytes((i,)) * 256 for i in range(256))  # 64 KiB exactly
+        src.write_bytes(body * 3)  # 192 KiB → 3 chunks
+
+        uri = fx.write_atomic(origin_id="big", ext="bin", content=src)
+        assert uri.id == "big"
+        out = (tmp_path / "image-mcp" / "big.bin").read_bytes()
+        assert out == body * 3
+
+    def test_path_source_does_not_load_full_file_in_memory(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Patch Path.read_bytes to raise; the streaming write must not
+        # call it. This proves the streaming path goes through .open()
+        # + .read(chunk) only.
+        (tmp_path / ".exchange-id").write_text("g\n", encoding="utf-8")
+        fx = FileExchange(base_dir=tmp_path, exchange_id="g", namespace="image-mcp")
+        src = tmp_path / "src.bin"
+        src.write_bytes(b"hello")
+
+        original_read_bytes = Path.read_bytes
+
+        def boom(self: Path) -> bytes:
+            if self == src:
+                raise AssertionError("read_bytes called on source — streaming bypassed")
+            return original_read_bytes(self)
+
+        monkeypatch.setattr(Path, "read_bytes", boom)
+        fx.write_atomic(origin_id="abc", ext="bin", content=src)
+        assert (tmp_path / "image-mcp" / "abc.bin").read_bytes() == b"hello"
+
+
+class TestHTTPClientReuse:
+    """Round-9 fix: ``FileExchangeHandle._get_http_client`` lazy-creates
+    a single ``httpx.AsyncClient`` and reuses it across fetch calls so
+    repeated transfers to the same producer host enjoy connection
+    pooling and TLS-session resumption.
+    """
+
+    async def test_client_is_lazy_and_reused(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        h = FileExchangeHandle(
+            namespace="x",
+            enabled=True,
+            produce=False,
+            consume=True,
+            artifact_store=None,
+            exchange=None,
+            capability=None,
+        )
+        # Lazy: nothing built yet.
+        assert h._http_client is None
+
+        c1 = h._get_http_client()
+        c2 = h._get_http_client()
+        assert c1 is c2  # reused
+        assert h._http_client is c1
+
+        await h.aclose()
+        assert h._http_client is None
+
+    async def test_aclose_idempotent(self) -> None:
+        h = FileExchangeHandle(
+            namespace="x",
+            enabled=True,
+            produce=False,
+            consume=True,
+            artifact_store=None,
+            exchange=None,
+            capability=None,
+        )
+        # No client created — aclose should be a no-op.
+        await h.aclose()
+        # Create one, close, then close again.
+        h._get_http_client()
+        await h.aclose()
+        await h.aclose()
+
+
 class TestPathDeletedAfterPublish:
     """Round-8 fix: ``create_download_link`` should return a structured
     ``transfer_failed`` envelope when the published Path has been
