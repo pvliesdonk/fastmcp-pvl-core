@@ -391,7 +391,7 @@ class FileExchange:
 
     # ---- consumer ----------------------------------------------------------
 
-    def read_exchange_uri(self, uri: str) -> bytes:
+    def read_exchange_uri(self, uri: str, *, max_bytes: int | None = None) -> bytes:
         """Read the bytes at ``uri``.
 
         Validates per spec §"Security and Path Resolution", refuses
@@ -400,6 +400,12 @@ class FileExchange:
 
         Args:
             uri: An ``exchange://`` URI.
+            max_bytes: Optional ceiling on the file size, in bytes. The
+                size is checked via ``stat`` before any bytes are read,
+                so an oversized file never lands in memory. ``None``
+                (default) skips the check; the consumer ``fetch_file``
+                tool always passes its own cap so this default applies
+                only to direct callers of the runtime.
 
         Returns:
             The file's bytes.
@@ -408,6 +414,7 @@ class FileExchange:
             ExchangeURIError: URI is malformed or violates segment rules.
             ExchangeGroupMismatch: URI is for a different exchange group.
             FileNotFoundError: No file exists at the resolved path.
+            OSError: ``max_bytes`` is set and the file's size exceeds it.
         """
         parsed = ExchangeURI.parse(uri)
         if parsed.exchange_id != self.exchange_id:
@@ -424,6 +431,12 @@ class FileExchange:
                 f"refusing dotfile filename (spec §'Directory Layout'): {uri!r}"
             )
         file_path = self.base_dir / parsed.namespace / parsed.filename
+        if max_bytes is not None:
+            size = file_path.stat().st_size
+            if size > max_bytes:
+                raise OSError(
+                    f"exchange file {uri!r} exceeds max_bytes ({size} > {max_bytes})"
+                )
         return file_path.read_bytes()
 
     # ---- lifecycle ---------------------------------------------------------

@@ -186,6 +186,12 @@ class FileExchangeHandle:
     fetch_tool_name: str = _DEFAULT_FETCH_TOOL
     ttl_seconds: float = _DEFAULT_TTL_SECONDS
     publish_registry: dict[str, _PublishRecord] = field(default_factory=dict)
+    # Throttle: skip ``expire_publish_registry`` if it ran more recently
+    # than this many seconds ago. The registry is in-process and short-
+    # lived per record, so a once-per-30s sweep keeps memory bounded
+    # without the O(N) scan running on every download-link request.
+    _expiry_sweep_interval: float = 30.0
+    _last_expiry_sweep: float = 0.0
 
     @property
     def http_enabled(self) -> bool:
@@ -375,9 +381,21 @@ class FileExchangeHandle:
 
     # ---- lifecycle --------------------------------------------------------
 
-    def expire_publish_registry(self) -> int:
-        """Drop registry records past their TTL. Returns the number removed."""
+    def expire_publish_registry(self, *, force: bool = False) -> int:
+        """Drop registry records past their TTL.
+
+        Throttled: returns ``0`` immediately if a sweep ran within the
+        last ``_expiry_sweep_interval`` seconds. Pass ``force=True`` to
+        bypass the throttle (useful in tests and explicit
+        ``aclose``-style shutdown).
+
+        Returns:
+            The number of records removed (``0`` when throttled).
+        """
         now = time.time()
+        if not force and (now - self._last_expiry_sweep) < self._expiry_sweep_interval:
+            return 0
+        self._last_expiry_sweep = now
         expired = [k for k, r in self.publish_registry.items() if r.expires_at < now]
         for k in expired:
             del self.publish_registry[k]
@@ -967,7 +985,11 @@ async def _consume_exchange(
         raise FileExchangeConfigError(
             "exchange method requested but MCP_EXCHANGE_DIR is not configured"
         )
-    data = await asyncio.to_thread(handle.exchange.read_exchange_uri, uri)
+    data = await asyncio.to_thread(
+        handle.exchange.read_exchange_uri,
+        uri,
+        max_bytes=_DEFAULT_HTTP_FETCH_MAX_BYTES,
+    )
     ctx = FetchContext(
         url=uri,
         file_ref=file_ref,

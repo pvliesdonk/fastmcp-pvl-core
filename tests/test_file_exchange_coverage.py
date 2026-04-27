@@ -34,6 +34,7 @@ from fastmcp_pvl_core import (
     FetchContext,
     FetchResult,
     FileExchange,
+    FileExchangeHandle,
     FileRef,
     register_file_exchange,
     set_artifact_store,
@@ -475,6 +476,92 @@ class TestConcurrentSweepAndWrite:
 # ---------------------------------------------------------------------------
 # client_orchestration_required envelope
 # ---------------------------------------------------------------------------
+
+
+class TestSizeCap:
+    """Round-5 finding: ``read_exchange_uri`` needs a size cap to match
+    the http path's 256 MiB guard, otherwise a malicious or accidental
+    large file in the exchange volume could OOM the consumer process.
+    """
+
+    def test_read_exchange_uri_rejects_oversize_file(self, tmp_path: Path) -> None:
+        (tmp_path / ".exchange-id").write_text("g\n", encoding="utf-8")
+        fx = FileExchange(base_dir=tmp_path, exchange_id="g", namespace="image-mcp")
+        fx.write_atomic(origin_id="big", ext="bin", content=b"x" * 1000)
+        with pytest.raises(OSError, match="exceeds max_bytes"):
+            fx.read_exchange_uri("exchange://g/image-mcp/big.bin", max_bytes=100)
+
+    def test_read_exchange_uri_no_cap_by_default(self, tmp_path: Path) -> None:
+        (tmp_path / ".exchange-id").write_text("g\n", encoding="utf-8")
+        fx = FileExchange(base_dir=tmp_path, exchange_id="g", namespace="image-mcp")
+        fx.write_atomic(origin_id="big", ext="bin", content=b"x" * 1000)
+        # Direct callers (without max_bytes) get the unguarded read —
+        # only fetch_file passes the cap.
+        assert len(fx.read_exchange_uri("exchange://g/image-mcp/big.bin")) == 1000
+
+
+class TestExpiryThrottle:
+    """Round-5 finding: ``expire_publish_registry`` runs on every
+    create_download_link call; throttle to once per N seconds so the
+    O(N) scan doesn't bottleneck high-throughput producers.
+    """
+
+    def test_throttle_skips_recent_sweeps(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from fastmcp_pvl_core.file_exchange import _PublishRecord
+
+        h = FileExchangeHandle(
+            namespace="x",
+            enabled=True,
+            produce=True,
+            consume=False,
+            artifact_store=None,
+            exchange=None,
+            capability=None,
+        )
+        # Insert an already-expired record.
+        h.publish_registry["a"] = _PublishRecord(
+            mime_type="text/plain",
+            ext="txt",
+            filename="a.txt",
+            eager_bytes=b"x",
+            expires_at=time.time() - 60,
+        )
+        # First call sweeps (last_sweep is 0 → far past the threshold).
+        assert h.expire_publish_registry() == 1
+        # Re-insert and call again immediately — the throttle skips it.
+        h.publish_registry["b"] = _PublishRecord(
+            mime_type="text/plain",
+            ext="txt",
+            filename="b.txt",
+            eager_bytes=b"x",
+            expires_at=time.time() - 60,
+        )
+        assert h.expire_publish_registry() == 0
+        assert "b" in h.publish_registry  # not swept
+
+    def test_force_bypasses_throttle(self) -> None:
+        from fastmcp_pvl_core.file_exchange import _PublishRecord
+
+        h = FileExchangeHandle(
+            namespace="x",
+            enabled=True,
+            produce=True,
+            consume=False,
+            artifact_store=None,
+            exchange=None,
+            capability=None,
+        )
+        h._last_expiry_sweep = time.time()  # very recent → throttled
+        h.publish_registry["a"] = _PublishRecord(
+            mime_type="text/plain",
+            ext="txt",
+            filename="a.txt",
+            eager_bytes=b"x",
+            expires_at=time.time() - 60,
+        )
+        assert h.expire_publish_registry(force=True) == 1
 
 
 class TestDefensiveErrorPaths:
