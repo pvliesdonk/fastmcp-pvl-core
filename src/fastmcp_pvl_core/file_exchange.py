@@ -330,8 +330,14 @@ class FileExchangeHandle:
             if eager_bytes is not None:
                 payload = eager_bytes
             elif eager_path is not None:
+                # Read once for the exchange-volume write, but do NOT
+                # cache the bytes in eager_bytes — letting the registry
+                # store ``eager_path`` instead means the http branch
+                # re-reads from disk on demand. Caching would hold the
+                # full file (up to the 256 MiB cap) in memory for the
+                # publish-side TTL window, which is OOM-risky when many
+                # large files are published concurrently.
                 payload = await asyncio.to_thread(eager_path.read_bytes)
-                eager_bytes = payload  # cache for http reuse
             else:
                 # Lazy callables are materialised eagerly above when
                 # exchange is on, so reaching here means the input
@@ -1022,6 +1028,15 @@ async def _consume_http(
             timeout=_DEFAULT_HTTP_FETCH_TIMEOUT, follow_redirects=False
         ) as client:
             async with client.stream("GET", url) as resp:
+                # ``raise_for_status`` only raises for 4xx/5xx — a 3xx
+                # redirect with follow_redirects=False would otherwise
+                # stream the redirect body (a small "Moved" HTML page)
+                # as if it were the file content, silently corrupting
+                # what reaches the consumer sink.
+                if resp.is_redirect:
+                    raise FetchTransportError(
+                        f"http fetch failed: redirect ({resp.status_code}) not allowed"
+                    )
                 resp.raise_for_status()
                 chunks: list[bytes] = []
                 total = 0

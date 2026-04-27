@@ -197,6 +197,36 @@ class TestConsumeHTTP:
         assert out["error"] == "transfer_failed"
         assert "exceeds" in out["message"]
 
+    async def test_3xx_response_returns_transfer_failed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Round-7 fix: a 3xx response with follow_redirects=False must
+        # be treated as a failure, not silently consume the redirect
+        # body as file content.
+        async def sink(data: bytes, ctx: FetchContext) -> FetchResult:
+            return FetchResult(bytes_written=len(data))
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                301,
+                content=b"<html>Moved Permanently</html>",
+                headers={"location": "https://elsewhere.example/x"},
+            )
+
+        original = httpx.AsyncClient
+
+        def mock_async_client(*args: Any, **kwargs: Any) -> httpx.AsyncClient:
+            kwargs["transport"] = httpx.MockTransport(handler)
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(httpx, "AsyncClient", mock_async_client)
+        mcp = _new_consumer_mcp(monkeypatch, sink)
+
+        out = await _call_fetch(mcp, url="https://example.com/redirect")
+        assert out["error"] == "transfer_failed"
+        assert out["method"] == "http"
+        assert "redirect" in out["message"]
+
     async def test_redirect_not_followed(self, monkeypatch: pytest.MonkeyPatch) -> None:
         async def sink(data: bytes, ctx: FetchContext) -> FetchResult:
             return FetchResult(bytes_written=len(data))
