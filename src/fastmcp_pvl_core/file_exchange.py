@@ -45,6 +45,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple
 from urllib.parse import urlsplit
 
+import httpx
+
 from fastmcp_pvl_core._artifacts import ArtifactStore, set_artifact_store
 from fastmcp_pvl_core._env import env, parse_bool
 from fastmcp_pvl_core._file_exchange_protocol import (
@@ -191,7 +193,7 @@ class FileExchangeHandle:
             self.enabled
             and self.produce
             and self.artifact_store is not None
-            and self.artifact_store._base_url is not None  # noqa: SLF001
+            and self.artifact_store.has_base_url
         )
 
     @property
@@ -285,7 +287,8 @@ class FileExchangeHandle:
                 # read at create_download_link time anyway. Surfacing
                 # the error here gives a stack at the actual call site
                 # instead of a deferred mystery error in the tool body.
-                size_bytes = source.stat().st_size
+                stat_result = await asyncio.to_thread(source.stat)
+                size_bytes = stat_result.st_size
         elif source is not None:
             raise TypeError(
                 f"publish() source must be bytes or pathlib.Path, "
@@ -309,21 +312,33 @@ class FileExchangeHandle:
         # If exchange is enabled, write the bytes into the volume now.
         exchange_uri_str: str | None = None
         if self.exchange_enabled:
-            assert self.exchange is not None  # for type checker
-            payload: bytes
+            # exchange_enabled implies self.exchange is not None.
+            exchange_runtime = self.exchange
+            if exchange_runtime is None:
+                raise RuntimeError(
+                    "exchange_enabled is True but exchange runtime is None"
+                )
             if eager_bytes is not None:
                 payload = eager_bytes
             elif eager_path is not None:
-                payload = eager_path.read_bytes()
-                if eager_bytes is None:
-                    eager_bytes = payload  # cache for http reuse
+                payload = await asyncio.to_thread(eager_path.read_bytes)
+                eager_bytes = payload  # cache for http reuse
             else:
-                raise AssertionError("unreachable")
-            exchange_uri_str = str(
-                self.exchange.write_atomic(
-                    origin_id=origin_id, ext=ext, content=payload
+                # Lazy callables are materialised eagerly above when
+                # exchange is on, so reaching here means the input
+                # validation at the top of publish() let through a
+                # combination it shouldn't have. Surface as
+                # RuntimeError so we get a meaningful traceback.
+                raise RuntimeError(
+                    "publish(): no byte source after lazy materialisation"
                 )
+            exchange_uri = await asyncio.to_thread(
+                exchange_runtime.write_atomic,
+                origin_id=origin_id,
+                ext=ext,
+                content=payload,
             )
+            exchange_uri_str = str(exchange_uri)
 
         # Register for the http branch (only when http is enabled).
         if self.http_enabled:
@@ -586,7 +601,7 @@ def _build_transfer_methods(
     methods: dict[str, dict[str, Any]] = {}
     if exchange is not None and (produce or consume):
         methods["exchange"] = {}
-    if produce and store is not None and store._base_url is not None:  # noqa: SLF001
+    if produce and store is not None and store.has_base_url:
         methods["http"] = {"tool": download_tool_name}
     elif consume:
         methods["http"] = {"tool": fetch_tool_name}
@@ -659,7 +674,10 @@ def _register_create_download_link(mcp: FastMCP, handle: FileExchangeHandle) -> 
                 message="record has no resolvable byte source (internal error)",
             )
 
-        assert handle.artifact_store is not None  # http_enabled guarantees this
+        # http_enabled guarantees this in normal operation; defend
+        # against future refactors that might bypass that check.
+        if handle.artifact_store is None:
+            raise RuntimeError("create_download_link reached without an artifact store")
         url = handle.artifact_store.put_ephemeral(
             data,
             content_type=record.mime_type,
@@ -745,6 +763,12 @@ def _register_fetch_file(
         in spec priority (``exchange`` before ``http``), building
         ``remaining_transfer`` on each method failure per spec
         §"Transfer Negotiation".
+
+        HTTP redirects are NOT followed — producers configure
+        non-redirecting download URLs (the spec mandates one-time
+        unguessable URLs which are issued already-resolved). This
+        avoids redirect-based SSRF where a redirect target would slip
+        past the up-front host guard.
         """
         if (file_ref is None) == (url is None):
             return {
@@ -758,9 +782,10 @@ def _register_fetch_file(
         if url is not None:
             return await _fetch_via_url(handle, sink, url, params)
 
-        assert (
-            file_ref is not None
-        )  # narrowed by the (file_ref is None) == (url is None) check above
+        # url is None here (the (file_ref is None) == (url is None)
+        # check above guarantees one is set).
+        if file_ref is None:
+            raise RuntimeError("fetch_file: input validation should have caught this")
         return await _fetch_via_file_ref(handle, sink, file_ref, params)
 
 
@@ -956,7 +981,6 @@ async def _consume_http(
     params: Mapping[str, Any],
 ) -> dict[str, Any]:
     _ssrf_guard(url)
-    import httpx
 
     try:
         async with httpx.AsyncClient(
@@ -1008,17 +1032,42 @@ def _sink_response(result: FetchResult, *, method: str) -> dict[str, Any]:
     return out
 
 
-def _ssrf_guard(url: str) -> None:
-    """Reject URLs whose hostname is a private/loopback/link-local IP literal.
+# Hostnames that aren't IP literals but are well-known aliases for
+# loopback or cloud metadata endpoints. The check is exact-match
+# case-insensitive — DNS-name patterns (``*.internal``) and
+# resolver-side games (``localtest.me`` → 127.0.0.1) are deliberately
+# out of scope; the goal is catching the cheap LLM mistake of
+# ``http://localhost/admin``, not building a perimeter firewall.
+_SSRF_HOSTNAME_DENYLIST = frozenset(
+    {
+        "localhost",
+        "ip6-localhost",
+        "ip6-loopback",
+        "metadata.google.internal",
+        "metadata.goog",
+        "metadata.aws",
+        "metadata.amazonaws.com",
+        "metadata.azure.com",
+    }
+)
 
-    Hostnames that resolve via DNS are out of scope — the deployer is
-    responsible for the network they expose. This guard catches the
-    cheap mistake (an LLM tries to fetch ``http://127.0.0.1/admin``)
-    without paying the cost of a name-resolution call inside the tool
-    handler.
+
+def _ssrf_guard(url: str) -> None:
+    """Reject URLs whose host is a private/loopback IP or a known alias.
+
+    DNS-resolved hostnames in general are out of scope — the deployer
+    is responsible for the network they expose. The guard catches the
+    cheap mistakes: IP literals in private/loopback/link-local ranges
+    (incl. AWS IMDS at 169.254.169.254 and IPv6 ``::1``) and the
+    handful of named aliases for loopback / cloud metadata endpoints
+    (``localhost``, ``metadata.google.internal``, etc.).
     """
     parts = urlsplit(url)
-    host = parts.hostname or ""
+    host = (parts.hostname or "").lower()
+    if host in _SSRF_HOSTNAME_DENYLIST:
+        raise FetchTransportError(
+            f"refusing to fetch URL with denylisted hostname: {host}"
+        )
     try:
         ip = ipaddress.ip_address(host)
     except ValueError:

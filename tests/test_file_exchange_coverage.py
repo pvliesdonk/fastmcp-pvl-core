@@ -263,6 +263,19 @@ class TestSSRFGuard:
         # Should not raise.
         _ssrf_guard(url)
 
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "http://localhost/admin",
+            "http://LOCALHOST/x",  # case-insensitive
+            "http://metadata.google.internal/computeMetadata/v1",
+            "http://metadata.amazonaws.com/x",
+        ],
+    )
+    def test_blocks_named_aliases(self, url: str) -> None:
+        with pytest.raises(FetchTransportError, match="denylisted"):
+            _ssrf_guard(url)
+
 
 # ---------------------------------------------------------------------------
 # _filename_from_disposition

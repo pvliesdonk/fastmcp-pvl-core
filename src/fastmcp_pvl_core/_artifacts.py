@@ -168,6 +168,16 @@ class ArtifactStore:
             return None
         return record
 
+    @property
+    def has_base_url(self) -> bool:
+        """``True`` iff :meth:`build_url` / :meth:`put_ephemeral` will work.
+
+        Cheaper than catching the ``RuntimeError`` from
+        :meth:`build_url`, and lets external callers branch without
+        reaching into the private ``_base_url`` attribute.
+        """
+        return self._base_url is not None
+
     def build_url(self, token: str) -> str:
         """Return the public URL for ``token``.
 

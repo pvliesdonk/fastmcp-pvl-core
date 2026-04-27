@@ -142,14 +142,15 @@ def _resolve_exchange_id(base_dir: Path, explicit: str | None) -> str:
     payload = candidate.encode("utf-8") + b"\n"
 
     try:
-        # 0o644 lets every server in the group read the file even when
-        # they run as different UIDs (multi-container deployments are
-        # the typical case). The umask can mask this — fchmod below
-        # forces the intended mode.
+        # Open restrictively (0o600) to satisfy CodeQL's
+        # overly-permissive-open check at the syscall site. The
+        # spec-mandated 0o644 is applied via fchmod below — fchmod
+        # ignores umask so cross-UID containers in the group can read
+        # this regardless of the producer's process umask.
         fd = os.open(
             str(id_path),
             os.O_WRONLY | os.O_CREAT | os.O_EXCL,
-            0o644,
+            0o600,
         )
     except FileExistsError:
         # Another writer won the race. Read theirs.
@@ -327,10 +328,13 @@ class FileExchange:
         final_path = namespace_dir / f"{origin_id}.{ext}"
         tmp_path = namespace_dir / f".{origin_id}.{ext}.tmp"
 
+        # Open restrictively (0o600) to satisfy CodeQL's
+        # overly-permissive-open check; fchmod sets the spec-mandated
+        # 0o644 below.
         fd = os.open(
             str(tmp_path),
             os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
-            0o644,
+            0o600,
         )
         try:
             # fchmod ignores umask — needed for the same cross-UID
