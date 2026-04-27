@@ -31,12 +31,9 @@ from fastmcp_pvl_core._file_exchange import (
     SPEC_VERSION as FILE_EXCHANGE_SPEC_VERSION,
 )
 from fastmcp_pvl_core._file_exchange import (
-    ExchangeGroupMismatch,
     ExchangeURI,
     ExchangeURIError,
-    FileExchange,
     FileExchangeCapability,
-    FileExchangeConfigError,
     FileRef,
     FileRefPreview,
     TransferMethods,
@@ -56,13 +53,10 @@ __version__ = "1.1.0"  # PSR overrides at build time
 __all__ = [
     "ArtifactStore",
     "AuthMode",
-    "ExchangeGroupMismatch",
     "ExchangeURI",
     "ExchangeURIError",
     "FILE_EXCHANGE_SPEC_VERSION",
-    "FileExchange",
     "FileExchangeCapability",
-    "FileExchangeConfigError",
     "FileRef",
     "FileRefPreview",
     "IconSpec",
