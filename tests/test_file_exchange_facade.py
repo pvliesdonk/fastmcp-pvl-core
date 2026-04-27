@@ -535,11 +535,12 @@ class TestFetchFileTool:
             consumer_sink=_identity_sink,
             transport="http",
         )
-        # Direct call to the tool raises through the tool error path.
-        # Use an explicit private IP — DNS hostnames are out of guard scope.
-        tool = await _get_tool(mcp, "fetch_file")
-        with pytest.raises(Exception, match="private/loopback"):
-            await tool.run({"url": "http://127.0.0.1/secret"})
+        # Bare-URL SSRF refusals come back as a structured transfer_failed
+        # envelope (the same shape as a file_ref-supplied http failure).
+        out = await _call_tool(mcp, "fetch_file", url="http://127.0.0.1/secret")
+        assert out["error"] == "transfer_failed"
+        assert out["method"] == "http"
+        assert "private/loopback" in out["message"]
 
 
 # ---------------------------------------------------------------------------

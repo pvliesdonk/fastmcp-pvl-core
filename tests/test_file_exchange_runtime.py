@@ -37,9 +37,12 @@ class TestFromEnv:
     def test_unset_returns_none(self) -> None:
         assert FileExchange.from_env(default_namespace="image-mcp") is None
 
-    def test_blank_returns_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_blank_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # set-but-empty is treated as a deployment misconfiguration, not
+        # a silent opt-out (use unset for that).
         monkeypatch.setenv("MCP_EXCHANGE_DIR", "   ")
-        assert FileExchange.from_env(default_namespace="image-mcp") is None
+        with pytest.raises(FileExchangeConfigError, match="empty"):
+            FileExchange.from_env(default_namespace="image-mcp")
 
     def test_missing_directory_raises(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path

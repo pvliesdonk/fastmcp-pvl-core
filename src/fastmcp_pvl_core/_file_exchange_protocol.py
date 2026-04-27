@@ -1,6 +1,7 @@
 r"""MCP File Exchange — protocol surface (typed envelope, URI, capability).
 
-Implements spec v0.2.5 §3 (data model) and §4 (capability declaration).
+Implements the data model and capability declaration sections of the
+file-exchange spec (see ``docs/specs/file-exchange.md``).
 This module is pure data + small helpers; it has no I/O, no env access,
 and no filesystem dependencies. The runtime side (env-driven group
 membership, atomic writes, lifecycle sweep) lives in
@@ -30,7 +31,8 @@ logger = logging.getLogger(__name__)
 
 #: Spec version this module implements. Advertised as the ``version``
 #: field in the ``experimental.file_exchange`` capability declaration
-#: (spec §3.9). Major.minor only — patch revisions are spec-internal.
+#: (spec §"Capability declaration"). Major.minor only — patch revisions
+#: are spec-internal.
 SPEC_VERSION = "0.2"
 
 
@@ -40,11 +42,14 @@ SPEC_VERSION = "0.2"
 
 
 class ExchangeURIError(ValueError):
-    """An ``exchange://`` URI or path segment failed spec §3.7 validation."""
+    """An ``exchange://`` URI or segment failed validation.
+
+    See spec §"Security and Path Resolution".
+    """
 
 
 # ---------------------------------------------------------------------------
-# Segment validation (spec §3.7)
+# Segment validation (spec §"Security and Path Resolution")
 # ---------------------------------------------------------------------------
 #
 # The spec defines two contexts in which segment values appear:
@@ -63,13 +68,17 @@ _PERCENT_ESCAPE = re.compile(r"%[0-9A-Fa-f]{2}")
 
 Residual escapes signal that the input was double-encoded — a known
 traversal-bypass vector (``%252e%252e%252f`` decodes once to
-``%2e%2e%2f`` which on a naive second pass becomes ``../``). Spec §3.7
-mandates exactly one decode pass and rejection of residuals.
+``%2e%2e%2f`` which on a naive second pass becomes ``../``). The spec
+§"Security and Path Resolution" mandates exactly one decode pass and
+rejection of residuals.
 """
 
 
 def _check_segment_rules(value: str, *, where: str) -> str:
-    """Apply spec §3.7 segment rules to an already-decoded value."""
+    """Apply the spec's segment rules to an already-decoded value.
+
+    See spec §"Security and Path Resolution".
+    """
     if not value:
         raise ExchangeURIError(f"{where} segment is empty")
     if value != value.strip():
@@ -89,13 +98,13 @@ def _check_segment_rules(value: str, *, where: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Preview (spec §3.2)
+# Preview (spec §"Preview")
 # ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True, slots=True)
 class FileRefPreview:
-    """Lightweight LLM-facing metadata for a file (spec §3.2).
+    """Lightweight LLM-facing metadata for a file (spec §"Preview").
 
     All fields are optional. Producers SHOULD include at least
     :attr:`description` when using the reference-only pattern. In the
@@ -111,7 +120,7 @@ class FileRefPreview:
     metadata: Mapping[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        """Serialise to the wire form defined in spec §3.2.
+        """Serialise to the wire form defined in spec §"Preview".
 
         Optional fields with value ``None`` are omitted entirely so the
         wire payload stays compact.
@@ -164,7 +173,7 @@ class FileRefPreview:
 
 
 # ---------------------------------------------------------------------------
-# File reference (spec §3.1)
+# File reference (spec §"File Reference")
 # ---------------------------------------------------------------------------
 
 
@@ -179,7 +188,7 @@ TransferMethods = Mapping[str, Mapping[str, Any]]
 class FileRef:
     """A pass-by-reference handle for a file produced by an MCP server.
 
-    Spec §3.1. The interop surface a producer returns to the LLM.
+    See spec §"File Reference". The interop surface a producer returns to the LLM.
     ``transfer`` advertises one or more methods the consumer can use to
     pick up the bytes; ``preview`` (when present) gives the LLM enough
     context to reason about the file without ingesting it.
@@ -193,7 +202,7 @@ class FileRef:
     preview: FileRefPreview | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        """Serialise to the wire form defined in spec §3.1."""
+        """Serialise to the wire form defined in spec §"File Reference"."""
         out: dict[str, Any] = {
             "origin_server": self.origin_server,
             "origin_id": self.origin_id,
@@ -209,7 +218,7 @@ class FileRef:
 
     @classmethod
     def from_dict(cls, raw: Mapping[str, Any]) -> FileRef:
-        """Parse from the wire form, validating spec §3.1 invariants."""
+        """Parse from the wire form, validating spec §"File Reference" invariants."""
         # ``raw.get(...) is None`` handles both "key absent" and "key
         # present but explicitly null" — a JSON ``null`` for a required
         # field is invalid input, not a silent default.
@@ -253,7 +262,7 @@ class FileRef:
 
 
 # ---------------------------------------------------------------------------
-# Exchange URI (spec §3.6)
+# Exchange URI (spec §"Exchange URI")
 # ---------------------------------------------------------------------------
 
 
@@ -261,7 +270,7 @@ class FileRef:
 class ExchangeURI:
     """Parsed ``exchange://{exchange-id}/{namespace}/{id}.{ext}`` URI.
 
-    Spec §3.6.
+    See spec §"Exchange URI".
     """
 
     exchange_id: str
@@ -279,12 +288,13 @@ class ExchangeURI:
 
     @classmethod
     def parse(cls, uri: str) -> ExchangeURI:
-        """Parse and validate an exchange URI per spec §3.6 + §3.7.
+        """Parse and validate an exchange URI.
 
+        See spec §"Exchange URI" and §"Security and Path Resolution".
         The URI is split into ``(exchange_id, namespace, filename)``
-        components. Each component is URI-decoded exactly once (spec
-        §3.7) and then checked against the segment rules. A residual
-        ``%XX`` pattern after one decode is rejected as double-encoded.
+        components. Each component is URI-decoded exactly once and then
+        checked against the segment rules. A residual ``%XX`` pattern
+        after one decode is rejected as double-encoded.
 
         Raises:
             ExchangeURIError: If the URI shape is wrong, if a segment
@@ -348,7 +358,7 @@ class ExchangeURI:
 
     @classmethod
     def validate_segment(cls, value: str, *, role: Literal["uri", "json_param"]) -> str:
-        """Validate one path segment per spec §3.7.
+        """Validate one path segment per spec §"Security and Path Resolution".
 
         Args:
             value: The segment to validate.
@@ -363,7 +373,8 @@ class ExchangeURI:
             ``role="json_param"``) value.
 
         Raises:
-            ExchangeURIError: If the segment violates spec §3.7.
+            ExchangeURIError: If the segment violates spec
+                §"Security and Path Resolution".
             ValueError: If ``role`` is not ``"uri"`` or ``"json_param"``
                 — defends against callers bypassing the Literal type.
         """
@@ -381,13 +392,15 @@ class ExchangeURI:
 
 
 # ---------------------------------------------------------------------------
-# Capability declaration (spec §3.9 / §4.1)
+# Capability declaration (spec §"Capability declaration")
 # ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True, slots=True)
 class FileExchangeCapability:
-    """Payload that lives under ``experimental.file_exchange`` (spec §3.9).
+    """Payload that lives under ``experimental.file_exchange``.
+
+    See spec §"Capability declaration".
 
     ``namespace`` and ``exchange_id`` are validated at construction so a
     bad value can't leak into the capability dict and ultimately into
@@ -432,13 +445,13 @@ class FileExchangeCapability:
 # Capability advertisement
 # ---------------------------------------------------------------------------
 #
-# fastmcp 3.2.4 has no first-class hook for setting ``experimental``
-# capabilities on the MCP ``initialize`` response, but it does expose a
-# documented ``Middleware.on_initialize`` lifecycle hook that can mutate
-# the response before it returns. We use that — it is the supported
-# extension point, not a monkey-patch. If a future fastmcp release adds
-# a constructor kwarg or registry method, only :func:`_advertise_experimental`
-# needs to change.
+# fastmcp does not currently expose a first-class hook for setting
+# ``experimental`` capabilities on the MCP ``initialize`` response, but it
+# does provide a documented ``Middleware.on_initialize`` lifecycle hook
+# that can mutate the response before it returns. We use that — it is the
+# supported extension point, not a monkey-patch. If a future fastmcp
+# release adds a constructor kwarg or registry method, only
+# :func:`_advertise_experimental` needs to change.
 
 _EXPERIMENTAL_KEY = "file_exchange"
 
@@ -472,6 +485,12 @@ def _build_experimental_middleware() -> Any:
             # present, merge so we don't trample anyone else's keys.
             caps = getattr(result, "capabilities", None)
             if caps is None:
+                logger.error(
+                    "experimental capability advertisement skipped: "
+                    "initialize result has no .capabilities attribute "
+                    "(keys=%s)",
+                    list(self._payloads.keys()),
+                )
                 return result
             existing = getattr(caps, "experimental", None)
             merged: dict[str, dict[str, Any]] = dict(existing) if existing else {}
@@ -479,13 +498,28 @@ def _build_experimental_middleware() -> Any:
                 merged[k] = v
             try:
                 caps.experimental = merged
-            except (AttributeError, TypeError):
-                # Some pydantic configurations forbid attribute
-                # assignment; fall back to model_copy when available.
+            except (AttributeError, TypeError) as exc:
+                # Direct assignment is forbidden in some pydantic
+                # configurations. Fall back to model_copy when
+                # available, and surface a hard error if neither path
+                # works — silently dropping the advertisement breaks
+                # capability-aware clients without leaving any signal.
                 model_copy = getattr(result, "model_copy", None)
-                if model_copy is not None:
-                    new_caps = caps.model_copy(update={"experimental": merged})
-                    result = result.model_copy(update={"capabilities": new_caps})
+                if model_copy is None:
+                    logger.error(
+                        "experimental capability advertisement failed: "
+                        "cannot mutate caps.experimental (%s) and "
+                        "result has no model_copy fallback (keys=%s)",
+                        exc,
+                        list(self._payloads.keys()),
+                    )
+                    return result
+                logger.info(
+                    "experimental capability: using model_copy fallback (%s)",
+                    exc,
+                )
+                new_caps = caps.model_copy(update={"experimental": merged})
+                result = result.model_copy(update={"capabilities": new_caps})
             return result
 
     return _ExperimentalCapabilityMiddleware()

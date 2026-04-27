@@ -74,6 +74,16 @@ _DEFAULT_HTTP_FETCH_TIMEOUT = 30.0
 _DEFAULT_HTTP_FETCH_MAX_BYTES = 256 * 1024 * 1024  # 256 MiB hard cap
 
 
+class FetchTransportError(RuntimeError):
+    """A transfer attempt failed with a domain-specific reason.
+
+    Used for SSRF refusals, oversize-response refusals, and HTTP-status
+    failures inside ``fetch_file``. Caught by the fetch dispatcher and
+    translated into a structured ``transfer_failed`` envelope per
+    spec §"Step 2: Attempt transfer".
+    """
+
+
 # ---------------------------------------------------------------------------
 # Consumer-sink types
 # ---------------------------------------------------------------------------
@@ -219,8 +229,8 @@ class FileExchangeHandle:
             lazy: Sync or async callable that returns the bytes when
                 invoked (per ``create_download_link`` call — not cached).
             origin_id: Producer-chosen opaque id. Defaults to a fresh
-                UUID4 hex. Validated as a raw JSON parameter (spec §3.7
-                — never URI-decoded).
+                UUID4 hex. Validated as a raw JSON parameter (spec
+                §"Security and Path Resolution" — never URI-decoded).
             mime_type: MIME type of the file. Required. Used to pick a
                 default extension when ``ext`` is omitted.
             ext: File extension (no leading dot). Defaults to a sensible
@@ -237,9 +247,10 @@ class FileExchangeHandle:
         """
         if not self.enabled or not self.produce:
             raise RuntimeError(
-                f"FileExchangeHandle({self.namespace}): publishing is disabled "
-                "— check {PREFIX}_FILE_EXCHANGE_ENABLED / "
-                "{PREFIX}_FILE_EXCHANGE_PRODUCE env vars"
+                f"FileExchangeHandle({self.namespace}): publishing is "
+                "disabled — check the {prefix}_FILE_EXCHANGE_ENABLED and "
+                "{prefix}_FILE_EXCHANGE_PRODUCE env vars (where {prefix} "
+                "is the env_prefix passed to register_file_exchange)"
             )
         if (source is None) == (lazy is None):
             raise ValueError("publish() requires exactly one of source= or lazy=")
@@ -269,10 +280,12 @@ class FileExchangeHandle:
         elif isinstance(source, Path):
             eager_path = source
             if size_bytes is None:
-                try:
-                    size_bytes = source.stat().st_size
-                except OSError:
-                    size_bytes = None
+                # Fail fast: if we can't stat the source, the producer
+                # is publishing a reference to a file we'll be unable to
+                # read at create_download_link time anyway. Surfacing
+                # the error here gives a stack at the actual call site
+                # instead of a deferred mystery error in the tool body.
+                size_bytes = source.stat().st_size
         elif source is not None:
             raise TypeError(
                 f"publish() source must be bytes or pathlib.Path, "
@@ -408,9 +421,10 @@ def register_file_exchange(
     2. Resolves the :class:`FileExchange` runtime from
        ``MCP_EXCHANGE_DIR`` (deployer-controlled, unprefixed).
     3. Advertises ``experimental.file_exchange`` on the MCP
-       ``initialize`` response (spec §3.9 / §4.1).
-    4. Registers ``create_download_link`` (spec §3.4) and
-       ``fetch_file`` (spec §6) MCP tools as appropriate for the
+       ``initialize`` response (spec §"Capability declaration").
+    4. Registers ``create_download_link`` (spec §"Transfer Methods /
+       http") and ``fetch_file`` (spec §"Transfer Negotiation") MCP
+       tools as appropriate for the
        resolved producer / consumer / transport state.
 
     Args:
@@ -443,10 +457,19 @@ def register_file_exchange(
     resolved_transport = _resolve_transport(env_prefix, transport)
     enabled = _resolve_enabled(env_prefix, resolved_transport)
     produce = enabled and parse_bool(env(env_prefix, "FILE_EXCHANGE_PRODUCE", "true"))
-    consume = enabled and (
-        consumer_sink is not None
-        and parse_bool(env(env_prefix, "FILE_EXCHANGE_CONSUME", "true"))
-    )
+    consume_env = parse_bool(env(env_prefix, "FILE_EXCHANGE_CONSUME", "true"))
+    consume = enabled and consumer_sink is not None and consume_env
+    if enabled and consume_env and consumer_sink is None:
+        # Operator opted in but the downstream code didn't supply a sink
+        # — capability advertisement and fetch_file will both be silently
+        # absent, which is exactly the kind of inconsistency that turns
+        # into "tool not found" support tickets.
+        logger.warning(
+            "%s_FILE_EXCHANGE_CONSUME is true but no consumer_sink was "
+            "passed to register_file_exchange — consumer side will NOT "
+            "be advertised",
+            env_prefix,
+        )
     ttl_raw = env(env_prefix, "FILE_EXCHANGE_TTL")
     ttl_seconds = float(ttl_raw) if ttl_raw else _DEFAULT_TTL_SECONDS
 
@@ -464,14 +487,21 @@ def register_file_exchange(
         set_artifact_store(store)
 
     # --- Exchange volume ---
-    exchange: FileExchange | None = None
+    # FileExchange.from_env raises on misconfiguration (set-but-empty,
+    # missing dir, group-id mismatch). Let those exceptions propagate so
+    # the operator fixes the deployment rather than silently running
+    # without exchange. We log first so the failure is searchable in
+    # startup logs even when the surrounding boot harness doesn't print
+    # the exception cleanly.
     try:
         exchange = FileExchange.from_env(
             default_namespace=namespace, ttl_seconds=ttl_seconds
         )
-    except (FileExchangeConfigError, ExchangeGroupMismatch):
-        # The deployer set MCP_EXCHANGE_DIR but it's misconfigured —
-        # re-raise so they can fix it rather than silently degrading.
+    except (FileExchangeConfigError, ExchangeGroupMismatch) as exc:
+        logger.error(
+            "register_file_exchange: file_exchange runtime config invalid: %s",
+            exc,
+        )
         raise
 
     # --- Capability declaration ---
@@ -578,7 +608,7 @@ def _register_create_download_link(mcp: FastMCP, handle: FileExchangeHandle) -> 
     ) -> dict[str, Any]:
         """Mint a one-time HTTP download URL for a previously-published file.
 
-        Spec §3.4. ``origin_id`` is the opaque handle from a
+        See spec §"Transfer Methods / http". ``origin_id`` is the opaque handle from a
         ``file_ref.origin_id`` field. ``ttl_seconds`` is clamped to the
         server's configured maximum.
         """
@@ -610,8 +640,8 @@ def _register_create_download_link(mcp: FastMCP, handle: FileExchangeHandle) -> 
         if ttl_seconds is None or ttl_seconds <= 0:
             effective_ttl = handle.ttl_seconds
         else:
-            # Producer MAY clamp (proposed v0.4 amendment) — never serve
-            # a longer TTL than the publish-side record allows.
+            # Clamp to the publish-side TTL — never serve a download URL
+            # that outlives the bytes the server is willing to retain.
             effective_ttl = min(float(ttl_seconds), handle.ttl_seconds)
 
         # Resolve bytes (eager / Path / lazy).
@@ -651,7 +681,7 @@ def _transfer_failed(
     message: str,
     remaining_transfer: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Build a spec §6.2 ``transfer_failed`` envelope."""
+    """Build a ``transfer_failed`` envelope (spec §"Step 2: Attempt transfer")."""
     out: dict[str, Any] = {
         "error": "transfer_failed",
         "origin_server": origin_server,
@@ -670,15 +700,25 @@ def _transfer_exhausted(
     origin_id: str,
     attempted_methods: list[str],
     message: str,
+    attempt_errors: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
-    """Build a spec §6.3 ``transfer_exhausted`` envelope."""
-    return {
+    """Build a ``transfer_exhausted`` envelope (spec §"Step 3: Exhaustion").
+
+    ``attempt_errors`` is non-spec but the spec is silent on carrying
+    per-attempt failure reasons. Including them is strictly additive
+    (spec-aware clients ignore unknown fields) and gives operators
+    something to grep for when transfer_exhausted lands in production.
+    """
+    out: dict[str, Any] = {
         "error": "transfer_exhausted",
         "origin_server": origin_server,
         "origin_id": origin_id,
         "attempted_methods": attempted_methods,
         "message": message,
     }
+    if attempt_errors:
+        out["attempt_errors"] = attempt_errors
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -699,11 +739,12 @@ def _register_fetch_file(
     ) -> dict[str, Any]:
         """Resolve a file reference (or URL) and hand the bytes to a sink.
 
-        Accepts either a full ``file_ref`` dict (see spec §3.1) or a
-        bare ``url`` (``exchange://`` or ``http(s)://``). When given a
-        ``file_ref``, walks ``transfer`` in spec priority (``exchange``
-        before ``http``), building ``remaining_transfer`` on each
-        method failure per spec §6.
+        Accepts either a full ``file_ref`` dict (see spec §"File
+        Reference") or a bare ``url`` (``exchange://`` or
+        ``http(s)://``). When given a ``file_ref``, walks ``transfer``
+        in spec priority (``exchange`` before ``http``), building
+        ``remaining_transfer`` on each method failure per spec
+        §"Transfer Negotiation".
         """
         if (file_ref is None) == (url is None):
             return {
@@ -731,14 +772,58 @@ async def _fetch_via_url(
 ) -> dict[str, Any]:
     parts = urlsplit(url)
     if parts.scheme == "exchange":
-        return await _consume_exchange(handle, sink, url, file_ref=None, params=params)
+        # Derive origin_server from the URI so the error envelope is
+        # informative even when the caller passed only a bare URL.
+        try:
+            parsed = ExchangeURI.parse(url)
+            origin_server = parsed.namespace
+            origin_id = parsed.id
+        except ExchangeURIError:
+            origin_server = ""
+            origin_id = ""
+        try:
+            return await _consume_exchange(
+                handle, sink, url, file_ref=None, params=params
+            )
+        except (
+            ExchangeURIError,
+            ExchangeGroupMismatch,
+            FileExchangeConfigError,
+            OSError,
+        ) as exc:
+            logger.warning("fetch_file exchange url failed: %s", exc)
+            return _transfer_failed(
+                origin_server=origin_server,
+                origin_id=origin_id,
+                method="exchange",
+                message=str(exc),
+            )
     if parts.scheme in ("http", "https"):
-        return await _consume_http(handle, sink, url, file_ref=None, params=params)
+        try:
+            return await _consume_http(handle, sink, url, file_ref=None, params=params)
+        except FetchTransportError as exc:
+            logger.warning("fetch_file http url failed: %s", exc)
+            return _transfer_failed(
+                origin_server="",
+                origin_id="",
+                method="http",
+                message=str(exc),
+            )
     return {
         "error": "invalid_input",
         "message": f"unsupported URL scheme {parts.scheme!r}; expected "
         "exchange:// or http(s)://",
     }
+
+
+# Methods this consumer can attempt directly when handed a file_ref.
+# ``http`` is excluded because spec §"Transfer Negotiation / Step 2 /
+# For http" assigns URL-acquisition to the *client* (call producer's
+# tool, get URL, hand URL back to fetch_file). The consumer can't
+# dispatch the producer's tool itself, so listing http here would only
+# manufacture spurious failures and send naive clients into retry
+# loops on `remaining_transfer`.
+_CONSUMER_DISPATCHABLE_METHODS = ("exchange",)
 
 
 async def _fetch_via_file_ref(
@@ -752,28 +837,71 @@ async def _fetch_via_file_ref(
     except (ValueError, TypeError) as exc:
         return {"error": "invalid_input", "message": str(exc)}
 
-    # Spec priority: exchange before http. Iterate in that order while
-    # building remaining_transfer.
-    method_order = [m for m in ("exchange", "http") if m in ref.transfer]
-    method_order.extend(m for m in ref.transfer if m not in method_order)
+    method_order = [m for m in _CONSUMER_DISPATCHABLE_METHODS if m in ref.transfer]
+
+    if not method_order:
+        # Nothing this consumer can dispatch directly. If the producer
+        # offers http, point the client at the orchestration it has to
+        # do itself (per spec §"Transfer Negotiation / Step 2 / For
+        # http"). Use a non-`transfer_failed` error code so the client
+        # doesn't keep retrying the same shape.
+        if "http" in ref.transfer:
+            tool = ref.transfer["http"].get("tool")
+            return {
+                "error": "client_orchestration_required",
+                "origin_server": ref.origin_server,
+                "origin_id": ref.origin_id,
+                "method": "http",
+                "http_tool": tool,
+                "message": (
+                    "the http transfer method requires client "
+                    f"orchestration: call {tool!r} on "
+                    f"{ref.origin_server!r} to obtain a download URL, "
+                    "then call fetch_file(url=...) here"
+                ),
+            }
+        return _transfer_exhausted(
+            origin_server=ref.origin_server,
+            origin_id=ref.origin_id,
+            attempted_methods=[],
+            message="no transfer methods this consumer can dispatch",
+        )
 
     attempted: list[str] = []
+    attempt_errors: list[dict[str, str]] = []
     for i, method in enumerate(method_order):
         attempted.append(method)
         meta = ref.transfer[method]
         remaining = {m: dict(ref.transfer[m]) for m in method_order[i + 1 :]}
+        # If the producer offered http alongside exchange, surface it as
+        # remaining so a client can fall through to client-orchestrated
+        # http after our exchange attempt fails.
+        if "http" in ref.transfer and "http" not in remaining:
+            remaining["http"] = dict(ref.transfer["http"])
         if method == "exchange":
             uri = meta.get("uri")
             if not isinstance(uri, str) or not uri:
+                attempt_errors.append(
+                    {"method": "exchange", "error": "invalid_uri", "message": ""}
+                )
                 continue
             try:
                 return await _consume_exchange(
                     handle, sink, uri, file_ref=ref, params=params
                 )
-            except (ExchangeURIError, ExchangeGroupMismatch, OSError) as exc:
-                logger.info(
-                    "fetch_file exchange method failed (will try next): %s",
-                    exc,
+            except (
+                ExchangeURIError,
+                ExchangeGroupMismatch,
+                FileExchangeConfigError,
+                OSError,
+            ) as exc:
+                logger.warning("fetch_file exchange method failed: %s", exc)
+                attempt_errors.append(
+                    {
+                        "method": "exchange",
+                        "error": type(exc).__name__,
+                        "message": str(exc),
+                    }
                 )
                 if remaining:
                     return _transfer_failed(
@@ -784,25 +912,13 @@ async def _fetch_via_file_ref(
                         remaining_transfer=remaining,
                     )
                 continue
-        elif method == "http":
-            tool = meta.get("tool")
-            return _transfer_failed(
-                origin_server=ref.origin_server,
-                origin_id=ref.origin_id,
-                method="http",
-                message=(
-                    "this tool cannot dispatch a producer http call by itself; "
-                    f"the client must call {tool!r} on {ref.origin_server!r} "
-                    "to obtain a URL and then call fetch_file(url=...) here"
-                ),
-                remaining_transfer=remaining or None,
-            )
 
     return _transfer_exhausted(
         origin_server=ref.origin_server,
         origin_id=ref.origin_id,
         attempted_methods=attempted,
         message="no transfer method succeeded",
+        attempt_errors=attempt_errors,
     )
 
 
@@ -842,25 +958,31 @@ async def _consume_http(
     _ssrf_guard(url)
     import httpx
 
-    async with httpx.AsyncClient(
-        timeout=_DEFAULT_HTTP_FETCH_TIMEOUT, follow_redirects=False
-    ) as client:
-        async with client.stream("GET", url) as resp:
-            resp.raise_for_status()
-            chunks: list[bytes] = []
-            total = 0
-            async for chunk in resp.aiter_bytes():
-                total += len(chunk)
-                if total > _DEFAULT_HTTP_FETCH_MAX_BYTES:
-                    raise OSError(
-                        f"response exceeds {_DEFAULT_HTTP_FETCH_MAX_BYTES} bytes"
-                    )
-                chunks.append(chunk)
-            data = b"".join(chunks)
-            content_type = resp.headers.get("content-type")
-            suggested = _filename_from_disposition(
-                resp.headers.get("content-disposition")
-            )
+    try:
+        async with httpx.AsyncClient(
+            timeout=_DEFAULT_HTTP_FETCH_TIMEOUT, follow_redirects=False
+        ) as client:
+            async with client.stream("GET", url) as resp:
+                resp.raise_for_status()
+                chunks: list[bytes] = []
+                total = 0
+                async for chunk in resp.aiter_bytes():
+                    total += len(chunk)
+                    if total > _DEFAULT_HTTP_FETCH_MAX_BYTES:
+                        raise FetchTransportError(
+                            f"response exceeds {_DEFAULT_HTTP_FETCH_MAX_BYTES} bytes"
+                        )
+                    chunks.append(chunk)
+                data = b"".join(chunks)
+                content_type = resp.headers.get("content-type")
+                suggested = _filename_from_disposition(
+                    resp.headers.get("content-disposition")
+                )
+    except httpx.HTTPError as exc:
+        # Translate the entire httpx error hierarchy (timeouts, connect
+        # errors, status errors, transport errors) into our own domain
+        # error so callers don't depend on httpx types.
+        raise FetchTransportError(f"http fetch failed: {exc}") from exc
 
     ctx = FetchContext(
         url=url,
@@ -909,7 +1031,9 @@ def _ssrf_guard(url: str) -> None:
         or ip.is_multicast
         or ip.is_unspecified
     ):
-        raise OSError(f"refusing to fetch URL with private/loopback host: {host}")
+        raise FetchTransportError(
+            f"refusing to fetch URL with private/loopback host: {host}"
+        )
 
 
 def _filename_from_disposition(value: str | None) -> str | None:

@@ -1,9 +1,9 @@
 """MCP File Exchange — runtime for the ``exchange`` transfer method.
 
-Implements spec v0.2.5 §3.5 (Exchange Group), §4 (Deployer Setup),
-§5 (Directory Layout), and §7 (Server Requirements — producing/
-consuming server). Consumes the protocol primitives (``ExchangeURI``)
-from :mod:`fastmcp_pvl_core._file_exchange_protocol`.
+Implements the spec sections covering exchange-group membership,
+deployer setup, directory layout, and producer/consumer requirements
+(see ``docs/specs/file-exchange.md``). Consumes the protocol primitives
+(``ExchangeURI``) from :mod:`fastmcp_pvl_core._file_exchange_protocol`.
 
 Lifecycle constraints from the spec:
 
@@ -61,7 +61,7 @@ class ExchangeGroupMismatch(ValueError):  # noqa: N818  -- spec-defined name
 
 
 # ---------------------------------------------------------------------------
-# .exchange-id resolution (spec §3.5)
+# .exchange-id resolution (spec §"Exchange Group" / "Deployer Setup")
 # ---------------------------------------------------------------------------
 
 
@@ -72,8 +72,8 @@ _EMPTY_FILE_RETRY_INTERVAL_SECONDS = 0.01
 def _read_exchange_id_file(path: Path) -> str:
     """Read and validate a persisted ``.exchange-id`` value.
 
-    Spec §3.5 says the file format is a UTF-8 plaintext UUID; consumers
-    strip trailing whitespace before comparison.
+    The spec mandates a UTF-8 plaintext UUID; consumers strip trailing
+    whitespace before comparison.
 
     The naive ``O_CREAT | O_EXCL`` pattern has a narrow race: a winner
     creates the file, but a concurrent reader can ``open`` and ``read``
@@ -86,9 +86,16 @@ def _read_exchange_id_file(path: Path) -> str:
     A truly empty file (winner crashed mid-init) eventually surfaces
     as :class:`FileExchangeConfigError` so the deployer can clean up.
     """
-    for _attempt in range(_EMPTY_FILE_RETRY_ATTEMPTS):
+    for attempt in range(_EMPTY_FILE_RETRY_ATTEMPTS):
         raw = path.read_text(encoding="utf-8").strip()
         if raw:
+            if attempt > 0:
+                logger.warning(
+                    "exchange_id read succeeded after %d empty retries — "
+                    "investigate if this recurs (path=%s)",
+                    attempt,
+                    path,
+                )
             return raw
         time.sleep(_EMPTY_FILE_RETRY_INTERVAL_SECONDS)
     raise FileExchangeConfigError(
@@ -98,11 +105,12 @@ def _read_exchange_id_file(path: Path) -> str:
 
 
 def _resolve_exchange_id(base_dir: Path, explicit: str | None) -> str:
-    """Read or atomically create ``$base_dir/.exchange-id`` per spec §3.5.
+    """Read or atomically create ``$base_dir/.exchange-id``.
 
-    Uses ``O_CREAT | O_EXCL | O_WRONLY`` for the create attempt. Spec
-    §3.5 explicitly forbids ``rename(2)`` here because POSIX rename
-    silently overwrites — which would split-brain on a race.
+    See spec §"Deployer Setup". Uses ``O_CREAT | O_EXCL | O_WRONLY`` for
+    the create attempt. The spec explicitly forbids ``rename(2)`` here
+    because POSIX rename silently overwrites — which would split-brain
+    on a race.
 
     Args:
         base_dir: Resolved ``MCP_EXCHANGE_DIR``.
@@ -134,10 +142,10 @@ def _resolve_exchange_id(base_dir: Path, explicit: str | None) -> str:
     payload = candidate.encode("utf-8") + b"\n"
 
     try:
-        # 0o644 makes the file readable by every server in the group;
-        # the spec docs note this in the v0.4.0 amendment but the value
-        # is also the de-facto requirement for any deployer running
-        # multiple containers under different UIDs.
+        # 0o644 lets every server in the group read the file even when
+        # they run as different UIDs (multi-container deployments are
+        # the typical case). The umask can mask this — fchmod below
+        # forces the intended mode.
         fd = os.open(
             str(id_path),
             os.O_WRONLY | os.O_CREAT | os.O_EXCL,
@@ -154,6 +162,10 @@ def _resolve_exchange_id(base_dir: Path, explicit: str | None) -> str:
         return existing
 
     try:
+        # fchmod ignores umask — without this, a process running with a
+        # restrictive umask (e.g. 0o077 in hardened containers) gets
+        # 0o600 here and breaks cross-UID readers in the group.
+        os.fchmod(fd, 0o644)
         os.write(fd, payload)
         os.fsync(fd)
     finally:
@@ -202,9 +214,13 @@ class FileExchange:
     ) -> FileExchange | None:
         """Build a :class:`FileExchange` from the deployer's env.
 
-        Returns ``None`` when ``MCP_EXCHANGE_DIR`` is unset or empty —
-        the server is simply not participating in the ``exchange``
-        method, which is a normal mode of operation per spec §3.5.
+        Returns ``None`` when ``MCP_EXCHANGE_DIR`` is unset — the
+        server is simply not participating in the ``exchange`` method,
+        which is a normal mode of operation per spec §"Exchange Group".
+        A *set-but-empty* ``MCP_EXCHANGE_DIR`` is treated as a
+        deployment misconfiguration and raises
+        :class:`FileExchangeConfigError` rather than silently
+        degrading to no-exchange mode.
 
         Args:
             default_namespace: Fallback namespace when
@@ -213,16 +229,22 @@ class FileExchange:
             ttl_seconds: Default lifetime for produced files.
 
         Raises:
-            FileExchangeConfigError: ``MCP_EXCHANGE_DIR`` is set but
-                does not exist or is not a directory; persisted
-                ``.exchange-id`` is corrupt; resolved namespace is
-                invalid.
+            FileExchangeConfigError: ``MCP_EXCHANGE_DIR`` is set to an
+                empty value, points at a non-existent path, or points
+                at a non-directory; persisted ``.exchange-id`` is
+                corrupt; resolved namespace is invalid.
             ExchangeGroupMismatch: An explicit ``MCP_EXCHANGE_ID``
                 disagrees with the persisted value.
         """
-        raw_dir = env("MCP", "EXCHANGE_DIR")
-        if not raw_dir:
+        raw_present = os.environ.get("MCP_EXCHANGE_DIR")
+        if raw_present is None:
             return None
+        raw_dir = raw_present.strip()
+        if not raw_dir:
+            raise FileExchangeConfigError(
+                "MCP_EXCHANGE_DIR is set but empty — unset it to disable "
+                "the exchange method, or set a valid directory path"
+            )
         base_dir = Path(raw_dir)
         if not base_dir.exists():
             raise FileExchangeConfigError(
@@ -263,11 +285,12 @@ class FileExchange:
         The write goes to a dotfile-prefixed temp path first, then
         ``os.rename``-s into place. Both steps live inside the same
         namespace directory so the rename is POSIX-atomic on the same
-        filesystem (spec §7 producer requirements).
+        filesystem (spec §"Producing server").
 
         Args:
             origin_id: Producer-chosen file id. Validated as a raw JSON
-                parameter (spec §3.7) — a literal ``%`` is preserved.
+                parameter (spec §"Security and Path Resolution") — a
+                literal ``%`` is preserved.
             ext: File extension (no leading dot). Validated the same
                 way.
             content: Bytes to write.
@@ -277,7 +300,8 @@ class FileExchange:
 
         Raises:
             ExchangeURIError: ``origin_id`` or ``ext`` violates spec
-                §3.7 segment rules, or ``origin_id`` starts with a dot
+                segment rules from spec §"Security and Path Resolution",
+                or ``origin_id`` starts with a dot
                 (which would land in the dotfile name space and be
                 hidden from consumers).
         """
@@ -290,6 +314,16 @@ class FileExchange:
 
         namespace_dir = self.base_dir / self.namespace
         namespace_dir.mkdir(mode=0o755, exist_ok=True)
+        # mkdir() honours the umask; force 0o755 so consumers running as
+        # different UIDs can list and read this directory.
+        try:
+            namespace_dir.chmod(0o755)
+        except OSError as exc:
+            logger.debug(
+                "exchange_chmod_namespace_dir_failed dir=%s err=%s",
+                namespace_dir,
+                exc,
+            )
         final_path = namespace_dir / f"{origin_id}.{ext}"
         tmp_path = namespace_dir / f".{origin_id}.{ext}.tmp"
 
@@ -299,6 +333,9 @@ class FileExchange:
             0o644,
         )
         try:
+            # fchmod ignores umask — needed for the same cross-UID
+            # readability reason as the .exchange-id write above.
+            os.fchmod(fd, 0o644)
             os.write(fd, content)
             os.fsync(fd)
         finally:
@@ -324,9 +361,9 @@ class FileExchange:
     def read_exchange_uri(self, uri: str) -> bytes:
         """Read the bytes at ``uri``.
 
-        Validates per spec §3.7, refuses URIs from a different exchange
-        group, refuses dotfile filenames (per spec §5), and reads the
-        file.
+        Validates per spec §"Security and Path Resolution", refuses
+        URIs from a different exchange group, refuses dotfile filenames
+        (per spec §"Directory Layout"), and reads the file.
 
         Args:
             uri: An ``exchange://`` URI.
@@ -350,7 +387,9 @@ class FileExchange:
             # Defence in depth: ExchangeURI.parse already rejects these,
             # but explicit re-check protects against future parser
             # changes that loosen the rules.
-            raise ExchangeURIError(f"refusing dotfile filename per spec §5: {uri!r}")
+            raise ExchangeURIError(
+                f"refusing dotfile filename (spec §'Directory Layout'): {uri!r}"
+            )
         file_path = self.base_dir / parsed.namespace / parsed.filename
         return file_path.read_bytes()
 
@@ -425,6 +464,15 @@ def _try_unlink(path: Path) -> bool:
         return True
     except OSError as exc:
         if exc.errno == errno.EISDIR:
+            # The is_file() check above filters dirs out; reaching here
+            # means the entry's type changed between stat and unlink —
+            # an external mutation worth surfacing.
+            logger.warning(
+                "exchange_sweep encountered a directory in namespace "
+                "%s: %s — external mutation suspected",
+                path.parent.name,
+                path,
+            )
             return False
         logger.warning("exchange_sweep_unlink_failed path=%s err=%s", path, exc)
         return False

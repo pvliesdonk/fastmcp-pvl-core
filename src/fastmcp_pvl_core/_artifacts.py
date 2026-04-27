@@ -295,8 +295,7 @@ class ArtifactStore:
 # The HTTP route handler registered via ``mcp.custom_route`` runs outside
 # any DI/lifespan context, and tool bodies need to share the same
 # ``ArtifactStore`` instance with it. A module-level singleton is the
-# simplest way to bridge them; downstream projects used to maintain a
-# private shim for this — that shim now belongs here.
+# simplest way to bridge them.
 
 _artifact_store: ArtifactStore | None = None
 
