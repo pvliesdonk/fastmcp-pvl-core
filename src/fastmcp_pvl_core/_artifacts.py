@@ -76,71 +76,40 @@ class ArtifactStore:
         and are not shared between workers.
     """
 
-    def __init__(
-        self,
-        ttl_seconds: float = 3600.0,
-        *,
-        base_url: str | None = None,
-        route_path: str = "/artifacts/{token}",
-    ) -> None:
+    def __init__(self, ttl_seconds: float = 3600.0) -> None:
         """Create a new store.
 
         Args:
             ttl_seconds: Lifetime of each token in seconds (default 1 hour).
-            base_url: Optional public base URL (scheme + host + optional
-                prefix) used by :meth:`build_url` and :meth:`put_ephemeral`
-                to assemble download URLs. ``None`` means URL construction
-                is unavailable; callers using only :meth:`add` / :meth:`pop`
-                don't need it.
-            route_path: URL template for the artifact route. Must contain
-                ``{token}``. Pass the same value as ``path`` when calling
-                :meth:`register_route` so the URL constructed here matches
-                the actual route mounted on the server.
         """
-        if "{token}" not in route_path:
-            raise ValueError(
-                f"route_path must contain '{{token}}' placeholder; got {route_path!r}"
-            )
         self._records: dict[str, TokenRecord] = {}
         self._ttl = float(ttl_seconds)
-        self._base_url = base_url
-        self._route_path = route_path
 
-    def add(
-        self,
-        content: bytes,
-        *,
-        filename: str,
-        mime_type: str,
-        ttl_seconds: float | None = None,
-    ) -> str:
+    def add(self, content: bytes, *, filename: str, mime_type: str) -> str:
         """Stash ``content`` and return an opaque one-time token.
 
         Args:
             content: Raw bytes to serve on retrieval.
             filename: Filename advertised via ``Content-Disposition``.
             mime_type: MIME type advertised via ``Content-Type``.
-            ttl_seconds: Per-token lifetime override. ``None`` (default)
-                uses the store's process-wide TTL set at construction.
 
         Returns:
             A hex UUID4 token string.
         """
         self._purge_expired()
         token = uuid.uuid4().hex
-        ttl = self._ttl if ttl_seconds is None else float(ttl_seconds)
         self._records[token] = TokenRecord(
             content=content,
             filename=filename,
             mime_type=mime_type,
-            expires_at=time.time() + ttl,
+            expires_at=time.time() + self._ttl,
         )
         logger.debug(
             "artifact_add token_prefix=%s size=%d mime=%s ttl=%.1fs",
             token[:8],
             len(content),
             mime_type,
-            ttl,
+            self._ttl,
         )
         return token
 
@@ -165,71 +134,6 @@ class ArtifactStore:
             logger.debug("artifact_pop_expired token_prefix=%s", token[:8])
             return None
         return record
-
-    def build_url(self, token: str) -> str:
-        """Return the public URL for *token*.
-
-        Args:
-            token: An opaque token previously returned by :meth:`add` or
-                :meth:`put_ephemeral`.
-
-        Returns:
-            The full public URL constructed from the store's ``base_url``
-            and ``route_path``.
-
-        Raises:
-            RuntimeError: If the store was constructed without ``base_url``.
-        """
-        if self._base_url is None:
-            raise RuntimeError(
-                "ArtifactStore.base_url is required for URL construction"
-            )
-        return self._base_url.rstrip("/") + self._route_path.replace("{token}", token)
-
-    def put_ephemeral(
-        self,
-        content: bytes,
-        *,
-        content_type: str,
-        filename: str,
-        ttl_seconds: float | None = None,
-        one_time: bool = True,
-    ) -> str:
-        """Stash *content* and return a one-time download URL.
-
-        Convenience wrapper around :meth:`add` + :meth:`build_url` for the
-        common case of "give me a URL that serves these bytes once".
-
-        Args:
-            content: Raw bytes to serve on retrieval.
-            content_type: MIME type advertised via ``Content-Type``.
-            filename: Filename advertised via ``Content-Disposition``.
-            ttl_seconds: Per-token lifetime override. ``None`` (default)
-                uses the store's process-wide TTL.
-            one_time: Reserved for API symmetry with a future repeatable-
-                fetch mode. The current store is always one-time; passing
-                ``False`` raises :class:`NotImplementedError` rather than
-                silently behaving differently from the kwarg's name.
-
-        Returns:
-            The full public URL pointing at the stashed content.
-
-        Raises:
-            NotImplementedError: If ``one_time=False``.
-            RuntimeError: If the store was constructed without ``base_url``.
-        """
-        if not one_time:
-            raise NotImplementedError(
-                "ArtifactStore.put_ephemeral(one_time=False) is reserved for "
-                "future repeatable-fetch mode and not yet implemented"
-            )
-        token = self.add(
-            content,
-            filename=filename,
-            mime_type=content_type,
-            ttl_seconds=ttl_seconds,
-        )
-        return self.build_url(token)
 
     def _purge_expired(self) -> None:
         """Remove expired records (lazy cleanup).
@@ -293,35 +197,3 @@ class ArtifactStore:
                     "Content-Disposition": (f'attachment; filename="{safe_filename}"'),
                 },
             )
-
-
-# Module-level singleton for the common case where a custom HTTP route
-# handler (registered via FastMCP.custom_route) needs to find the same
-# store the tool handler is using. The route handler runs outside the
-# DI context where the store was constructed, so a module-level
-# reference is the simplest shared-state mechanism.
-_artifact_store: ArtifactStore | None = None
-
-
-def set_artifact_store(store: ArtifactStore) -> None:
-    """Register *store* as the process-wide singleton.
-
-    Call once during server startup, before any code path that calls
-    :func:`get_artifact_store`.
-    """
-    global _artifact_store
-    _artifact_store = store
-
-
-def get_artifact_store() -> ArtifactStore:
-    """Return the singleton previously registered via :func:`set_artifact_store`.
-
-    Raises:
-        RuntimeError: If no store has been registered yet.
-    """
-    if _artifact_store is None:
-        raise RuntimeError(
-            "ArtifactStore not configured; call set_artifact_store() during "
-            "server startup before requesting it from a route handler"
-        )
-    return _artifact_store
