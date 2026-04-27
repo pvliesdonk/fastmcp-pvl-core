@@ -344,7 +344,15 @@ class FileExchange:
             os.fsync(fd)
         finally:
             os.close(fd)
-        os.rename(str(tmp_path), str(final_path))
+        try:
+            os.rename(str(tmp_path), str(final_path))
+        except OSError:
+            # Same-namespace rename can't fail with EXDEV, but a
+            # read-only fs (or a quota hit) mid-write would orphan the
+            # dotfile temp. Sweep skips dotfiles, so an orphan would
+            # accrue silently — clean it up before propagating.
+            _try_unlink(tmp_path)
+            raise
 
         logger.debug(
             "exchange_write namespace=%s id=%s ext=%s size=%d",
@@ -424,7 +432,20 @@ class FileExchange:
         removed = 0
         survivors: list[tuple[Path, os.stat_result]] = []
 
-        for entry in namespace_dir.iterdir():
+        try:
+            entries = list(namespace_dir.iterdir())
+        except OSError as exc:
+            # Dir permission flipped after the exists() check, or
+            # underlying fs error. Log and bail rather than crashing the
+            # background sweep loop.
+            logger.warning(
+                "exchange_sweep_iterdir_failed namespace=%s err=%s",
+                self.namespace,
+                exc,
+            )
+            return 0
+
+        for entry in entries:
             if entry.name.startswith("."):
                 continue
             try:

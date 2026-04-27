@@ -293,6 +293,14 @@ class TestFilenameFromDisposition:
             ("inline; filename=bare.txt", "bare.txt"),
             ('attachment; foo=bar; filename="multi.bin"', "multi.bin"),
             ('attachment; FILENAME="upper.png"', "upper.png"),  # case-insensitive
+            # Embedded semicolon inside quoted value — the old hand-rolled
+            # parser truncated this; the stdlib parser handles it.
+            ('attachment; filename="report;v1.csv"', "report;v1.csv"),
+            # RFC 5987 extended form with UTF-8 charset.
+            (
+                "attachment; filename*=UTF-8''hello%20world.txt",
+                "hello world.txt",
+            ),
         ],
     )
     def test_parses_common_shapes(

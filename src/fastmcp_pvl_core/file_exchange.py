@@ -1086,17 +1086,21 @@ def _ssrf_guard(url: str) -> None:
 
 
 def _filename_from_disposition(value: str | None) -> str | None:
+    """Extract the filename from a ``Content-Disposition`` header value.
+
+    Uses :class:`email.message.Message` so quoted strings, escaped
+    characters, embedded semicolons (``filename="report;v1.csv"``), and
+    RFC 5987 ``filename*=UTF-8''...`` extended forms are all handled
+    correctly. Falls back to ``None`` when the header is absent or
+    contains no filename parameter.
+    """
     if not value:
         return None
-    # We only need a sensible default — a tiny parser that finds
-    # ``filename="..."`` is enough; the http RFC has more variants but
-    # this covers what producers in our family emit.
-    parts = [p.strip() for p in value.split(";")]
-    for p in parts:
-        if p.lower().startswith("filename="):
-            v = p.split("=", 1)[1].strip()
-            return v.strip('"')
-    return None
+    from email.message import Message
+
+    msg = Message()
+    msg["Content-Disposition"] = value
+    return msg.get_filename()
 
 
 __all__ = [

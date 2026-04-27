@@ -197,7 +197,12 @@ class ArtifactStore:
             raise RuntimeError(
                 "ArtifactStore.base_url is required for URL construction"
             )
-        return self._base_url.rstrip("/") + self._route_path.replace("{token}", token)
+        # Normalise the join so callers that pass a route_path without a
+        # leading slash (e.g. "artifacts/{token}") still get a well-formed
+        # URL — concatenation alone would silently yield "host/artifacts...".
+        base = self._base_url.rstrip("/")
+        path = "/" + self._route_path.lstrip("/")
+        return f"{base}{path}".replace("{token}", token)
 
     def put_ephemeral(
         self,

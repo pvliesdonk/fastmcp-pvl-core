@@ -85,6 +85,19 @@ class TestBuildURL:
         with pytest.raises(ValueError, match=r"\{token\}"):
             ArtifactStore(route_path="/no-placeholder")
 
+    def test_build_url_normalises_route_path_without_leading_slash(self) -> None:
+        # Caller passed "artifacts/{token}" instead of "/artifacts/{token}";
+        # naive concatenation would yield "https://hostartifacts/...".
+        store = ArtifactStore(
+            base_url="https://mcp.example.com",
+            route_path="artifacts/{token}",
+        )
+        assert store.build_url("abc") == "https://mcp.example.com/artifacts/abc"
+
+    def test_has_base_url_property(self) -> None:
+        assert ArtifactStore().has_base_url is False
+        assert ArtifactStore(base_url="https://x").has_base_url is True
+
 
 class TestPutEphemeral:
     async def test_put_ephemeral_round_trip_via_register_route(self) -> None:
