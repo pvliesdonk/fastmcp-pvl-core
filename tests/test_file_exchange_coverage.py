@@ -618,9 +618,7 @@ class TestHTTPClientReuse:
     pooling and TLS-session resumption.
     """
 
-    async def test_client_is_lazy_and_reused(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    async def test_client_is_lazy_and_reused(self) -> None:
         h = FileExchangeHandle(
             namespace="x",
             enabled=True,

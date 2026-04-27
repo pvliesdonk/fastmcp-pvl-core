@@ -20,6 +20,7 @@ from __future__ import annotations
 import errno
 import logging
 import os
+import secrets
 import time
 import uuid
 from dataclasses import dataclass
@@ -350,7 +351,14 @@ class FileExchange:
                 exc,
             )
         final_path = namespace_dir / f"{origin_id}.{ext}"
-        tmp_path = namespace_dir / f".{origin_id}.{ext}.tmp"
+        # Include a random suffix in the temp name so two concurrent
+        # writes for the same origin_id don't collide on the same temp
+        # path (one writer's truncate would otherwise corrupt the
+        # other's in-flight bytes). Atomic rename still gives last-
+        # writer-wins on the final filename, which is the documented
+        # contract — but each writer's stream is now isolated.
+        unique = secrets.token_hex(8)
+        tmp_path = namespace_dir / f".{origin_id}.{unique}.{ext}.tmp"
 
         try:
             # Open restrictively (0o600) to satisfy CodeQL's
@@ -483,33 +491,34 @@ class FileExchange:
         removed = 0
         survivors: list[tuple[Path, os.stat_result]] = []
 
+        # Iterate the iterdir() generator directly so we don't
+        # materialise a list of every entry on namespace dirs holding
+        # tens of thousands of files. The try/except catches OSError
+        # from both the initial iterdir() call and from any
+        # __next__() raise during traversal (some filesystems surface
+        # permission flips at iteration time, others at open time).
         try:
-            entries = list(namespace_dir.iterdir())
+            for entry in namespace_dir.iterdir():
+                if entry.name.startswith("."):
+                    continue
+                try:
+                    stat = entry.stat()
+                except FileNotFoundError:
+                    continue
+                if not entry.is_file():
+                    continue
+                if stat.st_mtime < cutoff:
+                    if _try_unlink(entry):
+                        removed += 1
+                else:
+                    survivors.append((entry, stat))
         except OSError as exc:
-            # Dir permission flipped after the exists() check, or
-            # underlying fs error. Log and bail rather than crashing the
-            # background sweep loop.
             logger.warning(
                 "exchange_sweep_iterdir_failed namespace=%s err=%s",
                 self.namespace,
                 exc,
             )
-            return 0
-
-        for entry in entries:
-            if entry.name.startswith("."):
-                continue
-            try:
-                stat = entry.stat()
-            except FileNotFoundError:
-                continue
-            if not entry.is_file():
-                continue
-            if stat.st_mtime < cutoff:
-                if _try_unlink(entry):
-                    removed += 1
-            else:
-                survivors.append((entry, stat))
+            return removed
 
         if storage_ceiling_bytes is not None and survivors:
             survivors.sort(key=lambda pair: pair[1].st_mtime)
