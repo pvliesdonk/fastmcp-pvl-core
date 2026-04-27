@@ -576,14 +576,10 @@ wheels = [
 
 [[package]]
 name = "fastmcp-pvl-core"
-version = "1.0.0"
+version = "1.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "fastmcp" },
-]
-
-[package.optional-dependencies]
-remote-auth = [
     { name = "httpx" },
 ]
 
@@ -600,8 +596,8 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "fastmcp", specifier = ">=3.0,<4" },
-    { name = "httpx", marker = "extra == 'remote-auth'", specifier = ">=0.27" },
+    { name = "fastmcp", specifier = ">=3.2.4,<4" },
+    { name = "httpx", specifier = ">=0.27" },
 ]
 provides-extras = ["remote-auth"]
 
