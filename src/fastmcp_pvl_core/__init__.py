@@ -59,7 +59,7 @@ from fastmcp_pvl_core.file_exchange import (
     register_file_exchange,
 )
 
-__version__ = "1.1.0"  # PSR overrides at build time
+__version__ = "1.2.0"  # PSR overrides at build time
 
 __all__ = [
     "FILE_EXCHANGE_SPEC_VERSION",
