@@ -41,6 +41,7 @@ import time
 import uuid
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
+from email.message import Message
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple
 from urllib.parse import urlsplit
@@ -907,7 +908,14 @@ async def _fetch_via_file_ref(
             uri = meta.get("uri")
             if not isinstance(uri, str) or not uri:
                 attempt_errors.append(
-                    {"method": "exchange", "error": "invalid_uri", "message": ""}
+                    {
+                        "method": "exchange",
+                        "error": "invalid_uri",
+                        "message": (
+                            "exchange URI is missing or empty in "
+                            "file_ref.transfer['exchange']"
+                        ),
+                    }
                 )
                 continue
             try:
@@ -1096,8 +1104,6 @@ def _filename_from_disposition(value: str | None) -> str | None:
     """
     if not value:
         return None
-    from email.message import Message
-
     msg = Message()
     msg["Content-Disposition"] = value
     return msg.get_filename()

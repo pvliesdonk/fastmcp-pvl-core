@@ -477,6 +477,69 @@ class TestConcurrentSweepAndWrite:
 # ---------------------------------------------------------------------------
 
 
+class TestDefensiveErrorPaths:
+    """Locks in the round-3 / round-4 try/except guards that absorb rare
+    OSErrors instead of crashing the caller (background sweepers,
+    producer tool handlers).
+    """
+
+    def test_sweep_iterdir_oserror_returns_zero(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        (tmp_path / ".exchange-id").write_text("g\n", encoding="utf-8")
+        fx = FileExchange(base_dir=tmp_path, exchange_id="g", namespace="image-mcp")
+        # Make the namespace dir exist so sweep gets past the early return,
+        # then have iterdir raise.
+        (tmp_path / "image-mcp").mkdir()
+        original_iterdir = Path.iterdir
+
+        def boom(self: Path) -> Any:
+            if self.name == "image-mcp":
+                raise PermissionError("simulated permission flip")
+            return original_iterdir(self)
+
+        monkeypatch.setattr(Path, "iterdir", boom)
+        # Should NOT raise — sweep absorbs the OSError and returns 0.
+        assert fx.sweep() == 0
+
+    def test_write_atomic_cleans_up_tmp_on_rename_failure(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        (tmp_path / ".exchange-id").write_text("g\n", encoding="utf-8")
+        fx = FileExchange(base_dir=tmp_path, exchange_id="g", namespace="image-mcp")
+
+        def boom(*args: Any, **kwargs: Any) -> Any:
+            raise OSError("simulated rename failure")
+
+        monkeypatch.setattr(os, "rename", boom)
+        with pytest.raises(OSError, match="simulated"):
+            fx.write_atomic(origin_id="abc", ext="png", content=b"x")
+        # The dotfile temp must NOT be left orphaned on disk.
+        ns_dir = tmp_path / "image-mcp"
+        leftover = list(ns_dir.glob(".*.tmp"))
+        assert leftover == []
+
+    def test_resolve_exchange_id_unlinks_on_write_failure(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Force os.fdopen to raise *after* O_CREAT|O_EXCL succeeded so we
+        # exercise the "open OK, write failed" cleanup path. Otherwise
+        # the next init attempt would see an empty .exchange-id forever.
+        original_fdopen = os.fdopen
+
+        def boom(*args: Any, **kwargs: Any) -> Any:
+            raise OSError("simulated write failure")
+
+        monkeypatch.setattr(os, "fdopen", boom)
+        with pytest.raises(OSError, match="simulated"):
+            _resolve_exchange_id(tmp_path, explicit=None)
+        # The corrupt .exchange-id was removed; a follow-up init can succeed.
+        assert not (tmp_path / ".exchange-id").exists()
+        monkeypatch.setattr(os, "fdopen", original_fdopen)
+        new_id = _resolve_exchange_id(tmp_path, explicit=None)
+        assert new_id
+
+
 class TestClientOrchestrationRequired:
     async def test_file_ref_with_only_http_returns_orchestration_envelope(
         self, monkeypatch: pytest.MonkeyPatch

@@ -163,14 +163,31 @@ def _resolve_exchange_id(base_dir: Path, explicit: str | None) -> str:
         return existing
 
     try:
-        # fchmod ignores umask — without this, a process running with a
-        # restrictive umask (e.g. 0o077 in hardened containers) gets
-        # 0o600 here and breaks cross-UID readers in the group.
-        os.fchmod(fd, 0o644)
-        os.write(fd, payload)
-        os.fsync(fd)
-    finally:
-        os.close(fd)
+        try:
+            # fchmod ignores umask — without this, a process running
+            # with a restrictive umask (e.g. 0o077 in hardened
+            # containers) gets 0o600 here and breaks cross-UID readers
+            # in the group.
+            os.fchmod(fd, 0o644)
+            # ``os.write`` may perform a partial write under load.
+            # Wrapping the fd in a buffered file object delegates the
+            # loop-until-complete behaviour to Python's stdlib.
+            with os.fdopen(fd, "wb", closefd=False) as f:
+                f.write(payload)
+                f.flush()
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    except BaseException:
+        # Open succeeded but write/sync failed: leaving an empty file
+        # would block every other server's init forever (the
+        # _read_exchange_id_file retry loop eventually surfaces it as
+        # a corruption error). Unlink so the next start can try again.
+        try:
+            os.unlink(id_path)
+        except OSError:
+            pass
+        raise
     return candidate
 
 
@@ -328,29 +345,33 @@ class FileExchange:
         final_path = namespace_dir / f"{origin_id}.{ext}"
         tmp_path = namespace_dir / f".{origin_id}.{ext}.tmp"
 
-        # Open restrictively (0o600) to satisfy CodeQL's
-        # overly-permissive-open check; fchmod sets the spec-mandated
-        # 0o644 below.
-        fd = os.open(
-            str(tmp_path),
-            os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
-            0o600,
-        )
         try:
-            # fchmod ignores umask — needed for the same cross-UID
-            # readability reason as the .exchange-id write above.
-            os.fchmod(fd, 0o644)
-            os.write(fd, content)
-            os.fsync(fd)
-        finally:
-            os.close(fd)
-        try:
+            # Open restrictively (0o600) to satisfy CodeQL's
+            # overly-permissive-open check; fchmod sets the spec-mandated
+            # 0o644 below.
+            fd = os.open(
+                str(tmp_path),
+                os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
+                0o600,
+            )
+            try:
+                # fchmod ignores umask — needed for the same cross-UID
+                # readability reason as the .exchange-id write above.
+                os.fchmod(fd, 0o644)
+                # Buffered write loops until the full payload lands;
+                # raw os.write can do a partial write on large buffers.
+                with os.fdopen(fd, "wb", closefd=False) as f:
+                    f.write(content)
+                    f.flush()
+                os.fsync(fd)
+            finally:
+                os.close(fd)
             os.rename(str(tmp_path), str(final_path))
-        except OSError:
-            # Same-namespace rename can't fail with EXDEV, but a
-            # read-only fs (or a quota hit) mid-write would orphan the
-            # dotfile temp. Sweep skips dotfiles, so an orphan would
-            # accrue silently — clean it up before propagating.
+        except BaseException:
+            # Any failure between open and rename leaves the dotfile
+            # temp on disk. Sweep skips dotfiles to stay race-safe with
+            # in-flight writes, so an orphan would accrue silently —
+            # clean it up before propagating.
             _try_unlink(tmp_path)
             raise
 
