@@ -23,6 +23,7 @@ from fastmcp_pvl_core._cli import make_serve_parser, normalise_http_path
 from fastmcp_pvl_core._config import ServerConfig, Transport
 from fastmcp_pvl_core._debug import maybe_start_debugpy
 from fastmcp_pvl_core._env import env, parse_bool, parse_list, parse_scopes
+from fastmcp_pvl_core._errors import ConfigurationError
 from fastmcp_pvl_core._factory import (
     build_event_store,
     build_instructions,
@@ -66,6 +67,7 @@ __all__ = [
     "FILE_EXCHANGE_SPEC_VERSION",
     "ArtifactStore",
     "AuthMode",
+    "ConfigurationError",
     "ConsumerSink",
     "ExchangeGroupMismatch",
     "ExchangeURI",
