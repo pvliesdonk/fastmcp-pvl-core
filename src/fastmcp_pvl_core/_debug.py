@@ -73,10 +73,16 @@ def maybe_start_debugpy() -> None:
 
     When ``DEBUG_WAIT`` is truthy the helper blocks until the IDE
     attaches (``debugpy.wait_for_client()``); otherwise startup
-    continues immediately.
+    continues immediately. A failure inside ``wait_for_client`` (e.g.
+    debugpy-internal error, transport hiccup) likewise logs a
+    ``WARNING`` and returns — the listener is still up, so the IDE can
+    still attach manually. ``KeyboardInterrupt`` propagates so an
+    operator-initiated Ctrl-C still aborts the process.
 
     Idempotent across repeated calls in the same process. Not
-    thread-safe — call from ``main()`` before spawning workers.
+    thread-safe — call from ``main()`` before spawning workers. After
+    a ``wait_for_client`` failure a re-call short-circuits silently:
+    the listener is up, there is nothing more to do.
 
     Security note: the listener binds ``0.0.0.0`` and debugpy's DAP
     protocol is unauthenticated. Only expose the port to a trusted
@@ -141,5 +147,21 @@ def maybe_start_debugpy() -> None:
 
     if parse_bool(os.environ.get("DEBUG_WAIT", "")):
         logger.info("DEBUG_WAIT=true — blocking until debugger attaches...")
-        debugpy.wait_for_client()
+        try:
+            debugpy.wait_for_client()
+        except KeyboardInterrupt:
+            # Operator hit Ctrl-C while waiting — propagate so the
+            # process exits as the user expects. The latch stays set
+            # because listen() already succeeded; a re-caller would
+            # short-circuit silently (listener is up, nothing to do).
+            raise
+        except Exception as exc:  # noqa: BLE001 — debugger bring-up must not crash startup
+            logger.warning(
+                "debugpy.wait_for_client failed: %s; continuing startup. "
+                "The listener on 0.0.0.0:%d is still up; "
+                "the IDE can still attach manually.",
+                exc,
+                port,
+            )
+            return
         logger.info("debugger attached; continuing startup.")

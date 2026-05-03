@@ -65,13 +65,21 @@ def test_no_op_when_debug_port_parses_to_zero(
     )
 
 
-def test_no_op_when_debug_port_blank(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_no_op_when_debug_port_blank(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     monkeypatch.setenv("DEBUG_PORT", "   ")
     fake = _install_fake_debugpy(monkeypatch)
 
-    maybe_start_debugpy()
+    with caplog.at_level(logging.DEBUG, logger="fastmcp_pvl_core._debug"):
+        maybe_start_debugpy()
 
     assert fake.calls == []
+    assert caplog.records == [], (
+        "blank DEBUG_PORT must be a silent no-op, but logged: "
+        f"{[r.getMessage() for r in caplog.records]}"
+    )
 
 
 def test_invalid_port_logs_warning_and_no_ops(
@@ -167,6 +175,74 @@ def test_debug_wait_triggers_wait_for_client(
     assert fake.calls.index(("listen", ("0.0.0.0", 5678))) < fake.calls.index(
         ("wait", None)
     )
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        OSError("connection lost"),
+        RuntimeError("debugpy internal error in wait"),
+    ],
+)
+def test_wait_for_client_failure_logs_warning_and_continues(
+    exc: Exception,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # Symmetry with the listen() failure path: a wait_for_client() error
+    # must not crash startup. The latch is correctly already True at this
+    # point (listen succeeded), so subsequent calls short-circuit — but
+    # the *current* call must continue, not raise.
+    monkeypatch.setenv("DEBUG_PORT", "5678")
+    monkeypatch.setenv("DEBUG_WAIT", "true")
+
+    def listen(_: tuple[str, int]) -> None:
+        return None
+
+    def wait_boom() -> None:
+        raise exc
+
+    fake = types.ModuleType("debugpy")
+    fake.listen = listen  # type: ignore[attr-defined]
+    fake.wait_for_client = wait_boom  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "debugpy", fake)
+
+    with caplog.at_level(logging.WARNING, logger="fastmcp_pvl_core._debug"):
+        maybe_start_debugpy()  # must not raise
+
+    assert any(
+        rec.levelno == logging.WARNING
+        and "wait_for_client" in rec.message
+        and str(exc) in rec.message
+        for rec in caplog.records
+    )
+    # The listener bound successfully — the latch must stay set so a
+    # re-caller correctly short-circuits. This is the contract the
+    # wait-failure handling exists to preserve.
+    assert debug_mod._started is True
+
+
+def test_wait_for_client_keyboard_interrupt_propagates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Ctrl-C during wait must propagate so the operator can abort —
+    # swallowing it would prevent process shutdown via SIGINT.
+    monkeypatch.setenv("DEBUG_PORT", "5678")
+    monkeypatch.setenv("DEBUG_WAIT", "true")
+
+    def listen(_: tuple[str, int]) -> None:
+        return None
+
+    def wait_interrupt() -> None:
+        raise KeyboardInterrupt
+
+    fake = types.ModuleType("debugpy")
+    fake.listen = listen  # type: ignore[attr-defined]
+    fake.wait_for_client = wait_interrupt  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "debugpy", fake)
+
+    with pytest.raises(KeyboardInterrupt):
+        maybe_start_debugpy()
 
 
 def test_debug_wait_false_skips_wait(monkeypatch: pytest.MonkeyPatch) -> None:
