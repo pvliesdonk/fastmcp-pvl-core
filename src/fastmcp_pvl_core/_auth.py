@@ -16,7 +16,10 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 if sys.version_info >= (3, 11):
     import tomllib
 else:  # pragma: no cover - fallback for Python 3.10
-    import tomli as tomllib  # type: ignore[import-not-found]
+    # ``import-not-found`` covers CI rows where ``tomli`` is excluded by
+    # the marker (3.11+); ``unused-ignore`` covers local 3.10 envs where
+    # ``tomli`` is installed and the ignore would otherwise be flagged.
+    import tomli as tomllib  # type: ignore[import-not-found,unused-ignore]
 
 from fastmcp_pvl_core._config import ServerConfig
 from fastmcp_pvl_core._errors import ConfigurationError
@@ -151,8 +154,7 @@ def _load_bearer_tokens(path: Path) -> dict[str, str]:
             raise ConfigurationError(
                 f"bearer tokens file at {path}: token entry is a "
                 f"nested table — quote token strings as "
-                f'\'"<token>" = "<subject>"\' (got nested table for key '
-                f"{type(subject).__name__})"
+                f'\'"<token>" = "<subject>"\''
             )
         if not isinstance(subject, str):
             raise ConfigurationError(
