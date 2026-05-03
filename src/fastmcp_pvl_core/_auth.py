@@ -2,7 +2,8 @@
 
 Inspect :class:`ServerConfig` to determine which auth flavor is
 configured, then dispatch to the right FastMCP auth provider.
-Five modes: ``none``, ``bearer``, ``remote``, ``oidc-proxy``, ``multi``.
+Six modes: ``none``, ``bearer-single``, ``bearer-mapped``, ``remote``,
+``oidc-proxy``, ``multi``.
 """
 
 from __future__ import annotations
@@ -22,7 +23,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-AuthMode = Literal["none", "bearer", "remote", "oidc-proxy", "multi"]
+AuthMode = Literal[
+    "none", "bearer-single", "bearer-mapped", "remote", "oidc-proxy", "multi"
+]
 
 # The override only accepts the two OIDC modes that can apply to the same
 # underlying configuration.  Bearer / multi / none are unambiguous from
@@ -47,8 +50,11 @@ def resolve_auth_mode(config: ServerConfig) -> AuthMode:
       ``multi``, ``none``, and any unknown string) are ignored with a
       warning, and auto-detection is used.  The comparison is case- and
       whitespace-insensitive.
-    - ``multi``: both a bearer token and an OIDC flavor are configured.
-    - ``bearer``: only ``bearer_token`` set.
+    - ``multi``: any bearer flavor (single or mapped) and an OIDC
+      flavor are both configured.
+    - ``bearer-mapped``: ``bearer_tokens_file`` set (takes precedence
+      over a single ``bearer_token`` if both are configured).
+    - ``bearer-single``: only ``bearer_token`` set.
     - ``oidc-proxy``: all four OIDC client-credential vars set
       (``base_url``, ``oidc_config_url``, ``oidc_client_id``,
       ``oidc_client_secret``).
@@ -71,7 +77,8 @@ def resolve_auth_mode(config: ServerConfig) -> AuthMode:
             explicit,
         )
 
-    has_bearer = bool(config.bearer_token)
+    has_mapped_bearer = config.bearer_tokens_file is not None
+    has_single_bearer = bool(config.bearer_token) and not has_mapped_bearer
     has_oidc_proxy = all(
         (
             config.base_url,
@@ -90,10 +97,14 @@ def resolve_auth_mode(config: ServerConfig) -> AuthMode:
     else:
         oidc_mode = None
 
-    if has_bearer and oidc_mode is not None:
+    has_any_bearer = has_mapped_bearer or has_single_bearer
+
+    if has_any_bearer and oidc_mode is not None:
         return "multi"
-    if has_bearer:
-        return "bearer"
+    if has_mapped_bearer:
+        return "bearer-mapped"
+    if has_single_bearer:
+        return "bearer-single"
     if oidc_mode is not None:
         return oidc_mode
     return "none"
@@ -294,7 +305,7 @@ def build_auth(config: ServerConfig) -> Any:
 
         - ``None`` when no auth is configured.
         - A :class:`~fastmcp.server.auth.StaticTokenVerifier` in
-          ``bearer`` mode.
+          ``bearer-single`` or ``bearer-mapped`` mode.
         - An :class:`~fastmcp.server.auth.oidc_proxy.OIDCProxy` in
           ``oidc-proxy`` mode.
         - A :class:`~fastmcp.server.auth.RemoteAuthProvider` in
@@ -306,7 +317,7 @@ def build_auth(config: ServerConfig) -> Any:
     mode = resolve_auth_mode(config)
     if mode == "none":
         return None
-    if mode == "bearer":
+    if mode in ("bearer-single", "bearer-mapped"):
         return build_bearer_auth(config)
     if mode == "oidc-proxy":
         return build_oidc_proxy_auth(config)
