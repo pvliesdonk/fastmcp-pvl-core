@@ -45,7 +45,7 @@ class TestBuildBearerAuth:
         assert auth is not None
         # StaticTokenVerifier exposes a ``tokens`` dict for introspection.
         entry = auth.tokens["secret"]
-        assert entry["client_id"] == "bearer"
+        assert entry["client_id"] == "bearer-anon"
         assert entry["scopes"] == ["read", "write"]
 
 

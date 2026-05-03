@@ -53,10 +53,39 @@ config = ServerConfig.from_env("MY_APP")
 mcp = FastMCP(
     name="my-app",
     instructions=build_instructions(read_only=False, env_prefix="MY_APP", domain_line="…"),
-    auth=build_auth("MY_APP", config),
+    auth=build_auth(config),
 )
 wire_middleware_stack(mcp)
 ```
+
+### Per-user subject mapping (bearer auth)
+
+Bearer auth has two modes:
+
+- **Single token** — `MY_APP_BEARER_TOKEN=<token>` accepts one shared token.
+  Authenticated callers all share the same subject (default
+  `"bearer-anon"`; override with `MY_APP_BEARER_DEFAULT_SUBJECT=<value>`).
+
+- **Mapped tokens** — `MY_APP_BEARER_TOKENS_FILE=/path/to/tokens.toml`
+  loads a token→subject map at startup. Each token resolves to a distinct
+  subject string for downstream attribution (audit logs, ACLs, request
+  metadata).
+
+```toml
+# tokens.toml
+[tokens]
+"ghp_alice_xxxxxxxx" = "user:alice@example.com"
+"sk_ci_yyyyyyyy"     = "service:ci-bot"
+```
+
+If both `MY_APP_BEARER_TOKEN` and `MY_APP_BEARER_TOKENS_FILE` are set,
+the file wins and a `WARNING` is logged. Subject strings are opaque to
+the library; the `<kind>:<id>` convention (`user:`, `service:`,
+`token:`) is documentation only.
+
+`MY_APP_BEARER_DEFAULT_SUBJECT` only applies to single-token mode; it
+is ignored when `MY_APP_BEARER_TOKENS_FILE` is set (mapped mode uses
+the per-token subjects from the TOML file).
 
 ### Remote debugging in containers
 

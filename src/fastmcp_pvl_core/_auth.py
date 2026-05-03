@@ -2,16 +2,27 @@
 
 Inspect :class:`ServerConfig` to determine which auth flavor is
 configured, then dispatch to the right FastMCP auth provider.
-Five modes: ``none``, ``bearer``, ``remote``, ``oidc-proxy``, ``multi``.
+Six modes: ``none``, ``bearer-single``, ``bearer-mapped``, ``remote``,
+``oidc-proxy``, ``multi``.
 """
 
 from __future__ import annotations
 
 import logging
 import sys
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, cast
 
+if sys.version_info >= (3, 11):
+    import tomllib
+else:  # pragma: no cover - fallback for Python 3.10
+    # ``import-not-found`` covers CI rows where ``tomli`` is excluded by
+    # the marker (3.11+); ``unused-ignore`` covers local 3.10 envs where
+    # ``tomli`` is installed and the ignore would otherwise be flagged.
+    import tomli as tomllib  # type: ignore[import-not-found,unused-ignore]
+
 from fastmcp_pvl_core._config import ServerConfig
+from fastmcp_pvl_core._errors import ConfigurationError
 
 if TYPE_CHECKING:
     from fastmcp.server.auth import (
@@ -22,12 +33,14 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-AuthMode = Literal["none", "bearer", "remote", "oidc-proxy", "multi"]
+AuthMode = Literal[
+    "none", "bearer-single", "bearer-mapped", "remote", "oidc-proxy", "multi"
+]
 
 # The override only accepts the two OIDC modes that can apply to the same
 # underlying configuration.  Bearer / multi / none are unambiguous from
 # field presence, so allowing them as overrides only introduces silent
-# failure modes (e.g. ``AUTH_MODE=bearer`` with no ``BEARER_TOKEN``
+# failure modes (e.g. ``AUTH_MODE=bearer-single`` with no ``BEARER_TOKEN``
 # would start the server unauthenticated).
 _VALID_MODES: frozenset[Literal["remote", "oidc-proxy"]] = frozenset(
     {"remote", "oidc-proxy"}
@@ -47,8 +60,11 @@ def resolve_auth_mode(config: ServerConfig) -> AuthMode:
       ``multi``, ``none``, and any unknown string) are ignored with a
       warning, and auto-detection is used.  The comparison is case- and
       whitespace-insensitive.
-    - ``multi``: both a bearer token and an OIDC flavor are configured.
-    - ``bearer``: only ``bearer_token`` set.
+    - ``multi``: any bearer flavor (single or mapped) and an OIDC
+      flavor are both configured.
+    - ``bearer-mapped``: ``bearer_tokens_file`` set (takes precedence
+      over a single ``bearer_token`` if both are configured).
+    - ``bearer-single``: only ``bearer_token`` set.
     - ``oidc-proxy``: all four OIDC client-credential vars set
       (``base_url``, ``oidc_config_url``, ``oidc_client_id``,
       ``oidc_client_secret``).
@@ -59,7 +75,7 @@ def resolve_auth_mode(config: ServerConfig) -> AuthMode:
         config: Populated server configuration.
 
     Returns:
-        One of the five :data:`AuthMode` literals.
+        One of the six :data:`AuthMode` literals.
     """
     explicit = (config.auth_mode or "").strip().lower()
     if explicit:
@@ -71,7 +87,8 @@ def resolve_auth_mode(config: ServerConfig) -> AuthMode:
             explicit,
         )
 
-    has_bearer = bool(config.bearer_token)
+    has_mapped_bearer = config.bearer_tokens_file is not None
+    has_single_bearer = bool(config.bearer_token) and not has_mapped_bearer
     has_oidc_proxy = all(
         (
             config.base_url,
@@ -90,40 +107,137 @@ def resolve_auth_mode(config: ServerConfig) -> AuthMode:
     else:
         oidc_mode = None
 
-    if has_bearer and oidc_mode is not None:
+    has_any_bearer = has_mapped_bearer or has_single_bearer
+
+    if has_any_bearer and oidc_mode is not None:
         return "multi"
-    if has_bearer:
-        return "bearer"
+    if has_mapped_bearer:
+        return "bearer-mapped"
+    if has_single_bearer:
+        return "bearer-single"
     if oidc_mode is not None:
         return oidc_mode
     return "none"
 
 
-def build_bearer_auth(config: ServerConfig) -> StaticTokenVerifier | None:
-    """Build a :class:`StaticTokenVerifier` from ``config.bearer_token``.
+def _load_bearer_tokens(path: Path) -> dict[str, str]:
+    """Parse a bearer-token TOML file into a {token: subject} dict.
 
-    Returns a verifier that validates ``Authorization: Bearer <token>``
-    headers against the configured static token.  The token is granted
-    ``read`` and ``write`` scopes; operators scope down at the MCP layer
-    (e.g. tag-based tool hiding) rather than by differentiating bearer
-    scopes.
+    Raises:
+        ConfigurationError: file missing, unparseable, schema-invalid, or
+            containing empty/non-string values.
+    """
+    if not path.is_file():
+        raise ConfigurationError(
+            f"bearer tokens file not found or not a regular file: {path}"
+        )
+    try:
+        raw = path.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError) as exc:
+        raise ConfigurationError(
+            f"bearer tokens file at {path} could not be read: {exc}"
+        ) from exc
+    if not raw:
+        raise ConfigurationError(f"bearer tokens file is empty: {path}")
+    try:
+        data = tomllib.loads(raw)
+    except tomllib.TOMLDecodeError as exc:
+        raise ConfigurationError(
+            f"bearer tokens file at {path} could not be parsed: {exc}"
+        ) from exc
+    tokens = data.get("tokens")
+    if not isinstance(tokens, dict) or not tokens:
+        raise ConfigurationError(
+            f"bearer tokens file at {path} must define a non-empty [tokens] table"
+        )
+    result: dict[str, str] = {}
+    for token, subject in tokens.items():
+        # TOML keys are always strings, so just check they're non-blank.
+        if not token.strip():
+            raise ConfigurationError(
+                f"bearer tokens file at {path}: token key is empty or whitespace-only"
+            )
+        if isinstance(subject, dict):
+            raise ConfigurationError(
+                f"bearer tokens file at {path}: token entry is a "
+                f"nested table — quote token strings as "
+                f'\'"<token>" = "<subject>"\''
+            )
+        if not isinstance(subject, str):
+            raise ConfigurationError(
+                f"bearer tokens file at {path}: subject must be a "
+                f"string, got {type(subject).__name__}"
+            )
+        if not subject.strip():
+            raise ConfigurationError(f"bearer tokens file at {path}: subject is empty")
+        result[token] = subject
+    return result
+
+
+def build_bearer_auth(config: ServerConfig) -> StaticTokenVerifier | None:
+    """Build a :class:`StaticTokenVerifier` for either bearer flavor.
+
+    Two modes:
+
+    - **Mapped** (``bearer_tokens_file`` set): parse the TOML file and
+      build one verifier entry per ``token → subject`` row. The subject
+      is carried via the entry's ``client_id`` so request-time code can
+      retrieve it via :func:`get_subject`.
+    - **Single** (``bearer_token`` set, no file): one verifier entry
+      whose ``client_id`` is ``config.bearer_default_subject``
+      (defaults to ``"bearer-anon"``).
+
+    If both ``bearer_tokens_file`` and ``bearer_token`` are configured,
+    the file wins and a ``WARNING`` is logged.
 
     Args:
         config: Populated server configuration.
 
     Returns:
-        A configured :class:`StaticTokenVerifier`, or ``None`` when the
-        bearer token is absent or blank.
+        A configured :class:`StaticTokenVerifier`, or ``None`` when
+        neither flavor is configured.
+
+    Raises:
+        ConfigurationError: when ``bearer_tokens_file`` is set but the
+            file is missing, unparseable, or schema-invalid.
     """
+    from fastmcp.server.auth import StaticTokenVerifier
+
+    tokens_file = config.bearer_tokens_file
+    if tokens_file is not None:
+        if config.bearer_token:
+            logger.warning(
+                "bearer_tokens_file_takes_precedence "
+                "bearer_tokens_file=%s bearer_token=<redacted> — "
+                "single-token value is ignored",
+                tokens_file,
+            )
+        mapping = _load_bearer_tokens(tokens_file)
+        return StaticTokenVerifier(
+            tokens={
+                token: {"client_id": subject, "scopes": ["read", "write"]}
+                for token, subject in mapping.items()
+            },
+        )
+
     token = (config.bearer_token or "").strip()
     if not token:
         logger.debug("bearer_auth_skipped reason=not_configured")
         return None
-    logger.debug("bearer_auth_enabled token=<redacted>")
-    from fastmcp.server.auth import StaticTokenVerifier
 
+    # ``env()`` already strips and falls back; this guard handles direct
+    # ``ServerConfig(bearer_default_subject="")`` construction where the
+    # empty value would otherwise produce a verifier with empty client_id.
+    default_subject = (config.bearer_default_subject or "").strip() or "bearer-anon"
+
+    logger.debug("bearer_auth_enabled token=<redacted>")
     return StaticTokenVerifier(
-        tokens={token: {"client_id": "bearer", "scopes": ["read", "write"]}},
+        tokens={
+            token: {
+                "client_id": default_subject,
+                "scopes": ["read", "write"],
+            },
+        },
     )
 
 
@@ -294,7 +408,7 @@ def build_auth(config: ServerConfig) -> Any:
 
         - ``None`` when no auth is configured.
         - A :class:`~fastmcp.server.auth.StaticTokenVerifier` in
-          ``bearer`` mode.
+          ``bearer-single`` or ``bearer-mapped`` mode.
         - An :class:`~fastmcp.server.auth.oidc_proxy.OIDCProxy` in
           ``oidc-proxy`` mode.
         - A :class:`~fastmcp.server.auth.RemoteAuthProvider` in
@@ -306,7 +420,7 @@ def build_auth(config: ServerConfig) -> Any:
     mode = resolve_auth_mode(config)
     if mode == "none":
         return None
-    if mode == "bearer":
+    if mode in ("bearer-single", "bearer-mapped"):
         return build_bearer_auth(config)
     if mode == "oidc-proxy":
         return build_oidc_proxy_auth(config)

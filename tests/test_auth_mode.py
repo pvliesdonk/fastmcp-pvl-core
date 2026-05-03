@@ -16,7 +16,7 @@ class TestResolveAuthMode:
         assert resolve_auth_mode(_cfg()) == "none"
 
     def test_bearer_only(self):
-        assert resolve_auth_mode(_cfg(bearer_token="x")) == "bearer"
+        assert resolve_auth_mode(_cfg(bearer_token="x")) == "bearer-single"
 
     def test_oidc_proxy_when_all_four_oidc_vars_set(self):
         assert (
@@ -68,6 +68,28 @@ class TestResolveAuthMode:
             == "multi"
         )
 
+    def test_bearer_mapped_when_tokens_file_set(self, tmp_path):
+        token_file = tmp_path / "tokens.toml"
+        token_file.write_text('[tokens]\n"abc" = "user:alice"\n', encoding="utf-8")
+        cfg = _cfg(bearer_tokens_file=token_file)
+        assert resolve_auth_mode(cfg) == "bearer-mapped"
+
+    def test_bearer_mapped_takes_precedence_when_both_set(self, tmp_path):
+        token_file = tmp_path / "tokens.toml"
+        token_file.write_text('[tokens]\n"abc" = "user:alice"\n', encoding="utf-8")
+        cfg = _cfg(bearer_token="x", bearer_tokens_file=token_file)
+        assert resolve_auth_mode(cfg) == "bearer-mapped"
+
+    def test_multi_with_bearer_mapped(self, tmp_path):
+        token_file = tmp_path / "tokens.toml"
+        token_file.write_text('[tokens]\n"abc" = "user:alice"\n', encoding="utf-8")
+        cfg = _cfg(
+            bearer_tokens_file=token_file,
+            base_url="https://x",
+            oidc_config_url="https://idp/.well-known/openid-configuration",
+        )
+        assert resolve_auth_mode(cfg) == "multi"
+
 
 class TestExplicitOverride:
     def test_override_remote_when_all_four_oidc_vars_set(self):
@@ -114,14 +136,17 @@ class TestExplicitOverride:
     def test_blank_override_falls_back_to_auto_detection(self):
         assert resolve_auth_mode(_cfg(auth_mode="   ")) == "none"
 
-    @pytest.mark.parametrize("bad", ["bearer", "multi", "none", "bogus"])
+    @pytest.mark.parametrize("bad", ["bearer-single", "multi", "none", "bogus"])
     def test_unknown_override_falls_back_to_auto_detection(self, bad: str):
-        # ``bearer``, ``multi``, and ``none`` are no longer accepted as
-        # override values — only ``remote`` and ``oidc-proxy`` are.  All
-        # other strings, including these previously-accepted ones, are
+        # Only ``remote`` and ``oidc-proxy`` are accepted as override
+        # values; everything else (including the bearer-flavor literals
+        # and previously-accepted ``bearer``/``multi``/``none``) is
         # rejected with a warning and auto-detection runs instead.
-        # With ``bearer_token`` set, auto-detection yields ``bearer``.
-        assert resolve_auth_mode(_cfg(auth_mode=bad, bearer_token="x")) == "bearer"
+        # With ``bearer_token`` set, auto-detection yields
+        # ``bearer-single``.
+        assert (
+            resolve_auth_mode(_cfg(auth_mode=bad, bearer_token="x")) == "bearer-single"
+        )
 
     def test_rejected_override_without_autodetect_candidates_returns_none(self):
         # With no fields configured, the auto-detect fallback for an
