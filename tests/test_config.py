@@ -106,9 +106,7 @@ class TestServerConfigFromEnv:
         with pytest.raises(AttributeError):
             config.transport = "http"  # type: ignore[misc]
 
-    def test_reads_bearer_tokens_file(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path
-    ):
+    def test_reads_bearer_tokens_file(self, monkeypatch: pytest.MonkeyPatch, tmp_path):
         token_file = tmp_path / "tokens.toml"
         token_file.write_text("[tokens]\n", encoding="utf-8")
         monkeypatch.setenv("MYAPP_BEARER_TOKENS_FILE", str(token_file))
