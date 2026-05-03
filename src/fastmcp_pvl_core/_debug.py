@@ -113,7 +113,10 @@ def maybe_start_debugpy() -> None:
         return
 
     try:
-        import debugpy  # type: ignore[import-not-found]
+        # ``import-not-found`` covers environments without the optional
+        # ``[debug]`` extra; ``unused-ignore`` covers CI / dev installs
+        # that *do* have debugpy and would otherwise flag the comment.
+        import debugpy  # type: ignore[import-not-found, unused-ignore]
     except ImportError:
         logger.warning(
             "DEBUG_PORT=%d set but debugpy is not installed. "
