@@ -131,3 +131,84 @@ class TestBuildAuthMapped:
         auth = build_auth(ServerConfig(bearer_tokens_file=token_file))
         assert isinstance(auth, StaticTokenVerifier)
         assert auth.tokens["k1"]["client_id"] == "user:alice"
+
+
+class TestBuildAuthMultiWithMapped:
+    def test_multi_with_mapped_bearer_and_oidc_proxy(self, tmp_path):
+        from unittest.mock import MagicMock, patch
+
+        from fastmcp.server.auth import MultiAuth, StaticTokenVerifier
+
+        from fastmcp_pvl_core import ServerConfig, build_auth
+
+        token_file = tmp_path / "tokens.toml"
+        token_file.write_text('[tokens]\n"k1" = "user:alice"\n', encoding="utf-8")
+        cfg = ServerConfig(
+            bearer_tokens_file=token_file,
+            base_url="https://x.example",
+            oidc_config_url=("https://idp.example/.well-known/openid-configuration"),
+            oidc_client_id="cid",
+            oidc_client_secret="csecret",
+        )
+        mock_proxy_cls = MagicMock()
+        with patch("fastmcp.server.auth.oidc_proxy.OIDCProxy", mock_proxy_cls):
+            auth = build_auth(cfg)
+        assert isinstance(auth, MultiAuth)
+        assert auth.required_scopes == []
+        bearer = next(v for v in auth.verifiers if isinstance(v, StaticTokenVerifier))
+        assert bearer.tokens["k1"]["client_id"] == "user:alice"
+
+    def test_multi_warns_when_both_bearer_inputs_set(self, tmp_path, caplog):
+        import logging
+        from unittest.mock import MagicMock, patch
+
+        from fastmcp_pvl_core import ServerConfig, build_auth
+
+        token_file = tmp_path / "tokens.toml"
+        token_file.write_text('[tokens]\n"k1" = "user:alice"\n', encoding="utf-8")
+        cfg = ServerConfig(
+            bearer_token="single-token",
+            bearer_tokens_file=token_file,
+            base_url="https://x.example",
+            oidc_config_url=("https://idp.example/.well-known/openid-configuration"),
+            oidc_client_id="cid",
+            oidc_client_secret="csecret",
+        )
+        mock_proxy_cls = MagicMock()
+        with (
+            caplog.at_level(logging.WARNING),
+            patch("fastmcp.server.auth.oidc_proxy.OIDCProxy", mock_proxy_cls),
+        ):
+            build_auth(cfg)
+        assert any(
+            "bearer_tokens_file_takes_precedence" in r.message
+            and r.levelname == "WARNING"
+            for r in caplog.records
+        )
+
+    def test_multi_falls_back_to_mapped_bearer_when_oidc_build_fails(
+        self, tmp_path, monkeypatch
+    ):
+        import httpx
+        from fastmcp.server.auth import StaticTokenVerifier
+
+        from fastmcp_pvl_core import ServerConfig, build_auth
+
+        # Simulate remote auth discovery failure
+        def _raise(*a, **kw):
+            raise httpx.ConnectError("network down")
+
+        monkeypatch.setattr(httpx, "get", _raise)
+
+        token_file = tmp_path / "tokens.toml"
+        token_file.write_text('[tokens]\n"k1" = "user:alice"\n', encoding="utf-8")
+        cfg = ServerConfig(
+            bearer_tokens_file=token_file,
+            base_url="https://x.example",
+            oidc_config_url=("https://idp.example/.well-known/openid-configuration"),
+            # Only base_url + oidc_config_url set → remote mode (not proxy)
+        )
+        auth = build_auth(cfg)
+        # OIDC discovery fails → fallback to whatever bearer succeeded.
+        assert isinstance(auth, StaticTokenVerifier)
+        assert auth.tokens["k1"]["client_id"] == "user:alice"

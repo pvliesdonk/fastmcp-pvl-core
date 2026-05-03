@@ -45,6 +45,8 @@ class ServerConfig:
     auth_mode: str | None = None
 
     bearer_tokens_file: Path | None = None
+    # Subject for the single-token bearer mode; ignored when
+    # ``bearer_tokens_file`` is set (mapped mode uses per-token subjects).
     bearer_default_subject: str = "bearer-anon"
 
     @classmethod
@@ -82,7 +84,9 @@ class ServerConfig:
         )
 
         tokens_file_raw = env(env_prefix, "BEARER_TOKENS_FILE")
-        bearer_tokens_file = Path(tokens_file_raw) if tokens_file_raw else None
+        bearer_tokens_file = (
+            Path(tokens_file_raw).expanduser() if tokens_file_raw else None
+        )
         bearer_default_subject = env(
             env_prefix, "BEARER_DEFAULT_SUBJECT", "bearer-anon"
         )

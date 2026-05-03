@@ -1,4 +1,4 @@
-"""Tests for FASTMCP_BEARER_TOKENS_FILE token→subject mapping."""
+"""Tests for the bearer-tokens TOML loader."""
 
 from __future__ import annotations
 
@@ -67,6 +67,45 @@ class TestBearerTokensFileLoader:
         with pytest.raises(ConfigurationError, match="empty"):
             build_bearer_auth(ServerConfig(bearer_tokens_file=path))
 
+    def test_empty_tokens_table_raises_configuration_error(self, tmp_path: Path):
+        path = _write_tokens(tmp_path, "[tokens]\n")
+        with pytest.raises(ConfigurationError, match="non-empty"):
+            build_bearer_auth(ServerConfig(bearer_tokens_file=path))
+
+    def test_whitespace_only_subject_raises_configuration_error(self, tmp_path: Path):
+        path = _write_tokens(tmp_path, '[tokens]\n"x" = "   "\n')
+        with pytest.raises(ConfigurationError, match="empty"):
+            build_bearer_auth(ServerConfig(bearer_tokens_file=path))
+
+    def test_empty_token_key_raises_configuration_error(self, tmp_path: Path):
+        path = _write_tokens(tmp_path, '[tokens]\n"" = "user:alice"\n')
+        with pytest.raises(ConfigurationError, match="empty or whitespace"):
+            build_bearer_auth(ServerConfig(bearer_tokens_file=path))
+
+    def test_whitespace_only_token_key_raises_configuration_error(self, tmp_path: Path):
+        path = _write_tokens(tmp_path, '[tokens]\n"   " = "user:alice"\n')
+        with pytest.raises(ConfigurationError, match="empty or whitespace"):
+            build_bearer_auth(ServerConfig(bearer_tokens_file=path))
+
+    def test_nested_subtable_raises_clear_diagnostic(self, tmp_path: Path):
+        # Common operator slip: writing `[tokens.foo]` instead of
+        # `[tokens]\n"foo" = "..."` produces a nested-table structure;
+        # the loader should surface a clear "nested table" diagnostic
+        # rather than the misleading "subject must be a string".
+        path = _write_tokens(tmp_path, '[tokens.foo]\nbar = "baz"\n')
+        with pytest.raises(ConfigurationError, match="nested table"):
+            build_bearer_auth(ServerConfig(bearer_tokens_file=path))
+
+    def test_error_messages_do_not_leak_token_value(self, tmp_path: Path):
+        # Defensive: error messages must never embed the raw token (the
+        # KEY in the [tokens] map), so an operator pasting a startup
+        # exception into a bug report doesn't leak credentials.
+        secret_token = "ghp_secretvalue_xxx_must_not_appear"
+        path = _write_tokens(tmp_path, f'[tokens]\n"{secret_token}" = ""\n')
+        with pytest.raises(ConfigurationError) as excinfo:
+            build_bearer_auth(ServerConfig(bearer_tokens_file=path))
+        assert secret_token not in str(excinfo.value)
+
 
 class TestBearerTokensFilePrecedence:
     def test_file_takes_precedence_over_single_token(
@@ -86,8 +125,8 @@ class TestBearerTokensFilePrecedence:
         assert auth.tokens["file-token"]["client_id"] == "user:via-file"
         # WARNING surfaced.
         assert any(
-            "BEARER_TOKENS_FILE" in r.message
-            and "BEARER_TOKEN" in r.message
+            "bearer_tokens_file" in r.message
+            and "bearer_token" in r.message
             and r.levelname == "WARNING"
             for r in caplog.records
         )

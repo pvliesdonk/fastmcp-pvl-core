@@ -138,11 +138,12 @@ class TestExplicitOverride:
 
     @pytest.mark.parametrize("bad", ["bearer-single", "multi", "none", "bogus"])
     def test_unknown_override_falls_back_to_auto_detection(self, bad: str):
-        # ``bearer``, ``multi``, and ``none`` are no longer accepted as
-        # override values — only ``remote`` and ``oidc-proxy`` are.  All
-        # other strings, including these previously-accepted ones, are
+        # Only ``remote`` and ``oidc-proxy`` are accepted as override
+        # values; everything else (including the bearer-flavor literals
+        # and previously-accepted ``bearer``/``multi``/``none``) is
         # rejected with a warning and auto-detection runs instead.
-        # With ``bearer_token`` set, auto-detection yields ``bearer``.
+        # With ``bearer_token`` set, auto-detection yields
+        # ``bearer-single``.
         assert (
             resolve_auth_mode(_cfg(auth_mode=bad, bearer_token="x")) == "bearer-single"
         )

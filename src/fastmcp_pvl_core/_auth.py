@@ -37,7 +37,7 @@ AuthMode = Literal[
 # The override only accepts the two OIDC modes that can apply to the same
 # underlying configuration.  Bearer / multi / none are unambiguous from
 # field presence, so allowing them as overrides only introduces silent
-# failure modes (e.g. ``AUTH_MODE=bearer`` with no ``BEARER_TOKEN``
+# failure modes (e.g. ``AUTH_MODE=bearer-single`` with no ``BEARER_TOKEN``
 # would start the server unauthenticated).
 _VALID_MODES: frozenset[Literal["remote", "oidc-proxy"]] = frozenset(
     {"remote", "oidc-proxy"}
@@ -72,7 +72,7 @@ def resolve_auth_mode(config: ServerConfig) -> AuthMode:
         config: Populated server configuration.
 
     Returns:
-        One of the five :data:`AuthMode` literals.
+        One of the six :data:`AuthMode` literals.
     """
     explicit = (config.auth_mode or "").strip().lower()
     if explicit:
@@ -142,15 +142,25 @@ def _load_bearer_tokens(path: Path) -> dict[str, str]:
         )
     result: dict[str, str] = {}
     for token, subject in tokens.items():
+        # Validate the key side first (prevents "" or "   " tokens).
+        if not isinstance(token, str) or not token.strip():
+            raise ConfigurationError(
+                f"bearer tokens file at {path}: token key is empty or whitespace-only"
+            )
+        if isinstance(subject, dict):
+            raise ConfigurationError(
+                f"bearer tokens file at {path}: token entry is a "
+                f"nested table — quote token strings as "
+                f'\'"<token>" = "<subject>"\' (got nested table for key '
+                f"{type(subject).__name__})"
+            )
         if not isinstance(subject, str):
             raise ConfigurationError(
-                f"bearer tokens file at {path}: subject for token "
-                f"{token!r} must be a string"
+                f"bearer tokens file at {path}: subject must be a "
+                f"string, got {type(subject).__name__}"
             )
         if not subject.strip():
-            raise ConfigurationError(
-                f"bearer tokens file at {path}: subject for token {token!r} is empty"
-            )
+            raise ConfigurationError(f"bearer tokens file at {path}: subject is empty")
         result[str(token)] = subject
     return result
 
@@ -189,7 +199,7 @@ def build_bearer_auth(config: ServerConfig) -> StaticTokenVerifier | None:
         if config.bearer_token:
             logger.warning(
                 "bearer_tokens_file_takes_precedence "
-                "BEARER_TOKENS_FILE=%s BEARER_TOKEN=<redacted> — "
+                "bearer_tokens_file=%s bearer_token=<redacted> — "
                 "single-token value is ignored",
                 tokens_file,
             )

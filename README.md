@@ -83,6 +83,10 @@ the file wins and a `WARNING` is logged. Subject strings are opaque to
 the library; the `<kind>:<id>` convention (`user:`, `service:`,
 `token:`) is documentation only.
 
+`MY_APP_BEARER_DEFAULT_SUBJECT` only applies to single-token mode; it
+is ignored when `MY_APP_BEARER_TOKENS_FILE` is set (mapped mode uses
+the per-token subjects from the TOML file).
+
 ### Remote debugging in containers
 
 Containerised consumers can opt into a remote Python debugger by calling
