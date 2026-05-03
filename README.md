@@ -34,6 +34,8 @@ may change without a major-version bump.
 uv add fastmcp-pvl-core
 # If you use RemoteAuthProvider mode:
 uv add "fastmcp-pvl-core[remote-auth]"
+# For attaching a remote Python debugger inside a container image:
+uv add "fastmcp-pvl-core[debug]"
 ```
 
 ## Usage
@@ -55,6 +57,50 @@ mcp = FastMCP(
 )
 wire_middleware_stack(mcp)
 ```
+
+### Remote debugging in containers
+
+Containerised consumers can opt into a remote Python debugger by calling
+`maybe_start_debugpy()` early in their CLI entrypoint:
+
+```python
+from fastmcp_pvl_core import configure_logging_from_env, maybe_start_debugpy
+
+def main() -> None:
+    configure_logging_from_env()
+    maybe_start_debugpy()  # no-op unless DEBUG_PORT is set
+    ...
+```
+
+Environment contract:
+
+- `DEBUG_PORT` — TCP port to listen on. Unset, blank, or any value that
+  parses to `0` is a silent no-op. Non-numeric or out-of-`1..65535`
+  values log a `WARNING` and the helper returns without raising.
+- `DEBUG_WAIT` — when truthy (`1`/`true`/`yes`/`on`, case-insensitive),
+  block startup until the IDE attaches. Default is non-blocking.
+- If `debugpy.listen()` itself fails (port in use, permission denied,
+  debugpy-internal error), the helper logs a `WARNING` and continues —
+  a debug-port problem must never crash the server.
+
+Install the optional `debug` extra on images that need the listener:
+
+```bash
+uv add "fastmcp-pvl-core[debug]"   # quote brackets in zsh
+# or, equivalently:
+uv add debugpy
+```
+
+The helper logs a `WARNING` and continues if `debugpy` is unavailable,
+so it is safe to ship in default scaffolds.
+
+> ⚠️ **Security:** the listener binds `0.0.0.0` and debugpy's DAP
+> protocol is **unauthenticated** — any peer that can reach the port
+> has arbitrary code execution as the server process. Only enable
+> `DEBUG_PORT` in environments where the port is reachable solely
+> from a trusted developer workstation, e.g. `kubectl port-forward`,
+> `docker run -p 127.0.0.1:5678:5678` (loopback bind), or an SSH
+> tunnel. Never publish the debug port on a public network.
 
 ## License
 

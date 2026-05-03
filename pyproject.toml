@@ -21,6 +21,10 @@ dependencies = [
 
 [project.optional-dependencies]
 remote-auth = []
+# Optional remote-debugger support — enables ``maybe_start_debugpy()`` to
+# bind a listener on ``DEBUG_PORT``. Containerised consumers add this
+# extra to images that need attach-from-IDE debugging.
+debug = ["debugpy>=1.8"]
 
 [project.urls]
 Homepage = "https://github.com/pvliesdonk/fastmcp-pvl-core"

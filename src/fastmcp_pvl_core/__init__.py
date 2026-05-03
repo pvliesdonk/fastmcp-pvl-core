@@ -21,6 +21,7 @@ from fastmcp_pvl_core._auth import (
 )
 from fastmcp_pvl_core._cli import make_serve_parser, normalise_http_path
 from fastmcp_pvl_core._config import ServerConfig, Transport
+from fastmcp_pvl_core._debug import maybe_start_debugpy
 from fastmcp_pvl_core._env import env, parse_bool, parse_list, parse_scopes
 from fastmcp_pvl_core._factory import (
     build_event_store,
@@ -96,6 +97,7 @@ __all__ = [
     "get_artifact_store",
     "make_icon",
     "make_serve_parser",
+    "maybe_start_debugpy",
     "normalise_http_path",
     "parse_bool",
     "parse_list",
