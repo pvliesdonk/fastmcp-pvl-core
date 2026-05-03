@@ -122,12 +122,10 @@ class TestBuildAuth:
 
 class TestBuildAuthMapped:
     def test_returns_verifier_in_bearer_mapped_mode(self, tmp_path: Path) -> None:
-        token_file = tmp_path / "tokens.toml"
-        token_file.write_text('[tokens]\n"k1" = "user:alice"\n', encoding="utf-8")
         from fastmcp.server.auth import StaticTokenVerifier
 
-        from fastmcp_pvl_core import ServerConfig, build_auth
-
+        token_file = tmp_path / "tokens.toml"
+        token_file.write_text('[tokens]\n"k1" = "user:alice"\n', encoding="utf-8")
         auth = build_auth(ServerConfig(bearer_tokens_file=token_file))
         assert isinstance(auth, StaticTokenVerifier)
         assert auth.tokens["k1"]["client_id"] == "user:alice"
@@ -135,11 +133,7 @@ class TestBuildAuthMapped:
 
 class TestBuildAuthMultiWithMapped:
     def test_multi_with_mapped_bearer_and_oidc_proxy(self, tmp_path):
-        from unittest.mock import MagicMock, patch
-
         from fastmcp.server.auth import MultiAuth, StaticTokenVerifier
-
-        from fastmcp_pvl_core import ServerConfig, build_auth
 
         token_file = tmp_path / "tokens.toml"
         token_file.write_text('[tokens]\n"k1" = "user:alice"\n', encoding="utf-8")
@@ -160,9 +154,6 @@ class TestBuildAuthMultiWithMapped:
 
     def test_multi_warns_when_both_bearer_inputs_set(self, tmp_path, caplog):
         import logging
-        from unittest.mock import MagicMock, patch
-
-        from fastmcp_pvl_core import ServerConfig, build_auth
 
         token_file = tmp_path / "tokens.toml"
         token_file.write_text('[tokens]\n"k1" = "user:alice"\n', encoding="utf-8")
@@ -191,8 +182,6 @@ class TestBuildAuthMultiWithMapped:
     ):
         import httpx
         from fastmcp.server.auth import StaticTokenVerifier
-
-        from fastmcp_pvl_core import ServerConfig, build_auth
 
         # Simulate remote auth discovery failure
         def _raise(*a, **kw):
