@@ -53,6 +53,7 @@ from fastmcp_pvl_core._server_info import (
     UpstreamResult,
     register_server_info_tool,
 )
+from fastmcp_pvl_core._subject import get_subject
 from fastmcp_pvl_core.file_exchange import (
     ConsumerSink,
     FetchContext,
@@ -97,6 +98,7 @@ __all__ = [
     "configure_logging_from_env",
     "env",
     "get_artifact_store",
+    "get_subject",
     "make_icon",
     "make_serve_parser",
     "maybe_start_debugpy",
