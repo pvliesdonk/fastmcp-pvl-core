@@ -127,9 +127,16 @@ def _load_bearer_tokens(path: Path) -> dict[str, str]:
         ConfigurationError: file missing, unparseable, schema-invalid, or
             containing empty/non-string values.
     """
-    if not path.exists():
-        raise ConfigurationError(f"bearer tokens file not found: {path}")
-    raw = path.read_text(encoding="utf-8").strip()
+    if not path.is_file():
+        raise ConfigurationError(
+            f"bearer tokens file not found or not a regular file: {path}"
+        )
+    try:
+        raw = path.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError) as exc:
+        raise ConfigurationError(
+            f"bearer tokens file at {path} could not be read: {exc}"
+        ) from exc
     if not raw:
         raise ConfigurationError(f"bearer tokens file is empty: {path}")
     try:
@@ -145,8 +152,8 @@ def _load_bearer_tokens(path: Path) -> dict[str, str]:
         )
     result: dict[str, str] = {}
     for token, subject in tokens.items():
-        # Validate the key side first (prevents "" or "   " tokens).
-        if not isinstance(token, str) or not token.strip():
+        # TOML keys are always strings, so just check they're non-blank.
+        if not token.strip():
             raise ConfigurationError(
                 f"bearer tokens file at {path}: token key is empty or whitespace-only"
             )
@@ -163,7 +170,7 @@ def _load_bearer_tokens(path: Path) -> dict[str, str]:
             )
         if not subject.strip():
             raise ConfigurationError(f"bearer tokens file at {path}: subject is empty")
-        result[str(token)] = subject
+        result[token] = subject
     return result
 
 
@@ -218,11 +225,16 @@ def build_bearer_auth(config: ServerConfig) -> StaticTokenVerifier | None:
         logger.debug("bearer_auth_skipped reason=not_configured")
         return None
 
+    # ``env()`` already strips and falls back; this guard handles direct
+    # ``ServerConfig(bearer_default_subject="")`` construction where the
+    # empty value would otherwise produce a verifier with empty client_id.
+    default_subject = (config.bearer_default_subject or "").strip() or "bearer-anon"
+
     logger.debug("bearer_auth_enabled token=<redacted>")
     return StaticTokenVerifier(
         tokens={
             token: {
-                "client_id": config.bearer_default_subject,
+                "client_id": default_subject,
                 "scopes": ["read", "write"],
             },
         },

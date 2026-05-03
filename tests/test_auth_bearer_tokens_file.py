@@ -42,6 +42,18 @@ class TestBearerTokensFileLoader:
         with pytest.raises(ConfigurationError, match="not found"):
             build_bearer_auth(ServerConfig(bearer_tokens_file=tmp_path / "nope.toml"))
 
+    def test_path_is_directory_raises_configuration_error(self, tmp_path: Path):
+        directory = tmp_path / "tokens.toml"
+        directory.mkdir()
+        with pytest.raises(ConfigurationError, match="not a regular file"):
+            build_bearer_auth(ServerConfig(bearer_tokens_file=directory))
+
+    def test_non_utf8_file_raises_configuration_error(self, tmp_path: Path):
+        path = tmp_path / "tokens.toml"
+        path.write_bytes(b'[tokens]\n\xff\xfe = "alice"\n')
+        with pytest.raises(ConfigurationError, match="could not be read"):
+            build_bearer_auth(ServerConfig(bearer_tokens_file=path))
+
     def test_malformed_toml_raises_configuration_error(self, tmp_path: Path):
         path = _write_tokens(tmp_path, '[tokens\n"x" = "y"')
         with pytest.raises(ConfigurationError, match="parse"):
@@ -144,3 +156,19 @@ class TestBearerSingleDefaultSubject:
         )
         assert auth is not None
         assert auth.tokens["t"]["client_id"] == "service:x"
+
+    def test_empty_default_subject_falls_back(self):
+        # Belt-and-suspenders: direct construction with an empty
+        # bearer_default_subject must not produce an empty client_id.
+        auth = build_bearer_auth(
+            ServerConfig(bearer_token="t", bearer_default_subject="")
+        )
+        assert auth is not None
+        assert auth.tokens["t"]["client_id"] == "bearer-anon"
+
+    def test_whitespace_only_default_subject_falls_back(self):
+        auth = build_bearer_auth(
+            ServerConfig(bearer_token="t", bearer_default_subject="   ")
+        )
+        assert auth is not None
+        assert auth.tokens["t"]["client_id"] == "bearer-anon"
