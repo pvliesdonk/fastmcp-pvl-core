@@ -9,6 +9,7 @@ MCP Apps domain.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Literal
 
 from fastmcp_pvl_core._env import env, parse_bool, parse_scopes
@@ -42,6 +43,9 @@ class ServerConfig:
     app_domain: str | None = None
 
     auth_mode: str | None = None
+
+    bearer_tokens_file: Path | None = None
+    bearer_default_subject: str = "bearer-anon"
 
     @classmethod
     def from_env(cls, env_prefix: str) -> ServerConfig:
@@ -77,6 +81,12 @@ class ServerConfig:
             parse_bool(verify_access_raw) if verify_access_raw is not None else False
         )
 
+        tokens_file_raw = env(env_prefix, "BEARER_TOKENS_FILE")
+        bearer_tokens_file = Path(tokens_file_raw) if tokens_file_raw else None
+        bearer_default_subject = env(
+            env_prefix, "BEARER_DEFAULT_SUBJECT", "bearer-anon"
+        )
+
         return cls(
             transport=transport,
             host=host,
@@ -93,4 +103,6 @@ class ServerConfig:
             event_store_url=env(env_prefix, "EVENT_STORE_URL"),
             app_domain=env(env_prefix, "APP_DOMAIN"),
             auth_mode=env(env_prefix, "AUTH_MODE"),
+            bearer_tokens_file=bearer_tokens_file,
+            bearer_default_subject=bearer_default_subject,
         )

@@ -24,6 +24,12 @@ class TestServerConfigDefaults:
         assert config.oidc_client_id is None
         assert config.oidc_required_scopes == ()
 
+    def test_bearer_tokens_file_defaults_to_none(self):
+        assert ServerConfig().bearer_tokens_file is None
+
+    def test_bearer_default_subject_default(self):
+        assert ServerConfig().bearer_default_subject == "bearer-anon"
+
 
 class TestServerConfigFromEnv:
     def test_reads_transport(self, monkeypatch: pytest.MonkeyPatch):
@@ -99,3 +105,24 @@ class TestServerConfigFromEnv:
         config = ServerConfig()
         with pytest.raises(AttributeError):
             config.transport = "http"  # type: ignore[misc]
+
+    def test_reads_bearer_tokens_file(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ):
+        token_file = tmp_path / "tokens.toml"
+        token_file.write_text("[tokens]\n", encoding="utf-8")
+        monkeypatch.setenv("MYAPP_BEARER_TOKENS_FILE", str(token_file))
+        config = ServerConfig.from_env("MYAPP")
+        assert config.bearer_tokens_file == token_file
+
+    def test_reads_bearer_default_subject(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setenv("MYAPP_BEARER_DEFAULT_SUBJECT", "service:bot")
+        config = ServerConfig.from_env("MYAPP")
+        assert config.bearer_default_subject == "service:bot"
+
+    def test_bearer_default_subject_falls_back_when_unset(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.delenv("MYAPP_BEARER_DEFAULT_SUBJECT", raising=False)
+        config = ServerConfig.from_env("MYAPP")
+        assert config.bearer_default_subject == "bearer-anon"
