@@ -10,9 +10,16 @@ from __future__ import annotations
 
 import logging
 import sys
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, cast
 
+if sys.version_info >= (3, 11):
+    import tomllib
+else:  # pragma: no cover - fallback for Python 3.10
+    import tomli as tomllib  # type: ignore[import-not-found]
+
 from fastmcp_pvl_core._config import ServerConfig
+from fastmcp_pvl_core._errors import ConfigurationError
 
 if TYPE_CHECKING:
     from fastmcp.server.auth import (
@@ -110,31 +117,103 @@ def resolve_auth_mode(config: ServerConfig) -> AuthMode:
     return "none"
 
 
-def build_bearer_auth(config: ServerConfig) -> StaticTokenVerifier | None:
-    """Build a :class:`StaticTokenVerifier` from ``config.bearer_token``.
+def _load_bearer_tokens(path: Path) -> dict[str, str]:
+    """Parse a bearer-token TOML file into a {token: subject} dict.
 
-    Returns a verifier that validates ``Authorization: Bearer <token>``
-    headers against the configured static token.  The token is granted
-    ``read`` and ``write`` scopes; operators scope down at the MCP layer
-    (e.g. tag-based tool hiding) rather than by differentiating bearer
-    scopes.
+    Raises:
+        ConfigurationError: file missing, unparseable, schema-invalid, or
+            containing empty/non-string values.
+    """
+    if not path.exists():
+        raise ConfigurationError(f"bearer tokens file not found: {path}")
+    raw = path.read_text(encoding="utf-8").strip()
+    if not raw:
+        raise ConfigurationError(f"bearer tokens file is empty: {path}")
+    try:
+        data = tomllib.loads(raw)
+    except tomllib.TOMLDecodeError as exc:
+        raise ConfigurationError(
+            f"bearer tokens file at {path} could not be parsed: {exc}"
+        ) from exc
+    tokens = data.get("tokens")
+    if not isinstance(tokens, dict) or not tokens:
+        raise ConfigurationError(
+            f"bearer tokens file at {path} must define a non-empty [tokens] table"
+        )
+    result: dict[str, str] = {}
+    for token, subject in tokens.items():
+        if not isinstance(subject, str):
+            raise ConfigurationError(
+                f"bearer tokens file at {path}: subject for token "
+                f"{token!r} must be a string"
+            )
+        if not subject.strip():
+            raise ConfigurationError(
+                f"bearer tokens file at {path}: subject for token {token!r} is empty"
+            )
+        result[str(token)] = subject
+    return result
+
+
+def build_bearer_auth(config: ServerConfig) -> StaticTokenVerifier | None:
+    """Build a :class:`StaticTokenVerifier` for either bearer flavor.
+
+    Two modes:
+
+    - **Mapped** (``bearer_tokens_file`` set): parse the TOML file and
+      build one verifier entry per ``token → subject`` row. The subject
+      is carried via the entry's ``client_id`` so request-time code can
+      retrieve it via :func:`get_subject`.
+    - **Single** (``bearer_token`` set, no file): one verifier entry
+      whose ``client_id`` is ``config.bearer_default_subject``
+      (defaults to ``"bearer-anon"``).
+
+    If both ``bearer_tokens_file`` and ``bearer_token`` are configured,
+    the file wins and a ``WARNING`` is logged.
 
     Args:
         config: Populated server configuration.
 
     Returns:
-        A configured :class:`StaticTokenVerifier`, or ``None`` when the
-        bearer token is absent or blank.
+        A configured :class:`StaticTokenVerifier`, or ``None`` when
+        neither flavor is configured.
+
+    Raises:
+        ConfigurationError: when ``bearer_tokens_file`` is set but the
+            file is missing, unparseable, or schema-invalid.
     """
+    from fastmcp.server.auth import StaticTokenVerifier
+
+    tokens_file = config.bearer_tokens_file
+    if tokens_file is not None:
+        if config.bearer_token:
+            logger.warning(
+                "bearer_tokens_file_takes_precedence "
+                "BEARER_TOKENS_FILE=%s BEARER_TOKEN=<redacted> — "
+                "single-token value is ignored",
+                tokens_file,
+            )
+        mapping = _load_bearer_tokens(tokens_file)
+        return StaticTokenVerifier(
+            tokens={
+                token: {"client_id": subject, "scopes": ["read", "write"]}
+                for token, subject in mapping.items()
+            },
+        )
+
     token = (config.bearer_token or "").strip()
     if not token:
         logger.debug("bearer_auth_skipped reason=not_configured")
         return None
-    logger.debug("bearer_auth_enabled token=<redacted>")
-    from fastmcp.server.auth import StaticTokenVerifier
 
+    logger.debug("bearer_auth_enabled token=<redacted>")
     return StaticTokenVerifier(
-        tokens={token: {"client_id": "bearer", "scopes": ["read", "write"]}},
+        tokens={
+            token: {
+                "client_id": config.bearer_default_subject,
+                "scopes": ["read", "write"],
+            },
+        },
     )
 
 
