@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
+from contextlib import AbstractContextManager
 from typing import Any
 from unittest.mock import patch
 
@@ -42,10 +43,12 @@ class _FakeAccessToken:
 
 
 @pytest.fixture
-def patch_get_access_token():
+def patch_get_access_token() -> Callable[
+    [_FakeAccessToken | None], AbstractContextManager[Any]
+]:
     """Patch FastMCP's get_access_token to return a controllable value."""
 
-    def _set(token):
+    def _set(token: _FakeAccessToken | None) -> AbstractContextManager[Any]:
         return patch("fastmcp_pvl_core._subject.get_access_token", return_value=token)
 
     return _set
@@ -98,6 +101,26 @@ class TestGetSubjectOIDC:
         ):
             assert get_subject() == "oidc-client-x"
 
+    def test_empty_sub_falls_back_to_client_id(self, patch_get_access_token):
+        # ``isinstance(sub, str) and sub`` rejects empty strings; the
+        # fallback to ``client_id`` must engage.
+        with patch_get_access_token(
+            _FakeAccessToken(client_id="oidc-client-x", claims={"sub": ""})
+        ):
+            assert get_subject() == "oidc-client-x"
+
+    def test_returns_none_when_sub_and_client_id_both_empty(
+        self, patch_get_access_token
+    ):
+        with patch_get_access_token(_FakeAccessToken(client_id="", claims={"sub": ""})):
+            assert get_subject() is None
+
+    def test_returns_none_when_sub_missing_and_client_id_none(
+        self, patch_get_access_token
+    ):
+        with patch_get_access_token(_FakeAccessToken(client_id=None, claims={})):
+            assert get_subject() is None
+
 
 class TestGetSubjectMissing:
     def test_returns_none_when_no_token_and_auth_configured(
@@ -107,3 +130,9 @@ class TestGetSubjectMissing:
         build_auth(ServerConfig(bearer_token="t"))
         with patch_get_access_token(None):
             assert get_subject() is None
+
+
+# Note: ``multi`` mode is not exercised here. When a token is present,
+# the bearer-vs-OIDC distinction flows through the token's ``claims`` and
+# ``client_id`` (not the resolved auth mode), so the OIDC and bearer
+# tests above already cover both runtime paths in ``multi`` deployments.

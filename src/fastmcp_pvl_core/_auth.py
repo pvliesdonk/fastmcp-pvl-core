@@ -419,6 +419,9 @@ def build_auth(config: ServerConfig) -> Any:
           see implementation comment).
     """
     mode = resolve_auth_mode(config)
+    # Record the resolved mode for ``get_subject``; must run before the
+    # early ``return None`` in the ``mode == "none"`` branch below so
+    # tools called in stdio/no-auth servers still get ``"local"``.
     set_current_auth_mode(mode)
 
     if mode == "none":

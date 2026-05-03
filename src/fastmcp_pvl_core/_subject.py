@@ -54,8 +54,9 @@ def get_subject() -> str | None:
     access_token = get_access_token()
     if access_token is None:
         return "local" if _current_auth_mode == "none" else None
-    claims = getattr(access_token, "claims", None) or {}
-    sub = claims.get("sub") if isinstance(claims, dict) else None
+    raw_claims = getattr(access_token, "claims", None)
+    claims = raw_claims if isinstance(raw_claims, dict) else {}
+    sub = claims.get("sub")
     if isinstance(sub, str) and sub:
         return sub
     client_id = getattr(access_token, "client_id", None)
