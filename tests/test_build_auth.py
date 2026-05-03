@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from fastmcp_pvl_core import ServerConfig, build_auth
@@ -117,3 +118,16 @@ class TestBuildAuth:
         with patch("httpx.get", side_effect=_boom):
             auth = build_auth(_remote_only_config(bearer_token="x"))
         assert isinstance(auth, StaticTokenVerifier)
+
+
+class TestBuildAuthMapped:
+    def test_returns_verifier_in_bearer_mapped_mode(self, tmp_path: Path) -> None:
+        token_file = tmp_path / "tokens.toml"
+        token_file.write_text('[tokens]\n"k1" = "user:alice"\n', encoding="utf-8")
+        from fastmcp.server.auth import StaticTokenVerifier
+
+        from fastmcp_pvl_core import ServerConfig, build_auth
+
+        auth = build_auth(ServerConfig(bearer_tokens_file=token_file))
+        assert isinstance(auth, StaticTokenVerifier)
+        assert auth.tokens["k1"]["client_id"] == "user:alice"
