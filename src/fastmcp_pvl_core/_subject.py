@@ -1,4 +1,3 @@
-# src/fastmcp_pvl_core/_subject.py
 """Uniform subject extraction across all auth modes.
 
 Downstream code that wants to know "who is making this request?" should
@@ -13,42 +12,44 @@ from __future__ import annotations
 
 from fastmcp.server.dependencies import get_access_token
 
-# Module-level pointer to the resolved auth mode. ``build_auth`` calls
-# ``set_current_auth_mode`` exactly once at server startup; ``get_subject``
-# reads it to decide whether the absence of an access token means
-# "stdio/no-auth" (returns "local") or "auth configured but no valid
-# token" (returns None).
+# Process-global pointer to the auth mode resolved at server startup.
+# ``build_auth`` calls ``set_current_auth_mode``; the most recent value
+# is in effect. ``get_subject`` reads it to decide whether the absence
+# of an access token means "stdio/no-auth" (returns "local") or "auth
+# configured but no valid token" (returns None).
+#
+# This is a process-global rather than a contextvar by design — auth
+# mode is resolved once at startup and is invariant across requests.
 _current_auth_mode: str | None = None
 
 
 def set_current_auth_mode(mode: str | None) -> None:
     """Record the auth mode resolved at server startup.
 
-    Called by :func:`fastmcp_pvl_core.build_auth`. Tests that bypass
-    ``build_auth`` may call this directly.
+    Called by :func:`fastmcp_pvl_core.build_auth`. Tests that exercise
+    :func:`get_subject` without going through ``build_auth`` may call
+    this directly. Passing ``None`` resets the pointer (useful between
+    tests).
     """
     global _current_auth_mode
     _current_auth_mode = mode
 
 
-def get_subject(_ctx_or_request: object | None = None) -> str | None:
+def get_subject() -> str | None:
     """Return the subject of the current request, or ``None``.
 
     Resolution order:
 
-    1. If FastMCP's :func:`get_access_token` returns a token, return
-       ``token.claims["sub"]`` if present, else ``token.client_id``.
-       The builders are responsible for ensuring ``client_id`` carries
-       the right value per mode (mapped subject for ``bearer-mapped``,
-       ``bearer_default_subject`` for ``bearer-single``).
+    1. If FastMCP's :func:`get_access_token` returns a token, prefer
+       ``token.claims["sub"]`` (OIDC's standard subject claim); fall
+       back to ``token.client_id`` when ``sub`` is absent or non-string.
+       The builders normalise ``client_id`` per bearer mode (mapped
+       subject for ``bearer-mapped``, ``bearer_default_subject`` for
+       ``bearer-single``).
     2. If there is no access token and ``set_current_auth_mode`` was
        called with ``"none"``, return the literal ``"local"``.
     3. Otherwise return ``None`` and let the caller decide whether to
        fall back or error.
-
-    The optional ``_ctx_or_request`` argument is reserved for future use
-    (an explicit request/context object); v1 ignores it and reads from
-    FastMCP's ambient context plumbing.
     """
     access_token = get_access_token()
     if access_token is None:

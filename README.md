@@ -102,13 +102,21 @@ def whoami() -> str:
     return subject or "anonymous"
 ```
 
-Return values per mode:
+Resolution order:
 
-- `auth_mode == "none"` → `"local"`.
-- `auth_mode == "bearer-single"` → `bearer_default_subject` (default `"bearer-anon"`).
-- `auth_mode == "bearer-mapped"` → the per-token subject from the TOML map.
-- OIDC modes → the `sub` claim from the validated token, falling back to `client_id`.
-- No valid token (and auth required) → `None`. Caller decides whether to fall back or error.
+1. **Token present:** prefer `claims["sub"]` (OIDC's standard subject
+   claim); fall back to `client_id` if `sub` is absent. The auth
+   builders normalise `client_id` per mode:
+   - `bearer-single` → `bearer_default_subject` (default `"bearer-anon"`).
+   - `bearer-mapped` → the per-token subject from the TOML map.
+   - OIDC modes (`oidc-proxy`, `remote`) → typically `claims["sub"]` wins
+     (a real OIDC token always carries `sub`); the `client_id` fallback
+     is defensive.
+   - `multi` → bearer-validated requests follow the bearer path,
+     OIDC-validated requests follow the OIDC path.
+2. **No token, `auth_mode == "none"`:** returns the literal `"local"`.
+3. **No token, auth required:** returns `None` — caller decides whether
+   to fall back or error.
 
 ### Remote debugging in containers
 

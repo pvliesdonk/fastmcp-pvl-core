@@ -291,10 +291,14 @@ Each PR ships its own tests. mypy-strict and ruff are gates per pyproject.toml.
 
 ### PR #36
 
-- `test_subject.py` — all five auth modes return expected subjects via a fake
-  auth context (using FastMCP's testing primitives); `get_subject` works from
-  inside a tool body, a middleware, and a resource handler (three integration
-  tests).
+- `test_subject.py` — unit tests covering each branch of `get_subject`'s
+  resolution order: `auth_mode=="none"` returns `"local"`, bearer-single
+  uses the default subject from `client_id`, bearer-mapped uses the
+  mapped subject, OIDC prefers `claims["sub"]` and falls back to
+  `client_id` when `sub` is absent, and missing-token-with-auth-required
+  returns `None`. Implementation reads FastMCP's ambient context via
+  `get_access_token`; tests patch that single call site rather than
+  spinning up a full FastMCP server.
 
 ### PR #37
 

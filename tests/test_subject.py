@@ -1,8 +1,8 @@
-# tests/test_subject.py
 """Tests for get_subject helper."""
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from typing import Any
 from unittest.mock import patch
 
@@ -13,6 +13,20 @@ from fastmcp_pvl_core import (
     build_auth,
     get_subject,
 )
+from fastmcp_pvl_core._subject import set_current_auth_mode
+
+
+@pytest.fixture(autouse=True)
+def _reset_auth_mode() -> Iterator[None]:
+    """Reset the process-global auth-mode pointer between tests.
+
+    Without this, a test that doesn't call ``build_auth`` would observe
+    the mode set by whichever earlier test ran last — order-dependent
+    flakes are easy to introduce as the suite grows.
+    """
+    set_current_auth_mode(None)
+    yield
+    set_current_auth_mode(None)
 
 
 class _FakeAccessToken:
@@ -46,9 +60,7 @@ class TestGetSubjectAuthModeNone:
 
 
 class TestGetSubjectBearerSingle:
-    def test_returns_default_subject_from_client_id(
-        self, patch_get_access_token, tmp_path
-    ):
+    def test_returns_default_subject_from_client_id(self, patch_get_access_token):
         cfg = ServerConfig(bearer_token="x", bearer_default_subject="bearer-anon")
         build_auth(cfg)
         with patch_get_access_token(_FakeAccessToken(client_id="bearer-anon")):

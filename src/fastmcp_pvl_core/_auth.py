@@ -23,6 +23,7 @@ else:  # pragma: no cover - fallback for Python 3.10
 
 from fastmcp_pvl_core._config import ServerConfig
 from fastmcp_pvl_core._errors import ConfigurationError
+from fastmcp_pvl_core._subject import set_current_auth_mode
 
 if TYPE_CHECKING:
     from fastmcp.server.auth import (
@@ -418,10 +419,6 @@ def build_auth(config: ServerConfig) -> Any:
           see implementation comment).
     """
     mode = resolve_auth_mode(config)
-
-    # Local import to avoid a circular-import surface at module load time.
-    from fastmcp_pvl_core._subject import set_current_auth_mode
-
     set_current_auth_mode(mode)
 
     if mode == "none":
