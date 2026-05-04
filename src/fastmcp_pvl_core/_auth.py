@@ -11,15 +11,18 @@ from __future__ import annotations
 import logging
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal, TypeGuard, cast
 
 if sys.version_info >= (3, 11):
+    from typing import assert_never
+
     import tomllib
 else:  # pragma: no cover - fallback for Python 3.10
     # ``import-not-found`` covers CI rows where ``tomli`` is excluded by
     # the marker (3.11+); ``unused-ignore`` covers local 3.10 envs where
     # ``tomli`` is installed and the ignore would otherwise be flagged.
     import tomli as tomllib  # type: ignore[import-not-found,unused-ignore]
+    from typing_extensions import assert_never
 
 from fastmcp_pvl_core._config import ServerConfig
 from fastmcp_pvl_core._errors import ConfigurationError
@@ -46,6 +49,11 @@ AuthMode = Literal[
 _VALID_MODES: frozenset[Literal["remote", "oidc-proxy"]] = frozenset(
     {"remote", "oidc-proxy"}
 )
+
+
+def _is_valid_override(value: str) -> TypeGuard[Literal["remote", "oidc-proxy"]]:
+    """Narrow ``value`` to the override-valid subset of :data:`AuthMode`."""
+    return value in _VALID_MODES
 
 
 def resolve_auth_mode(config: ServerConfig) -> AuthMode:
@@ -80,9 +88,9 @@ def resolve_auth_mode(config: ServerConfig) -> AuthMode:
     """
     explicit = (config.auth_mode or "").strip().lower()
     if explicit:
-        if explicit in _VALID_MODES:
+        if _is_valid_override(explicit):
             logger.info("auth_mode=%s (explicit via AUTH_MODE)", explicit)
-            return cast(AuthMode, explicit)
+            return explicit
         logger.warning(
             "auth_mode_unknown value=%r — ignoring, falling back to auto-detection",
             explicit,
@@ -424,47 +432,54 @@ def build_auth(config: ServerConfig) -> Any:
     # tools called in stdio/no-auth servers still get ``"local"``.
     set_current_auth_mode(mode)
 
-    if mode == "none":
-        return None
-    if mode in ("bearer-single", "bearer-mapped"):
-        return build_bearer_auth(config)
-    if mode == "oidc-proxy":
-        return build_oidc_proxy_auth(config)
-    if mode == "remote":
-        return build_remote_auth(config)
+    # ``match``-based dispatch with an explicit ``case _`` calling
+    # ``assert_never`` makes adding a new :data:`AuthMode` literal a
+    # mypy error rather than a silent fall-through.
+    match mode:
+        case "none":
+            return None
+        case "bearer-single" | "bearer-mapped":
+            return build_bearer_auth(config)
+        case "oidc-proxy":
+            return build_oidc_proxy_auth(config)
+        case "remote":
+            return build_remote_auth(config)
+        case "multi":
+            oidc_auth: OIDCProxy | RemoteAuthProvider | None = build_oidc_proxy_auth(
+                config
+            ) or build_remote_auth(config)
+            bearer_auth = build_bearer_auth(config)
 
-    # mode == "multi"
-    oidc_auth: OIDCProxy | RemoteAuthProvider | None = build_oidc_proxy_auth(
-        config
-    ) or build_remote_auth(config)
-    bearer_auth = build_bearer_auth(config)
+            if oidc_auth is None or bearer_auth is None:
+                # One of the two builders returned None despite
+                # ``resolve_auth_mode`` reporting "multi" (e.g. remote-auth
+                # discovery failed, or httpx missing).  Fall back to
+                # whichever one is available rather than silently dropping
+                # auth entirely.
+                logger.warning(
+                    "multi_auth_degraded oidc=%s bearer=%s — falling back to "
+                    "whichever auth provider succeeded",
+                    oidc_auth is not None,
+                    bearer_auth is not None,
+                )
+                return oidc_auth or bearer_auth
 
-    if oidc_auth is None or bearer_auth is None:
-        # One of the two builders returned None despite resolve_auth_mode
-        # reporting "multi" (e.g. remote-auth discovery failed, or httpx
-        # missing).  Fall back to whichever one is available rather than
-        # silently dropping auth entirely.
-        logger.warning(
-            "multi_auth_degraded oidc=%s bearer=%s — falling back to "
-            "whichever auth provider succeeded",
-            oidc_auth is not None,
-            bearer_auth is not None,
-        )
-        return oidc_auth or bearer_auth
+            from fastmcp.server.auth import MultiAuth
 
-    from fastmcp.server.auth import MultiAuth
-
-    # required_scopes=[] is load-bearing: without it, OIDC's ["openid"]
-    # scope propagates to FastMCP's RequireAuthMiddleware and rejects
-    # bearer tokens lacking "openid" with 403 insufficient_scope
-    # (MV PR #249).
-    #
-    # OIDCProxy / RemoteAuthProvider (both OAuthProvider subclasses) MUST
-    # go in server= — passing an OAuthProvider in verifiers= silently
-    # drops its OAuth routes because get_routes/get_well_known_routes
-    # only delegate to self.server.
-    return MultiAuth(
-        server=oidc_auth,
-        verifiers=[bearer_auth],
-        required_scopes=[],
-    )
+            # ``required_scopes=[]`` is load-bearing: without it, OIDC's
+            # ``["openid"]`` scope propagates to FastMCP's
+            # RequireAuthMiddleware and rejects bearer tokens lacking
+            # ``openid`` with 403 insufficient_scope (MV PR #249).
+            #
+            # OIDCProxy / RemoteAuthProvider (both OAuthProvider
+            # subclasses) MUST go in ``server=`` — passing an
+            # ``OAuthProvider`` in ``verifiers=`` silently drops its OAuth
+            # routes because ``get_routes`` / ``get_well_known_routes``
+            # only delegate to ``self.server``.
+            return MultiAuth(
+                server=oidc_auth,
+                verifiers=[bearer_auth],
+                required_scopes=[],
+            )
+        case _:
+            assert_never(mode)

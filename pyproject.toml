@@ -21,6 +21,10 @@ dependencies = [
   # tokens-file loader uses it transparently via a sys.version_info
   # gate. Drop this dep once ``requires-python`` is bumped to >=3.11.
   "tomli>=2.0; python_version < '3.11'",
+  # typing_extensions provides ``assert_never`` on 3.10 (stdlib has it
+  # only in 3.11+). Same sys.version_info gate as tomli; drop alongside
+  # when ``requires-python`` is bumped to >=3.11.
+  "typing_extensions>=4.7; python_version < '3.11'",
 ]
 
 [project.optional-dependencies]
