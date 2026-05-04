@@ -344,16 +344,26 @@ def build_remote_auth(config: ServerConfig) -> RemoteAuthProvider | None:
     tokens are validated locally.
 
     Requires ``base_url`` and ``oidc_config_url`` on *config*.  Returns
-    ``None`` when either is missing, when ``httpx`` is not installed
-    (the ``remote-auth`` extra), when the discovery request fails, or
-    when the discovery document is missing ``jwks_uri``/``issuer``.
+    ``None`` only as a precondition signal when either is missing
+    (caller should already have routed away from ``remote`` mode in
+    that case).  Other failure modes — ``httpx`` not installed, the
+    discovery fetch failing, the discovery document missing
+    ``jwks_uri`` / ``issuer`` — raise :class:`ConfigurationError`
+    rather than returning ``None``: a server that asked for OIDC and
+    cannot get it must fail at startup, never silently degrade to
+    "no auth at all" or "bearer break-glass only".
 
     Args:
         config: Populated server configuration.
 
     Returns:
         A configured :class:`RemoteAuthProvider`, or ``None`` when
-        remote auth cannot be built.
+        ``base_url`` / ``oidc_config_url`` are absent (precondition
+        miss; not a failure mode).
+
+    Raises:
+        ConfigurationError: ``httpx`` missing, discovery fetch failed,
+            or the discovery document is incomplete.
     """
     if not config.base_url or not config.oidc_config_url:
         logger.debug("remote_auth_skipped reason=missing_base_url_or_config_url")
@@ -361,33 +371,29 @@ def build_remote_auth(config: ServerConfig) -> RemoteAuthProvider | None:
 
     try:
         import httpx
-    except ImportError:
-        logger.warning(
-            "remote_auth_skipped reason=httpx_missing — "
-            "install with `pip install fastmcp-pvl-core[remote-auth]`"
-        )
-        return None
+    except ImportError as exc:
+        raise ConfigurationError(
+            "remote auth requires the 'remote-auth' extra "
+            "(install with `pip install fastmcp-pvl-core[remote-auth]`); "
+            "refusing to start without auth"
+        ) from exc
 
     try:
         resp = httpx.get(config.oidc_config_url, timeout=10)
         resp.raise_for_status()
         discovery = resp.json()
-    except (httpx.HTTPError, ValueError):
-        logger.exception(
-            "remote_auth_discovery_failed config_url=%s",
-            config.oidc_config_url,
-        )
-        return None
+    except (httpx.HTTPError, ValueError) as exc:
+        raise ConfigurationError(
+            f"OIDC discovery fetch failed at {config.oidc_config_url}: {exc}"
+        ) from exc
 
     jwks_uri = discovery.get("jwks_uri")
     issuer = discovery.get("issuer")
     if not jwks_uri or not issuer:
-        logger.error(
-            "remote_auth_discovery_incomplete jwks_uri=%s issuer=%s",
-            jwks_uri,
-            issuer,
+        raise ConfigurationError(
+            f"OIDC discovery document at {config.oidc_config_url} is "
+            f"incomplete: jwks_uri={jwks_uri!r} issuer={issuer!r}"
         )
-        return None
 
     required_scopes: list[str] | None = list(config.oidc_required_scopes) or None
 
@@ -450,24 +456,35 @@ def build_auth(config: ServerConfig) -> Any:
         case "remote":
             return build_remote_auth(config)
         case "multi":
+            # ``build_remote_auth`` raises ``ConfigurationError`` on
+            # discovery / dependency failures, so the only way for either
+            # ``oidc_auth`` or ``bearer_auth`` to be ``None`` here is a
+            # precondition mismatch (e.g. ``build_oidc_proxy_auth`` finds
+            # missing fields and ``build_remote_auth`` likewise returns
+            # ``None`` from its precondition check).  In multi mode that
+            # is itself a misconfiguration: ``resolve_auth_mode`` only
+            # picks "multi" when both bearer and OIDC inputs are present
+            # at startup.  Hard-fail rather than silent-degrade.
             oidc_auth: OIDCProxy | RemoteAuthProvider | None = build_oidc_proxy_auth(
                 config
             ) or build_remote_auth(config)
             bearer_auth = build_bearer_auth(config)
 
-            if oidc_auth is None or bearer_auth is None:
-                # One of the two builders returned None despite
-                # ``resolve_auth_mode`` reporting "multi" (e.g. remote-auth
-                # discovery failed, or httpx missing).  Fall back to
-                # whichever one is available rather than silently dropping
-                # auth entirely.
-                logger.warning(
-                    "multi_auth_degraded oidc=%s bearer=%s — falling back to "
-                    "whichever auth provider succeeded",
-                    oidc_auth is not None,
-                    bearer_auth is not None,
+            if oidc_auth is None:
+                raise ConfigurationError(
+                    "multi-mode auth requires both OIDC and bearer providers; "
+                    "OIDC builder returned None — check OIDC configuration "
+                    "(base_url, oidc_config_url, and the proxy fields if used). "
+                    "Refusing to start without OIDC; would otherwise silently "
+                    "degrade to bearer-only and break the operator's "
+                    "real-identity contract."
                 )
-                return oidc_auth or bearer_auth
+            if bearer_auth is None:
+                raise ConfigurationError(
+                    "multi-mode auth requires both OIDC and bearer providers; "
+                    "bearer builder returned None — check bearer configuration "
+                    "(bearer_token or bearer_tokens_file)."
+                )
 
             from fastmcp.server.auth import MultiAuth
 

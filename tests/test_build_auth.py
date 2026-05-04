@@ -5,6 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from fastmcp_pvl_core import ServerConfig, build_auth
 
 
@@ -105,19 +107,24 @@ class TestBuildAuth:
         assert auth.required_scopes == []
         assert isinstance(auth.server, RemoteAuthProvider)
 
-    def test_multi_falls_back_to_bearer_when_oidc_build_fails(
-        self,
-    ):
-        """If remote discovery fails, fall back to bearer alone, not None."""
+    def test_multi_hard_fails_when_oidc_discovery_fails(self):
+        """OIDC discovery failure in multi mode must abort startup.
+
+        Regression guard for issue #41: the previous behaviour was to
+        log a ``multi_auth_degraded`` warning and silently fall back
+        to bearer-only — a security-relevant silent failure where the
+        operator believes OIDC is enforcing identity but it is not.
+        """
         import httpx
-        from fastmcp.server.auth import StaticTokenVerifier
+
+        from fastmcp_pvl_core import ConfigurationError
 
         def _boom(*_args: object, **_kw: object) -> MagicMock:
             raise httpx.ConnectError("boom")
 
         with patch("httpx.get", side_effect=_boom):
-            auth = build_auth(_remote_only_config(bearer_token="x"))
-        assert isinstance(auth, StaticTokenVerifier)
+            with pytest.raises(ConfigurationError, match="discovery"):
+                build_auth(_remote_only_config(bearer_token="x"))
 
 
 class TestBuildAuthMapped:
@@ -177,13 +184,21 @@ class TestBuildAuthMultiWithMapped:
             for r in caplog.records
         )
 
-    def test_multi_falls_back_to_mapped_bearer_when_oidc_build_fails(
+    def test_multi_with_mapped_bearer_hard_fails_when_oidc_discovery_fails(
         self, tmp_path, monkeypatch
     ):
-        import httpx
-        from fastmcp.server.auth import StaticTokenVerifier
+        """Same hard-fail as the single-bearer case — across both bearer flavors.
 
-        # Simulate remote auth discovery failure
+        The audit's silent-failure-hunter flagged this exact scenario
+        (mapped bearer + remote OIDC, discovery fails) as the canonical
+        operator foot-gun: the deployment looks fine, audit logs show
+        per-user mapped subjects from the bearer side, but OIDC isn't
+        actually enforcing anything.  Hard-fail at startup instead.
+        """
+        import httpx
+
+        from fastmcp_pvl_core import ConfigurationError
+
         def _raise(*a, **kw):
             raise httpx.ConnectError("network down")
 
@@ -197,7 +212,5 @@ class TestBuildAuthMultiWithMapped:
             oidc_config_url=("https://idp.example/.well-known/openid-configuration"),
             # Only base_url + oidc_config_url set → remote mode (not proxy)
         )
-        auth = build_auth(cfg)
-        # OIDC discovery fails → fallback to whatever bearer succeeded.
-        assert isinstance(auth, StaticTokenVerifier)
-        assert auth.tokens["k1"]["client_id"] == "user:alice"
+        with pytest.raises(ConfigurationError, match="discovery"):
+            build_auth(cfg)
