@@ -30,6 +30,20 @@ class TestServerConfigDefaults:
     def test_bearer_default_subject_default(self):
         assert ServerConfig().bearer_default_subject == "bearer-anon"
 
+    def test_blank_bearer_default_subject_normalises_at_construction(self):
+        # The non-blank invariant lives on the dataclass (``__post_init__``),
+        # so direct construction with an empty / whitespace-only value
+        # must produce a config carrying the package default.  These
+        # assertions are observable on the construction surface itself,
+        # without relying on downstream consumers (``build_bearer_auth``)
+        # to paper over a blank subject.
+        assert ServerConfig(bearer_default_subject="").bearer_default_subject == (
+            "bearer-anon"
+        )
+        assert ServerConfig(bearer_default_subject="   ").bearer_default_subject == (
+            "bearer-anon"
+        )
+
 
 class TestServerConfigFromEnv:
     def test_reads_transport(self, monkeypatch: pytest.MonkeyPatch):
