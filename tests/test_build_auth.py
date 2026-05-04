@@ -126,6 +126,30 @@ class TestBuildAuth:
             with pytest.raises(ConfigurationError, match="discovery"):
                 build_auth(_remote_only_config(bearer_token="x"))
 
+    def test_multi_hard_fails_when_bearer_builder_returns_none(self):
+        """Defense-in-depth: bearer_auth=None in multi mode → ConfigurationError.
+
+        Currently unreachable via ``build_auth`` because
+        ``resolve_auth_mode`` only picks ``"multi"`` when bearer config is
+        present, so ``build_bearer_auth`` is guaranteed to return a
+        verifier.  This test forces the dispatcher into the multi branch
+        with no bearer config (via a mocked resolver) to lock in the
+        contract that the explicit ``bearer_auth is None`` guard fires
+        rather than silently constructing a half-auth ``MultiAuth``.
+        Catches a future refactor that desyncs the resolver from the
+        builder preconditions.
+        """
+        from fastmcp_pvl_core import ConfigurationError
+
+        cfg = _oidc_proxy_config()  # OIDC fully configured, no bearer
+        mock_proxy_cls = MagicMock()
+        with (
+            patch("fastmcp_pvl_core._auth.resolve_auth_mode", return_value="multi"),
+            patch("fastmcp.server.auth.oidc_proxy.OIDCProxy", mock_proxy_cls),
+            pytest.raises(ConfigurationError, match="bearer"),
+        ):
+            build_auth(cfg)
+
 
 class TestBuildAuthMapped:
     def test_returns_verifier_in_bearer_mapped_mode(self, tmp_path: Path) -> None:
