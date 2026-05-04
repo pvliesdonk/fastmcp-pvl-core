@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextvars
 from collections.abc import Callable
 from contextlib import AbstractContextManager
 from typing import Any
@@ -144,8 +145,6 @@ class TestExplicitContextIsolation:
         last-writer-wins — see the module docstring on ``_subject.py``
         for caller guidance.
         """
-        import contextvars
-
         # Two independent contexts: each will call ``build_auth`` with
         # a different config, then both will be read after both writes
         # have happened.
