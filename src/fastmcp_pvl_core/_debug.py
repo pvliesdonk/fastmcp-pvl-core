@@ -4,16 +4,17 @@ Containerised consumers (image-generation-mcp, markdown-vault-mcp, ...)
 need a uniform way to attach a remote Python debugger without each one
 hand-rolling the ``debugpy`` bootstrap. Call :func:`maybe_start_debugpy`
 early in ``main()`` (after logging is configured, before argument
-parsing): it is a no-op unless ``DEBUG_PORT`` is set, so it is safe to
-ship in default scaffolds.
+parsing) with the same ``env_prefix`` the rest of the server uses for
+its config: it is a no-op unless ``{PREFIX}_DEBUG_PORT`` is set, so it
+is safe to ship in default scaffolds.
 
 Environment contract:
 
-* ``DEBUG_PORT`` — TCP port to listen on. Unset, blank, or any value
-  that parses to ``0`` disables the helper silently. Non-numeric or
-  out-of-``1..65535`` values log a ``WARNING`` and the helper returns
-  without raising. Surrounding whitespace is ignored.
-* ``DEBUG_WAIT`` — when truthy (``1``/``true``/``yes``/``on``,
+* ``{PREFIX}_DEBUG_PORT`` — TCP port to listen on. Unset, blank, or any
+  value that parses to ``0`` disables the helper silently. Non-numeric
+  or out-of-``1..65535`` values log a ``WARNING`` and the helper
+  returns without raising. Surrounding whitespace is ignored.
+* ``{PREFIX}_DEBUG_WAIT`` — when truthy (``1``/``true``/``yes``/``on``,
   case-insensitive — see ``parse_bool`` in ``_env.py``), block startup
   until the IDE attaches. Default is non-blocking so missing-attach
   doesn't deadlock production containers that were accidentally built
@@ -31,18 +32,18 @@ to call unconditionally in the default scaffold.
    outside the container — this is intentional for the developer
    workflow, but **debugpy's DAP protocol is unauthenticated**: any
    peer that can reach the port has arbitrary code execution as the
-   server process. Only enable ``DEBUG_PORT`` in environments where
-   the port is reachable solely from a trusted developer workstation
-   (e.g. ``kubectl port-forward``, ``docker run -p 127.0.0.1:5678:5678``,
-   an SSH tunnel). Never publish the debug port on a public network.
+   server process. Only enable ``{PREFIX}_DEBUG_PORT`` in environments
+   where the port is reachable solely from a trusted developer
+   workstation (e.g. ``kubectl port-forward``,
+   ``docker run -p 127.0.0.1:5678:5678``, an SSH tunnel). Never publish
+   the debug port on a public network.
 """
 
 from __future__ import annotations
 
 import logging
-import os
 
-from fastmcp_pvl_core._env import parse_bool
+from fastmcp_pvl_core._env import env, parse_bool
 
 logger = logging.getLogger(__name__)
 
@@ -56,14 +57,14 @@ logger = logging.getLogger(__name__)
 _started = False
 
 
-def maybe_start_debugpy() -> None:
-    """Start a debugpy listener if ``DEBUG_PORT`` is set.
+def maybe_start_debugpy(env_prefix: str) -> None:
+    """Start a debugpy listener if ``{env_prefix}_DEBUG_PORT`` is set.
 
-    Reads ``DEBUG_PORT`` from the environment. Unset, blank, or any
-    value that parses to ``0`` is a silent no-op. Non-numeric or
-    out-of-``1..65535`` values log a ``WARNING`` so misconfiguration
-    is visible. Otherwise imports :mod:`debugpy` lazily and binds
-    ``("0.0.0.0", port)``.
+    Reads ``{env_prefix}_DEBUG_PORT`` from the environment. Unset,
+    blank, or any value that parses to ``0`` is a silent no-op.
+    Non-numeric or out-of-``1..65535`` values log a ``WARNING`` so
+    misconfiguration is visible. Otherwise imports :mod:`debugpy`
+    lazily and binds ``("0.0.0.0", port)``.
 
     A failed import logs a ``WARNING`` pointing at the ``debug`` extra
     and returns. A failure inside :func:`debugpy.listen` (port in use,
@@ -71,8 +72,8 @@ def maybe_start_debugpy() -> None:
     ``WARNING`` and returns — a debug-port problem must never crash
     the server.
 
-    When ``DEBUG_WAIT`` is truthy the helper blocks until the IDE
-    attaches (``debugpy.wait_for_client()``); otherwise startup
+    When ``{env_prefix}_DEBUG_WAIT`` is truthy the helper blocks until
+    the IDE attaches (``debugpy.wait_for_client()``); otherwise startup
     continues immediately. A failure inside ``wait_for_client`` (e.g.
     debugpy-internal error, transport hiccup) likewise logs a
     ``WARNING`` and returns — the listener is still up, so the IDE can
@@ -84,6 +85,12 @@ def maybe_start_debugpy() -> None:
     a ``wait_for_client`` failure a re-call short-circuits silently:
     the listener is up, there is nothing more to do.
 
+    Args:
+        env_prefix: The same per-app prefix the server uses for its
+            other env vars (e.g. ``"MY_APP"`` produces
+            ``MY_APP_DEBUG_PORT`` / ``MY_APP_DEBUG_WAIT``). Trailing
+            underscore optional, matching ``_env.env``'s convention.
+
     Security note: the listener binds ``0.0.0.0`` and debugpy's DAP
     protocol is unauthenticated. Only expose the port to a trusted
     developer workstation (port-forward, loopback bind, SSH tunnel).
@@ -93,15 +100,17 @@ def maybe_start_debugpy() -> None:
     if _started:
         return
 
-    raw = os.environ.get("DEBUG_PORT", "").strip()
-    if not raw:
+    port_var = f"{env_prefix.rstrip('_')}_DEBUG_PORT"
+    raw = env(env_prefix, "DEBUG_PORT")
+    if raw is None:
         return
 
     try:
         port = int(raw)
     except ValueError:
         logger.warning(
-            "DEBUG_PORT=%r is not a valid integer; debugpy listener not started.",
+            "%s=%r is not a valid integer; debugpy listener not started.",
+            port_var,
             raw,
         )
         return
@@ -113,7 +122,8 @@ def maybe_start_debugpy() -> None:
 
     if not 1 <= port <= 65535:
         logger.warning(
-            "DEBUG_PORT=%d is outside 1..65535; debugpy listener not started.",
+            "%s=%d is outside 1..65535; debugpy listener not started.",
+            port_var,
             port,
         )
         return
@@ -125,9 +135,10 @@ def maybe_start_debugpy() -> None:
         import debugpy  # type: ignore[import-not-found, unused-ignore]
     except ImportError:
         logger.warning(
-            "DEBUG_PORT=%d set but debugpy is not installed. "
+            "%s=%d set but debugpy is not installed. "
             "Install with `pip install 'fastmcp-pvl-core[debug]'` "
             "or `uv add debugpy`.",
+            port_var,
             port,
         )
         return
@@ -145,8 +156,9 @@ def maybe_start_debugpy() -> None:
     _started = True
     logger.info("debugpy listening on 0.0.0.0:%d", port)
 
-    if parse_bool(os.environ.get("DEBUG_WAIT", "")):
-        logger.info("DEBUG_WAIT=true — blocking until debugger attaches...")
+    if parse_bool(env(env_prefix, "DEBUG_WAIT", "")):
+        wait_var = f"{env_prefix.rstrip('_')}_DEBUG_WAIT"
+        logger.info("%s=true — blocking until debugger attaches...", wait_var)
         try:
             debugpy.wait_for_client()
         except KeyboardInterrupt:
