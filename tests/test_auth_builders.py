@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from fastmcp_pvl_core import (
+    ConfigurationError,
     ServerConfig,
     build_bearer_auth,
     build_oidc_proxy_auth,
@@ -141,15 +142,17 @@ class TestBuildRemoteAuth:
     def test_returns_none_when_only_base_url(self):
         assert build_remote_auth(ServerConfig(base_url="https://x")) is None
 
-    def test_returns_none_when_httpx_unavailable(self, monkeypatch: pytest.MonkeyPatch):
+    def test_raises_configuration_error_when_httpx_unavailable(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
         monkeypatch.setitem(sys.modules, "httpx", None)
-        result = build_remote_auth(
-            ServerConfig(
-                base_url="https://x",
-                oidc_config_url="https://idp/.well-known/openid-configuration",
+        with pytest.raises(ConfigurationError, match="remote-auth"):
+            build_remote_auth(
+                ServerConfig(
+                    base_url="https://x",
+                    oidc_config_url="https://idp/.well-known/openid-configuration",
+                )
             )
-        )
-        assert result is None
 
     def test_returns_provider_when_discovery_succeeds(
         self, monkeypatch: pytest.MonkeyPatch
@@ -181,7 +184,7 @@ class TestBuildRemoteAuth:
         )
         assert isinstance(auth, RemoteAuthProvider)
 
-    def test_returns_none_when_discovery_missing_fields(
+    def test_raises_when_discovery_missing_fields(
         self, monkeypatch: pytest.MonkeyPatch
     ):
         import httpx
@@ -194,34 +197,34 @@ class TestBuildRemoteAuth:
                 return {}  # missing jwks_uri/issuer
 
         monkeypatch.setattr(httpx, "get", lambda *a, **kw: _StubResponse())
-        auth = build_remote_auth(
-            ServerConfig(
-                base_url="https://x.example",
-                oidc_config_url=(
-                    "https://idp.example/.well-known/openid-configuration"
-                ),
+        with pytest.raises(ConfigurationError, match="incomplete"):
+            build_remote_auth(
+                ServerConfig(
+                    base_url="https://x.example",
+                    oidc_config_url=(
+                        "https://idp.example/.well-known/openid-configuration"
+                    ),
+                )
             )
-        )
-        assert auth is None
 
-    def test_returns_none_when_discovery_raises(self, monkeypatch: pytest.MonkeyPatch):
+    def test_raises_when_discovery_raises(self, monkeypatch: pytest.MonkeyPatch):
         import httpx
 
         def _raise(*a, **kw):
             raise httpx.ConnectError("network down")
 
         monkeypatch.setattr(httpx, "get", _raise)
-        auth = build_remote_auth(
-            ServerConfig(
-                base_url="https://x.example",
-                oidc_config_url=(
-                    "https://idp.example/.well-known/openid-configuration"
-                ),
+        with pytest.raises(ConfigurationError, match="discovery"):
+            build_remote_auth(
+                ServerConfig(
+                    base_url="https://x.example",
+                    oidc_config_url=(
+                        "https://idp.example/.well-known/openid-configuration"
+                    ),
+                )
             )
-        )
-        assert auth is None
 
-    def test_returns_none_when_discovery_json_malformed(
+    def test_raises_when_discovery_json_malformed(
         self, monkeypatch: pytest.MonkeyPatch
     ):
         import httpx
@@ -234,12 +237,12 @@ class TestBuildRemoteAuth:
                 raise ValueError("not json")
 
         monkeypatch.setattr(httpx, "get", lambda *a, **kw: _BadJSONResp())
-        auth = build_remote_auth(
-            ServerConfig(
-                base_url="https://x.example",
-                oidc_config_url=(
-                    "https://idp.example/.well-known/openid-configuration"
-                ),
+        with pytest.raises(ConfigurationError, match="discovery"):
+            build_remote_auth(
+                ServerConfig(
+                    base_url="https://x.example",
+                    oidc_config_url=(
+                        "https://idp.example/.well-known/openid-configuration"
+                    ),
+                )
             )
-        )
-        assert auth is None
