@@ -135,20 +135,23 @@ def get_subject() -> str | None:
     return None
 ```
 
-`_current_auth_mode` is a process-global pointer set at server startup by
-a module-level `set_current_auth_mode(mode)` that `build_auth` calls
-after resolving the mode and before any early return — so
-`get_subject()` returns `"local"` even in stdio/no-auth servers where
-`build_auth` itself returns `None`.
+`_current_auth_mode` captures the resolved auth mode during server
+initialisation (via `set_current_auth_mode`) so that `get_subject()`
+can correctly distinguish between an unauthenticated local caller
+(returning `"local"`) and a missing token in an authenticated session
+(returning `None`).
 
-The architectural questions raised by this design — the module-global
-mutable state (which doesn't survive concurrent `build_auth` calls in a
-multi-server-in-one-process setup), the typed contract on
-`set_current_auth_mode`, missing end-to-end integration tests for tool /
-middleware / resource surfaces — are tracked separately in
+The current implementation stores it as a process-global; the
+architectural concerns this raises — surviving concurrent `build_auth`
+calls in a multi-server-in-one-process setup, the typed contract on
+`set_current_auth_mode`, missing end-to-end integration tests for tool
+/ middleware / resource surfaces — are tracked separately in
 [#42](https://github.com/pvliesdonk/fastmcp-pvl-core/issues/42),
 [#48](https://github.com/pvliesdonk/fastmcp-pvl-core/issues/48), and
-[#44](https://github.com/pvliesdonk/fastmcp-pvl-core/issues/44).
+[#44](https://github.com/pvliesdonk/fastmcp-pvl-core/issues/44). The
+contract above (functional behaviour of `get_subject()` per auth mode)
+is the durable specification; the storage mechanism is expected to
+change.
 
 ### README drift fix (PR #39)
 
