@@ -42,6 +42,27 @@ class TestBearerTokensFileLoader:
         with pytest.raises(ConfigurationError, match="not found"):
             build_bearer_auth(ServerConfig(bearer_tokens_file=tmp_path / "nope.toml"))
 
+    def test_tilde_path_expands_at_load_time(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        # Direct construction with a ``~``-prefixed path keeps the tilde
+        # literal on the dataclass; the loader normalises it via
+        # ``Path.expanduser`` so the file is found.
+        _write_tokens(tmp_path, '[tokens]\n"k1" = "user:alice"\n')
+        monkeypatch.setenv("HOME", str(tmp_path))
+        cfg = ServerConfig(bearer_tokens_file=Path("~/tokens.toml"))
+        # Field stays literal — the loader is the expansion site.
+        assert cfg.bearer_tokens_file is not None
+        assert str(cfg.bearer_tokens_file) == "~/tokens.toml"
+        # ``expanduser`` against the patched ``$HOME`` resolves to the
+        # same file the loader will touch.  This is the meaningful
+        # regression guard: removing ``expanduser`` from the loader
+        # would make ``build_bearer_auth`` raise "file not found".
+        assert cfg.bearer_tokens_file.expanduser() == tmp_path / "tokens.toml"
+        auth = build_bearer_auth(cfg)
+        assert auth is not None
+        assert auth.tokens["k1"]["client_id"] == "user:alice"
+
     def test_path_is_directory_raises_configuration_error(self, tmp_path: Path):
         directory = tmp_path / "tokens.toml"
         directory.mkdir()

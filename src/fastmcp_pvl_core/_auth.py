@@ -124,10 +124,17 @@ def resolve_auth_mode(config: ServerConfig) -> AuthMode:
 def _load_bearer_tokens(path: Path) -> dict[str, str]:
     """Parse a bearer-token TOML file into a {token: subject} dict.
 
+    The path is normalised with :meth:`Path.expanduser` first.  This is
+    the single expansion site for both env-loaded configs (``from_env``
+    intentionally keeps a leading ``~`` literal) and direct-construction
+    configs (where ``Path("~/tokens.toml")`` also keeps the tilde
+    literal).  Both call sites converge on the same expanded path here.
+
     Raises:
         ConfigurationError: file missing, unparseable, schema-invalid, or
             containing empty/non-string values.
     """
+    path = path.expanduser()
     if not path.is_file():
         raise ConfigurationError(
             f"bearer tokens file not found or not a regular file: {path}"

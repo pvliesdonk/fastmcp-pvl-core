@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from fastmcp_pvl_core import ServerConfig
@@ -112,6 +114,25 @@ class TestServerConfigFromEnv:
         monkeypatch.setenv("MYAPP_BEARER_TOKENS_FILE", str(token_file))
         config = ServerConfig.from_env("MYAPP")
         assert config.bearer_tokens_file == token_file
+
+    def test_bearer_tokens_file_keeps_tilde_literal(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
+        # ``from_env`` no longer expands ``~`` — the loader is the single
+        # expansion site.  Verifies the load-bearing change in this PR:
+        # the env-driven path stays literal on the dataclass and only
+        # resolves to the on-disk file when it reaches the loader.
+        token_file = tmp_path / "tokens.toml"
+        token_file.write_text('[tokens]\n"k1" = "user:alice"\n', encoding="utf-8")
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("MYAPP_BEARER_TOKENS_FILE", "~/tokens.toml")
+        config = ServerConfig.from_env("MYAPP")
+        # Field is the literal ``~/tokens.toml`` — not expanded yet.
+        assert str(config.bearer_tokens_file) == "~/tokens.toml"
+        # Expanding by hand (with the patched ``$HOME``) lands on the
+        # actual file the loader will touch.
+        assert config.bearer_tokens_file is not None
+        assert config.bearer_tokens_file.expanduser() == token_file
 
     def test_reads_bearer_default_subject(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setenv("MYAPP_BEARER_DEFAULT_SUBJECT", "service:bot")
