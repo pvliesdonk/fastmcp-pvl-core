@@ -347,11 +347,12 @@ def build_remote_auth(config: ServerConfig) -> RemoteAuthProvider | None:
     ``None`` only as a precondition signal when either is missing
     (caller should already have routed away from ``remote`` mode in
     that case).  Other failure modes — ``httpx`` not installed, the
-    discovery fetch failing, the discovery document missing
-    ``jwks_uri`` / ``issuer`` — raise :class:`ConfigurationError`
-    rather than returning ``None``: a server that asked for OIDC and
-    cannot get it must fail at startup, never silently degrade to
-    "no auth at all" or "bearer break-glass only".
+    discovery request failing (network error or malformed JSON), the
+    discovery document missing ``jwks_uri`` / ``issuer`` — raise
+    :class:`ConfigurationError` rather than returning ``None``: a
+    server that asked for OIDC and cannot get it must fail at startup,
+    never silently degrade to "no auth at all" or "bearer break-glass
+    only".
 
     Args:
         config: Populated server configuration.
@@ -362,8 +363,9 @@ def build_remote_auth(config: ServerConfig) -> RemoteAuthProvider | None:
         miss; not a failure mode).
 
     Raises:
-        ConfigurationError: ``httpx`` missing, discovery fetch failed,
-            or the discovery document is incomplete.
+        ConfigurationError: ``httpx`` missing, discovery failed
+            (network error or malformed JSON), or the discovery
+            document is incomplete.
     """
     if not config.base_url or not config.oidc_config_url:
         logger.debug("remote_auth_skipped reason=missing_base_url_or_config_url")
@@ -383,8 +385,12 @@ def build_remote_auth(config: ServerConfig) -> RemoteAuthProvider | None:
         resp.raise_for_status()
         discovery = resp.json()
     except (httpx.HTTPError, ValueError) as exc:
+        # Catches both network-layer failures (``httpx.HTTPError``) and
+        # parse-layer failures (``ValueError`` from ``resp.json()``);
+        # phrasing avoids "fetch" so the message stays accurate for the
+        # parse case too.
         raise ConfigurationError(
-            f"OIDC discovery fetch failed at {config.oidc_config_url}: {exc}"
+            f"OIDC discovery failed at {config.oidc_config_url}: {exc}"
         ) from exc
 
     jwks_uri = discovery.get("jwks_uri")

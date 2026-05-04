@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from fastmcp_pvl_core import (
+    ConfigurationError,
     ServerConfig,
     build_bearer_auth,
     build_oidc_proxy_auth,
@@ -144,8 +145,6 @@ class TestBuildRemoteAuth:
     def test_raises_configuration_error_when_httpx_unavailable(
         self, monkeypatch: pytest.MonkeyPatch
     ):
-        from fastmcp_pvl_core import ConfigurationError
-
         monkeypatch.setitem(sys.modules, "httpx", None)
         with pytest.raises(ConfigurationError, match="remote-auth"):
             build_remote_auth(
@@ -190,8 +189,6 @@ class TestBuildRemoteAuth:
     ):
         import httpx
 
-        from fastmcp_pvl_core import ConfigurationError
-
         class _StubResponse:
             def raise_for_status(self) -> None:
                 return None
@@ -213,8 +210,6 @@ class TestBuildRemoteAuth:
     def test_raises_when_discovery_raises(self, monkeypatch: pytest.MonkeyPatch):
         import httpx
 
-        from fastmcp_pvl_core import ConfigurationError
-
         def _raise(*a, **kw):
             raise httpx.ConnectError("network down")
 
@@ -233,8 +228,6 @@ class TestBuildRemoteAuth:
         self, monkeypatch: pytest.MonkeyPatch
     ):
         import httpx
-
-        from fastmcp_pvl_core import ConfigurationError
 
         class _BadJSONResp:
             def raise_for_status(self) -> None:

@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from fastmcp_pvl_core import ServerConfig, build_auth
+from fastmcp_pvl_core import ConfigurationError, ServerConfig, build_auth
 
 
 def _oidc_proxy_config(**overrides: object) -> ServerConfig:
@@ -117,8 +117,6 @@ class TestBuildAuth:
         """
         import httpx
 
-        from fastmcp_pvl_core import ConfigurationError
-
         def _boom(*_args: object, **_kw: object) -> MagicMock:
             raise httpx.ConnectError("boom")
 
@@ -139,8 +137,6 @@ class TestBuildAuth:
         Catches a future refactor that desyncs the resolver from the
         builder preconditions.
         """
-        from fastmcp_pvl_core import ConfigurationError
-
         cfg = _oidc_proxy_config()  # OIDC fully configured, no bearer
         mock_proxy_cls = MagicMock()
         with (
@@ -220,8 +216,6 @@ class TestBuildAuthMultiWithMapped:
         actually enforcing anything.  Hard-fail at startup instead.
         """
         import httpx
-
-        from fastmcp_pvl_core import ConfigurationError
 
         def _raise(*a, **kw):
             raise httpx.ConnectError("network down")
