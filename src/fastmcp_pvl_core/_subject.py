@@ -10,6 +10,7 @@ module is a thin extractor.
 
 from __future__ import annotations
 
+from contextvars import ContextVar
 from typing import TYPE_CHECKING
 
 from fastmcp.server.dependencies import get_access_token
@@ -19,15 +20,30 @@ if TYPE_CHECKING:
     # (``_auth`` imports ``set_current_auth_mode`` from this module).
     from fastmcp_pvl_core._auth import AuthMode
 
-# Process-global pointer to the auth mode resolved at server startup.
-# ``build_auth`` calls ``set_current_auth_mode``; the most recent value
-# is in effect. ``get_subject`` reads it to decide whether the absence
-# of an access token means "stdio/no-auth" (returns "local") or "auth
+# Per-context pointer to the auth mode resolved at server startup.
+# ``build_auth`` calls ``set_current_auth_mode`` once after resolving
+# the mode; ``get_subject`` reads it to decide whether the absence of
+# an access token means "stdio/no-auth" (returns "local") or "auth
 # configured but no valid token" (returns None).
 #
-# This is a process-global rather than a contextvar by design — auth
-# mode is resolved once at startup and is invariant across requests.
-_current_auth_mode: AuthMode | None = None
+# Implemented as a :class:`ContextVar` rather than a module global so
+# that the suite-wide autouse fixture in ``tests/conftest.py``
+# (``_reset_auth_mode``, which calls ``set_current_auth_mode(None)``
+# before/after every test) and explicitly-isolated harnesses
+# (``contextvars.copy_context().run(...)``) can reset / scope the
+# value cleanly.  Note: pytest does not auto-reset ``ContextVar``
+# values between tests on its own; the autouse fixture is what makes
+# isolation work.  In the natural single-context production pattern
+# (two ``build_auth`` calls in the same ``main()`` body) last-writer
+# still wins — caller code wishing to compose multiple ``FastMCP``
+# instances with distinct auth modes must wrap each ``build_auth`` in
+# its own ``copy_context().run(...)``.  In standard server-startup-
+# then-serve deployments, asyncio's task context inherits the
+# startup value uniformly across requests.
+_current_auth_mode: ContextVar[AuthMode | None] = ContextVar(
+    "fastmcp_pvl_core_current_auth_mode",
+    default=None,
+)
 
 
 def set_current_auth_mode(mode: AuthMode | None) -> None:
@@ -38,8 +54,7 @@ def set_current_auth_mode(mode: AuthMode | None) -> None:
     this directly. Passing ``None`` resets the pointer (useful between
     tests).
     """
-    global _current_auth_mode
-    _current_auth_mode = mode
+    _current_auth_mode.set(mode)
 
 
 def get_subject() -> str | None:
@@ -60,7 +75,7 @@ def get_subject() -> str | None:
     """
     access_token = get_access_token()
     if access_token is None:
-        return "local" if _current_auth_mode == "none" else None
+        return "local" if _current_auth_mode.get() == "none" else None
     raw_claims = getattr(access_token, "claims", None)
     claims = raw_claims if isinstance(raw_claims, dict) else {}
     sub = claims.get("sub")
