@@ -234,16 +234,14 @@ def build_bearer_auth(config: ServerConfig) -> StaticTokenVerifier | None:
         logger.debug("bearer_auth_skipped reason=not_configured")
         return None
 
-    # ``env()`` already strips and falls back; this guard handles direct
-    # ``ServerConfig(bearer_default_subject="")`` construction where the
-    # empty value would otherwise produce a verifier with empty client_id.
-    default_subject = (config.bearer_default_subject or "").strip() or "bearer-anon"
-
+    # ``ServerConfig.__post_init__`` normalises blank/whitespace-only
+    # ``bearer_default_subject`` to the package default, so we can read
+    # the field directly without a defensive consumer-side fallback.
     logger.debug("bearer_auth_enabled token=<redacted>")
     return StaticTokenVerifier(
         tokens={
             token: {
-                "client_id": default_subject,
+                "client_id": config.bearer_default_subject,
                 "scopes": ["read", "write"],
             },
         },
