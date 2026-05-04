@@ -130,24 +130,27 @@ Resolution order:
 ### Remote debugging in containers
 
 Containerised consumers can opt into a remote Python debugger by calling
-`maybe_start_debugpy()` early in their CLI entrypoint:
+`maybe_start_debugpy(env_prefix)` early in their CLI entrypoint, passing
+the same per-app prefix the server uses for the rest of its config:
 
 ```python
 from fastmcp_pvl_core import configure_logging_from_env, maybe_start_debugpy
 
 def main() -> None:
     configure_logging_from_env()
-    maybe_start_debugpy()  # no-op unless DEBUG_PORT is set
+    maybe_start_debugpy("MY_APP")  # no-op unless MY_APP_DEBUG_PORT is set
     ...
 ```
 
-Environment contract:
+Environment contract (`{PREFIX}` matches the argument):
 
-- `DEBUG_PORT` — TCP port to listen on. Unset, blank, or any value that
-  parses to `0` is a silent no-op. Non-numeric or out-of-`1..65535`
-  values log a `WARNING` and the helper returns without raising.
-- `DEBUG_WAIT` — when truthy (`1`/`true`/`yes`/`on`, case-insensitive),
-  block startup until the IDE attaches. Default is non-blocking.
+- `{PREFIX}_DEBUG_PORT` — TCP port to listen on. Unset, blank, or any
+  value that parses to `0` is a silent no-op. Non-numeric or
+  out-of-`1..65535` values log a `WARNING` and the helper returns
+  without raising.
+- `{PREFIX}_DEBUG_WAIT` — when truthy (`1`/`true`/`yes`/`on`,
+  case-insensitive), block startup until the IDE attaches. Default is
+  non-blocking.
 - If `debugpy.listen()` itself fails (port in use, permission denied,
   debugpy-internal error), the helper logs a `WARNING` and continues —
   a debug-port problem must never crash the server.
@@ -166,10 +169,10 @@ so it is safe to ship in default scaffolds.
 > ⚠️ **Security:** the listener binds `0.0.0.0` and debugpy's DAP
 > protocol is **unauthenticated** — any peer that can reach the port
 > has arbitrary code execution as the server process. Only enable
-> `DEBUG_PORT` in environments where the port is reachable solely
-> from a trusted developer workstation, e.g. `kubectl port-forward`,
-> `docker run -p 127.0.0.1:5678:5678` (loopback bind), or an SSH
-> tunnel. Never publish the debug port on a public network.
+> `{PREFIX}_DEBUG_PORT` in environments where the port is reachable
+> solely from a trusted developer workstation, e.g. `kubectl
+> port-forward`, `docker run -p 127.0.0.1:5678:5678` (loopback bind),
+> or an SSH tunnel. Never publish the debug port on a public network.
 
 ## License
 
