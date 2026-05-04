@@ -10,7 +10,14 @@ module is a thin extractor.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from fastmcp.server.dependencies import get_access_token
+
+if TYPE_CHECKING:
+    # Imported only for typing; runtime import would create a cycle
+    # (``_auth`` imports ``set_current_auth_mode`` from this module).
+    from fastmcp_pvl_core._auth import AuthMode
 
 # Process-global pointer to the auth mode resolved at server startup.
 # ``build_auth`` calls ``set_current_auth_mode``; the most recent value
@@ -20,10 +27,10 @@ from fastmcp.server.dependencies import get_access_token
 #
 # This is a process-global rather than a contextvar by design — auth
 # mode is resolved once at startup and is invariant across requests.
-_current_auth_mode: str | None = None
+_current_auth_mode: AuthMode | None = None
 
 
-def set_current_auth_mode(mode: str | None) -> None:
+def set_current_auth_mode(mode: AuthMode | None) -> None:
     """Record the auth mode resolved at server startup.
 
     Called by :func:`fastmcp_pvl_core.build_auth`. Tests that exercise
