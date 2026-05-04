@@ -123,7 +123,7 @@ def get_subject() -> str | None:
         # No auth context. Local stdio with auth_mode == "none" returns
         # the constant "local"; anything else returns None and lets the
         # caller decide whether to fall back or error.
-        return "local" if _current_auth_mode == "none" else None
+        return "local" if _current_auth_mode.get() == "none" else None
     raw_claims = getattr(access_token, "claims", None)
     claims = raw_claims if isinstance(raw_claims, dict) else {}
     sub = claims.get("sub")
@@ -135,20 +135,27 @@ def get_subject() -> str | None:
     return None
 ```
 
-`_current_auth_mode` is a process-global pointer set at server startup by
-a module-level `set_current_auth_mode(mode)` that `build_auth` calls
-after resolving the mode and before any early return — so
-`get_subject()` returns `"local"` even in stdio/no-auth servers where
-`build_auth` itself returns `None`.
+`_current_auth_mode` captures the resolved auth mode during server
+initialisation (via `set_current_auth_mode`) so that `get_subject()`
+can correctly distinguish between an unauthenticated local caller
+(returning `"local"`) and a missing token in an authenticated session
+(returning `None`).
 
-The architectural questions raised by this design — the module-global
-mutable state (which doesn't survive concurrent `build_auth` calls in a
-multi-server-in-one-process setup), the typed contract on
-`set_current_auth_mode`, missing end-to-end integration tests for tool /
-middleware / resource surfaces — are tracked separately in
-[#42](https://github.com/pvliesdonk/fastmcp-pvl-core/issues/42),
-[#48](https://github.com/pvliesdonk/fastmcp-pvl-core/issues/48), and
-[#44](https://github.com/pvliesdonk/fastmcp-pvl-core/issues/44).
+The pointer is implemented as a `contextvars.ContextVar`. The primary
+benefit over a module global is **test isolation**, achieved via the
+suite-wide autouse fixture `_reset_auth_mode` in `tests/conftest.py`
+(pytest itself does not auto-reset `ContextVar` values across tests —
+the fixture is what makes the isolation work; without it, a `set()`
+in one test would leak to the next). Explicit harnesses that wrap
+each `build_auth` call in its own `contextvars.copy_context().run(...)`
+get scope-local isolation the same way. In the natural single-context
+production pattern (two `build_auth` calls in the same `main()`)
+last-writer-wins — a caller wishing to compose multiple `FastMCP`
+instances with distinct auth modes must do so via
+`copy_context().run(...)` per instance. asyncio task contexts inherit
+from the spawning context at task-creation time, so a
+server-startup-then-serve pattern propagates the startup-set value to
+every per-request task uniformly.
 
 ### README drift fix (PR #39)
 
@@ -167,9 +174,12 @@ its own tests.
   `ConfigurationError`; missing file → `ConfigurationError`; blank file →
   `ConfigurationError`; both env vars set → WARNING + file wins; mapped
   token → request succeeds with the mapped subject visible on
-  `access_token.client_id`. The "unmapped token → 401" assertion was
-  delegated to fastmcp's `StaticTokenVerifier` and is being added as a
-  direct test in [#47](https://github.com/pvliesdonk/fastmcp-pvl-core/issues/47).
+  `access_token.client_id`. The "unmapped token → 401" assertion is
+  delegated to fastmcp's `StaticTokenVerifier`; a direct integration
+  test was considered in
+  [#47](https://github.com/pvliesdonk/fastmcp-pvl-core/issues/47) and
+  closed-as-deferred for the same fastmcp in-memory-transport reason
+  as #44.
 - `test_auth_mode.py` extended — `bearer-single` vs `bearer-mapped`
   resolution; `multi` mode with mapped bearer.
 - `test_config.py` extended — `bearer_tokens_file` and
@@ -187,8 +197,14 @@ its own tests.
   rather than spinning up a full FastMCP server.
 - The originating issue's "works equally from inside a tool body, a
   middleware, and a resource handler" verification is *not* covered by
-  these unit tests; integration tests against a real FastMCP server are
-  tracked in [#44](https://github.com/pvliesdonk/fastmcp-pvl-core/issues/44).
+  these unit tests. Integration tests against a real FastMCP server
+  were considered in
+  [#44](https://github.com/pvliesdonk/fastmcp-pvl-core/issues/44) and
+  deferred: fastmcp's in-memory `FastMCPTransport` runs the low-level
+  MCP server directly and bypasses the HTTP-layer auth middleware, so
+  there is no in-process integration surface today that exercises the
+  auth chain end-to-end. The issue is closed-as-deferred with reopen
+  conditions documented inline.
 
 ## PR-by-PR breakdown
 
@@ -207,8 +223,10 @@ its own tests.
   - `{PREFIX}_BEARER_TOKEN=<token>` (single) continues to work; subject is
     `bearer_default_subject` (default `"bearer-anon"`).
   - Both env vars set → WARNING logged and file mode active.
-  - Unmapped token → 401 (delegated to `StaticTokenVerifier`; direct test
-    pending — see issue #47).
+  - Unmapped token → 401 (delegated to `StaticTokenVerifier`; a direct
+    integration test was considered in
+    [#47](https://github.com/pvliesdonk/fastmcp-pvl-core/issues/47) and
+    deferred for the same fastmcp in-memory-transport reason as #44).
   - Malformed/missing file → fail-fast at startup with a clear
     `ConfigurationError`.
 
@@ -222,8 +240,9 @@ its own tests.
   pointing at `get_subject`.
 - Issue verification list: each auth mode returns the expected subject
   shape; `auth_mode` reporting in startup logs aligns with the values
-  the function returns.  The "from inside tool / middleware / resource"
-  AC remains unverified at the integration level — see issue #44.
+  the function returns. The "from inside tool / middleware / resource"
+  AC remains unverified at the integration level — see #44 (closed as
+  deferred) for the architectural reason and the reopen conditions.
 
 ## Versioning
 
