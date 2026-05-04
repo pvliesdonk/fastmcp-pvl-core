@@ -7,7 +7,7 @@ auth, middleware, logging, config helpers, server-factory building blocks.
 
 - [`fastmcp-server-template`](https://github.com/pvliesdonk/fastmcp-server-template) —
   copier template that scaffolds new FastMCP servers on top of this library.
-- Active consumers (as of 2026-04):
+- Active consumers:
   [`markdown-vault-mcp`](https://github.com/pvliesdonk/markdown-vault-mcp),
   [`scholar-mcp`](https://github.com/pvliesdonk/scholar-mcp),
   [`image-generation-mcp`](https://github.com/pvliesdonk/image-generation-mcp).
@@ -18,7 +18,7 @@ auth, middleware, logging, config helpers, server-factory building blocks.
 
 ## API stability
 
-This package is stable at 1.x and follows
+This package is stable at 2.x and follows
 [semantic versioning](https://semver.org/): breaking changes bump the
 major version, new features bump the minor, bugfixes bump the patch.
 "Public API" means symbols re-exported from the top-level
@@ -83,9 +83,18 @@ the file wins and a `WARNING` is logged. Subject strings are opaque to
 the library; the `<kind>:<id>` convention (`user:`, `service:`,
 `token:`) is documentation only.
 
-`MY_APP_BEARER_DEFAULT_SUBJECT` only applies to single-token mode; it
-is ignored when `MY_APP_BEARER_TOKENS_FILE` is set (mapped mode uses
-the per-token subjects from the TOML file).
+If `MY_APP_BEARER_TOKENS_FILE` is set but the file is missing,
+unparseable, or schema-invalid, the loader raises
+`fastmcp_pvl_core.ConfigurationError` at startup — the server fails
+fast rather than silently denying every request. The exception type
+is part of the public API; downstream code can `import` and `except`
+it as a stable contract.
+
+`MY_APP_BEARER_DEFAULT_SUBJECT` only applies when bearer auth runs in
+single-token mode (either standalone or as the bearer side of `multi`
+mode alongside OIDC). It is ignored when `MY_APP_BEARER_TOKENS_FILE`
+is set, including in `multi` mode — mapped mode uses the per-token
+subjects from the TOML file.
 
 ### Identifying the caller — `get_subject`
 
