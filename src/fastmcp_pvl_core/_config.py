@@ -116,9 +116,12 @@ class ServerConfig:
         )
 
         tokens_file_raw = env(env_prefix, "BEARER_TOKENS_FILE")
-        bearer_tokens_file = (
-            Path(tokens_file_raw).expanduser() if tokens_file_raw else None
-        )
+        # ``Path(...)`` keeps a leading ``~`` literal here.  Expansion is
+        # performed once, in :func:`fastmcp_pvl_core._auth._load_bearer_tokens`,
+        # so both this env-driven path and a directly-constructed
+        # ``ServerConfig(bearer_tokens_file=Path("~/tokens.toml"))`` resolve
+        # the tilde at the same call site.
+        bearer_tokens_file = Path(tokens_file_raw) if tokens_file_raw else None
         bearer_default_subject = env(
             env_prefix, "BEARER_DEFAULT_SUBJECT", DEFAULT_BEARER_SUBJECT
         )
