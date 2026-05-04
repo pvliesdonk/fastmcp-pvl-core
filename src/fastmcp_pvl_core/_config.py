@@ -60,7 +60,7 @@ class ServerConfig:
     def __post_init__(self) -> None:
         """Enforce the non-blank ``bearer_default_subject`` invariant.
 
-        Blank / whitespace-only values are rewritten to
+        Blank, whitespace-only, or ``None`` values are rewritten to
         :data:`DEFAULT_BEARER_SUBJECT` rather than rejected, so that
         direct construction (``ServerConfig(bearer_default_subject="")``)
         stays permissive.  This guard exists specifically for the
@@ -74,8 +74,15 @@ class ServerConfig:
         produce a ``StaticTokenVerifier`` entry with an empty
         ``client_id`` — exactly the foot-gun the consumer-side
         defensive fallback in ``_auth.py`` was previously papering over.
+
+        The ``or ""`` in the guard is belt-and-suspenders against a
+        stray ``None`` reaching this method from a non-mypy-checked
+        construction site (unpacked-config dict, dynamic test fixture,
+        etc.).  The field is typed ``str`` and mypy is the primary
+        enforcement; the runtime guard preserves the equivalent of the
+        prior ``_auth.py`` fallback's robustness.
         """
-        if not self.bearer_default_subject.strip():
+        if not (self.bearer_default_subject or "").strip():
             # ``object.__setattr__`` bypasses the frozen-dataclass guard;
             # this is the documented escape hatch for ``__post_init__``
             # normalisation on a frozen dataclass.
