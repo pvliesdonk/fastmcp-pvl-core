@@ -87,6 +87,37 @@ the library; the `<kind>:<id>` convention (`user:`, `service:`,
 is ignored when `MY_APP_BEARER_TOKENS_FILE` is set (mapped mode uses
 the per-token subjects from the TOML file).
 
+### Identifying the caller — `get_subject`
+
+Tools, middleware, and resource handlers can call
+`fastmcp_pvl_core.get_subject()` to retrieve the subject of the current
+request without knowing which auth mode is active:
+
+```python
+from fastmcp_pvl_core import get_subject
+
+@mcp.tool
+def whoami() -> str:
+    subject = get_subject()
+    return subject or "anonymous"
+```
+
+Resolution order:
+
+1. **Token present:** prefer `claims["sub"]` (OIDC's standard subject
+   claim); fall back to `client_id` if `sub` is absent. The auth
+   builders normalise `client_id` per mode:
+   - `bearer-single` → `bearer_default_subject` (default `"bearer-anon"`).
+   - `bearer-mapped` → the per-token subject from the TOML map.
+   - OIDC modes (`oidc-proxy`, `remote`) → typically `claims["sub"]` wins
+     (a real OIDC token always carries `sub`); the `client_id` fallback
+     is defensive.
+   - `multi` → bearer-validated requests follow the bearer path,
+     OIDC-validated requests follow the OIDC path.
+2. **No token, `auth_mode == "none"`:** returns the literal `"local"`.
+3. **No token, auth required:** returns `None` — caller decides whether
+   to fall back or error.
+
 ### Remote debugging in containers
 
 Containerised consumers can opt into a remote Python debugger by calling

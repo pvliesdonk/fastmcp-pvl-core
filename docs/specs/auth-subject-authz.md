@@ -17,7 +17,7 @@ claim; the bearer surface needs a comparable affordance for deployments that
 prefer pre-shared tokens (CI bots, service-to-service, small teams, no IdP).
 
 Once a real subject exists across all auth modes, the next two layers can land:
-a uniform `get_subject(request)` extractor so downstream code stops poking at
+a uniform `get_subject()` extractor so downstream code stops poking at
 the auth context directly, and an optional `authorization` submodule providing
 the `subject + tenant + required_scope → allow/deny` middleware that several
 consuming servers will otherwise reinvent.
@@ -27,7 +27,7 @@ consuming servers will otherwise reinvent.
 This spec covers three sequential pull requests, one per issue:
 
 1. **PR #35** — `{PREFIX}_BEARER_TOKENS_FILE` + bearer-mapped auth mode.
-2. **PR #36** — `get_subject(request)` helper with unified extraction logic.
+2. **PR #36** — `get_subject()` helper with unified extraction logic.
 3. **PR #37** — optional `fastmcp_pvl_core.authorization` submodule (middleware,
    ACL store, scope vocabulary, admin tools, optional git-commit integration).
 
@@ -100,34 +100,43 @@ the per-token mapped subject in mapped mode. Code that read `access_token.
 client_id` to gate behavior on the literal `"bearer"` will need to update;
 this is documented in the PR #35 release notes.
 
-#### `get_subject(ctx_or_request) -> str | None` (PR #36)
+#### `get_subject() -> str | None` (PR #36)
 
 New module `_subject.py`, exported from the package root. Implementation is
 mode-agnostic at runtime — the per-mode logic was already pushed into the
 builders:
 
 ```python
-def get_subject(ctx_or_request: object | None = None) -> str | None:
+def get_subject() -> str | None:
     access_token = get_access_token()
     if access_token is None:
-        # No auth context. Local stdio with auth_mode == "none" returns the
-        # constant "local"; anything else returns None and lets the caller
-        # decide whether to fall back or error.
-        return "local" if _current_auth_mode() == "none" else None
-    sub = (access_token.claims or {}).get("sub")
-    if sub:
+        # No auth context. Local stdio with auth_mode == "none" returns
+        # the constant "local"; anything else returns None and lets the
+        # caller decide whether to fall back or error.
+        return "local" if _current_auth_mode == "none" else None
+    raw_claims = getattr(access_token, "claims", None)
+    claims = raw_claims if isinstance(raw_claims, dict) else {}
+    sub = claims.get("sub")
+    if isinstance(sub, str) and sub:
         return sub
-    return access_token.client_id or None
+    client_id = getattr(access_token, "client_id", None)
+    if isinstance(client_id, str) and client_id:
+        return client_id
+    return None
 ```
 
-`_current_auth_mode()` returns the `AuthMode` value resolved at server
-startup; PR #36 wires this through whatever the simplest indirection is at
-implementation time (likely a module-level `set_current_auth_mode(mode)` that
-`build_auth` calls before returning).
+`_current_auth_mode` is a process-global pointer set at server startup by a
+module-level `set_current_auth_mode(mode)` that `build_auth` calls before
+returning.
 
-The optional positional argument exists so callers can pass an explicit
-request/context object in the future without breaking the signature; v1 ignores
-it and reads from FastMCP's existing context plumbing.
+A previous draft of this spec proposed an optional positional `ctx_or_request`
+parameter for forward-compat, but local code review concluded the parameter
+was a future-evolution trap (a leading-underscore positional on a public-API
+symbol is non-standard, `object` typing offers no IDE help, downstream
+consumers passing a context would silently have it ignored). The v1
+implementation drops the parameter; a future version that needs explicit
+context will add it as a named parameter or a separate overload — both are
+non-breaking additions on a no-arg signature.
 
 #### README drift fix (PR #35)
 
@@ -157,7 +166,7 @@ Re-exported from `fastmcp_pvl_core`: `AuthorizationMiddleware`,
 Installed via the existing `wire_middleware_stack(mcp, extra=[...])`
 extension point. Hooks:
 
-- **Tool call:** `subject = get_subject(request)`;
+- **Tool call:** `subject = get_subject()`;
   `tenant = tenant_resolver(request)`;
   `required = annotation.get("requires_scope", "read")`;
   ACL lookup → continue or raise `AuthzDenied`.
@@ -291,10 +300,14 @@ Each PR ships its own tests. mypy-strict and ruff are gates per pyproject.toml.
 
 ### PR #36
 
-- `test_subject.py` — all five auth modes return expected subjects via a fake
-  auth context (using FastMCP's testing primitives); `get_subject` works from
-  inside a tool body, a middleware, and a resource handler (three integration
-  tests).
+- `test_subject.py` — unit tests covering each branch of `get_subject`'s
+  resolution order: `auth_mode=="none"` returns `"local"`, bearer-single
+  uses the default subject from `client_id`, bearer-mapped uses the
+  mapped subject, OIDC prefers `claims["sub"]` and falls back to
+  `client_id` when `sub` is absent, and missing-token-with-auth-required
+  returns `None`. Implementation reads FastMCP's ambient context via
+  `get_access_token`; tests patch that single call site rather than
+  spinning up a full FastMCP server.
 
 ### PR #37
 
