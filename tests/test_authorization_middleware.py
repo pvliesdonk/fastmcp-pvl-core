@@ -78,10 +78,21 @@ async def test_on_call_tool_with_meta_denied_raises_tool_error() -> None:
     call_next.assert_not_awaited()
 
 
-@pytest.mark.asyncio
-async def test_on_call_tool_publishes_authorizer_to_contextvar() -> None:
-    """__init__ sets the ambient authorizer so check_authorization works."""
-    from fastmcp_pvl_core._authorization import _current_authorizer
+def test_init_publishes_authorizer_for_ambient_check_authorization() -> None:
+    """__init__ makes the authorizer available to check_authorization without kwarg."""
+    from fastmcp_pvl_core._authorization import (
+        AuthzDenied,
+        check_authorization,
+    )
 
-    AuthorizationMiddleware(authorizer=_allow_all)
-    assert _current_authorizer.get() is _allow_all
+    with patch(
+        "fastmcp_pvl_core._authorization.get_subject", return_value="user:alice"
+    ):
+        AuthorizationMiddleware(authorizer=_allow_all)
+        check_authorization("any_scope")  # ambient authorizer found, allows
+
+        AuthorizationMiddleware(authorizer=_deny_all)
+        with pytest.raises(AuthzDenied) as exc_info:
+            check_authorization("any_scope")
+    assert exc_info.value.subject == "user:alice"
+    assert exc_info.value.required_scope == "any_scope"
