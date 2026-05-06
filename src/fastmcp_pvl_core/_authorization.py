@@ -23,7 +23,7 @@ from contextvars import ContextVar
 from pathlib import Path
 from typing import Any, TypeAlias
 
-from fastmcp.exceptions import ToolError
+from fastmcp.exceptions import PromptError, ResourceError, ToolError
 from fastmcp.server.middleware import Middleware, MiddlewareContext
 
 if sys.version_info >= (3, 11):
@@ -391,6 +391,62 @@ class AuthorizationMiddleware(Middleware):
                 required_scope=required,
             )
             raise ToolError(
+                self._format_deny_payload(
+                    subject=subject, required_scope=required
+                )
+            )
+        return await call_next(context)
+
+    async def on_read_resource(
+        self, context: MiddlewareContext, call_next: Any
+    ) -> Any:
+        """Enforce ``required_scope`` on resource reads."""
+        assert context.fastmcp_context is not None
+        resource = await context.fastmcp_context.fastmcp.get_resource(
+            context.message.uri
+        )
+        meta = getattr(resource, "meta", None) or {}
+        required = meta.get("required_scope")
+        if not isinstance(required, str) or not required.strip():
+            return await call_next(context)
+
+        subject = get_subject()
+        if not self._authorizer(subject, required):
+            self._log_deny(
+                kind="resource",
+                name=str(context.message.uri),
+                subject=subject,
+                required_scope=required,
+            )
+            raise ResourceError(
+                self._format_deny_payload(
+                    subject=subject, required_scope=required
+                )
+            )
+        return await call_next(context)
+
+    async def on_get_prompt(
+        self, context: MiddlewareContext, call_next: Any
+    ) -> Any:
+        """Enforce ``required_scope`` on prompt retrievals."""
+        assert context.fastmcp_context is not None
+        prompt = await context.fastmcp_context.fastmcp.get_prompt(
+            context.message.name
+        )
+        meta = getattr(prompt, "meta", None) or {}
+        required = meta.get("required_scope")
+        if not isinstance(required, str) or not required.strip():
+            return await call_next(context)
+
+        subject = get_subject()
+        if not self._authorizer(subject, required):
+            self._log_deny(
+                kind="prompt",
+                name=context.message.name,
+                subject=subject,
+                required_scope=required,
+            )
+            raise PromptError(
                 self._format_deny_payload(
                     subject=subject, required_scope=required
                 )
