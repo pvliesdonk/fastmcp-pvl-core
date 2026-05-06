@@ -18,6 +18,10 @@ from collections.abc import Callable
 from contextvars import ContextVar
 from typing import TypeAlias
 
+# ---------------------------------------------------------------------------
+# Public types
+# ---------------------------------------------------------------------------
+
 Authorizer: TypeAlias = Callable[[str | None, str], bool]
 """Decision callable: ``(subject, required_scope) -> bool``.
 
@@ -29,6 +33,10 @@ across this and other Callable seams in the package is tracked in
 issue #60.
 """
 
+
+# ---------------------------------------------------------------------------
+# AuthzDenied exception
+# ---------------------------------------------------------------------------
 
 class AuthzDenied(Exception):  # noqa: N818
     """Raised by :func:`check_authorization` when the authorizer denies.
@@ -54,6 +62,10 @@ class AuthzDenied(Exception):  # noqa: N818
         self.subject = subject
         self.required_scope = required_scope
 
+
+# ---------------------------------------------------------------------------
+# Ambient authorizer (ContextVar plumbing)
+# ---------------------------------------------------------------------------
 
 _current_authorizer: ContextVar[Authorizer | None] = ContextVar(
     "fastmcp_pvl_core_current_authorizer",

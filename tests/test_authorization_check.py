@@ -19,6 +19,13 @@ def test_authz_denied_subject_can_be_none() -> None:
     assert exc.required_scope == "read"
 
 
+def test_authz_denied_message_contains_subject_and_scope() -> None:
+    exc = AuthzDenied(subject="user:alice@example.com", required_scope="write")
+    msg = str(exc)
+    assert "user:alice@example.com" in msg
+    assert "write" in msg
+
+
 def test_authz_denied_is_an_exception() -> None:
     with pytest.raises(AuthzDenied):
         raise AuthzDenied(subject="x", required_scope="y")
