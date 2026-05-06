@@ -15,7 +15,8 @@ See ``docs/specs/authorization-submodule.md`` for the design rationale.
 from __future__ import annotations
 
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
+from collections.abc import Set as AbstractSet
 from contextvars import ContextVar
 from pathlib import Path
 from typing import TypeAlias
@@ -196,3 +197,42 @@ def load_acl(path: Path) -> dict[str, frozenset[str]]:
             cleaned.add(scope)
         result[subject] = frozenset(cleaned)
     return result
+
+
+# ---------------------------------------------------------------------------
+# ACL → Authorizer bridge
+# ---------------------------------------------------------------------------
+
+
+def make_acl_authorizer(acl: Mapping[str, AbstractSet[str]]) -> Authorizer:
+    """Bridge a ``{subject: scopes}`` mapping to an :data:`Authorizer`.
+
+    Allow rules:
+
+    - ``subject is None`` → deny.
+    - Subject not in ``acl`` → deny.
+    - ``"*"`` in the subject's grants → allow any required scope.
+    - Otherwise → allow iff ``required_scope`` is in the grants.
+
+    The mapping is captured by reference, not copied.  A downstream that
+    mutates the dict in place sees the change reflected by the closure
+    (intentional; the recommended pattern is rebuild + reassign, but
+    reference-capture lets advanced consumers wire reload semantics
+    without changing this signature).
+
+    Args:
+        acl: Mapping from subject string to a set of granted scope strings.
+
+    Returns:
+        An :data:`Authorizer` callable.
+    """
+
+    def authorize(subject: str | None, required_scope: str) -> bool:
+        if subject is None:
+            return False
+        granted = acl.get(subject)
+        if granted is None:
+            return False
+        return "*" in granted or required_scope in granted
+
+    return authorize
