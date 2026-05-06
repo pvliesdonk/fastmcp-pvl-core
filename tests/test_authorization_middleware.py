@@ -221,3 +221,67 @@ async def test_on_get_prompt_body_authz_denied_becomes_prompt_error() -> None:
             await middleware.on_get_prompt(ctx, body_raises)
     payload = json.loads(str(exc_info.value))
     assert payload == {"code": "authz_denied", "required_scope": "read:foo"}
+
+
+@pytest.mark.asyncio
+async def test_on_call_tool_get_tool_failure_falls_through(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    middleware = AuthorizationMiddleware(authorizer=_deny_all)
+    fastmcp_obj = SimpleNamespace(
+        get_tool=AsyncMock(side_effect=KeyError("tool not found"))
+    )
+    fastmcp_context = SimpleNamespace(fastmcp=fastmcp_obj)
+    ctx = MagicMock(
+        message=SimpleNamespace(name="missing", arguments={}),
+        fastmcp_context=fastmcp_context,
+    )
+    call_next = AsyncMock(return_value="result")
+    caplog.set_level("WARNING", logger="fastmcp_pvl_core._authorization")
+    with patch(
+        "fastmcp_pvl_core._authorization.get_subject", return_value="user:alice"
+    ):
+        result = await middleware.on_call_tool(ctx, call_next)
+    assert result == "result"
+    call_next.assert_awaited_once_with(ctx)
+    assert any("tool lookup failed" in rec.message for rec in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_on_read_resource_get_resource_failure_falls_through(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    middleware = AuthorizationMiddleware(authorizer=_deny_all)
+    fastmcp_obj = SimpleNamespace(
+        get_resource=AsyncMock(side_effect=KeyError("nope"))
+    )
+    fastmcp_context = SimpleNamespace(fastmcp=fastmcp_obj)
+    ctx = MagicMock(
+        message=SimpleNamespace(uri="vault://x"),
+        fastmcp_context=fastmcp_context,
+    )
+    call_next = AsyncMock(return_value="contents")
+    caplog.set_level("WARNING", logger="fastmcp_pvl_core._authorization")
+    result = await middleware.on_read_resource(ctx, call_next)
+    assert result == "contents"
+    assert any("resource lookup failed" in rec.message for rec in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_on_get_prompt_get_prompt_failure_falls_through(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    middleware = AuthorizationMiddleware(authorizer=_deny_all)
+    fastmcp_obj = SimpleNamespace(
+        get_prompt=AsyncMock(side_effect=KeyError("nope"))
+    )
+    fastmcp_context = SimpleNamespace(fastmcp=fastmcp_obj)
+    ctx = MagicMock(
+        message=SimpleNamespace(name="missing", arguments={}),
+        fastmcp_context=fastmcp_context,
+    )
+    call_next = AsyncMock(return_value="messages")
+    caplog.set_level("WARNING", logger="fastmcp_pvl_core._authorization")
+    result = await middleware.on_get_prompt(ctx, call_next)
+    assert result == "messages"
+    assert any("prompt lookup failed" in rec.message for rec in caplog.records)

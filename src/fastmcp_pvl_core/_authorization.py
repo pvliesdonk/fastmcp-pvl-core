@@ -422,9 +422,23 @@ class AuthorizationMiddleware(Middleware):
     ) -> Any:
         """Enforce ``required_scope`` on tool calls."""
         assert context.fastmcp_context is not None
-        tool = await context.fastmcp_context.fastmcp.get_tool(
-            context.message.name
-        )
+        try:
+            tool = await context.fastmcp_context.fastmcp.get_tool(
+                context.message.name
+            )
+        except Exception as exc:  # noqa: BLE001 — defensive, logged
+            logger.warning(
+                "tool lookup failed during authz check; falling through "
+                "name=%s exc=%r",
+                context.message.name, exc,
+            )
+            return await self._call_with_authz_translation(
+                kind="tool",
+                name=context.message.name,
+                error_cls=ToolError,
+                call_next=call_next,
+                context=context,
+            )
         await self._enforce_static(
             kind="tool",
             name=context.message.name,
@@ -444,9 +458,23 @@ class AuthorizationMiddleware(Middleware):
     ) -> Any:
         """Enforce ``required_scope`` on resource reads."""
         assert context.fastmcp_context is not None
-        resource = await context.fastmcp_context.fastmcp.get_resource(
-            context.message.uri
-        )
+        try:
+            resource = await context.fastmcp_context.fastmcp.get_resource(
+                context.message.uri
+            )
+        except Exception as exc:  # noqa: BLE001 — defensive, logged
+            logger.warning(
+                "resource lookup failed during authz check; falling through "
+                "uri=%s exc=%r",
+                context.message.uri, exc,
+            )
+            return await self._call_with_authz_translation(
+                kind="resource",
+                name=str(context.message.uri),
+                error_cls=ResourceError,
+                call_next=call_next,
+                context=context,
+            )
         await self._enforce_static(
             kind="resource",
             name=str(context.message.uri),
@@ -466,9 +494,23 @@ class AuthorizationMiddleware(Middleware):
     ) -> Any:
         """Enforce ``required_scope`` on prompt retrievals."""
         assert context.fastmcp_context is not None
-        prompt = await context.fastmcp_context.fastmcp.get_prompt(
-            context.message.name
-        )
+        try:
+            prompt = await context.fastmcp_context.fastmcp.get_prompt(
+                context.message.name
+            )
+        except Exception as exc:  # noqa: BLE001 — defensive, logged
+            logger.warning(
+                "prompt lookup failed during authz check; falling through "
+                "name=%s exc=%r",
+                context.message.name, exc,
+            )
+            return await self._call_with_authz_translation(
+                kind="prompt",
+                name=context.message.name,
+                error_cls=PromptError,
+                call_next=call_next,
+                context=context,
+            )
         await self._enforce_static(
             kind="prompt",
             name=context.message.name,
