@@ -294,6 +294,10 @@ def check_authorization(
             nor explicit).
         ValueError: when ``required_scope`` is empty or whitespace-only.
     """
+    required_scope = required_scope.strip()
+    if not required_scope:
+        raise ValueError("required_scope must be a non-empty string")
+
     if authorizer is None:
         authorizer = _current_authorizer.get()
         if authorizer is None:
@@ -301,10 +305,6 @@ def check_authorization(
                 "no authorizer in context; install AuthorizationMiddleware "
                 "or pass authorizer= explicitly to check_authorization()"
             )
-
-    required_scope = required_scope.strip()
-    if not required_scope:
-        raise ValueError("required_scope must be a non-empty string")
 
     resolved_subject = subject if subject is not None else get_subject()
 

@@ -143,11 +143,15 @@ def test_check_authorization_strips_required_scope() -> None:
 
 
 def test_check_authorization_empty_required_scope_raises_value_error() -> None:
-    with patch(
-        "fastmcp_pvl_core._authorization.get_subject", return_value="user:alice"
-    ):
-        with pytest.raises(ValueError, match="non-empty"):
-            check_authorization("   ", authorizer=_allow_all)
+    with pytest.raises(ValueError, match="non-empty"):
+        check_authorization("   ", authorizer=_allow_all)
+
+
+def test_check_authorization_empty_scope_raises_before_authorizer_resolution() -> None:
+    """Empty scope is a programmer bug; ``ValueError`` fires regardless of context."""
+    set_current_authorizer(None)
+    with pytest.raises(ValueError, match="non-empty"):
+        check_authorization("   ")  # no ambient, no explicit — but scope check wins
 
 
 def test_check_authorization_get_subject_returning_none_denied_by_authorizer() -> None:
