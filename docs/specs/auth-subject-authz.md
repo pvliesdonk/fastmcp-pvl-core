@@ -20,11 +20,11 @@ Once a real subject exists across all auth modes, downstream code wants a
 uniform `get_subject()` extractor so it stops poking at the auth context
 directly.
 
-A follow-on optional `authorization` submodule (subject + tenant + required
-scope → allow / deny middleware) is described separately in
-[`authorization-submodule.md`](authorization-submodule.md) — that work was
-attempted in 2026-05 and abandoned mid-implementation; issue #37 remains
-open.
+A follow-on optional `authorization` submodule (subject + scope →
+allow/deny middleware, ACL TOML loader, and `check_authorization`
+helper) is described separately in
+[`authorization-submodule.md`](authorization-submodule.md). The
+implementation closes [issue #37](https://github.com/pvliesdonk/fastmcp-pvl-core/issues/37).
 
 ## Scope
 
@@ -275,12 +275,12 @@ PRs open as draft. Flip to ready only after CI green and bot LGTM bodies
 driver: needs per-user attribution for ACLs and audit metadata. Likely
 future consumers: any multi-tenant MCP server in the PVL ecosystem.
 
-The downstream `authorization` submodule (issue #37) — the deeper
-machinery for ACLs / admin tools / scope vocabulary — is described in
-[`authorization-submodule.md`](authorization-submodule.md). That spec
-is currently DRAFT and not implemented; treat it as forward design only.
+The downstream `authorization` submodule — the optional middleware /
+loader / `check_authorization` helper — is described in
+[`authorization-submodule.md`](authorization-submodule.md) and closes
+issue #37.
 
 ## See also
 
-- [`authorization-submodule.md`](authorization-submodule.md) — DRAFT
-  follow-on spec for the optional authorization submodule (issue #37).
+- [`authorization-submodule.md`](authorization-submodule.md) — the
+  optional authorization submodule design (issue #37).
