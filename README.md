@@ -127,6 +127,62 @@ Resolution order:
 3. **No token, auth required:** returns `None` — caller decides whether
    to fall back or error.
 
+### Authorization (opt-in) — `AuthorizationMiddleware`
+
+Tools, resources, and prompts can opt into per-subject access control by
+setting `meta={"required_scope": "<scope>"}` at registration. A
+configured `AuthorizationMiddleware` enforces the static check and
+filters `list_*` responses to what the caller can use:
+
+```python
+from pathlib import Path
+from fastmcp_pvl_core import (
+    AuthorizationMiddleware, load_acl, make_acl_authorizer, check_authorization,
+)
+
+authorizer = make_acl_authorizer(load_acl(Path("/etc/my-app/acl.toml")))
+mcp.add_middleware(AuthorizationMiddleware(authorizer=authorizer))
+
+@mcp.tool(meta={"required_scope": "write"})
+async def edit_document(project_id: str, doc_id: str, body: str) -> None:
+    # Coarse "write" gate already passed at middleware. Per-project gate here:
+    check_authorization(f"write:{project_id}")
+    ...
+```
+
+ACL TOML schema (loaded by `load_acl`):
+
+```toml
+[subjects]
+"user:alice@example.com" = ["read", "write"]
+"user:admin@example.com" = ["*"]              # wildcard scope
+"service:ci-bot"         = ["read"]
+"local"                  = ["*"]              # stdio mode
+```
+
+Key properties:
+
+- **Opt-in per component.** Tools / resources / prompts without
+  `meta["required_scope"]` are unrestricted regardless of caller.
+- **`*` is the only library-treated special scope** ("any required
+  scope passes"). All other scopes are opaque strings; downstream chooses
+  the vocabulary.
+- **Subject-side wildcards (`*` as an ACL key) are rejected at load
+  time.**
+- **`load_acl` fails fast** with `ConfigurationError` on every malformed
+  condition — never silent denial.
+- **ACL is loaded once at startup.** Restart to pick up changes.
+- **Authorization scopes are application-level** and distinct from the
+  OAuth scopes carried in tokens.
+- **Subject is logged on every deny** at WARNING. The wire-side payload
+  *omits* the subject by default to limit cross-user info disclosure;
+  pass `AuthorizationMiddleware(..., expose_subject_in_error=True)` to
+  include it (e.g. for internal-only servers).
+
+For the full design rationale and deviations from the originating
+issue, see
+[`docs/specs/authorization-submodule.md`](docs/specs/authorization-submodule.md).
+
 ### Remote debugging in containers
 
 Containerised consumers can opt into a remote Python debugger by calling
