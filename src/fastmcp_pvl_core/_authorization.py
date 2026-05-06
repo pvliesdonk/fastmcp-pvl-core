@@ -30,6 +30,7 @@ else:  # pragma: no cover - fallback for Python 3.10
     import tomli as tomllib  # type: ignore[import-not-found,unused-ignore]
 
 from fastmcp_pvl_core._errors import ConfigurationError
+from fastmcp_pvl_core._subject import get_subject
 
 # ---------------------------------------------------------------------------
 # Public types
@@ -236,3 +237,61 @@ def make_acl_authorizer(acl: Mapping[str, AbstractSet[str]]) -> Authorizer:
         return "*" in granted or required_scope in granted
 
     return authorize
+
+
+# ---------------------------------------------------------------------------
+# check_authorization (escape-hatch helper)
+# ---------------------------------------------------------------------------
+
+
+def check_authorization(
+    required_scope: str,
+    *,
+    authorizer: Authorizer | None = None,
+    subject: str | None = None,
+) -> None:
+    """Imperative authz check for use inside a tool / resource / prompt body.
+
+    Resolution order:
+
+    1. ``authorizer`` argument if given.
+    2. The ambient :data:`_current_authorizer` (set by
+       :class:`AuthorizationMiddleware.__init__`).
+    3. Otherwise raise :class:`RuntimeError`.
+
+    Subject resolution:
+
+    - ``subject`` used as-is when a non-``None`` value is passed.
+    - When omitted (or ``None``), :func:`fastmcp_pvl_core.get_subject`
+      is called.  ``get_subject`` itself may return ``None`` if no auth
+      context is available — that ``None`` is then forwarded to the
+      authorizer, which typically denies it.
+
+    Args:
+        required_scope: Scope string to require, e.g. ``"write"`` or
+            ``"read:project-foo"``.
+        authorizer: Override the ambient authorizer.  Useful when the
+            middleware isn't installed but a code path still wants the
+            check.
+        subject: Override the ``get_subject()`` lookup.  ``None``
+            (the default) means "look up via :func:`get_subject`".
+
+    Raises:
+        AuthzDenied: when the authorizer returns ``False``.
+        RuntimeError: when no authorizer is reachable (neither ambient
+            nor explicit).
+    """
+    if authorizer is None:
+        authorizer = _current_authorizer.get()
+        if authorizer is None:
+            raise RuntimeError(
+                "no authorizer in context; install AuthorizationMiddleware "
+                "or pass authorizer= explicitly to check_authorization()"
+            )
+
+    resolved_subject = subject if subject is not None else get_subject()
+
+    if not authorizer(resolved_subject, required_scope):
+        raise AuthzDenied(
+            subject=resolved_subject, required_scope=required_scope
+        )

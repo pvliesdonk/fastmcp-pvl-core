@@ -29,3 +29,97 @@ def test_authz_denied_message_contains_subject_and_scope() -> None:
 def test_authz_denied_is_an_exception() -> None:
     with pytest.raises(AuthzDenied):
         raise AuthzDenied(subject="x", required_scope="y")
+
+
+from unittest.mock import patch  # noqa: E402
+
+from fastmcp_pvl_core._authorization import (  # noqa: E402
+    check_authorization,
+    set_current_authorizer,
+)
+
+
+def _allow_all(_subject: str | None, _required_scope: str) -> bool:
+    return True
+
+
+def _deny_all(_subject: str | None, _required_scope: str) -> bool:
+    return False
+
+
+def test_check_authorization_uses_explicit_authorizer_allow() -> None:
+    with patch(
+        "fastmcp_pvl_core._authorization.get_subject", return_value="user:alice"
+    ):
+        result = check_authorization("read", authorizer=_allow_all)
+    assert result is None
+
+
+def test_check_authorization_uses_explicit_authorizer_deny() -> None:
+    with patch(
+        "fastmcp_pvl_core._authorization.get_subject", return_value="user:alice"
+    ):
+        with pytest.raises(AuthzDenied) as exc_info:
+            check_authorization("write", authorizer=_deny_all)
+    assert exc_info.value.subject == "user:alice"
+    assert exc_info.value.required_scope == "write"
+
+
+def test_check_authorization_reads_ambient_authorizer() -> None:
+    set_current_authorizer(_allow_all)
+    with patch(
+        "fastmcp_pvl_core._authorization.get_subject", return_value="user:alice"
+    ):
+        check_authorization("read")
+
+
+def test_check_authorization_explicit_overrides_ambient() -> None:
+    set_current_authorizer(_allow_all)
+    with patch(
+        "fastmcp_pvl_core._authorization.get_subject", return_value="user:alice"
+    ):
+        with pytest.raises(AuthzDenied):
+            check_authorization("read", authorizer=_deny_all)
+
+
+def test_check_authorization_no_authorizer_anywhere_raises_runtime_error() -> None:
+    with pytest.raises(RuntimeError, match="install AuthorizationMiddleware"):
+        check_authorization("read")
+
+
+def test_check_authorization_subject_kwarg_overrides_get_subject() -> None:
+    captured: dict[str, object] = {}
+
+    def authorize(subject: str | None, required_scope: str) -> bool:
+        captured["subject"] = subject
+        captured["required_scope"] = required_scope
+        return True
+
+    with patch(
+        "fastmcp_pvl_core._authorization.get_subject", return_value="user:fromcontext"
+    ):
+        check_authorization("read", authorizer=authorize, subject="user:explicit")
+    assert captured == {"subject": "user:explicit", "required_scope": "read"}
+
+
+def test_check_authorization_omitted_subject_falls_through_to_get_subject() -> None:
+    captured: dict[str, object] = {}
+
+    def authorize(subject: str | None, required_scope: str) -> bool:
+        captured["subject"] = subject
+        return True
+
+    with patch(
+        "fastmcp_pvl_core._authorization.get_subject", return_value="user:from_context"
+    ):
+        check_authorization("read", authorizer=authorize)
+    assert captured == {"subject": "user:from_context"}
+
+
+def test_check_authorization_get_subject_returning_none_denied_by_authorizer() -> None:
+    with patch(
+        "fastmcp_pvl_core._authorization.get_subject", return_value=None
+    ):
+        with pytest.raises(AuthzDenied) as exc_info:
+            check_authorization("read", authorizer=_deny_all)
+    assert exc_info.value.subject is None
