@@ -19,6 +19,14 @@ from fastmcp_pvl_core._auth import (
     build_remote_auth,
     resolve_auth_mode,
 )
+from fastmcp_pvl_core._authorization import (
+    AuthorizationMiddleware,
+    Authorizer,
+    AuthzDenied,
+    check_authorization,
+    load_acl,
+    make_acl_authorizer,
+)
 from fastmcp_pvl_core._cli import make_serve_parser, normalise_http_path
 from fastmcp_pvl_core._config import ServerConfig, Transport
 from fastmcp_pvl_core._debug import maybe_start_debugpy
@@ -65,14 +73,17 @@ from fastmcp_pvl_core.file_exchange import (
 __version__ = "2.0.0-rc.1"  # PSR overrides at build time
 
 __all__ = [
-    "FILE_EXCHANGE_SPEC_VERSION",
     "ArtifactStore",
     "AuthMode",
+    "AuthorizationMiddleware",
+    "Authorizer",
+    "AuthzDenied",
     "ConfigurationError",
     "ConsumerSink",
     "ExchangeGroupMismatch",
     "ExchangeURI",
     "ExchangeURIError",
+    "FILE_EXCHANGE_SPEC_VERSION",
     "FetchContext",
     "FetchResult",
     "FileExchange",
@@ -94,11 +105,14 @@ __all__ = [
     "build_instructions",
     "build_oidc_proxy_auth",
     "build_remote_auth",
+    "check_authorization",
     "compute_app_domain",
     "configure_logging_from_env",
     "env",
     "get_artifact_store",
     "get_subject",
+    "load_acl",
+    "make_acl_authorizer",
     "make_icon",
     "make_serve_parser",
     "maybe_start_debugpy",

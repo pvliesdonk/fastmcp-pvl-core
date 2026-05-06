@@ -7,6 +7,7 @@ from collections.abc import Iterator
 
 import pytest
 
+from fastmcp_pvl_core._authorization import set_current_authorizer
 from fastmcp_pvl_core._subject import set_current_auth_mode
 
 
@@ -24,6 +25,17 @@ def _reset_auth_mode() -> Iterator[None]:
     set_current_auth_mode(None)
     yield
     set_current_auth_mode(None)
+
+
+@pytest.fixture(autouse=True)
+def _reset_authorizer() -> Iterator[None]:
+    """Reset the authorizer contextvar between tests.
+
+    Mirrors ``_reset_auth_mode``; same rationale.
+    """
+    set_current_authorizer(None)
+    yield
+    set_current_authorizer(None)
 
 
 @pytest.fixture
