@@ -91,6 +91,33 @@ async def test_on_list_tools_non_string_required_scope_logs_warning_and_keeps(
 
 
 @pytest.mark.asyncio
+async def test_on_call_tool_blank_string_required_scope_logs_warning_and_passes(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Empty / whitespace-only ``required_scope`` falls open *and* warns.
+
+    Symmetric with the non-string case: an operator typo (e.g.
+    ``meta={"required_scope": ""}``) is more likely a misconfiguration
+    than a deliberate "no restriction" signal (the documented way to
+    express that is to omit the key entirely).
+    """
+    middleware = AuthorizationMiddleware(authorizer=_deny_all)
+    ctx = _make_context(tool_meta={"required_scope": "   "})
+    call_next = AsyncMock(return_value="result")
+    caplog.set_level("WARNING", logger="fastmcp_pvl_core._authorization")
+    with patch(
+        "fastmcp_pvl_core._authorization.get_subject", return_value="user:alice"
+    ):
+        result = await middleware.on_call_tool(ctx, call_next)
+    assert result == "result"
+    call_next.assert_awaited_once_with(ctx)
+    assert any(
+        "authz_meta_invalid" in rec.message and "kind=tool" in rec.message
+        for rec in caplog.records
+    )
+
+
+@pytest.mark.asyncio
 async def test_on_call_tool_with_meta_allowed_passes_through() -> None:
     middleware = AuthorizationMiddleware(authorizer=_allow_all)
     ctx = _make_context(tool_meta={"required_scope": "write"})

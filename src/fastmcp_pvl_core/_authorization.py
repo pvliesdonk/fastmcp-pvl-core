@@ -396,7 +396,7 @@ class AuthorizationMiddleware(Middleware):
         required = meta.get("required_scope")
         if required is None:
             return
-        if not isinstance(required, str):
+        if not isinstance(required, str) or not required.strip():
             logger.warning(
                 "authz_meta_invalid kind=%s name=%s required_scope=%r — "
                 "expected non-empty string; treating as unrestricted",
@@ -406,8 +406,6 @@ class AuthorizationMiddleware(Middleware):
             )
             return
         required = required.strip()
-        if not required:
-            return
         subject = get_subject()
         if not self._authorizer(subject, required):
             self._log_deny(
@@ -453,7 +451,7 @@ class AuthorizationMiddleware(Middleware):
             if required is None:
                 kept.append(component)
                 continue
-            if not isinstance(required, str):
+            if not isinstance(required, str) or not required.strip():
                 logger.warning(
                     "authz_meta_invalid component=%r required_scope=%r — "
                     "expected non-empty string; treating as unrestricted",
@@ -463,9 +461,6 @@ class AuthorizationMiddleware(Middleware):
                 kept.append(component)
                 continue
             required = required.strip()
-            if not required:
-                kept.append(component)
-                continue
             if self._authorizer(subject, required):
                 kept.append(component)
         return kept
