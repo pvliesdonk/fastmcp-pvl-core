@@ -6,8 +6,11 @@ Date: 2026-05-06.
 
 ## Status
 
-Design accepted; implementation pending. Replaces the abandoned 2026-05
-draft (`docs/specs/authorization-submodule.md` at commit
+Implementation landed via PR
+[#61](https://github.com/pvliesdonk/fastmcp-pvl-core/pull/61); closes
+issue [#37](https://github.com/pvliesdonk/fastmcp-pvl-core/issues/37).
+Replaces the abandoned 2026-05 draft (`docs/specs/authorization-submodule.md`
+at commit
 [9f79cfa](https://github.com/pvliesdonk/fastmcp-pvl-core/commit/9f79cfa)),
 which was deleted before this redesign started.
 

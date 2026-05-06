@@ -394,7 +394,16 @@ class AuthorizationMiddleware(Middleware):
         deny.  Does nothing when meta has no requirement.
         """
         required = meta.get("required_scope")
+        if required is None:
+            return
         if not isinstance(required, str):
+            logger.warning(
+                "authz_meta_invalid kind=%s name=%s required_scope=%r — "
+                "expected non-empty string; treating as unrestricted",
+                kind,
+                name,
+                required,
+            )
             return
         required = required.strip()
         if not required:
@@ -441,7 +450,16 @@ class AuthorizationMiddleware(Middleware):
         for component in components:
             meta = getattr(component, "meta", None) or {}
             required = meta.get("required_scope")
+            if required is None:
+                kept.append(component)
+                continue
             if not isinstance(required, str):
+                logger.warning(
+                    "authz_meta_invalid component=%r required_scope=%r — "
+                    "expected non-empty string; treating as unrestricted",
+                    component,
+                    required,
+                )
                 kept.append(component)
                 continue
             required = required.strip()

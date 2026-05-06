@@ -51,6 +51,46 @@ async def test_on_call_tool_no_meta_passes_through() -> None:
 
 
 @pytest.mark.asyncio
+async def test_on_call_tool_non_string_required_scope_logs_warning_and_passes(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Non-string ``required_scope`` falls open but logs a WARNING."""
+    middleware = AuthorizationMiddleware(authorizer=_deny_all)
+    ctx = _make_context(tool_meta={"required_scope": ["read", "write"]})
+    call_next = AsyncMock(return_value="result")
+    caplog.set_level("WARNING", logger="fastmcp_pvl_core._authorization")
+    with patch(
+        "fastmcp_pvl_core._authorization.get_subject", return_value="user:alice"
+    ):
+        result = await middleware.on_call_tool(ctx, call_next)
+    assert result == "result"
+    call_next.assert_awaited_once_with(ctx)
+    assert any(
+        "authz_meta_invalid" in rec.message and "kind=tool" in rec.message
+        for rec in caplog.records
+    )
+
+
+@pytest.mark.asyncio
+async def test_on_list_tools_non_string_required_scope_logs_warning_and_keeps(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Non-string ``required_scope`` in a listed component falls open but warns."""
+    bad_tool = SimpleNamespace(name="bad", meta={"required_scope": 42})
+    good_tool = SimpleNamespace(name="good", meta={})
+    middleware = AuthorizationMiddleware(authorizer=_deny_all)
+    call_next = AsyncMock(return_value=[bad_tool, good_tool])
+    ctx = MagicMock()
+    caplog.set_level("WARNING", logger="fastmcp_pvl_core._authorization")
+    with patch(
+        "fastmcp_pvl_core._authorization.get_subject", return_value="user:alice"
+    ):
+        result = await middleware.on_list_tools(ctx, call_next)
+    assert result == [bad_tool, good_tool]
+    assert any("authz_meta_invalid" in rec.message for rec in caplog.records)
+
+
+@pytest.mark.asyncio
 async def test_on_call_tool_with_meta_allowed_passes_through() -> None:
     middleware = AuthorizationMiddleware(authorizer=_allow_all)
     ctx = _make_context(tool_meta={"required_scope": "write"})
