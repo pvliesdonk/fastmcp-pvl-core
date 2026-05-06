@@ -167,5 +167,32 @@ def load_acl(path: Path) -> dict[str, frozenset[str]]:
 
     result: dict[str, frozenset[str]] = {}
     for subject, scopes in subjects.items():
-        result[subject] = frozenset(scopes)
+        if not subject.strip():
+            raise ConfigurationError(
+                f"ACL file at {path}: subject key is empty or whitespace-only"
+            )
+        if subject == "*":
+            raise ConfigurationError(
+                f'ACL file at {path}: "*" as a subject key is not allowed '
+                "(global subject wildcards collapse the model)"
+            )
+        if not isinstance(scopes, list):
+            raise ConfigurationError(
+                f"ACL file at {path}: subject {subject!r} value must be an "
+                f"array of scope strings; got {type(scopes).__name__}"
+            )
+        cleaned: set[str] = set()
+        for scope in scopes:
+            if not isinstance(scope, str):
+                raise ConfigurationError(
+                    f"ACL file at {path}: subject {subject!r}: scope must "
+                    f"be a string; got {type(scope).__name__}"
+                )
+            if not scope.strip():
+                raise ConfigurationError(
+                    f"ACL file at {path}: subject {subject!r}: scope is "
+                    "empty or whitespace-only"
+                )
+            cleaned.add(scope)
+        result[subject] = frozenset(cleaned)
     return result
