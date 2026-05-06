@@ -14,9 +14,21 @@ See ``docs/specs/authorization-submodule.md`` for the design rationale.
 
 from __future__ import annotations
 
+import sys
 from collections.abc import Callable
 from contextvars import ContextVar
+from pathlib import Path
 from typing import TypeAlias
+
+if sys.version_info >= (3, 11):
+    import tomllib
+else:  # pragma: no cover - fallback for Python 3.10
+    # ``import-not-found`` covers CI rows where ``tomli`` is excluded by
+    # the marker (3.11+); ``unused-ignore`` covers local 3.10 envs where
+    # ``tomli`` is installed and the ignore would otherwise be flagged.
+    import tomli as tomllib  # type: ignore[import-not-found,unused-ignore]
+
+from fastmcp_pvl_core._errors import ConfigurationError
 
 # ---------------------------------------------------------------------------
 # Public types
@@ -92,3 +104,68 @@ def set_current_authorizer(authorizer: Authorizer | None) -> None:
     pointer (useful between tests).
     """
     _current_authorizer.set(authorizer)
+
+
+# ---------------------------------------------------------------------------
+# ACL TOML loader
+# ---------------------------------------------------------------------------
+
+
+def load_acl(path: Path) -> dict[str, frozenset[str]]:
+    """Load an ACL TOML file into a ``{subject: frozenset[scope]}`` dict.
+
+    The path is normalised with :meth:`Path.expanduser` first.  This is
+    the single expansion site for both env-loaded paths (which keep a
+    leading ``~`` literal) and direct-construction paths.
+
+    Schema:
+
+    .. code-block:: toml
+
+        [subjects]
+        "user:alice@example.com" = ["read", "write"]
+        "user:admin@example.com" = ["*"]
+
+    The ``*`` scope is interpreted by :func:`make_acl_authorizer` as
+    "any required scope passes".  No subject-side wildcard.
+
+    Args:
+        path: Path to the ACL TOML file.
+
+    Returns:
+        A ``dict`` mapping each subject to a ``frozenset`` of granted
+        scope strings.
+
+    Raises:
+        ConfigurationError: file missing, unreadable, malformed,
+            schema-invalid, or containing an empty / whitespace /
+            ``"*"`` subject key.
+    """
+    path = path.expanduser()
+    if not path.is_file():
+        raise ConfigurationError(
+            f"ACL file not found or not a regular file: {path}"
+        )
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise ConfigurationError(
+            f"ACL file at {path} could not be read: {exc}"
+        ) from exc
+    try:
+        data = tomllib.loads(raw)
+    except tomllib.TOMLDecodeError as exc:
+        raise ConfigurationError(
+            f"ACL file at {path} could not be parsed: {exc}"
+        ) from exc
+
+    subjects = data.get("subjects")
+    if not isinstance(subjects, dict):
+        raise ConfigurationError(
+            f"ACL file at {path} must define a [subjects] table"
+        )
+
+    result: dict[str, frozenset[str]] = {}
+    for subject, scopes in subjects.items():
+        result[subject] = frozenset(scopes)
+    return result
