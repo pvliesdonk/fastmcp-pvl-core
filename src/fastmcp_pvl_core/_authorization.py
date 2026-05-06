@@ -367,35 +367,77 @@ class AuthorizationMiddleware(Middleware):
             required_scope,
         )
 
-    async def on_call_tool(
-        self, context: MiddlewareContext, call_next: Any
-    ) -> Any:
-        """Enforce ``required_scope`` on tool calls."""
-        assert context.fastmcp_context is not None, (
-            "on_call_tool invoked without a fastmcp_context"
-        )
-        tool = await context.fastmcp_context.fastmcp.get_tool(
-            context.message.name
-        )
-        meta = getattr(tool, "meta", None) or {}
+    async def _enforce_static(
+        self,
+        *,
+        kind: str,
+        name: str,
+        meta: Mapping[str, Any],
+        error_cls: type[Exception],
+    ) -> None:
+        """Run the static ``meta["required_scope"]`` check.
+
+        Raises ``error_cls`` (constructed with the JSON deny payload) on
+        deny.  Does nothing when meta has no requirement.
+        """
         required = meta.get("required_scope")
         if not isinstance(required, str) or not required.strip():
-            return await call_next(context)
-
+            return
         subject = get_subject()
         if not self._authorizer(subject, required):
             self._log_deny(
-                kind="tool",
-                name=context.message.name,
-                subject=subject,
-                required_scope=required,
+                kind=kind, name=name, subject=subject, required_scope=required
             )
-            raise ToolError(
+            raise error_cls(
                 self._format_deny_payload(
                     subject=subject, required_scope=required
                 )
             )
-        return await call_next(context)
+
+    async def _call_with_authz_translation(
+        self,
+        *,
+        kind: str,
+        name: str,
+        error_cls: type[Exception],
+        call_next: Any,
+        context: MiddlewareContext,
+    ) -> Any:
+        """Run ``call_next`` and translate AuthzDenied to ``error_cls``."""
+        try:
+            return await call_next(context)
+        except AuthzDenied as exc:
+            self._log_deny(
+                kind=kind, name=name,
+                subject=exc.subject, required_scope=exc.required_scope,
+            )
+            raise error_cls(
+                self._format_deny_payload(
+                    subject=exc.subject, required_scope=exc.required_scope,
+                )
+            ) from None
+
+    async def on_call_tool(
+        self, context: MiddlewareContext, call_next: Any
+    ) -> Any:
+        """Enforce ``required_scope`` on tool calls."""
+        assert context.fastmcp_context is not None
+        tool = await context.fastmcp_context.fastmcp.get_tool(
+            context.message.name
+        )
+        await self._enforce_static(
+            kind="tool",
+            name=context.message.name,
+            meta=getattr(tool, "meta", None) or {},
+            error_cls=ToolError,
+        )
+        return await self._call_with_authz_translation(
+            kind="tool",
+            name=context.message.name,
+            error_cls=ToolError,
+            call_next=call_next,
+            context=context,
+        )
 
     async def on_read_resource(
         self, context: MiddlewareContext, call_next: Any
@@ -405,25 +447,19 @@ class AuthorizationMiddleware(Middleware):
         resource = await context.fastmcp_context.fastmcp.get_resource(
             context.message.uri
         )
-        meta = getattr(resource, "meta", None) or {}
-        required = meta.get("required_scope")
-        if not isinstance(required, str) or not required.strip():
-            return await call_next(context)
-
-        subject = get_subject()
-        if not self._authorizer(subject, required):
-            self._log_deny(
-                kind="resource",
-                name=str(context.message.uri),
-                subject=subject,
-                required_scope=required,
-            )
-            raise ResourceError(
-                self._format_deny_payload(
-                    subject=subject, required_scope=required
-                )
-            )
-        return await call_next(context)
+        await self._enforce_static(
+            kind="resource",
+            name=str(context.message.uri),
+            meta=getattr(resource, "meta", None) or {},
+            error_cls=ResourceError,
+        )
+        return await self._call_with_authz_translation(
+            kind="resource",
+            name=str(context.message.uri),
+            error_cls=ResourceError,
+            call_next=call_next,
+            context=context,
+        )
 
     async def on_get_prompt(
         self, context: MiddlewareContext, call_next: Any
@@ -433,22 +469,16 @@ class AuthorizationMiddleware(Middleware):
         prompt = await context.fastmcp_context.fastmcp.get_prompt(
             context.message.name
         )
-        meta = getattr(prompt, "meta", None) or {}
-        required = meta.get("required_scope")
-        if not isinstance(required, str) or not required.strip():
-            return await call_next(context)
-
-        subject = get_subject()
-        if not self._authorizer(subject, required):
-            self._log_deny(
-                kind="prompt",
-                name=context.message.name,
-                subject=subject,
-                required_scope=required,
-            )
-            raise PromptError(
-                self._format_deny_payload(
-                    subject=subject, required_scope=required
-                )
-            )
-        return await call_next(context)
+        await self._enforce_static(
+            kind="prompt",
+            name=context.message.name,
+            meta=getattr(prompt, "meta", None) or {},
+            error_cls=PromptError,
+        )
+        return await self._call_with_authz_translation(
+            kind="prompt",
+            name=context.message.name,
+            error_cls=PromptError,
+            call_next=call_next,
+            context=context,
+        )

@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastmcp.exceptions import PromptError, ResourceError, ToolError
 
-from fastmcp_pvl_core._authorization import AuthorizationMiddleware
+from fastmcp_pvl_core._authorization import AuthorizationMiddleware, AuthzDenied
 
 
 def _make_context(
@@ -170,3 +170,54 @@ async def test_on_get_prompt_no_meta_passes_through() -> None:
     ):
         result = await middleware.on_get_prompt(ctx, call_next)
     assert result == "messages"
+
+
+@pytest.mark.asyncio
+async def test_on_call_tool_body_authz_denied_becomes_tool_error() -> None:
+    middleware = AuthorizationMiddleware(authorizer=_allow_all)
+    ctx = _make_context(tool_meta={})  # static check passes (no meta)
+
+    async def body_raises(_ctx: object) -> str:
+        raise AuthzDenied(subject="user:alice", required_scope="write:foo")
+
+    with patch(
+        "fastmcp_pvl_core._authorization.get_subject", return_value="user:alice"
+    ):
+        with pytest.raises(ToolError) as exc_info:
+            await middleware.on_call_tool(ctx, body_raises)
+    payload = json.loads(str(exc_info.value))
+    assert payload == {"code": "authz_denied", "required_scope": "write:foo"}
+
+
+@pytest.mark.asyncio
+async def test_on_read_resource_body_authz_denied_becomes_resource_error() -> None:
+    middleware = AuthorizationMiddleware(authorizer=_allow_all)
+    ctx = _make_resource_context(resource_meta={})
+
+    async def body_raises(_ctx: object) -> str:
+        raise AuthzDenied(subject="user:alice", required_scope="read:foo")
+
+    with patch(
+        "fastmcp_pvl_core._authorization.get_subject", return_value="user:alice"
+    ):
+        with pytest.raises(ResourceError) as exc_info:
+            await middleware.on_read_resource(ctx, body_raises)
+    payload = json.loads(str(exc_info.value))
+    assert payload == {"code": "authz_denied", "required_scope": "read:foo"}
+
+
+@pytest.mark.asyncio
+async def test_on_get_prompt_body_authz_denied_becomes_prompt_error() -> None:
+    middleware = AuthorizationMiddleware(authorizer=_allow_all)
+    ctx = _make_prompt_context(prompt_meta={})
+
+    async def body_raises(_ctx: object) -> str:
+        raise AuthzDenied(subject="user:alice", required_scope="read:foo")
+
+    with patch(
+        "fastmcp_pvl_core._authorization.get_subject", return_value="user:alice"
+    ):
+        with pytest.raises(PromptError) as exc_info:
+            await middleware.on_get_prompt(ctx, body_raises)
+    payload = json.loads(str(exc_info.value))
+    assert payload == {"code": "authz_denied", "required_scope": "read:foo"}
