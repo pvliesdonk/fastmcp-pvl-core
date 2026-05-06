@@ -353,3 +353,59 @@ async def test_on_list_prompts_filters_denied() -> None:
     ):
         result = await middleware.on_list_prompts(ctx, call_next)
     assert result == [p_open]
+
+
+@pytest.mark.asyncio
+async def test_default_payload_does_not_include_subject() -> None:
+    middleware = AuthorizationMiddleware(authorizer=_deny_all)
+    ctx = _make_context(tool_meta={"required_scope": "write"})
+    call_next = AsyncMock(return_value="result")
+    with patch(
+        "fastmcp_pvl_core._authorization.get_subject", return_value="user:alice"
+    ):
+        with pytest.raises(ToolError) as exc_info:
+            await middleware.on_call_tool(ctx, call_next)
+    payload = json.loads(str(exc_info.value))
+    assert "subject" not in payload
+
+
+@pytest.mark.asyncio
+async def test_expose_subject_in_error_includes_subject() -> None:
+    middleware = AuthorizationMiddleware(
+        authorizer=_deny_all, expose_subject_in_error=True
+    )
+    ctx = _make_context(tool_meta={"required_scope": "write"})
+    call_next = AsyncMock(return_value="result")
+    with patch(
+        "fastmcp_pvl_core._authorization.get_subject", return_value="user:alice"
+    ):
+        with pytest.raises(ToolError) as exc_info:
+            await middleware.on_call_tool(ctx, call_next)
+    payload = json.loads(str(exc_info.value))
+    assert payload == {
+        "code": "authz_denied",
+        "required_scope": "write",
+        "subject": "user:alice",
+    }
+
+
+@pytest.mark.asyncio
+async def test_subject_always_logged_at_warning_regardless_of_flag(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Subject appears in WARNING log even when expose_subject_in_error=False."""
+    caplog.set_level("WARNING", logger="fastmcp_pvl_core._authorization")
+    middleware = AuthorizationMiddleware(
+        authorizer=_deny_all, expose_subject_in_error=False
+    )
+    ctx = _make_context(tool_meta={"required_scope": "write"})
+    call_next = AsyncMock(return_value="result")
+    with patch(
+        "fastmcp_pvl_core._authorization.get_subject", return_value="user:alice"
+    ):
+        with pytest.raises(ToolError):
+            await middleware.on_call_tool(ctx, call_next)
+    assert any(
+        "user:alice" in rec.message and "authz_denied" in rec.message
+        for rec in caplog.records
+    )
