@@ -14,12 +14,17 @@ See ``docs/specs/authorization-submodule.md`` for the design rationale.
 
 from __future__ import annotations
 
+import json
+import logging
 import sys
 from collections.abc import Callable, Mapping
 from collections.abc import Set as AbstractSet
 from contextvars import ContextVar
 from pathlib import Path
-from typing import TypeAlias
+from typing import Any, TypeAlias
+
+from fastmcp.exceptions import ToolError
+from fastmcp.server.middleware import Middleware, MiddlewareContext
 
 if sys.version_info >= (3, 11):
     import tomllib
@@ -295,3 +300,99 @@ def check_authorization(
         raise AuthzDenied(
             subject=resolved_subject, required_scope=required_scope
         )
+
+
+# ---------------------------------------------------------------------------
+# AuthorizationMiddleware
+# ---------------------------------------------------------------------------
+
+
+logger = logging.getLogger(__name__)
+
+
+class AuthorizationMiddleware(Middleware):
+    """fastmcp middleware that enforces ``meta["required_scope"]`` on components.
+
+    Tools, resources, and prompts opt in by setting
+    ``meta={"required_scope": "<scope>"}`` at registration.  Components
+    without the meta key are unrestricted.
+
+    See ``docs/specs/authorization-submodule.md`` for the full design.
+    """
+
+    def __init__(
+        self,
+        *,
+        authorizer: Authorizer,
+        expose_subject_in_error: bool = False,
+    ) -> None:
+        """Construct the middleware and publish the authorizer ambient.
+
+        Args:
+            authorizer: Decision callable.  Saved on the instance and
+                also written to the package-internal
+                ``_current_authorizer`` :class:`ContextVar` so that
+                :func:`check_authorization` calls inside tool bodies
+                find it without an explicit ``authorizer=`` kwarg.
+            expose_subject_in_error: When ``True``, the wire-side deny
+                payload includes the ``subject`` key.  Defaults to
+                ``False`` (multi-user disclosure risk).  The subject is
+                always logged at WARNING regardless.
+        """
+        self._authorizer = authorizer
+        self._expose_subject = expose_subject_in_error
+        set_current_authorizer(authorizer)
+
+    def _format_deny_payload(
+        self, *, subject: str | None, required_scope: str
+    ) -> str:
+        """Render the JSON-encoded deny payload for the wire."""
+        body: dict[str, Any] = {
+            "code": "authz_denied",
+            "required_scope": required_scope,
+        }
+        if self._expose_subject:
+            body["subject"] = subject
+        return json.dumps(body)
+
+    def _log_deny(
+        self, *, kind: str, name: str, subject: str | None, required_scope: str
+    ) -> None:
+        """Log an authz denial at WARNING (subject always included in logs)."""
+        logger.warning(
+            "authz_denied kind=%s name=%s subject=%r required_scope=%r",
+            kind,
+            name,
+            subject,
+            required_scope,
+        )
+
+    async def on_call_tool(
+        self, context: MiddlewareContext, call_next: Any
+    ) -> Any:
+        """Enforce ``required_scope`` on tool calls."""
+        assert context.fastmcp_context is not None, (
+            "on_call_tool invoked without a fastmcp_context"
+        )
+        tool = await context.fastmcp_context.fastmcp.get_tool(
+            context.message.name
+        )
+        meta = getattr(tool, "meta", None) or {}
+        required = meta.get("required_scope")
+        if not isinstance(required, str) or not required.strip():
+            return await call_next(context)
+
+        subject = get_subject()
+        if not self._authorizer(subject, required):
+            self._log_deny(
+                kind="tool",
+                name=context.message.name,
+                subject=subject,
+                required_scope=required,
+            )
+            raise ToolError(
+                self._format_deny_payload(
+                    subject=subject, required_scope=required
+                )
+            )
+        return await call_next(context)
