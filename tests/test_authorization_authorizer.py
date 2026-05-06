@@ -48,3 +48,14 @@ def test_acl_captured_by_reference_not_copied() -> None:
     assert authorize("user:bob", "read") is False
     acl["user:bob"] = frozenset({"read"})
     assert authorize("user:bob", "read") is True
+
+
+def test_local_subject_treated_as_normal_subject() -> None:
+    """Spec checklist: ``"local"`` works exactly like any other subject."""
+    authorize = make_acl_authorizer({"local": frozenset({"read", "write"})})
+    assert authorize("local", "read") is True
+    assert authorize("local", "write") is True
+    assert authorize("local", "admin") is False
+    # And not in ACL → denied like any unknown subject.
+    other = make_acl_authorizer({"user:alice": frozenset({"read"})})
+    assert other("local", "read") is False

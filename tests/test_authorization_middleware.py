@@ -143,6 +143,20 @@ async def test_on_read_resource_no_meta_passes_through() -> None:
     ):
         result = await middleware.on_read_resource(ctx, call_next)
     assert result == "contents"
+    call_next.assert_awaited_once_with(ctx)
+
+
+@pytest.mark.asyncio
+async def test_on_read_resource_with_meta_allowed_passes_through() -> None:
+    middleware = AuthorizationMiddleware(authorizer=_allow_all)
+    ctx = _make_resource_context(resource_meta={"required_scope": "read"})
+    call_next = AsyncMock(return_value="contents")
+    with patch(
+        "fastmcp_pvl_core._authorization.get_subject", return_value="user:alice"
+    ):
+        result = await middleware.on_read_resource(ctx, call_next)
+    assert result == "contents"
+    call_next.assert_awaited_once_with(ctx)
 
 
 @pytest.mark.asyncio
@@ -170,6 +184,20 @@ async def test_on_get_prompt_no_meta_passes_through() -> None:
     ):
         result = await middleware.on_get_prompt(ctx, call_next)
     assert result == "messages"
+    call_next.assert_awaited_once_with(ctx)
+
+
+@pytest.mark.asyncio
+async def test_on_get_prompt_with_meta_allowed_passes_through() -> None:
+    middleware = AuthorizationMiddleware(authorizer=_allow_all)
+    ctx = _make_prompt_context(prompt_meta={"required_scope": "read"})
+    call_next = AsyncMock(return_value="messages")
+    with patch(
+        "fastmcp_pvl_core._authorization.get_subject", return_value="user:alice"
+    ):
+        result = await middleware.on_get_prompt(ctx, call_next)
+    assert result == "messages"
+    call_next.assert_awaited_once_with(ctx)
 
 
 @pytest.mark.asyncio
@@ -264,6 +292,7 @@ async def test_on_read_resource_get_resource_failure_falls_through(
     caplog.set_level("WARNING", logger="fastmcp_pvl_core._authorization")
     result = await middleware.on_read_resource(ctx, call_next)
     assert result == "contents"
+    call_next.assert_awaited_once_with(ctx)
     assert any("resource lookup failed" in rec.message for rec in caplog.records)
 
 
@@ -284,6 +313,7 @@ async def test_on_get_prompt_get_prompt_failure_falls_through(
     caplog.set_level("WARNING", logger="fastmcp_pvl_core._authorization")
     result = await middleware.on_get_prompt(ctx, call_next)
     assert result == "messages"
+    call_next.assert_awaited_once_with(ctx)
     assert any("prompt lookup failed" in rec.message for rec in caplog.records)
 
 

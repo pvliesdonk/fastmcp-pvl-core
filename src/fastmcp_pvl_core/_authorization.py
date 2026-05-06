@@ -346,7 +346,12 @@ class AuthorizationMiddleware(Middleware):
     def _format_deny_payload(
         self, *, subject: str | None, required_scope: str
     ) -> str:
-        """Render the JSON-encoded deny payload for the wire."""
+        """Render the JSON-encoded deny payload for the wire.
+
+        When ``expose_subject_in_error`` is ``True`` and the subject is
+        ``None``, the payload includes ``"subject": null``.  Downstream code
+        that consumes the payload should defend against this case.
+        """
         body: dict[str, Any] = {
             "code": "authz_denied",
             "required_scope": required_scope,
@@ -367,7 +372,7 @@ class AuthorizationMiddleware(Middleware):
             required_scope,
         )
 
-    async def _enforce_static(
+    def _enforce_static(
         self,
         *,
         kind: str,
@@ -437,7 +442,11 @@ class AuthorizationMiddleware(Middleware):
         self, context: MiddlewareContext, call_next: Any
     ) -> Any:
         """Enforce ``required_scope`` on tool calls."""
-        assert context.fastmcp_context is not None
+        if context.fastmcp_context is None:
+            raise RuntimeError(
+                "AuthorizationMiddleware.on_call_tool: fastmcp_context is None; "
+                "ensure the middleware is installed on a FastMCP server"
+            )
         try:
             tool = await context.fastmcp_context.fastmcp.get_tool(
                 context.message.name
@@ -455,7 +464,7 @@ class AuthorizationMiddleware(Middleware):
                 call_next=call_next,
                 context=context,
             )
-        await self._enforce_static(
+        self._enforce_static(
             kind="tool",
             name=context.message.name,
             meta=getattr(tool, "meta", None) or {},
@@ -473,7 +482,11 @@ class AuthorizationMiddleware(Middleware):
         self, context: MiddlewareContext, call_next: Any
     ) -> Any:
         """Enforce ``required_scope`` on resource reads."""
-        assert context.fastmcp_context is not None
+        if context.fastmcp_context is None:
+            raise RuntimeError(
+                "AuthorizationMiddleware.on_read_resource: fastmcp_context is None; "
+                "ensure the middleware is installed on a FastMCP server"
+            )
         try:
             resource = await context.fastmcp_context.fastmcp.get_resource(
                 context.message.uri
@@ -491,7 +504,7 @@ class AuthorizationMiddleware(Middleware):
                 call_next=call_next,
                 context=context,
             )
-        await self._enforce_static(
+        self._enforce_static(
             kind="resource",
             name=str(context.message.uri),
             meta=getattr(resource, "meta", None) or {},
@@ -509,7 +522,11 @@ class AuthorizationMiddleware(Middleware):
         self, context: MiddlewareContext, call_next: Any
     ) -> Any:
         """Enforce ``required_scope`` on prompt retrievals."""
-        assert context.fastmcp_context is not None
+        if context.fastmcp_context is None:
+            raise RuntimeError(
+                "AuthorizationMiddleware.on_get_prompt: fastmcp_context is None; "
+                "ensure the middleware is installed on a FastMCP server"
+            )
         try:
             prompt = await context.fastmcp_context.fastmcp.get_prompt(
                 context.message.name
@@ -527,7 +544,7 @@ class AuthorizationMiddleware(Middleware):
                 call_next=call_next,
                 context=context,
             )
-        await self._enforce_static(
+        self._enforce_static(
             kind="prompt",
             name=context.message.name,
             meta=getattr(prompt, "meta", None) or {},

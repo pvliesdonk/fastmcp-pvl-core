@@ -2,9 +2,15 @@
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
 import pytest
 
-from fastmcp_pvl_core._authorization import AuthzDenied
+from fastmcp_pvl_core._authorization import (
+    AuthzDenied,
+    check_authorization,
+    set_current_authorizer,
+)
 
 
 def test_authz_denied_carries_subject_and_required_scope() -> None:
@@ -31,14 +37,6 @@ def test_authz_denied_is_an_exception() -> None:
         raise AuthzDenied(subject="x", required_scope="y")
 
 
-from unittest.mock import patch  # noqa: E402
-
-from fastmcp_pvl_core._authorization import (  # noqa: E402
-    check_authorization,
-    set_current_authorizer,
-)
-
-
 def _allow_all(_subject: str | None, _required_scope: str) -> bool:
     return True
 
@@ -51,8 +49,7 @@ def test_check_authorization_uses_explicit_authorizer_allow() -> None:
     with patch(
         "fastmcp_pvl_core._authorization.get_subject", return_value="user:alice"
     ):
-        result = check_authorization("read", authorizer=_allow_all)
-    assert result is None
+        check_authorization("read", authorizer=_allow_all)
 
 
 def test_check_authorization_uses_explicit_authorizer_deny() -> None:

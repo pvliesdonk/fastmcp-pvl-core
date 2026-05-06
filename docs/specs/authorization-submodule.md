@@ -427,6 +427,10 @@ in-process surface that exercises the full chain end-to-end.
 
 ### Verification list
 
+This is a design-time intent checklist; the corresponding tests are
+catalogued in the "Test files" / "Middleware test scenarios" tables
+above.
+
 Mapping the original issue's spirit to this design:
 
 - [ ] Tool with `required_scope` denies unmapped subject; allows mapped subject.
