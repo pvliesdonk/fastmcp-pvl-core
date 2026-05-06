@@ -417,6 +417,22 @@ class AuthorizationMiddleware(Middleware):
                 )
             ) from None
 
+    def _filter_components(
+        self, components: list[Any]
+    ) -> list[Any]:
+        """Drop components whose ``meta["required_scope"]`` denies the caller."""
+        subject = get_subject()
+        kept: list[Any] = []
+        for component in components:
+            meta = getattr(component, "meta", None) or {}
+            required = meta.get("required_scope")
+            if not isinstance(required, str) or not required.strip():
+                kept.append(component)
+                continue
+            if self._authorizer(subject, required):
+                kept.append(component)
+        return kept
+
     async def on_call_tool(
         self, context: MiddlewareContext, call_next: Any
     ) -> Any:
@@ -524,3 +540,31 @@ class AuthorizationMiddleware(Middleware):
             call_next=call_next,
             context=context,
         )
+
+    async def on_list_tools(
+        self, context: MiddlewareContext, call_next: Any
+    ) -> Any:
+        """Filter tool listings by what the caller can call."""
+        tools = await call_next(context)
+        return self._filter_components(tools)
+
+    async def on_list_resources(
+        self, context: MiddlewareContext, call_next: Any
+    ) -> Any:
+        """Filter resource listings by what the caller can read."""
+        resources = await call_next(context)
+        return self._filter_components(resources)
+
+    async def on_list_resource_templates(
+        self, context: MiddlewareContext, call_next: Any
+    ) -> Any:
+        """Filter resource template listings by what the caller can read."""
+        templates = await call_next(context)
+        return self._filter_components(templates)
+
+    async def on_list_prompts(
+        self, context: MiddlewareContext, call_next: Any
+    ) -> Any:
+        """Filter prompt listings by what the caller can retrieve."""
+        prompts = await call_next(context)
+        return self._filter_components(prompts)

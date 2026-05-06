@@ -285,3 +285,71 @@ async def test_on_get_prompt_get_prompt_failure_falls_through(
     result = await middleware.on_get_prompt(ctx, call_next)
     assert result == "messages"
     assert any("prompt lookup failed" in rec.message for rec in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_on_list_tools_filters_denied_tools() -> None:
+    """Tools with denied required_scope are dropped; unannotated kept."""
+    tool_open = SimpleNamespace(name="open_tool", meta={})
+    tool_write = SimpleNamespace(
+        name="write_tool", meta={"required_scope": "write"}
+    )
+    tool_read = SimpleNamespace(
+        name="read_tool", meta={"required_scope": "read"}
+    )
+
+    def authorize(_subject: str | None, required: str) -> bool:
+        return required == "read"
+
+    middleware = AuthorizationMiddleware(authorizer=authorize)
+    call_next = AsyncMock(return_value=[tool_open, tool_write, tool_read])
+    ctx = MagicMock()
+    with patch(
+        "fastmcp_pvl_core._authorization.get_subject", return_value="user:alice"
+    ):
+        result = await middleware.on_list_tools(ctx, call_next)
+    assert result == [tool_open, tool_read]
+
+
+@pytest.mark.asyncio
+async def test_on_list_resources_filters_denied() -> None:
+    res_open = SimpleNamespace(uri="vault://1", meta={})
+    res_locked = SimpleNamespace(uri="vault://2", meta={"required_scope": "x"})
+    middleware = AuthorizationMiddleware(authorizer=_deny_all)
+    call_next = AsyncMock(return_value=[res_open, res_locked])
+    ctx = MagicMock()
+    with patch(
+        "fastmcp_pvl_core._authorization.get_subject", return_value="user:alice"
+    ):
+        result = await middleware.on_list_resources(ctx, call_next)
+    assert result == [res_open]
+
+
+@pytest.mark.asyncio
+async def test_on_list_resource_templates_filters_denied() -> None:
+    tmpl_open = SimpleNamespace(uri="vault://{a}", meta={})
+    tmpl_locked = SimpleNamespace(
+        uri="vault://locked/{a}", meta={"required_scope": "x"}
+    )
+    middleware = AuthorizationMiddleware(authorizer=_deny_all)
+    call_next = AsyncMock(return_value=[tmpl_open, tmpl_locked])
+    ctx = MagicMock()
+    with patch(
+        "fastmcp_pvl_core._authorization.get_subject", return_value="user:alice"
+    ):
+        result = await middleware.on_list_resource_templates(ctx, call_next)
+    assert result == [tmpl_open]
+
+
+@pytest.mark.asyncio
+async def test_on_list_prompts_filters_denied() -> None:
+    p_open = SimpleNamespace(name="open", meta={})
+    p_locked = SimpleNamespace(name="locked", meta={"required_scope": "x"})
+    middleware = AuthorizationMiddleware(authorizer=_deny_all)
+    call_next = AsyncMock(return_value=[p_open, p_locked])
+    ctx = MagicMock()
+    with patch(
+        "fastmcp_pvl_core._authorization.get_subject", return_value="user:alice"
+    ):
+        result = await middleware.on_list_prompts(ctx, call_next)
+    assert result == [p_open]
