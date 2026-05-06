@@ -280,9 +280,7 @@ async def test_on_read_resource_get_resource_failure_falls_through(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     middleware = AuthorizationMiddleware(authorizer=_deny_all)
-    fastmcp_obj = SimpleNamespace(
-        get_resource=AsyncMock(side_effect=KeyError("nope"))
-    )
+    fastmcp_obj = SimpleNamespace(get_resource=AsyncMock(side_effect=KeyError("nope")))
     fastmcp_context = SimpleNamespace(fastmcp=fastmcp_obj)
     ctx = MagicMock(
         message=SimpleNamespace(uri="vault://x"),
@@ -301,9 +299,7 @@ async def test_on_get_prompt_get_prompt_failure_falls_through(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     middleware = AuthorizationMiddleware(authorizer=_deny_all)
-    fastmcp_obj = SimpleNamespace(
-        get_prompt=AsyncMock(side_effect=KeyError("nope"))
-    )
+    fastmcp_obj = SimpleNamespace(get_prompt=AsyncMock(side_effect=KeyError("nope")))
     fastmcp_context = SimpleNamespace(fastmcp=fastmcp_obj)
     ctx = MagicMock(
         message=SimpleNamespace(name="missing", arguments={}),
@@ -321,12 +317,8 @@ async def test_on_get_prompt_get_prompt_failure_falls_through(
 async def test_on_list_tools_filters_denied_tools() -> None:
     """Tools with denied required_scope are dropped; unannotated kept."""
     tool_open = SimpleNamespace(name="open_tool", meta={})
-    tool_write = SimpleNamespace(
-        name="write_tool", meta={"required_scope": "write"}
-    )
-    tool_read = SimpleNamespace(
-        name="read_tool", meta={"required_scope": "read"}
-    )
+    tool_write = SimpleNamespace(name="write_tool", meta={"required_scope": "write"})
+    tool_read = SimpleNamespace(name="read_tool", meta={"required_scope": "read"})
 
     def authorize(_subject: str | None, required: str) -> bool:
         return required == "read"
@@ -416,6 +408,45 @@ async def test_expose_subject_in_error_includes_subject() -> None:
         "code": "authz_denied",
         "required_scope": "write",
         "subject": "user:alice",
+    }
+
+
+@pytest.mark.parametrize(
+    ("method_name", "message_kwarg"),
+    [
+        ("on_call_tool", {"name": "x", "arguments": {}}),
+        ("on_read_resource", {"uri": "x"}),
+        ("on_get_prompt", {"name": "x", "arguments": {}}),
+    ],
+)
+@pytest.mark.asyncio
+async def test_hook_raises_runtime_error_when_fastmcp_context_is_none(
+    method_name: str, message_kwarg: dict[str, Any]
+) -> None:
+    middleware = AuthorizationMiddleware(authorizer=_allow_all)
+    ctx = MagicMock(
+        fastmcp_context=None,
+        message=SimpleNamespace(**message_kwarg),
+    )
+    with pytest.raises(RuntimeError, match="fastmcp_context is None"):
+        await getattr(middleware, method_name)(ctx, AsyncMock())
+
+
+@pytest.mark.asyncio
+async def test_expose_subject_in_error_renders_null_when_subject_is_none() -> None:
+    middleware = AuthorizationMiddleware(
+        authorizer=_deny_all, expose_subject_in_error=True
+    )
+    ctx = _make_context(tool_meta={"required_scope": "write"})
+    call_next = AsyncMock(return_value="result")
+    with patch("fastmcp_pvl_core._authorization.get_subject", return_value=None):
+        with pytest.raises(ToolError) as exc_info:
+            await middleware.on_call_tool(ctx, call_next)
+    payload = json.loads(str(exc_info.value))
+    assert payload == {
+        "code": "authz_denied",
+        "required_scope": "write",
+        "subject": None,
     }
 
 

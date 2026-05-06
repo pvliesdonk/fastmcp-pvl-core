@@ -6,9 +6,7 @@ from fastmcp_pvl_core._authorization import make_acl_authorizer
 
 
 def test_subject_in_acl_with_required_scope_allowed() -> None:
-    authorize = make_acl_authorizer(
-        {"user:alice": frozenset({"read", "write"})}
-    )
+    authorize = make_acl_authorizer({"user:alice": frozenset({"read", "write"})})
     assert authorize("user:alice", "read") is True
     assert authorize("user:alice", "write") is True
 
@@ -36,9 +34,7 @@ def test_wildcard_scope_grants_anything() -> None:
 
 
 def test_wildcard_alongside_specific_scopes() -> None:
-    authorize = make_acl_authorizer(
-        {"user:admin": frozenset({"*", "read"})}
-    )
+    authorize = make_acl_authorizer({"user:admin": frozenset({"*", "read"})})
     assert authorize("user:admin", "anything") is True
 
 

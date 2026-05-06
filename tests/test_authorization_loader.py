@@ -13,12 +13,12 @@ from fastmcp_pvl_core._errors import ConfigurationError
 def test_load_acl_happy_path(tmp_path: Path) -> None:
     p = tmp_path / "acl.toml"
     p.write_text(
-        '''
+        """
 [subjects]
 "user:alice@example.com" = ["read", "write"]
 "user:admin@example.com" = ["*"]
 "service:ci-bot"         = ["read"]
-        ''',
+        """,
         encoding="utf-8",
     )
     acl = load_acl(p)

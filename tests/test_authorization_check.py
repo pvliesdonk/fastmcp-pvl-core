@@ -114,9 +114,7 @@ def test_check_authorization_omitted_subject_falls_through_to_get_subject() -> N
 
 
 def test_check_authorization_get_subject_returning_none_denied_by_authorizer() -> None:
-    with patch(
-        "fastmcp_pvl_core._authorization.get_subject", return_value=None
-    ):
+    with patch("fastmcp_pvl_core._authorization.get_subject", return_value=None):
         with pytest.raises(AuthzDenied) as exc_info:
             check_authorization("read", authorizer=_deny_all)
     assert exc_info.value.subject is None

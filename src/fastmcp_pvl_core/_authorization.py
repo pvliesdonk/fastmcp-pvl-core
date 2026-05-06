@@ -57,6 +57,7 @@ issue #60.
 # AuthzDenied exception
 # ---------------------------------------------------------------------------
 
+
 class AuthzDenied(Exception):  # noqa: N818
     """Raised by :func:`check_authorization` when the authorizer denies.
 
@@ -150,9 +151,7 @@ def load_acl(path: Path) -> dict[str, frozenset[str]]:
     """
     path = path.expanduser()
     if not path.is_file():
-        raise ConfigurationError(
-            f"ACL file not found or not a regular file: {path}"
-        )
+        raise ConfigurationError(f"ACL file not found or not a regular file: {path}")
     try:
         raw = path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as exc:
@@ -168,9 +167,7 @@ def load_acl(path: Path) -> dict[str, frozenset[str]]:
 
     subjects = data.get("subjects")
     if not isinstance(subjects, dict):
-        raise ConfigurationError(
-            f"ACL file at {path} must define a [subjects] table"
-        )
+        raise ConfigurationError(f"ACL file at {path} must define a [subjects] table")
 
     result: dict[str, frozenset[str]] = {}
     for subject, scopes in subjects.items():
@@ -200,7 +197,7 @@ def load_acl(path: Path) -> dict[str, frozenset[str]]:
                     f"ACL file at {path}: subject {subject!r}: scope is "
                     "empty or whitespace-only"
                 )
-            cleaned.add(scope)
+            cleaned.add(scope.strip())
         result[subject] = frozenset(cleaned)
     return result
 
@@ -278,8 +275,12 @@ def check_authorization(
         authorizer: Override the ambient authorizer.  Useful when the
             middleware isn't installed but a code path still wants the
             check.
-        subject: Override the ``get_subject()`` lookup.  ``None``
-            (the default) means "look up via :func:`get_subject`".
+        subject: Override the ``get_subject()`` lookup.  Both omitting
+            the argument and explicitly passing ``None`` trigger
+            :func:`get_subject`; to force ``None`` to the authorizer (the
+            "no auth context" test case), patch :func:`get_subject` directly
+            or use :func:`make_acl_authorizer` (which returns ``False`` on
+            ``None`` subject) and call it directly.
 
     Raises:
         AuthzDenied: when the authorizer returns ``False``.
@@ -297,9 +298,7 @@ def check_authorization(
     resolved_subject = subject if subject is not None else get_subject()
 
     if not authorizer(resolved_subject, required_scope):
-        raise AuthzDenied(
-            subject=resolved_subject, required_scope=required_scope
-        )
+        raise AuthzDenied(subject=resolved_subject, required_scope=required_scope)
 
 
 # ---------------------------------------------------------------------------
@@ -343,9 +342,7 @@ class AuthorizationMiddleware(Middleware):
         self._expose_subject = expose_subject_in_error
         set_current_authorizer(authorizer)
 
-    def _format_deny_payload(
-        self, *, subject: str | None, required_scope: str
-    ) -> str:
+    def _format_deny_payload(self, *, subject: str | None, required_scope: str) -> str:
         """Render the JSON-encoded deny payload for the wire.
 
         When ``expose_subject_in_error`` is ``True`` and the subject is
@@ -358,7 +355,7 @@ class AuthorizationMiddleware(Middleware):
         }
         if self._expose_subject:
             body["subject"] = subject
-        return json.dumps(body)
+        return json.dumps(body, separators=(",", ":"))
 
     def _log_deny(
         self, *, kind: str, name: str, subject: str | None, required_scope: str
@@ -386,7 +383,10 @@ class AuthorizationMiddleware(Middleware):
         deny.  Does nothing when meta has no requirement.
         """
         required = meta.get("required_scope")
-        if not isinstance(required, str) or not required.strip():
+        if not isinstance(required, str):
+            return
+        required = required.strip()
+        if not required:
             return
         subject = get_subject()
         if not self._authorizer(subject, required):
@@ -394,9 +394,7 @@ class AuthorizationMiddleware(Middleware):
                 kind=kind, name=name, subject=subject, required_scope=required
             )
             raise error_cls(
-                self._format_deny_payload(
-                    subject=subject, required_scope=required
-                )
+                self._format_deny_payload(subject=subject, required_scope=required)
             )
 
     async def _call_with_authz_translation(
@@ -413,49 +411,53 @@ class AuthorizationMiddleware(Middleware):
             return await call_next(context)
         except AuthzDenied as exc:
             self._log_deny(
-                kind=kind, name=name,
-                subject=exc.subject, required_scope=exc.required_scope,
+                kind=kind,
+                name=name,
+                subject=exc.subject,
+                required_scope=exc.required_scope,
             )
             raise error_cls(
                 self._format_deny_payload(
-                    subject=exc.subject, required_scope=exc.required_scope,
+                    subject=exc.subject,
+                    required_scope=exc.required_scope,
                 )
             ) from None
 
-    def _filter_components(
-        self, components: list[Any]
-    ) -> list[Any]:
+    def _filter_components(self, components: list[Any]) -> list[Any]:
         """Drop components whose ``meta["required_scope"]`` denies the caller."""
         subject = get_subject()
         kept: list[Any] = []
         for component in components:
             meta = getattr(component, "meta", None) or {}
             required = meta.get("required_scope")
-            if not isinstance(required, str) or not required.strip():
+            if not isinstance(required, str):
+                kept.append(component)
+                continue
+            required = required.strip()
+            if not required:
                 kept.append(component)
                 continue
             if self._authorizer(subject, required):
                 kept.append(component)
         return kept
 
-    async def on_call_tool(
-        self, context: MiddlewareContext, call_next: Any
-    ) -> Any:
+    async def on_call_tool(self, context: MiddlewareContext, call_next: Any) -> Any:
         """Enforce ``required_scope`` on tool calls."""
         if context.fastmcp_context is None:
             raise RuntimeError(
                 "AuthorizationMiddleware.on_call_tool: fastmcp_context is None; "
                 "ensure the middleware is installed on a FastMCP server"
             )
+        # NOTE: lookup failure path skips the static meta check. See
+        # docs/specs/authorization-submodule.md (AuthorizationMiddleware
+        # section, "When the inner-component lookup ... raises").
         try:
-            tool = await context.fastmcp_context.fastmcp.get_tool(
-                context.message.name
-            )
+            tool = await context.fastmcp_context.fastmcp.get_tool(context.message.name)
         except Exception as exc:  # noqa: BLE001 — defensive, logged
             logger.warning(
-                "tool lookup failed during authz check; falling through "
-                "name=%s exc=%r",
-                context.message.name, exc,
+                "tool lookup failed during authz check; falling through name=%s exc=%r",
+                context.message.name,
+                exc,
             )
             return await self._call_with_authz_translation(
                 kind="tool",
@@ -478,15 +480,16 @@ class AuthorizationMiddleware(Middleware):
             context=context,
         )
 
-    async def on_read_resource(
-        self, context: MiddlewareContext, call_next: Any
-    ) -> Any:
+    async def on_read_resource(self, context: MiddlewareContext, call_next: Any) -> Any:
         """Enforce ``required_scope`` on resource reads."""
         if context.fastmcp_context is None:
             raise RuntimeError(
                 "AuthorizationMiddleware.on_read_resource: fastmcp_context is None; "
                 "ensure the middleware is installed on a FastMCP server"
             )
+        # NOTE: lookup failure path skips the static meta check. See
+        # docs/specs/authorization-submodule.md (AuthorizationMiddleware
+        # section, "When the inner-component lookup ... raises").
         try:
             resource = await context.fastmcp_context.fastmcp.get_resource(
                 context.message.uri
@@ -495,7 +498,8 @@ class AuthorizationMiddleware(Middleware):
             logger.warning(
                 "resource lookup failed during authz check; falling through "
                 "uri=%s exc=%r",
-                context.message.uri, exc,
+                context.message.uri,
+                exc,
             )
             return await self._call_with_authz_translation(
                 kind="resource",
@@ -518,15 +522,16 @@ class AuthorizationMiddleware(Middleware):
             context=context,
         )
 
-    async def on_get_prompt(
-        self, context: MiddlewareContext, call_next: Any
-    ) -> Any:
+    async def on_get_prompt(self, context: MiddlewareContext, call_next: Any) -> Any:
         """Enforce ``required_scope`` on prompt retrievals."""
         if context.fastmcp_context is None:
             raise RuntimeError(
                 "AuthorizationMiddleware.on_get_prompt: fastmcp_context is None; "
                 "ensure the middleware is installed on a FastMCP server"
             )
+        # NOTE: lookup failure path skips the static meta check. See
+        # docs/specs/authorization-submodule.md (AuthorizationMiddleware
+        # section, "When the inner-component lookup ... raises").
         try:
             prompt = await context.fastmcp_context.fastmcp.get_prompt(
                 context.message.name
@@ -535,7 +540,8 @@ class AuthorizationMiddleware(Middleware):
             logger.warning(
                 "prompt lookup failed during authz check; falling through "
                 "name=%s exc=%r",
-                context.message.name, exc,
+                context.message.name,
+                exc,
             )
             return await self._call_with_authz_translation(
                 kind="prompt",
@@ -558,9 +564,7 @@ class AuthorizationMiddleware(Middleware):
             context=context,
         )
 
-    async def on_list_tools(
-        self, context: MiddlewareContext, call_next: Any
-    ) -> Any:
+    async def on_list_tools(self, context: MiddlewareContext, call_next: Any) -> Any:
         """Filter tool listings by what the caller can call."""
         tools = await call_next(context)
         return self._filter_components(tools)
@@ -579,9 +583,7 @@ class AuthorizationMiddleware(Middleware):
         templates = await call_next(context)
         return self._filter_components(templates)
 
-    async def on_list_prompts(
-        self, context: MiddlewareContext, call_next: Any
-    ) -> Any:
+    async def on_list_prompts(self, context: MiddlewareContext, call_next: Any) -> Any:
         """Filter prompt listings by what the caller can retrieve."""
         prompts = await call_next(context)
         return self._filter_components(prompts)
