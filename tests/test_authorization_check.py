@@ -113,6 +113,43 @@ def test_check_authorization_omitted_subject_falls_through_to_get_subject() -> N
     assert captured == {"subject": "user:from_context"}
 
 
+def test_check_authorization_explicit_subject_none_uses_get_subject() -> None:
+    """Explicit ``subject=None`` is equivalent to omitting the kwarg."""
+    captured: dict[str, object] = {}
+
+    def authorize(subject: str | None, required_scope: str) -> bool:
+        captured["subject"] = subject
+        return True
+
+    with patch(
+        "fastmcp_pvl_core._authorization.get_subject", return_value="user:from_context"
+    ):
+        check_authorization("read", authorizer=authorize, subject=None)
+    assert captured == {"subject": "user:from_context"}
+
+
+def test_check_authorization_strips_required_scope() -> None:
+    captured: dict[str, object] = {}
+
+    def authorize(_subject: str | None, required_scope: str) -> bool:
+        captured["required_scope"] = required_scope
+        return True
+
+    with patch(
+        "fastmcp_pvl_core._authorization.get_subject", return_value="user:alice"
+    ):
+        check_authorization("  write  ", authorizer=authorize)
+    assert captured == {"required_scope": "write"}
+
+
+def test_check_authorization_empty_required_scope_raises_value_error() -> None:
+    with patch(
+        "fastmcp_pvl_core._authorization.get_subject", return_value="user:alice"
+    ):
+        with pytest.raises(ValueError, match="non-empty"):
+            check_authorization("   ", authorizer=_allow_all)
+
+
 def test_check_authorization_get_subject_returning_none_denied_by_authorizer() -> None:
     with patch("fastmcp_pvl_core._authorization.get_subject", return_value=None):
         with pytest.raises(AuthzDenied) as exc_info:

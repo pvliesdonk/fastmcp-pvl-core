@@ -269,6 +269,12 @@ def check_authorization(
       context is available — that ``None`` is then forwarded to the
       authorizer, which typically denies it.
 
+    Scope normalisation:
+
+    The ``required_scope`` is stripped of surrounding whitespace before
+    the authorizer is called.  Passing an empty or whitespace-only scope
+    raises :class:`ValueError`.
+
     Args:
         required_scope: Scope string to require, e.g. ``"write"`` or
             ``"read:project-foo"``.
@@ -286,6 +292,7 @@ def check_authorization(
         AuthzDenied: when the authorizer returns ``False``.
         RuntimeError: when no authorizer is reachable (neither ambient
             nor explicit).
+        ValueError: when ``required_scope`` is empty or whitespace-only.
     """
     if authorizer is None:
         authorizer = _current_authorizer.get()
@@ -294,6 +301,10 @@ def check_authorization(
                 "no authorizer in context; install AuthorizationMiddleware "
                 "or pass authorizer= explicitly to check_authorization()"
             )
+
+    required_scope = required_scope.strip()
+    if not required_scope:
+        raise ValueError("required_scope must be a non-empty string")
 
     resolved_subject = subject if subject is not None else get_subject()
 

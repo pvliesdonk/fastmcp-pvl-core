@@ -451,6 +451,28 @@ async def test_expose_subject_in_error_renders_null_when_subject_is_none() -> No
 
 
 @pytest.mark.asyncio
+async def test_on_call_tool_strips_padded_required_scope() -> None:
+    """Whitespace-padded required_scope is stripped before authorizer + payload."""
+    captured: list[str] = []
+
+    def authorize(_subject: str | None, required_scope: str) -> bool:
+        captured.append(required_scope)
+        return False  # deny so we can assert the payload
+
+    middleware = AuthorizationMiddleware(authorizer=authorize)
+    ctx = _make_context(tool_meta={"required_scope": "  write  "})
+    call_next = AsyncMock(return_value="result")
+    with patch(
+        "fastmcp_pvl_core._authorization.get_subject", return_value="user:alice"
+    ):
+        with pytest.raises(ToolError) as exc_info:
+            await middleware.on_call_tool(ctx, call_next)
+    assert captured == ["write"]
+    payload = json.loads(str(exc_info.value))
+    assert payload["required_scope"] == "write"
+
+
+@pytest.mark.asyncio
 async def test_subject_always_logged_at_warning_regardless_of_flag(
     caplog: pytest.LogCaptureFixture,
 ) -> None:

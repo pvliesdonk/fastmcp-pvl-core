@@ -46,6 +46,14 @@ def test_load_acl_expands_user_home(
     assert acl == {"user:x": frozenset({"read"})}
 
 
+def test_load_acl_strips_padded_scopes(tmp_path: Path) -> None:
+    """Scopes with surrounding whitespace are stored in canonical form."""
+    p = tmp_path / "acl.toml"
+    p.write_text('[subjects]\n"user:x" = ["  read  ", " write"]\n', encoding="utf-8")
+    acl = load_acl(p)
+    assert acl == {"user:x": frozenset({"read", "write"})}
+
+
 def test_load_acl_missing_file(tmp_path: Path) -> None:
     p = tmp_path / "nope.toml"
     with pytest.raises(ConfigurationError, match="not found"):
