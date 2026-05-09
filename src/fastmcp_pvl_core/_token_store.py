@@ -21,7 +21,7 @@ import logging
 import time
 import uuid
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Generic, Protocol, TypeVar
+from typing import TYPE_CHECKING, Any, Generic, Protocol, TypeVar
 
 from starlette.responses import Response
 
@@ -346,6 +346,40 @@ class ArtifactStore(_BaseTokenStore[TokenRecord]):
                     "Content-Disposition": (f'attachment; filename="{safe_filename}"'),
                 },
             )
+
+
+# ---------------------------------------------------------------------------
+# Upload direction (intake)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class UploadRecord:
+    """A reservation slot for an in-flight upload (intake direction).
+
+    Unlike :class:`TokenRecord`, an ``UploadRecord`` does **not** carry
+    bytes — bytes arrive over the wire when the agent ``POST``s to
+    ``/<ns>/uploads/{token}``. The record carries only the metadata the
+    receiver needs to commit the bytes to its domain (``target_id``,
+    ``extra``) plus the runtime guards (``max_bytes``, ``expires_at``).
+
+    Attributes:
+        target_id: Opaque identifier for the upload destination, chosen
+            by the tool caller. The receiver decides what it means
+            (path, document id, etc.). Same character rules as
+            ``origin_id`` and ``exchange://`` segments — see spec.
+        max_bytes: Hard size cap for the POST body, enforced at the
+            HTTP route before dispatch.
+        extra: Caller-supplied dict passed verbatim to the receiver.
+        expires_at: Unix timestamp after which the reservation is
+            invalid; consumed reservations are removed atomically by
+            ``UploadStore.consume``.
+    """
+
+    target_id: str
+    max_bytes: int
+    extra: dict[str, Any]
+    expires_at: float
 
 
 # ---------------------------------------------------------------------------
