@@ -630,7 +630,9 @@ def register_upload_route(
     ``accepts`` is enforced before any body read — a request whose
     ``Content-Type`` does not match any entry returns 415. Use ``"*/*"``
     (the default) to disable the gate. Glob patterns like ``"image/*"``
-    match any subtype.
+    match any subtype. A request with no ``Content-Type`` header is
+    treated as not matching any non-wildcard entry — explicit
+    accept-lists therefore demand the header.
     """
     if (receiver is None) == (stream_receiver is None):
         raise ValueError(
@@ -648,6 +650,11 @@ def register_upload_route(
             logger.info("upload_handler_expired token_prefix=%s", token[:8])
             return Response(content="Gone", status_code=410)
         if record is None:
+            # Log policy: 404-miss is DEBUG because the cause is ambiguous
+            # (typo, probe, replay of an already-consumed token). The other
+            # 4xx mappings (410 expired, 413 oversize, 415 unsupported) log
+            # at INFO because they signal a clear client-side misuse the
+            # operator likely wants to see in default logs.
             logger.debug("upload_handler_miss token_prefix=%s", (token or "")[:8])
             return Response(content="Not Found", status_code=404)
 

@@ -203,16 +203,8 @@ async def test_post_malformed_content_length_falls_through_to_chunk_reader() -> 
 
 @pytest.mark.asyncio
 async def test_post_unaccepted_content_type_returns_415() -> None:
-    def recv(record: UploadRecord, body: bytes) -> dict[str, Any]:
-        return {"ok": True}
-
-    mcp = FastMCP(name="test-upload")
-    store = UploadStore(base_url="http://test.invalid")
-    register_upload_route(
-        mcp,
-        store=store,
-        namespace="ns",
-        receiver=recv,
+    mcp, store = _build_app(
+        lambda rec, body: {"ok": True},
         accepts=("application/octet-stream", "image/png"),
     )
     token = store.reserve(target_id="x", max_bytes=1024)
@@ -247,18 +239,7 @@ async def test_post_wildcard_accepts_disables_check() -> None:
 
 @pytest.mark.asyncio
 async def test_post_glob_accepts_matches_subtype() -> None:
-    def recv(record: UploadRecord, body: bytes) -> dict[str, Any]:
-        return {"ok": True}
-
-    mcp = FastMCP(name="test-upload")
-    store = UploadStore(base_url="http://test.invalid")
-    register_upload_route(
-        mcp,
-        store=store,
-        namespace="ns",
-        receiver=recv,
-        accepts=("image/*",),
-    )
+    mcp, store = _build_app(lambda rec, body: {"ok": True}, accepts=("image/*",))
     token = store.reserve(target_id="x", max_bytes=1024)
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=mcp.http_app()),
@@ -268,5 +249,58 @@ async def test_post_glob_accepts_matches_subtype() -> None:
             f"/ns/uploads/{token}",
             content=b"x",
             headers={"Content-Type": "image/png"},
+        )
+    assert resp.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_post_missing_content_type_with_explicit_accepts_returns_415() -> None:
+    """No Content-Type header is rejected when accepts is non-wildcard."""
+    mcp, store = _build_app(
+        lambda rec, body: {"ok": True},
+        accepts=("application/octet-stream",),
+    )
+    token = store.reserve(target_id="x", max_bytes=1024)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=mcp.http_app()),
+        base_url="http://test",
+    ) as client:
+        # No Content-Type header set — httpx does not auto-add one for
+        # raw bytes content, so the handler sees an empty CT.
+        resp = await client.post(f"/ns/uploads/{token}", content=b"x")
+    assert resp.status_code == 415
+
+
+@pytest.mark.asyncio
+async def test_post_content_type_with_parameters_matches() -> None:
+    """``image/png; charset=binary`` matches ``image/png`` (parameters stripped)."""
+    mcp, store = _build_app(lambda rec, body: {"ok": True}, accepts=("image/png",))
+    token = store.reserve(target_id="x", max_bytes=1024)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=mcp.http_app()),
+        base_url="http://test",
+    ) as client:
+        resp = await client.post(
+            f"/ns/uploads/{token}",
+            content=b"x",
+            headers={"Content-Type": "image/png; charset=binary"},
+        )
+    assert resp.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_post_content_type_match_is_case_insensitive() -> None:
+    """``Image/PNG`` against accepts ``image/*`` should match (case folded)."""
+    mcp, store = _build_app(lambda rec, body: {"ok": True}, accepts=("image/*",))
+    token = store.reserve(target_id="x", max_bytes=1024)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=mcp.http_app()),
+        base_url="http://test",
+    ) as client:
+        resp = await client.post(
+            f"/ns/uploads/{token}",
+            content=b"x",
+            headers={"Content-Type": "Image/PNG"},
         )
     assert resp.status_code == 200
