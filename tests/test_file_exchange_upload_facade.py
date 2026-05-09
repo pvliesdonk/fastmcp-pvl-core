@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import pytest
@@ -56,3 +57,37 @@ async def test_create_upload_link_returns_url_and_ttl(
     assert payload["target_id"] == "vault/foo.md"
     assert payload["upload_url"].startswith("http://srv.test/ns/uploads/")
     assert payload["expires_in_seconds"] > 0
+
+
+@pytest.mark.asyncio
+async def test_missing_base_url_returns_disabled_handle(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """When transport is http but BASE_URL is unset, the registrar disables upload."""
+    monkeypatch.setenv("TEST_UPLOAD_TRANSPORT", "http")
+    monkeypatch.delenv("TEST_UPLOAD_BASE_URL", raising=False)
+
+    mcp = FastMCP(name="test")
+    with caplog.at_level(logging.WARNING):
+        handle = register_file_exchange_upload(
+            mcp,
+            namespace="ns",
+            env_prefix="TEST_UPLOAD",
+            receiver=lambda rec, body: {"ok": True},
+        )
+
+    assert handle.enabled is False
+    assert handle.upload_store is None
+    assert handle.namespace == "ns"
+    assert handle.tool_name == "create_upload_link"
+
+    # No tool registered.
+    tools = await mcp.list_tools()
+    assert all(t.name != "create_upload_link" for t in tools)
+
+    # Operator-visible warning emitted.
+    assert any(
+        "TEST_UPLOAD_BASE_URL" in r.getMessage() and r.levelno == logging.WARNING
+        for r in caplog.records
+    )

@@ -1282,7 +1282,14 @@ class UploadHandle:
             raise RuntimeError(
                 "upload not enabled (transport=stdio, missing BASE_URL, or disabled)"
             )
-        ttl = float(self.ttl_default if ttl_seconds is None else ttl_seconds)
+        # Floor non-positive ttl_seconds to the default — symmetry with
+        # _register_create_download_link's guard. Avoids minting tokens
+        # that are born expired when callers (LLM tool calls, advanced
+        # wraps) pass 0 or a negative TTL.
+        if ttl_seconds is None or ttl_seconds <= 0:
+            ttl = float(self.ttl_default)
+        else:
+            ttl = float(ttl_seconds)
         ttl = min(ttl, self.ttl_max)
         cap = int(self.max_bytes_default if max_bytes is None else max_bytes)
         token = self.upload_store.reserve(
@@ -1292,6 +1299,31 @@ class UploadHandle:
             extra=extra,
         )
         return self.upload_store.build_url(token), ttl
+
+
+def _disabled_upload_handle(
+    *,
+    namespace: str,
+    upload_tool_name: str,
+    ttl_default: float,
+    ttl_max: float,
+    max_bytes_default: int,
+) -> UploadHandle:
+    """Return a no-op UploadHandle for the upload-disabled path.
+
+    Shared shape: ``enabled=False``, ``upload_store=None``, all other
+    fields preserved so the caller can still introspect the configured
+    namespace and tool name.
+    """
+    return UploadHandle(
+        namespace=namespace,
+        tool_name=upload_tool_name,
+        enabled=False,
+        upload_store=None,
+        ttl_default=ttl_default,
+        ttl_max=ttl_max,
+        max_bytes_default=max_bytes_default,
+    )
 
 
 def register_file_exchange_upload(
@@ -1384,11 +1416,9 @@ def register_file_exchange_upload(
         env(env_prefix, "UPLOAD_ENABLED", "true"),
     )
     if not enabled:
-        return UploadHandle(
+        return _disabled_upload_handle(
             namespace=namespace,
-            tool_name=upload_tool_name,
-            enabled=False,
-            upload_store=None,
+            upload_tool_name=upload_tool_name,
             ttl_default=ttl_default,
             ttl_max=ttl_max,
             max_bytes_default=max_bytes_default,
@@ -1401,11 +1431,9 @@ def register_file_exchange_upload(
             "endpoint disabled (would mint links without a public URL)",
             env_prefix,
         )
-        return UploadHandle(
+        return _disabled_upload_handle(
             namespace=namespace,
-            tool_name=upload_tool_name,
-            enabled=False,
-            upload_store=None,
+            upload_tool_name=upload_tool_name,
             ttl_default=ttl_default,
             ttl_max=ttl_max,
             max_bytes_default=max_bytes_default,
