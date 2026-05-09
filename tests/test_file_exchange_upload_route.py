@@ -74,3 +74,48 @@ def test_register_upload_route_requires_exactly_one_receiver() -> None:
             receiver=lambda r, b: {},
             stream_receiver=_stream,
         )
+
+
+@pytest.mark.asyncio
+async def test_post_unknown_token_returns_404() -> None:
+    mcp, _ = _build_app(lambda rec, body: {})
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=mcp.http_app()),
+        base_url="http://test",
+    ) as client:
+        resp = await client.post(
+            "/ns/uploads/bogus",
+            content=b"x",
+            headers={"Content-Type": "application/octet-stream"},
+        )
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_post_already_consumed_token_returns_404() -> None:
+    mcp, store = _build_app(lambda rec, body: {"ok": True})
+    token = store.reserve(target_id="x", max_bytes=10)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=mcp.http_app()),
+        base_url="http://test",
+    ) as client:
+        first = await client.post(f"/ns/uploads/{token}", content=b"x")
+        second = await client.post(f"/ns/uploads/{token}", content=b"x")
+    assert first.status_code == 200
+    assert second.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_post_expired_token_returns_410() -> None:
+    mcp, store = _build_app(lambda rec, body: {})
+    token = store.reserve(target_id="x", max_bytes=10, ttl_seconds=-1)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=mcp.http_app()),
+        base_url="http://test",
+    ) as client:
+        resp = await client.post(
+            f"/ns/uploads/{token}",
+            content=b"x",
+            headers={"Content-Type": "application/octet-stream"},
+        )
+    assert resp.status_code == 410

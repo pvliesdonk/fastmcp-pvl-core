@@ -21,7 +21,7 @@ import logging
 import time
 import uuid
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Generic, Protocol, TypeVar
+from typing import TYPE_CHECKING, Any, Generic, Literal, Protocol, TypeVar
 
 from starlette.responses import Response
 
@@ -509,6 +509,35 @@ class UploadStore(_BaseTokenStore[UploadRecord]):
         Returns ``None`` if the token is missing, expired, or already consumed.
         """
         return self._atomic_consume(token)
+
+    def consume_or_status(
+        self, token: str
+    ) -> tuple[UploadRecord | None, Literal["ok", "expired", "missing"]]:
+        """Atomic consume that distinguishes expired from missing/consumed.
+
+        Returns one of:
+            (record, "ok")       — token was valid; record consumed.
+            (None,   "expired")  — token existed but had passed expires_at; removed.
+            (None,   "missing")  — token unknown (never existed, or already consumed).
+
+        Use this in HTTP route handlers that need to map the three
+        states to distinct status codes (200, 410, 404). Plain
+        :meth:`consume` collapses expired and missing into ``None``.
+        """
+        # Pop the requested token BEFORE purging so we can still observe
+        # the "expired" branch — :meth:`_purge_expired` would otherwise
+        # remove the record and we'd report it as "missing", losing the
+        # 410-vs-404 distinction this method exists to provide.
+        record = self._records.pop(token, None)
+        # Sweep the rest of the table after we have our answer; no
+        # functional dependency, just keeping the table tidy on each
+        # access path the way :meth:`_atomic_consume` does.
+        self._purge_expired()
+        if record is None:
+            return None, "missing"
+        if time.time() > record.expires_at:
+            return None, "expired"
+        return record, "ok"
 
     def _peek_for_tests(self, token: str) -> UploadRecord | None:
         """Test-only inspection — do not use in production.

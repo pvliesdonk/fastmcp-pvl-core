@@ -641,7 +641,10 @@ def register_upload_route(
     @mcp.custom_route(path, methods=["POST"])
     async def _upload_handler(request: Request) -> Response:
         token = request.path_params.get("token", "")
-        record = store.consume(token)
+        record, status = store.consume_or_status(token)
+        if status == "expired":
+            logger.debug("upload_handler_expired token_prefix=%s", token[:8])
+            return Response(content="Gone", status_code=410)
         if record is None:
             logger.debug("upload_handler_miss token_prefix=%s", (token or "")[:8])
             return Response(content="Not Found", status_code=404)
