@@ -304,3 +304,67 @@ async def test_post_content_type_match_is_case_insensitive() -> None:
             headers={"Content-Type": "Image/PNG"},
         )
     assert resp.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_post_receiver_value_error_returns_400() -> None:
+    def recv(record: UploadRecord, body: bytes) -> dict[str, Any]:
+        raise ValueError("bad path")
+
+    mcp, store = _build_app(recv)
+    token = store.reserve(target_id="x", max_bytes=10)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=mcp.http_app()),
+        base_url="http://test",
+    ) as client:
+        resp = await client.post(
+            f"/ns/uploads/{token}",
+            content=b"x",
+            headers={"Content-Type": "application/octet-stream"},
+        )
+    assert resp.status_code == 400
+    assert "bad path" in resp.text
+
+
+@pytest.mark.asyncio
+async def test_post_receiver_file_exists_returns_409() -> None:
+    def recv(record: UploadRecord, body: bytes) -> dict[str, Any]:
+        raise FileExistsError("already there")
+
+    mcp, store = _build_app(recv)
+    token = store.reserve(target_id="x", max_bytes=10)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=mcp.http_app()),
+        base_url="http://test",
+    ) as client:
+        resp = await client.post(
+            f"/ns/uploads/{token}",
+            content=b"x",
+            headers={"Content-Type": "application/octet-stream"},
+        )
+    assert resp.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_post_receiver_other_exception_returns_500(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    import logging
+
+    def recv(record: UploadRecord, body: bytes) -> dict[str, Any]:
+        raise RuntimeError("kaboom")
+
+    mcp, store = _build_app(recv)
+    token = store.reserve(target_id="x", max_bytes=10)
+    with caplog.at_level(logging.ERROR):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=mcp.http_app()),
+            base_url="http://test",
+        ) as client:
+            resp = await client.post(
+                f"/ns/uploads/{token}",
+                content=b"x",
+                headers={"Content-Type": "application/octet-stream"},
+            )
+    assert resp.status_code == 500
+    assert any("kaboom" in r.getMessage() for r in caplog.records)

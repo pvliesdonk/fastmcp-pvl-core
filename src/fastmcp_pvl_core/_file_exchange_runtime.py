@@ -710,19 +710,50 @@ def register_upload_route(
                 return Response(content="Payload Too Large", status_code=413)
             chunks.append(chunk)
         body = b"".join(chunks)
-        if receiver is not None:
-            result = receiver(record, body)
-            if inspect.isawaitable(result):
-                result = await result
-        else:
-            assert stream_receiver is not None  # narrow
+        try:
+            if receiver is not None:
+                result = receiver(record, body)
+                if inspect.isawaitable(result):
+                    result = await result
+            else:
+                assert stream_receiver is not None  # narrow
 
-            # Task 10 will replace this with bounded chunked streaming
-            # (currently buffers the entire body, then yields it once).
-            async def _single_chunk() -> AsyncIterator[bytes]:
-                yield body
+                # Task 10 will replace this with bounded chunked streaming
+                # (currently buffers the entire body, then yields it once).
+                async def _single_chunk() -> AsyncIterator[bytes]:
+                    yield body
 
-            result = await stream_receiver(record, _single_chunk())
+                result = await stream_receiver(record, _single_chunk())
+        except ValueError as exc:
+            logger.info(
+                "upload_receiver_value_error token_prefix=%s: %s",
+                token[:8],
+                exc,
+            )
+            return Response(content=str(exc), status_code=400)
+        except FileExistsError as exc:
+            logger.info(
+                "upload_receiver_conflict token_prefix=%s: %s",
+                token[:8],
+                exc,
+            )
+            return Response(content=str(exc), status_code=409)
+        except Exception as exc:
+            # logger.exception attaches the full traceback (exc_info) at
+            # ERROR level. We also include str(exc) in the formatted
+            # message so the failure cause is visible in log scrapers
+            # that only render the message field — getMessage() does
+            # not include exc_info.
+            logger.exception(
+                "upload_receiver_failure token_prefix=%s: %s",
+                token[:8],
+                exc,
+            )
+            return Response(
+                content="Internal Server Error",
+                status_code=500,
+            )
+
         if not isinstance(result, dict):
             logger.error(
                 "upload_receiver returned non-dict (%s); coercing to {} for response",
