@@ -620,12 +620,34 @@ def register_upload_route(
     """Mount ``POST /<namespace>/uploads/{token}`` on ``mcp``.
 
     Exactly one of ``receiver`` (buffered) or ``stream_receiver``
-    (chunked) MUST be supplied. The route handles token lookup, size
-    enforcement, MIME filtering, atomic one-time consumption, and
-    receiver dispatch with the documented status-code mapping. This
-    happy-path implementation is extended in later tasks with token-
-    error distinction (404/410), size enforcement (413), MIME filter
-    (415), and exception mapping (400/409/500).
+    (chunked) MUST be supplied.
+
+    The route returns:
+
+    - ``200`` with the receiver's dict serialised as JSON on success.
+    - ``404 Not Found`` if the token is unknown or already consumed
+      (the response does NOT distinguish "never existed" from "consumed",
+      to avoid leaking token-existence to a probing caller).
+    - ``410 Gone`` if the token existed but has expired.
+    - ``413 Payload Too Large`` if ``Content-Length`` exceeds
+      ``record.max_bytes`` OR the body's running total exceeds the cap
+      mid-stream (defense in depth against lying clients).
+    - ``415 Unsupported Media Type`` if ``Content-Type`` does not match
+      any entry in ``accepts`` (with ``*/*`` semantics as below).
+    - ``400 Bad Request`` if the receiver raises ``ValueError`` —
+      the exception's ``str()`` is returned as the response body, so
+      receivers SHOULD frame ``ValueError`` messages as caller-facing
+      diagnostics ("invalid path", "extension not allowed").
+    - ``409 Conflict`` if the receiver raises ``FileExistsError`` —
+      same body convention as 400.
+    - ``500 Internal Server Error`` if the receiver raises any other
+      exception. The full traceback is logged at ERROR; the response
+      body is a generic ``"Internal Server Error"`` (does NOT echo
+      ``str(exc)`` to avoid leaking internal detail).
+
+    The streaming-receiver path currently buffers the entire body before
+    dispatch (placeholder); Task 10 will rewrite it to feed chunks to the
+    receiver as they arrive.
 
     ``accepts`` is enforced before any body read — a request whose
     ``Content-Type`` does not match any entry returns 415. Use ``"*/*"``

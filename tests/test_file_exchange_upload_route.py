@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -349,8 +350,6 @@ async def test_post_receiver_file_exists_returns_409() -> None:
 async def test_post_receiver_other_exception_returns_500(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    import logging
-
     def recv(record: UploadRecord, body: bytes) -> dict[str, Any]:
         raise RuntimeError("kaboom")
 
