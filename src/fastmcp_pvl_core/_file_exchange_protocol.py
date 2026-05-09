@@ -512,7 +512,7 @@ class _FileExchangeCapabilityBuilder:
             transfer_methods["http"] = http_block
         if not transfer_methods:
             return None
-        version = "0.2" if self.legacy_capability_shape else "0.4"
+        version = "0.2" if self.legacy_capability_shape else SPEC_VERSION
         return FileExchangeCapability(
             namespace=self.namespace,
             exchange_id=self.exchange_id,

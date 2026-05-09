@@ -1,10 +1,10 @@
 """MCP File Exchange — public facade.
 
 Single-entry-point wiring for downstream MCP servers that want to
-participate in the File Exchange convention (spec v0.2.5). Composes
-the artifact store, the protocol surface, and the exchange-volume
-runtime, and registers the spec-compliant ``create_download_link`` and
-``fetch_file`` MCP tools.
+participate in the File Exchange convention (spec v0.4 with v0.4.0
+amendments). Composes the artifact store, the protocol surface, and
+the exchange-volume runtime, and registers the spec-compliant
+``create_download_link`` and ``fetch_file`` MCP tools.
 
 Downstream usage::
 
@@ -1432,7 +1432,13 @@ class UploadHandle:
         else:
             ttl = float(ttl_seconds)
         ttl = min(ttl, self.ttl_max)
-        cap = int(self.max_bytes_default if max_bytes is None else max_bytes)
+        # Floor non-positive max_bytes to default — symmetry with the TTL floor.
+        # An LLM passing max_bytes=0 to the create_upload_link tool would otherwise
+        # reserve a slot that 413s every POST.
+        if max_bytes is None or max_bytes <= 0:
+            cap = int(self.max_bytes_default)
+        else:
+            cap = int(max_bytes)
         token = self.upload_store.reserve(
             target_id=target_id,
             max_bytes=cap,
@@ -1493,8 +1499,8 @@ def register_file_exchange_upload(
     1. Resolves transport (``auto`` → reads ``{PREFIX}_TRANSPORT`` /
        ``FASTMCP_TRANSPORT``).
     2. Reads ``{PREFIX}_UPLOAD_ENABLED`` (default ``true``),
-       ``{PREFIX}_UPLOAD_MAX_BYTES``, ``{PREFIX}_UPLOAD_TTL`` for env
-       overrides.
+       ``{PREFIX}_UPLOAD_MAX_BYTES``, ``{PREFIX}_UPLOAD_TTL``,
+       ``{PREFIX}_UPLOAD_TTL_MAX`` for env overrides.
     3. Builds an :class:`UploadStore`, mounts ``POST /<namespace>/uploads/{token}``
        via :func:`register_upload_route`, installs the module-level
        singleton.
@@ -1553,6 +1559,7 @@ def register_file_exchange_upload(
             Operator-overridable via ``{PREFIX}_UPLOAD_TTL``.
         ttl_max: Operator ceiling. Requested TTL is clamped; the
             effective value is returned to the caller.
+            Operator-overridable via ``{PREFIX}_UPLOAD_TTL_MAX``.
         legacy_capability_shape: Set to True during a migration window
             to advertise the v0.2 flat ``transfer_methods.http: {tool: ...}``
             shape instead of the v0.4 nested
@@ -1620,12 +1627,19 @@ def register_file_exchange_upload(
     ttl_raw = env(env_prefix, "UPLOAD_TTL")
     if ttl_raw:
         ttl_default = float(ttl_raw)
+    ttl_max_raw = env(env_prefix, "UPLOAD_TTL_MAX")
+    if ttl_max_raw:
+        ttl_max = float(ttl_max_raw)
 
     store = UploadStore(
         ttl_seconds=ttl_default,
         base_url=base_url,
         route_path=f"/{namespace}/uploads/{{token}}",
     )
+    # Module-level singleton: route handler uses closure-captured store
+    # (not this), so the singleton is for downstream `get_upload_store()`
+    # convenience. Multi-direction registration: last-caller-wins; see
+    # follow-up issue #65 for the architectural fix.
     set_upload_store(store)
     register_upload_route(
         mcp,

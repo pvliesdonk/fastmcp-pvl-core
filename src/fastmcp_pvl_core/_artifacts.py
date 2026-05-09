@@ -9,6 +9,8 @@ after introduction.
 
 from __future__ import annotations
 
+import warnings
+
 from fastmcp_pvl_core._token_store import (
     ArtifactStore,
     TokenRecord,
@@ -22,3 +24,15 @@ __all__ = [
     "get_artifact_store",
     "set_artifact_store",
 ]
+
+# stacklevel=2 makes the warning point at the caller's import line, not
+# at this shim's line. Fired once per process implicitly via Python's
+# default DeprecationWarning filter (Python suppresses repeated identical
+# warnings from the same source).
+warnings.warn(
+    "fastmcp_pvl_core._artifacts is a deprecation shim; import from "
+    "fastmcp_pvl_core (top-level) or fastmcp_pvl_core._token_store directly. "
+    "Slated for removal one minor version after introduction.",
+    DeprecationWarning,
+    stacklevel=2,
+)

@@ -225,3 +225,18 @@ class TestLegacyArtifactsShim:
 
         assert legacy.get_artifact_store is canonical_get
         assert legacy.set_artifact_store is canonical_set
+
+    def test_legacy_import_emits_deprecation_warning(self) -> None:
+        """Importing the shim emits a DeprecationWarning.
+
+        We force a re-import via ``importlib.reload`` because Python
+        caches modules — a plain ``import`` after another test in this
+        class already loaded ``_artifacts`` would not re-run the
+        module-top ``warnings.warn`` call.
+        """
+        import importlib
+
+        from fastmcp_pvl_core import _artifacts as legacy
+
+        with pytest.warns(DeprecationWarning, match="deprecation shim"):
+            importlib.reload(legacy)

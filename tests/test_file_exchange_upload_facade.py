@@ -222,6 +222,23 @@ async def test_env_overrides_max_bytes_and_ttl(monkeypatch: pytest.MonkeyPatch) 
     assert h.ttl_default == 120.0
 
 
+@pytest.mark.asyncio
+async def test_env_override_ttl_max(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`{PREFIX}_UPLOAD_TTL_MAX` overrides the operator ceiling."""
+    monkeypatch.setenv("TEST_UPLOAD_TRANSPORT", "http")
+    monkeypatch.setenv("TEST_UPLOAD_BASE_URL", "http://srv.test")
+    monkeypatch.setenv("TEST_UPLOAD_UPLOAD_TTL_MAX", "7200")
+
+    mcp = FastMCP(name="test")
+    h = register_file_exchange_upload(
+        mcp,
+        namespace="ns",
+        env_prefix="TEST_UPLOAD",
+        receiver=lambda rec, body: {"ok": True},
+    )
+    assert h.ttl_max == 7200.0
+
+
 def test_mutual_exclusion_of_receivers() -> None:
     mcp = FastMCP(name="test")
     with pytest.raises(ValueError, match="exactly one"):

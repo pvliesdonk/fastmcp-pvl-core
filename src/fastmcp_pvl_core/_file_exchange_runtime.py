@@ -700,6 +700,10 @@ def register_upload_route(
 
     @mcp.custom_route(path, methods=["POST"])
     async def _upload_handler(request: Request) -> Response:
+        # Note: the request body is intentionally not consumed on
+        # early-return error paths (404/410/413/415). ASGI servers
+        # (uvicorn, hypercorn) handle the connection-state reset; we
+        # do NOT need to call await request.body() to drain.
         token = request.path_params.get("token", "")
         record, status = store.consume_or_status(token)
         if status == "expired":
