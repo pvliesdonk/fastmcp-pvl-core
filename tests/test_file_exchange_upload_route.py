@@ -143,6 +143,69 @@ async def test_post_oversize_by_content_length_returns_413() -> None:
 
 
 @pytest.mark.asyncio
+async def test_post_oversize_by_content_length_burns_token() -> None:
+    """413 still consumes the token; retry on the same token gets 404.
+
+    Pins the documented anti-replay behavior — the token is consumed
+    at the lookup step, before precondition gates run, so any
+    subsequent POST to the same URL (even with a body that would
+    succeed) returns 404 rather than the original 413.
+    """
+    mcp, store = _build_app(lambda rec, body: {"ok": True})
+    token = store.reserve(target_id="x", max_bytes=10)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=mcp.http_app()),
+        base_url="http://test",
+    ) as client:
+        first = await client.post(
+            f"/ns/uploads/{token}",
+            content=b"x" * 11,
+            headers={
+                "Content-Type": "application/octet-stream",
+                "Content-Length": "11",
+            },
+        )
+        # Same token — already consumed at the lookup step.
+        second = await client.post(
+            f"/ns/uploads/{token}",
+            content=b"x" * 5,  # within cap this time
+            headers={"Content-Type": "application/octet-stream"},
+        )
+    assert first.status_code == 413
+    assert second.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_post_unaccepted_content_type_burns_token() -> None:
+    """415 still consumes the token; retry with correct CT gets 404.
+
+    Companion to ``test_post_oversize_by_content_length_burns_token``;
+    pins the same anti-replay invariant for the Content-Type gate.
+    """
+    mcp, store = _build_app(
+        lambda rec, body: {"ok": True},
+        accepts=("application/octet-stream",),
+    )
+    token = store.reserve(target_id="x", max_bytes=10)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=mcp.http_app()),
+        base_url="http://test",
+    ) as client:
+        first = await client.post(
+            f"/ns/uploads/{token}",
+            content=b"x",
+            headers={"Content-Type": "text/plain"},
+        )
+        second = await client.post(
+            f"/ns/uploads/{token}",
+            content=b"x",
+            headers={"Content-Type": "application/octet-stream"},
+        )
+    assert first.status_code == 415
+    assert second.status_code == 404
+
+
+@pytest.mark.asyncio
 async def test_post_oversize_via_chunk_overrun_returns_413() -> None:
     """Defense-in-depth: client lies about Content-Length, real body is bigger."""
     captured: dict[str, Any] = {"called": False}
@@ -370,15 +433,16 @@ async def test_post_receiver_other_exception_returns_500(
 
 
 @pytest.mark.asyncio
-async def test_post_receiver_returning_non_dict_is_coerced_to_empty_dict(
+async def test_post_receiver_returning_non_dict_returns_500(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """Receiver mis-implementations return 200 with ``{}`` and an ERROR log.
+    """Receiver mis-implementations surface as 500 with an ERROR log.
 
     The route's contract is "JSON object back to the agent"; if a receiver
-    returns a string/list/None, the route logs at ERROR (callers can grep
-    for the misbehaviour) and coerces to ``{}`` so the response is still
-    well-formed JSON.
+    returns a string/list/None, that is a programmer bug (not a runtime
+    or network condition). Treating it as success would let the agent
+    that uploaded believe its file was accepted. The route logs at
+    ERROR (operators can grep for "non-dict") and responds 500.
     """
 
     def recv(record: UploadRecord, body: bytes) -> dict[str, Any]:
@@ -396,10 +460,9 @@ async def test_post_receiver_returning_non_dict_is_coerced_to_empty_dict(
                 content=b"x",
                 headers={"Content-Type": "application/octet-stream"},
             )
-    assert resp.status_code == 200
-    assert resp.json() == {}
+    assert resp.status_code == 500
     assert any(
-        "non-dict" in r.getMessage() and "coercing" in r.getMessage()
+        "non-dict" in r.getMessage() and "receiver bug" in r.getMessage()
         for r in caplog.records
     )
 

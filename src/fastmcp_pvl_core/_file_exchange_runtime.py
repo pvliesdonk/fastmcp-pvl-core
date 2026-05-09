@@ -595,13 +595,21 @@ StreamReceiver = Callable[
 ]
 
 
-class _UploadOversizeError(Exception):
+class _UploadOversizeError(BaseException):  # noqa: N818  -- internal sentinel
     """Internal sentinel for mid-stream oversize aborts.
 
     Raised by the bounded chunk generator when the request body exceeds
     ``record.max_bytes`` mid-stream. Caught inside the upload handler and
     translated to a ``413`` response. Not part of the receiver contract —
     never propagates to user code.
+
+    Derives from :class:`BaseException` (not :class:`Exception`) so a
+    stream receiver wrapping ``async for chunk in body`` in a broad
+    ``except Exception`` cannot accidentally swallow it and complete on
+    a truncated body. The handler catches it explicitly via
+    ``except _UploadOversizeError``; ``BaseException`` subclasses remain
+    catchable by name. Same pattern Python uses for
+    :class:`asyncio.CancelledError` (Python 3.8+).
     """
 
 
@@ -651,9 +659,18 @@ def register_upload_route(
     - ``409 Conflict`` if the receiver raises ``FileExistsError`` —
       same body convention as 400.
     - ``500 Internal Server Error`` if the receiver raises any other
-      exception. The full traceback is logged at ERROR; the response
-      body is a generic ``"Internal Server Error"`` (does NOT echo
-      ``str(exc)`` to avoid leaking internal detail).
+      exception, OR if the receiver returns a non-dict (programmer
+      bug). The full traceback (or non-dict-marker log line) is
+      written at ERROR; the response body is a generic
+      ``"Internal Server Error"`` (does NOT echo ``str(exc)`` to avoid
+      leaking internal detail).
+
+    All non-success responses (4xx, 5xx) consume the token; clients
+    MUST re-call ``create_upload_link`` to retry. This is intentional —
+    the runtime consumes the token at the lookup step for anti-replay
+    safety, before the precondition gates (size, content-type) and
+    the receiver run. A naive retry on the same URL after a 413 / 415
+    therefore returns 404, not the original error code.
 
     The streaming-receiver path feeds chunks directly from
     ``request.stream()``; the running-total cap fires mid-iteration if
@@ -661,10 +678,10 @@ def register_upload_route(
     completes. The buffered-receiver path consumes the same bounded
     generator into a ``bytes`` object before dispatch.
 
-    Stream receivers MUST NOT broadly catch ``Exception`` while iterating
-    the body — the runtime uses a private exception type to signal
-    oversize-mid-iteration; swallowing it would let the receiver
-    complete on a truncated body.
+    The runtime uses a :class:`BaseException` subclass internally to
+    signal oversize-mid-iteration, so a stream receiver's normal
+    ``except Exception`` cannot accidentally swallow the abort signal.
+    Receivers may catch ``Exception`` freely without truncation risk.
 
     ``accepts`` is enforced before any body read — a request whose
     ``Content-Type`` does not match any entry returns 415. Use ``"*/*"``
@@ -800,8 +817,8 @@ def register_upload_route(
 
         if not isinstance(result, dict):
             logger.error(
-                "upload_receiver returned non-dict (%s); coercing to {} for response",
+                "upload_receiver returned non-dict (%s); responding 500 — receiver bug",
                 type(result).__name__,
             )
-            result = {}
+            return Response(content="Internal Server Error", status_code=500)
         return JSONResponse(result, status_code=200)

@@ -52,9 +52,9 @@ async def test_create_upload_link_returns_url_and_ttl(
     )
     tool = await mcp.get_tool("create_upload_link")
     assert tool is not None
-    result = await tool.run({"target_id": "vault/foo.md"})
+    result = await tool.run({"target_id": "foo.md"})
     payload = result.structured_content or {}
-    assert payload["target_id"] == "vault/foo.md"
+    assert payload["target_id"] == "foo.md"
     assert payload["upload_url"].startswith("http://srv.test/ns/uploads/")
     assert payload["expires_in_seconds"] > 0
 
@@ -101,8 +101,11 @@ async def test_pre_link_validator_blocks_invalid_target(
     monkeypatch.setenv("TEST_UPLOAD_BASE_URL", "http://srv.test")
 
     def reject(target_id: str, extra: dict[str, Any] | None) -> None:
-        if ".." in target_id:
-            raise ValueError(f"path traversal rejected: {target_id}")
+        # ``target_id`` shape passes the baseline segment rules
+        # (Amendment 11); the validator rejects on a domain-specific
+        # rule (allow-list of extensions).
+        if not target_id.endswith(".md"):
+            raise ValueError(f"only .md uploads accepted: {target_id}")
 
     mcp = FastMCP(name="test")
     register_file_exchange_upload(
@@ -114,8 +117,44 @@ async def test_pre_link_validator_blocks_invalid_target(
     )
     tool = await mcp.get_tool("create_upload_link")
     assert tool is not None
-    with pytest.raises(Exception, match="path traversal rejected"):
-        await tool.run({"target_id": "../../etc/passwd"})
+    with pytest.raises(Exception, match="only .md uploads accepted"):
+        await tool.run({"target_id": "passwd.txt"})
+
+
+@pytest.mark.asyncio
+async def test_pre_link_validator_other_exception_logs_as_bug(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Non-ValueError validator failures propagate AND log as server-side bugs.
+
+    A validator that raises ``RuntimeError`` (typo, AttributeError on
+    extra-dict access, etc.) is a programming bug, not a caller-input
+    error. The exception still propagates so FastMCP returns a tool
+    error, but the runtime additionally logs an ERROR with a
+    "non-ValueError" marker so operators can distinguish server-side
+    validator bugs from client-side validation rejections.
+    """
+    monkeypatch.setenv("TEST_UPLOAD_TRANSPORT", "http")
+    monkeypatch.setenv("TEST_UPLOAD_BASE_URL", "http://srv.test")
+
+    def buggy(target_id: str, extra: dict[str, Any] | None) -> None:
+        raise RuntimeError("kaboom")
+
+    mcp = FastMCP(name="test")
+    register_file_exchange_upload(
+        mcp,
+        namespace="ns",
+        env_prefix="TEST_UPLOAD",
+        receiver=lambda rec, body: {"ok": True},
+        pre_link_validator=buggy,
+    )
+    tool = await mcp.get_tool("create_upload_link")
+    assert tool is not None
+    with caplog.at_level(logging.ERROR):
+        with pytest.raises(Exception, match="kaboom"):
+            await tool.run({"target_id": "x.md"})
+    assert any("non-ValueError" in r.getMessage() for r in caplog.records)
 
 
 @pytest.mark.asyncio

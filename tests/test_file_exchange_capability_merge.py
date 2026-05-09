@@ -165,6 +165,64 @@ def test_builder_set_exchange_false_drops_exchange_method() -> None:
 
 
 @pytest.mark.asyncio
+async def test_register_file_exchange_legacy_shape_emits_v0_2_flat_http(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``legacy_capability_shape=True`` is plumbed through the public registrar.
+
+    Verifies the migration-window kwarg surfaces in the emitted capability
+    dict: the version drops to ``"0.2"`` and the http block is flat
+    ``{tool: ...}`` instead of the v0.4 nested ``{download: {...}}`` shape.
+    """
+    monkeypatch.setenv("TEST_LEGACY_TRANSPORT", "http")
+    monkeypatch.setenv("TEST_LEGACY_BASE_URL", "http://srv.test")
+    monkeypatch.delenv("MCP_EXCHANGE_DIR", raising=False)
+
+    from fastmcp_pvl_core import register_file_exchange
+
+    mcp = FastMCP(name="legacy")
+    register_file_exchange(
+        mcp,
+        namespace="ns",
+        env_prefix="TEST_LEGACY",
+        produces=["image/png"],
+        legacy_capability_shape=True,
+    )
+
+    from fastmcp_pvl_core.file_exchange import _capability_builders
+
+    builder = _capability_builders[id(mcp)]
+    cap = builder.build()
+    assert cap is not None
+    d = cap.to_capability_dict()
+    assert d["version"] == "0.2"
+    assert d["transfer_methods"]["http"] == {"tool": "create_download_link"}
+
+
+def test_reset_capability_builders_clears_registry() -> None:
+    """The autouse reset fixture clears _capability_builders between tests.
+
+    Without this reset, a builder created in one test's FastMCP would
+    leak to a subsequent test if id(mcp) coincidentally matched.
+    """
+    from fastmcp_pvl_core.file_exchange import (
+        _capability_builders,
+        _get_or_create_builder,
+        reset_capability_builders_for_test,
+    )
+
+    # Simulate the prior-test state.
+    mcp = FastMCP(name="probe")
+    _get_or_create_builder(mcp, namespace="ns")
+    assert id(mcp) in _capability_builders
+
+    reset_capability_builders_for_test()
+
+    assert id(mcp) not in _capability_builders
+    assert _capability_builders == {}
+
+
+@pytest.mark.asyncio
 async def test_register_both_directions_emits_merged_http(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

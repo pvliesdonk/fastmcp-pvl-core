@@ -115,10 +115,17 @@ def _get_or_create_builder(
     """Return (creating if needed) the per-FastMCP capability builder.
 
     Subsequent calls on the same ``mcp`` reuse the existing builder and
-    additively extend ``produces`` / ``consumes`` (so download and upload
-    registrations don't clobber each other's MIME lists). The
-    ``exchange_id`` and ``legacy_capability_shape`` are set by the FIRST
-    caller; subsequent calls do not overwrite them.
+    additively extend ``produces`` / ``consumes`` (so download and
+    upload registrations don't clobber each other's MIME lists).
+
+    Merge contract for the non-mergeable fields (``namespace``,
+    ``legacy_capability_shape``): first-caller-wins. A subsequent
+    caller passing a different value logs a WARNING and the original
+    value is retained — ``namespace`` always, and
+    ``legacy_capability_shape`` only when the second caller actively
+    tries to enable it (the common ``False`` default does not warn).
+    Likewise, ``exchange_id`` is set by the first caller that supplies
+    a non-``None`` value and not overwritten thereafter.
     """
     key = id(mcp)
     builder = _capability_builders.get(key)
@@ -132,6 +139,28 @@ def _get_or_create_builder(
         )
         _capability_builders[key] = builder
     else:
+        if namespace != builder.namespace:
+            logger.warning(
+                "_get_or_create_builder: namespace mismatch on FastMCP "
+                "id=%d — first caller registered %r, second caller "
+                "passed %r; first-caller-wins (the second namespace is "
+                "dropped). Verify both registrars use the same namespace.",
+                id(mcp),
+                builder.namespace,
+                namespace,
+            )
+        if (
+            legacy_capability_shape != builder.legacy_capability_shape
+            and legacy_capability_shape  # only warn if second caller TRIED to set True
+        ):
+            logger.warning(
+                "_get_or_create_builder: legacy_capability_shape mismatch "
+                "on FastMCP id=%d — first caller set %r, second tried "
+                "%r; first-caller-wins.",
+                id(mcp),
+                builder.legacy_capability_shape,
+                legacy_capability_shape,
+            )
         builder.exchange_id = builder.exchange_id or exchange_id
         # Set-union the MIME lists; using ``set`` and back to tuple
         # gives us order-independent dedup. Order is not part of the
@@ -574,6 +603,7 @@ def register_file_exchange(
     transport: Literal["http", "stdio", "auto"] = "auto",
     download_tool_name: str = _DEFAULT_DOWNLOAD_TOOL,
     fetch_tool_name: str = _DEFAULT_FETCH_TOOL,
+    legacy_capability_shape: bool = False,
 ) -> FileExchangeHandle:
     """Wire MCP File Exchange (v0.2.5) onto ``mcp``.
 
@@ -614,6 +644,11 @@ def register_file_exchange(
         download_tool_name: Override the default ``create_download_link``
             tool name.
         fetch_tool_name: Override the default ``fetch_file`` tool name.
+        legacy_capability_shape: Set to True during a migration window
+            to advertise the v0.2 flat ``transfer_methods.http: {tool: ...}``
+            shape instead of the v0.4 nested
+            ``{download: ..., upload: ...}`` shape. The upload entry is
+            dropped (with a logged warning) when legacy shape is selected.
 
     Returns:
         A :class:`FileExchangeHandle`. Stash it where your producer-side
@@ -682,6 +717,7 @@ def register_file_exchange(
             exchange_id=exchange.exchange_id if exchange is not None else None,
             produces=tuple(produces) if produce else (),
             consumes=tuple(consumes) if consume else (),
+            legacy_capability_shape=legacy_capability_shape,
         )
         if exchange is not None and (produce or consume):
             builder.set_exchange(True)
@@ -1333,6 +1369,38 @@ class UploadHandle:
     ttl_max: float
     max_bytes_default: int
 
+    def __post_init__(self) -> None:
+        """Validate field invariants at construction time.
+
+        ``enabled`` and ``upload_store is not None`` redundantly encode
+        the same fact; reject inconsistent combinations so downstream
+        code can rely on either form. Disabled handles pass TTL / bytes
+        through as caller introspection metadata; only enabled handles
+        need the positivity guards (the route would mint born-expired
+        tokens otherwise).
+        """
+        if self.enabled != (self.upload_store is not None):
+            raise ValueError(
+                "UploadHandle.enabled must agree with "
+                "(upload_store is not None) — got "
+                f"enabled={self.enabled!r}, "
+                f"upload_store={self.upload_store!r}"
+            )
+        if self.enabled:
+            if self.ttl_default <= 0:
+                raise ValueError(
+                    f"ttl_default must be > 0 when enabled; got {self.ttl_default}"
+                )
+            if self.ttl_max <= 0:
+                raise ValueError(
+                    f"ttl_max must be > 0 when enabled; got {self.ttl_max}"
+                )
+            if self.max_bytes_default <= 0:
+                raise ValueError(
+                    "max_bytes_default must be > 0 when enabled; got "
+                    f"{self.max_bytes_default}"
+                )
+
     def create_link(
         self,
         *,
@@ -1414,6 +1482,7 @@ def register_file_exchange_upload(
     max_bytes_default: int = _DEFAULT_UPLOAD_MAX_BYTES,
     ttl_default: float = _DEFAULT_UPLOAD_TTL_SECONDS,
     ttl_max: float = _DEFAULT_UPLOAD_TTL_MAX_SECONDS,
+    legacy_capability_shape: bool = False,
 ) -> UploadHandle:
     """Wire MCP File Exchange upload direction onto ``mcp``.
 
@@ -1440,6 +1509,12 @@ def register_file_exchange_upload(
     helper returns an :class:`UploadHandle` with ``enabled=False`` and
     no route or tool registered.
 
+    The mounted route consumes the token at the lookup step for
+    anti-replay safety: every non-success response (4xx, 5xx) burns
+    the token. Clients MUST re-call ``create_upload_link`` to retry
+    after any failure — a retry on the same URL returns 404, not the
+    original error code.
+
     Args:
         mcp: The :class:`fastmcp.FastMCP` server instance.
         namespace: Logical server name; used as the URL prefix for the
@@ -1450,12 +1525,16 @@ def register_file_exchange_upload(
             ``stream_receiver``.
         stream_receiver: Streaming receiver; receives chunks live.
         pre_link_validator: Optional callback ``(target_id, extra) -> None``
-            run inside the registered tool BEFORE token creation;
-            raising ``ValueError`` surfaces as an in-band tool error
-            with the exception message visible to the caller. Any
-            other exception type also surfaces in-band (FastMCP wraps
-            tool errors uniformly), but ``ValueError`` is the
-            conventional choice for caller-facing diagnostics.
+            run inside the registered tool AFTER baseline ``target_id``
+            character validation but BEFORE token creation. Raising
+            ``ValueError`` surfaces as an in-band tool error with the
+            exception message visible to the caller. Any other
+            exception type also propagates (FastMCP wraps tool errors
+            uniformly) but is additionally logged at ERROR with a
+            "non-ValueError" marker so operators can distinguish
+            server-side validator bugs from caller-input errors.
+            ``ValueError`` is the conventional choice for caller-facing
+            diagnostics.
         transport: ``"auto"`` (default), ``"http"``, or ``"stdio"``.
         upload_tool_name: Tool name override. Default
             ``"create_upload_link"``. Override this when registering
@@ -1474,6 +1553,11 @@ def register_file_exchange_upload(
             Operator-overridable via ``{PREFIX}_UPLOAD_TTL``.
         ttl_max: Operator ceiling. Requested TTL is clamped; the
             effective value is returned to the caller.
+        legacy_capability_shape: Set to True during a migration window
+            to advertise the v0.2 flat ``transfer_methods.http: {tool: ...}``
+            shape instead of the v0.4 nested
+            ``{download: ..., upload: ...}`` shape. The upload entry is
+            dropped (with a logged warning) when legacy shape is selected.
 
     Returns:
         An :class:`UploadHandle`. Stash if you need ``create_link`` for
@@ -1491,10 +1575,21 @@ def register_file_exchange_upload(
         )
 
     resolved_transport = _resolve_transport(env_prefix, transport)
-    enabled = resolved_transport != "stdio" and parse_bool(
-        env(env_prefix, "UPLOAD_ENABLED", "true"),
-    )
+    upload_enabled_env = parse_bool(env(env_prefix, "UPLOAD_ENABLED", "true"))
+    enabled = resolved_transport != "stdio" and upload_enabled_env
     if not enabled:
+        if resolved_transport == "stdio":
+            logger.info(
+                "register_file_exchange_upload(%s): upload disabled (transport=stdio)",
+                namespace,
+            )
+        else:
+            logger.info(
+                "register_file_exchange_upload(%s): upload disabled "
+                "(%s_UPLOAD_ENABLED=false)",
+                namespace,
+                env_prefix,
+            )
         return _disabled_upload_handle(
             namespace=namespace,
             upload_tool_name=upload_tool_name,
@@ -1557,7 +1652,11 @@ def register_file_exchange_upload(
     # ``accepts=("*/*",)`` is the default no-filter; omit from the
     # capability so we don't advertise a wildcard the spec already
     # treats as the absent-default.
-    builder = _get_or_create_builder(mcp, namespace=namespace)
+    builder = _get_or_create_builder(
+        mcp,
+        namespace=namespace,
+        legacy_capability_shape=legacy_capability_shape,
+    )
     builder.set_upload(
         tool_name=upload_tool_name,
         max_bytes=int(max_bytes_default),
@@ -1573,11 +1672,16 @@ def register_file_exchange_upload(
         max_bytes: int | None = None,
         extra: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """Mint a one-time HTTPS POST URL for an inbound upload.
+        r"""Mint a one-time HTTPS POST URL for an inbound upload.
 
         Args:
             target_id: Opaque destination identifier the receiver
-                interprets (e.g. a vault path or document id).
+                interprets (e.g. a filename or document id). Validated
+                against the spec's segment rules (Amendment 11): no
+                ``/``, ``\``, ``.``, ``..``, control bytes, leading or
+                trailing whitespace. Receivers that interpret
+                ``target_id`` as a path must construct the full path
+                themselves from the bare filename.
             ttl_seconds: Requested lifetime in integer seconds. Clamped
                 to the server's ``ttl_max`` ceiling; values <= 0 fall
                 back to the configured default. Sub-second TTLs are not
@@ -1592,8 +1696,31 @@ def register_file_exchange_upload(
         Returns:
             ``{upload_url, expires_in_seconds, target_id}``.
         """
+        # Spec rules (Amendment 11): no /, \, ., .., control bytes,
+        # leading/trailing whitespace. Mirrors the download direction's
+        # origin_id validation. The optional pre_link_validator may
+        # then refine with domain-specific checks.
+        ExchangeURI.validate_segment(target_id, role="json_param")
         if pre_link_validator is not None:
-            pre_link_validator(target_id, extra)
+            try:
+                pre_link_validator(target_id, extra)
+            except ValueError:
+                # Caller-facing validation rejection — surface to the
+                # LLM with the exception's message intact.
+                raise
+            except Exception:
+                # Anything else is a bug in the validator (NameError,
+                # typo, AttributeError on extra-dict access, etc.). Log
+                # with full traceback so operators can diagnose; re-raise
+                # so FastMCP surfaces it rather than treating it as
+                # caller-fixable.
+                logger.exception(
+                    "pre_link_validator raised non-ValueError "
+                    "(target_id=%r) — this is a server-side bug, not a "
+                    "client validation failure",
+                    target_id,
+                )
+                raise
         url, eff = handle.create_link(
             target_id=target_id,
             ttl_seconds=ttl_seconds,

@@ -18,7 +18,7 @@ from fastmcp_pvl_core._token_store import (
 class TestUploadRecord:
     def test_is_frozen(self) -> None:
         record = UploadRecord(
-            target_id="vault/foo.md",
+            target_id="foo.md",
             max_bytes=1024,
             extra={},
             expires_at=time.time() + 60,
@@ -49,7 +49,7 @@ class TestUploadRecord:
 class TestUploadStore:
     def test_reserve_returns_token_and_url(self) -> None:
         store = UploadStore(base_url="https://srv.test")
-        token = store.reserve(target_id="vault/foo.md", max_bytes=1024)
+        token = store.reserve(target_id="foo.md", max_bytes=1024)
         assert isinstance(token, str) and len(token) == 32
         url = store.build_url(token)
         assert url == f"https://srv.test/uploads/{token}"
@@ -57,7 +57,7 @@ class TestUploadStore:
     def test_reserve_with_explicit_ttl_and_extra(self) -> None:
         store = UploadStore(base_url="https://srv.test")
         token = store.reserve(
-            target_id="vault/x.md", max_bytes=10, ttl_seconds=42, extra={"k": 1}
+            target_id="x.md", max_bytes=10, ttl_seconds=42, extra={"k": 1}
         )
         record = store._peek_for_tests(token)
         assert record is not None

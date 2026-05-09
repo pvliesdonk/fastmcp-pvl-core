@@ -244,7 +244,7 @@ handle = register_file_exchange(
     mcp,
     namespace="vault",
     env_prefix="MARKDOWN_VAULT_MCP",
-    produce=True,
+    produces=["text/markdown"],
 )
 ```
 
@@ -269,9 +269,10 @@ dispatches the bytes to your receiver. See File Exchange spec
 [`docs/specs/file-exchange.md`](docs/specs/file-exchange.md) for the
 wire contract.
 
-Both helpers cooperate on a shared capability declaration — registering
-both on the same `FastMCP` instance advertises a single merged
-`experimental.file_exchange` capability with `direction: "both"`.
+Both helpers cooperate on the same `experimental.file_exchange`
+capability — registering both on one FastMCP instance advertises a
+single capability whose `transfer_methods.http` block carries both
+`download` and `upload` sub-keys.
 
 ## License
 
