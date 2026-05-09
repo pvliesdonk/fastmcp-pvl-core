@@ -38,6 +38,26 @@ def _reset_authorizer() -> Iterator[None]:
     set_current_authorizer(None)
 
 
+@pytest.fixture(autouse=True)
+def _reset_capability_builders() -> Iterator[None]:
+    """Clear the per-FastMCP capability-builder registry between tests.
+
+    Builders are keyed by ``id(mcp)`` (see
+    ``fastmcp_pvl_core.file_exchange._capability_builders``); pytest
+    fixtures may recycle FastMCP instances across the process. Without
+    this reset, capability state from one test can leak into the next
+    — e.g. an upload-direction contribution showing up in a
+    download-only test's capability dict.
+    """
+    from fastmcp_pvl_core.file_exchange import (
+        reset_capability_builders_for_test,
+    )
+
+    reset_capability_builders_for_test()
+    yield
+    reset_capability_builders_for_test()
+
+
 @pytest.fixture
 def clean_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     """Strip all env vars whose name starts with a common test prefix."""

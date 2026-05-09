@@ -286,7 +286,7 @@ class TestFileExchangeCapability:
         )
         d = cap.to_capability_dict()
         assert d == {
-            "version": "0.2",
+            "version": "0.4",
             "namespace": "image-mcp",
             "exchange_id": "hades-01",
             "produces": ["image/png", "image/webp", "image/jpeg"],

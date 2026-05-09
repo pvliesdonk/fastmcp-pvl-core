@@ -55,6 +55,7 @@ from fastmcp_pvl_core._file_exchange_protocol import (
     FileExchangeCapability,
     FileRef,
     FileRefPreview,
+    _FileExchangeCapabilityBuilder,
     register_file_exchange_capability,
 )
 from fastmcp_pvl_core._file_exchange_runtime import (
@@ -83,6 +84,89 @@ _DEFAULT_FETCH_TOOL = "fetch_file"
 _DEFAULT_TTL_SECONDS = 3600.0
 _DEFAULT_HTTP_FETCH_TIMEOUT = 30.0
 _DEFAULT_HTTP_FETCH_MAX_BYTES = 256 * 1024 * 1024  # 256 MiB hard cap
+
+
+# ---------------------------------------------------------------------------
+# Per-FastMCP capability builder registry
+# ---------------------------------------------------------------------------
+#
+# A single FastMCP instance may have both ``register_file_exchange``
+# (download direction) and ``register_file_exchange_upload`` (upload
+# direction) called against it. Both registrars need to contribute to
+# the same ``experimental.file_exchange`` capability dict. We key the
+# builder by ``id(mcp)`` (an int) rather than by the FastMCP object
+# itself: FastMCP instances may not be hashable / weakref-able in all
+# pydantic configurations, and ``id`` is stable for the lifetime of the
+# instance — which is exactly the lifetime we care about. The registry
+# is reset between tests via ``reset_capability_builders_for_test``.
+
+_capability_builders: dict[int, _FileExchangeCapabilityBuilder] = {}
+
+
+def _get_or_create_builder(
+    mcp: FastMCP,
+    *,
+    namespace: str,
+    exchange_id: str | None = None,
+    produces: tuple[str, ...] = (),
+    consumes: tuple[str, ...] = (),
+    legacy_capability_shape: bool = False,
+) -> _FileExchangeCapabilityBuilder:
+    """Return (creating if needed) the per-FastMCP capability builder.
+
+    Subsequent calls on the same ``mcp`` reuse the existing builder and
+    additively extend ``produces`` / ``consumes`` (so download and upload
+    registrations don't clobber each other's MIME lists). The
+    ``exchange_id`` and ``legacy_capability_shape`` are set by the FIRST
+    caller; subsequent calls do not overwrite them.
+    """
+    key = id(mcp)
+    builder = _capability_builders.get(key)
+    if builder is None:
+        builder = _FileExchangeCapabilityBuilder(
+            namespace=namespace,
+            exchange_id=exchange_id,
+            produces=produces,
+            consumes=consumes,
+            legacy_capability_shape=legacy_capability_shape,
+        )
+        _capability_builders[key] = builder
+    else:
+        builder.exchange_id = builder.exchange_id or exchange_id
+        # Set-union the MIME lists; using ``set`` and back to tuple
+        # gives us order-independent dedup. Order is not part of the
+        # spec contract for produces/consumes.
+        builder.produces = tuple(set(builder.produces) | set(produces))
+        builder.consumes = tuple(set(builder.consumes) | set(consumes))
+    return builder
+
+
+def _emit_capability(mcp: FastMCP) -> FileExchangeCapability | None:
+    """Materialise the per-FastMCP builder and advertise the capability.
+
+    Idempotent: each call rebuilds and re-advertises. Safe to call
+    after each registrar adds its contribution — the underlying
+    middleware stores the latest payload, so redundant calls just
+    overwrite-with-same-value.
+    """
+    builder = _capability_builders.get(id(mcp))
+    if builder is None:
+        return None
+    cap = builder.build()
+    if cap is not None:
+        register_file_exchange_capability(mcp, cap)
+    return cap
+
+
+def reset_capability_builders_for_test() -> None:
+    """Test-only: clear the per-FastMCP builder registry.
+
+    Required because builders are keyed by ``id(mcp)`` and pytest
+    fixtures recycle FastMCP instances across the process. Without this
+    reset, a test that builds capability state can leak it into the
+    next. Called by the autouse fixture in ``tests/conftest.py``.
+    """
+    _capability_builders.clear()
 
 
 class FetchTransportError(RuntimeError):
@@ -586,25 +670,33 @@ def register_file_exchange(
         raise
 
     # --- Capability declaration ---
+    # Push contributions into the per-FastMCP builder so that an upload
+    # registrar on the same ``mcp`` can merge into one capability dict.
+    # The shape emitted is v0.4 (nested ``http.download`` / ``http.upload``);
+    # legacy v0.2 flat shape is no longer wired here.
     capability: FileExchangeCapability | None = None
     if enabled:
-        transfer_methods = _build_transfer_methods(
-            produce=produce,
-            consume=consume,
-            exchange=exchange,
-            store=store,
-            download_tool_name=download_tool_name,
-            fetch_tool_name=fetch_tool_name,
+        builder = _get_or_create_builder(
+            mcp,
+            namespace=namespace,
+            exchange_id=exchange.exchange_id if exchange is not None else None,
+            produces=tuple(produces) if produce else (),
+            consumes=tuple(consumes) if consume else (),
         )
-        if transfer_methods:
-            capability = FileExchangeCapability(
-                namespace=namespace,
-                exchange_id=exchange.exchange_id if exchange is not None else None,
-                produces=tuple(produces) if produce else (),
-                consumes=tuple(consumes) if consume else (),
-                transfer_methods=transfer_methods,
-            )
-            register_file_exchange_capability(mcp, capability)
+        if exchange is not None and (produce or consume):
+            builder.set_exchange(True)
+        if produce and store is not None and store.has_base_url:
+            # Producer-side download: caller invokes ``download_tool_name``
+            # (default ``create_download_link``) to mint a one-time URL.
+            builder.set_download(tool_name=download_tool_name)
+        elif consume:
+            # Consumer-side intake: the server's ``fetch_file`` tool pulls
+            # bytes when given a URL. Re-uses the ``download`` slot in the
+            # nested-http shape — both producer download-link minting and
+            # consumer fetch are "download-direction" from the spec's
+            # transfer-method perspective.
+            builder.set_download(tool_name=fetch_tool_name)
+        capability = _emit_capability(mcp)
 
     handle = FileExchangeHandle(
         namespace=namespace,
@@ -1471,6 +1563,21 @@ def register_file_exchange_upload(
         ttl_max=ttl_max,
         max_bytes_default=max_bytes_default,
     )
+
+    # Push upload contribution into the shared per-FastMCP builder so a
+    # paired ``register_file_exchange`` (download direction) advertises
+    # both halves under one ``http`` block instead of clobbering.
+    # ``accepts=("*/*",)`` is the default no-filter; omit from the
+    # capability so we don't advertise a wildcard the spec already
+    # treats as the absent-default.
+    builder = _get_or_create_builder(mcp, namespace=namespace)
+    builder.set_upload(
+        tool_name=upload_tool_name,
+        max_bytes=int(max_bytes_default),
+        max_ttl_seconds=int(ttl_max),
+        accepts=accepts if accepts != ("*/*",) else None,
+    )
+    _emit_capability(mcp)
 
     @mcp.tool(name=upload_tool_name, tags=set(tool_tags))
     async def create_upload_link(
