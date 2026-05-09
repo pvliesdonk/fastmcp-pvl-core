@@ -50,6 +50,7 @@ async def test_create_upload_link_returns_url_and_ttl(
         receiver=lambda rec, body: {"ok": True},
     )
     tool = await mcp.get_tool("create_upload_link")
+    assert tool is not None
     result = await tool.run({"target_id": "vault/foo.md"})
     payload = result.structured_content or {}
     assert payload["target_id"] == "vault/foo.md"
