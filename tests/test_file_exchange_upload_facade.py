@@ -142,3 +142,79 @@ async def test_pre_link_validator_passes_extra_through(
     assert tool is not None
     await tool.run({"target_id": "x.md", "extra": {"k": 1}})
     assert seen == {"target_id": "x.md", "extra": {"k": 1}}
+
+
+@pytest.mark.asyncio
+async def test_ttl_clamped_to_ttl_max(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TEST_UPLOAD_TRANSPORT", "http")
+    monkeypatch.setenv("TEST_UPLOAD_BASE_URL", "http://srv.test")
+
+    mcp = FastMCP(name="test")
+    register_file_exchange_upload(
+        mcp,
+        namespace="ns",
+        env_prefix="TEST_UPLOAD",
+        receiver=lambda rec, body: {"ok": True},
+        ttl_default=300.0,
+        ttl_max=600.0,
+    )
+    tool = await mcp.get_tool("create_upload_link")
+    assert tool is not None
+    result = await tool.run({"target_id": "x", "ttl_seconds": 99999})
+    payload = result.structured_content or {}
+    assert payload["expires_in_seconds"] == 600  # clamped
+
+
+@pytest.mark.asyncio
+async def test_env_overrides_max_bytes_and_ttl(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TEST_UPLOAD_TRANSPORT", "http")
+    monkeypatch.setenv("TEST_UPLOAD_BASE_URL", "http://srv.test")
+    monkeypatch.setenv("TEST_UPLOAD_UPLOAD_MAX_BYTES", "5000000")
+    monkeypatch.setenv("TEST_UPLOAD_UPLOAD_TTL", "120")
+
+    mcp = FastMCP(name="test")
+    h = register_file_exchange_upload(
+        mcp,
+        namespace="ns",
+        env_prefix="TEST_UPLOAD",
+        receiver=lambda rec, body: {"ok": True},
+    )
+    assert h.max_bytes_default == 5_000_000
+    assert h.ttl_default == 120.0
+
+
+def test_mutual_exclusion_of_receivers() -> None:
+    mcp = FastMCP(name="test")
+    with pytest.raises(ValueError, match="exactly one"):
+        register_file_exchange_upload(
+            mcp,
+            namespace="ns",
+            env_prefix="TEST_X",
+            receiver=lambda rec, body: {},
+            stream_receiver=lambda rec, body: {},  # type: ignore[arg-type]
+        )
+
+
+def test_neither_receiver_raises() -> None:
+    mcp = FastMCP(name="test")
+    with pytest.raises(ValueError, match="exactly one"):
+        register_file_exchange_upload(
+            mcp,
+            namespace="ns",
+            env_prefix="TEST_X",
+        )
+
+
+def test_stdio_transport_returns_disabled_handle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("TEST_UPLOAD_TRANSPORT", "stdio")
+    mcp = FastMCP(name="test")
+    h = register_file_exchange_upload(
+        mcp,
+        namespace="ns",
+        env_prefix="TEST_UPLOAD",
+        receiver=lambda rec, body: {"ok": True},
+    )
+    assert h.enabled is False
+    assert h.upload_store is None
