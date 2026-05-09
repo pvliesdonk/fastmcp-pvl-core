@@ -19,7 +19,7 @@ def test_base_token_store_create_returns_unique_tokens() -> None:
     t1 = store._mint_token()
     t2 = store._mint_token()
     assert t1 != t2
-    assert isinstance(t1, str) and len(t1) >= 32
+    assert isinstance(t1, str) and len(t1) == 32
 
 
 def test_base_token_store_atomic_consume_returns_record_once() -> None:

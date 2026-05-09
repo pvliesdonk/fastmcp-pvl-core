@@ -28,7 +28,8 @@ logger = logging.getLogger(__name__)
 class _HasExpiresAt(Protocol):
     """Structural type for any record the base store can hold."""
 
-    expires_at: float
+    @property
+    def expires_at(self) -> float: ...
 
 
 T = TypeVar("T", bound=_HasExpiresAt)
@@ -63,6 +64,8 @@ class _BaseTokenStore(Generic[T]):
         record = self._records.pop(token, None)
         if record is None:
             return None
+        # Defense in depth: a record can tip past expires_at between
+        # _purge_expired's internal now() and this post-pop check.
         if time.time() > record.expires_at:
             return None
         return record
