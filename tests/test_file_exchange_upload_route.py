@@ -367,3 +367,105 @@ async def test_post_receiver_other_exception_returns_500(
             )
     assert resp.status_code == 500
     assert any("kaboom" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_post_async_buffered_receiver_runs_to_completion() -> None:
+    """The buffered receiver path also accepts an async function returning a dict."""
+    captured: dict[str, Any] = {}
+
+    async def recv(record: UploadRecord, body: bytes) -> dict[str, Any]:
+        captured["target_id"] = record.target_id
+        captured["body"] = body
+        return {"size": len(body), "ok": True}
+
+    mcp, store = _build_app(recv)
+    token = store.reserve(target_id="x", max_bytes=100)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=mcp.http_app()),
+        base_url="http://test",
+    ) as client:
+        resp = await client.post(
+            f"/ns/uploads/{token}",
+            content=b"hello async",
+            headers={"Content-Type": "application/octet-stream"},
+        )
+
+    assert resp.status_code == 200
+    assert resp.json() == {"size": 11, "ok": True}
+    assert captured["body"] == b"hello async"
+
+
+@pytest.mark.asyncio
+async def test_post_stream_receiver_sees_chunks_live() -> None:
+    seen: list[bytes] = []
+
+    async def recv(record: UploadRecord, body: AsyncIterator[bytes]) -> dict[str, Any]:
+        async for chunk in body:
+            seen.append(chunk)
+        return {"chunks": len(seen), "total": sum(len(c) for c in seen)}
+
+    mcp = FastMCP(name="test-upload")
+    store = UploadStore(base_url="http://test.invalid")
+    register_upload_route(
+        mcp,
+        store=store,
+        namespace="ns",
+        stream_receiver=recv,
+    )
+    token = store.reserve(target_id="x", max_bytes=1024)
+
+    async def chunk_iter() -> AsyncIterator[bytes]:
+        yield b"abc"
+        yield b"defg"
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=mcp.http_app()),
+        base_url="http://test",
+    ) as client:
+        resp = await client.post(
+            f"/ns/uploads/{token}",
+            content=chunk_iter(),
+            headers={"Content-Type": "application/octet-stream"},
+        )
+
+    assert resp.status_code == 200
+    assert resp.json() == {"chunks": len(seen), "total": 7}
+    assert b"".join(seen) == b"abcdefg"
+
+
+@pytest.mark.asyncio
+async def test_post_stream_receiver_oversize_aborts_before_completion() -> None:
+    """Bounded streaming: 413 fires mid-stream when running total exceeds max_bytes."""
+    received_chunks: list[bytes] = []
+
+    async def recv(record: UploadRecord, body: AsyncIterator[bytes]) -> dict[str, Any]:
+        async for chunk in body:
+            received_chunks.append(chunk)
+        return {"ok": True}
+
+    mcp = FastMCP(name="test-upload")
+    store = UploadStore(base_url="http://test.invalid")
+    register_upload_route(
+        mcp,
+        store=store,
+        namespace="ns",
+        stream_receiver=recv,
+    )
+    token = store.reserve(target_id="x", max_bytes=5)
+
+    async def chunk_iter() -> AsyncIterator[bytes]:
+        yield b"abcd"
+        yield b"efgh"  # cumulative 8 > 5
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=mcp.http_app()),
+        base_url="http://test",
+    ) as client:
+        resp = await client.post(
+            f"/ns/uploads/{token}",
+            content=chunk_iter(),
+            headers={"Content-Type": "application/octet-stream"},
+        )
+    assert resp.status_code == 413

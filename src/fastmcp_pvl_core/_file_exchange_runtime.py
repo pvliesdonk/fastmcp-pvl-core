@@ -595,6 +595,16 @@ StreamReceiver = Callable[
 ]
 
 
+class _UploadOversizeError(Exception):
+    """Internal sentinel for mid-stream oversize aborts.
+
+    Raised by the bounded chunk generator when the request body exceeds
+    ``record.max_bytes`` mid-stream. Caught inside the upload handler and
+    translated to a ``413`` response. Not part of the receiver contract —
+    never propagates to user code.
+    """
+
+
 def _accepts_match(content_type: str, accepts: tuple[str, ...]) -> bool:
     if "*/*" in accepts:
         return True
@@ -645,9 +655,11 @@ def register_upload_route(
       body is a generic ``"Internal Server Error"`` (does NOT echo
       ``str(exc)`` to avoid leaking internal detail).
 
-    The streaming-receiver path currently buffers the entire body before
-    dispatch (placeholder); Task 10 will rewrite it to feed chunks to the
-    receiver as they arrive.
+    The streaming-receiver path feeds chunks directly from
+    ``request.stream()``; the running-total cap fires mid-iteration if
+    the body exceeds ``record.max_bytes``, aborting before the receiver
+    completes. The buffered-receiver path consumes the same bounded
+    generator into a ``bytes`` object before dispatch.
 
     ``accepts`` is enforced before any body read — a request whose
     ``Content-Type`` does not match any entry returns 415. Use ``"*/*"``
@@ -714,38 +726,43 @@ def register_upload_route(
                 )
                 return Response(content="Payload Too Large", status_code=413)
 
-        # Defense in depth — the client may lie about Content-Length. Read in
-        # chunks tracking the running total ourselves; bail as soon as we
-        # exceed the cap rather than after a full buffer fill. Streaming
-        # receivers will be wired through this same bounded read in Task 10.
-        chunks: list[bytes] = []
-        total = 0
-        async for chunk in request.stream():
-            total += len(chunk)
-            if total > record.max_bytes:
-                logger.info(
-                    "upload_handler_oversize_chunk token_prefix=%s total=%d max=%d",
-                    token[:8],
-                    total,
-                    record.max_bytes,
-                )
-                return Response(content="Payload Too Large", status_code=413)
-            chunks.append(chunk)
-        body = b"".join(chunks)
+        # Defense in depth — the client may lie about Content-Length. A single
+        # bounded async-generator wraps ``request.stream()`` with a running-
+        # total cap; both branches consume it. The buffered branch collects
+        # chunks into bytes before calling the receiver; the streaming branch
+        # passes the generator straight through, so oversize aborts mid-
+        # iteration without ever materialising the full body.
+        async def _bounded_chunks() -> AsyncIterator[bytes]:
+            total = 0
+            async for chunk in request.stream():
+                total += len(chunk)
+                if total > record.max_bytes:
+                    logger.info(
+                        "upload_handler_oversize_chunk token_prefix=%s total=%d max=%d",
+                        token[:8],
+                        total,
+                        record.max_bytes,
+                    )
+                    raise _UploadOversizeError()
+                yield chunk
+
         try:
             if receiver is not None:
+                # Buffered path: fully consume the bounded generator into bytes.
+                buf: list[bytes] = []
+                async for c in _bounded_chunks():
+                    buf.append(c)
+                body = b"".join(buf)
                 result = receiver(record, body)
                 if inspect.isawaitable(result):
                     result = await result
             else:
+                # Streaming path: pass the bounded generator directly. The
+                # receiver iterates it; oversize aborts mid-iteration.
                 assert stream_receiver is not None  # narrow
-
-                # Task 10 will replace this with bounded chunked streaming
-                # (currently buffers the entire body, then yields it once).
-                async def _single_chunk() -> AsyncIterator[bytes]:
-                    yield body
-
-                result = await stream_receiver(record, _single_chunk())
+                result = await stream_receiver(record, _bounded_chunks())
+        except _UploadOversizeError:
+            return Response(content="Payload Too Large", status_code=413)
         except ValueError as exc:
             logger.info(
                 "upload_receiver_value_error token_prefix=%s: %s",
