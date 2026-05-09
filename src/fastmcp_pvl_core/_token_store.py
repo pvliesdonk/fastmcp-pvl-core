@@ -52,6 +52,12 @@ class _BaseTokenStore(Generic[T]):
     artifacts; ``reserve``/``consume`` for uploads). The base only owns
     token minting, expiry tracking, and the consume-and-remove
     primitive.
+
+    Concurrency: this store is not thread-safe. It assumes a single
+    asyncio event loop; the GIL guards individual dict operations between
+    ``await`` checkpoints, but cross-thread mutation requires external
+    synchronisation. Behind a multi-worker deployment, tokens must
+    sticky-route back to the worker that minted them.
     """
 
     def __init__(self) -> None:
@@ -472,6 +478,12 @@ class UploadStore(_BaseTokenStore[UploadRecord]):
         post-construction caller mutations are not visible to the
         receiver. Pairs with the by-reference semantic documented on
         :class:`UploadRecord`.
+
+        Validation note: ``max_bytes`` and ``target_id`` are stored verbatim;
+        no validation runs at this layer. Values of ``max_bytes <= 0`` will
+        cause every upload body to be rejected as oversize at the route layer.
+        Higher-level callers (``register_file_exchange_upload``'s
+        ``pre_link_validator``) are expected to validate before reserving.
         """
         self._purge_expired()
         token = self._mint_token()
@@ -498,10 +510,11 @@ class UploadStore(_BaseTokenStore[UploadRecord]):
         """
         return self._atomic_consume(token)
 
-    def peek(self, token: str) -> UploadRecord | None:
-        """Inspect without consuming.
+    def _peek_for_tests(self, token: str) -> UploadRecord | None:
+        """Test-only inspection — do not use in production.
 
-        Test-only; production callers MUST use :meth:`consume`.
+        Production callers MUST use :meth:`consume`; the leading underscore
+        and ``_for_tests`` suffix encode that contract in the symbol itself.
         """
         record = self._records.get(token)
         if record is None or time.time() > record.expires_at:

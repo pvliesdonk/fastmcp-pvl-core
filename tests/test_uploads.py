@@ -7,7 +7,12 @@ import time
 
 import pytest
 
-from fastmcp_pvl_core._token_store import UploadRecord, UploadStore
+from fastmcp_pvl_core._token_store import (
+    UploadRecord,
+    UploadStore,
+    get_upload_store,
+    set_upload_store,
+)
 
 
 class TestUploadRecord:
@@ -54,10 +59,20 @@ class TestUploadStore:
         token = store.reserve(
             target_id="vault/x.md", max_bytes=10, ttl_seconds=42, extra={"k": 1}
         )
-        record = store.peek(token)
+        record = store._peek_for_tests(token)
         assert record is not None
         assert record.extra == {"k": 1}
         assert record.expires_at - time.time() == pytest.approx(42, abs=2)
+
+    def test_reserve_snapshots_extra(self) -> None:
+        """Mutating the source dict after reserve must not affect the record."""
+        store = UploadStore(base_url="https://srv.test")
+        extra = {"k": "v1"}
+        token = store.reserve(target_id="x", max_bytes=10, extra=extra)
+        extra["k"] = "v2"
+        record = store._peek_for_tests(token)
+        assert record is not None
+        assert record.extra == {"k": "v1"}
 
     def test_consume_returns_record_then_none(self) -> None:
         store = UploadStore(base_url="https://srv.test")
@@ -83,11 +98,6 @@ class TestUploadStore:
 
 
 def test_upload_store_singleton_accessors() -> None:
-    from fastmcp_pvl_core._token_store import (
-        get_upload_store,
-        set_upload_store,
-    )
-
     set_upload_store(None)
     with pytest.raises(RuntimeError, match="set_upload_store"):
         get_upload_store()
