@@ -192,3 +192,36 @@ class TestSingleton:
         set_artifact_store(None)
         with pytest.raises(RuntimeError):
             get_artifact_store()
+
+
+class TestLegacyArtifactsShim:
+    """The deprecation re-export at ``fastmcp_pvl_core._artifacts``.
+
+    Existing imports through the legacy module path must keep working
+    until the deprecation window closes. We pin the re-export surface
+    here so the shim doesn't silently rot.
+    """
+
+    def test_legacy_import_path_re_exports_artifact_store(self) -> None:
+        from fastmcp_pvl_core import _artifacts as legacy
+        from fastmcp_pvl_core._token_store import ArtifactStore as Canonical
+
+        assert legacy.ArtifactStore is Canonical
+
+    def test_legacy_import_path_re_exports_token_record(self) -> None:
+        from fastmcp_pvl_core import _artifacts as legacy
+        from fastmcp_pvl_core._token_store import TokenRecord as Canonical
+
+        assert legacy.TokenRecord is Canonical
+
+    def test_legacy_import_path_re_exports_singleton_accessors(self) -> None:
+        from fastmcp_pvl_core import _artifacts as legacy
+        from fastmcp_pvl_core._token_store import (
+            get_artifact_store as canonical_get,
+        )
+        from fastmcp_pvl_core._token_store import (
+            set_artifact_store as canonical_set,
+        )
+
+        assert legacy.get_artifact_store is canonical_get
+        assert legacy.set_artifact_store is canonical_set

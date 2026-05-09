@@ -218,3 +218,53 @@ def test_stdio_transport_returns_disabled_handle(
     )
     assert h.enabled is False
     assert h.upload_store is None
+
+
+# ---------------------------------------------------------------------------
+# UploadHandle.create_link direct edges (escape valve, used by advanced wraps)
+# ---------------------------------------------------------------------------
+
+
+def test_create_link_raises_when_upload_disabled() -> None:
+    """``upload_store=None`` (disabled handle) makes create_link fail loudly.
+
+    Covers the RuntimeError branch — the direct API is the documented escape
+    valve for advanced callers, and a silent miss here would mint links
+    against the wrong store after a transport-mode misconfiguration.
+    """
+    from fastmcp_pvl_core import UploadHandle
+
+    handle = UploadHandle(
+        namespace="ns",
+        tool_name="create_upload_link",
+        enabled=False,
+        upload_store=None,
+        ttl_default=300.0,
+        ttl_max=3600.0,
+        max_bytes_default=10 * 1024 * 1024,
+    )
+    with pytest.raises(RuntimeError, match="upload not enabled"):
+        handle.create_link(target_id="x")
+
+
+def test_create_link_floors_non_positive_ttl_to_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``ttl_seconds <= 0`` falls back to ``ttl_default``; never born-expired."""
+    monkeypatch.setenv("TEST_UPLOAD_FLOOR_TRANSPORT", "http")
+    monkeypatch.setenv("TEST_UPLOAD_FLOOR_BASE_URL", "http://srv.test")
+    mcp = FastMCP(name="floor")
+    handle = register_file_exchange_upload(
+        mcp,
+        namespace="ns",
+        env_prefix="TEST_UPLOAD_FLOOR",
+        receiver=lambda rec, body: {"ok": True},
+        ttl_default=222.0,
+        ttl_max=3600.0,
+    )
+    _, eff_zero = handle.create_link(target_id="x", ttl_seconds=0)
+    assert eff_zero == 222.0
+    _, eff_neg = handle.create_link(target_id="y", ttl_seconds=-5)
+    assert eff_neg == 222.0
+    _, eff_none = handle.create_link(target_id="z", ttl_seconds=None)
+    assert eff_none == 222.0

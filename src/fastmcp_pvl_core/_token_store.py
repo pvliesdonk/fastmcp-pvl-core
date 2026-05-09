@@ -79,7 +79,9 @@ class _BaseTokenStore(Generic[T]):
             return None
         # Defense in depth: a record can tip past expires_at between
         # _purge_expired's internal now() and this post-pop check.
-        if time.time() > record.expires_at:
+        if time.time() > record.expires_at:  # pragma: no cover
+            # Sub-millisecond race window between purge sweep and post-pop
+            # time check; not deterministically reachable from tests.
             return None
         return record
 

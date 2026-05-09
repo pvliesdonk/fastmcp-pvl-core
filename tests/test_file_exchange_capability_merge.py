@@ -99,6 +99,71 @@ def test_builder_with_neither_direction_returns_none() -> None:
     assert b.build() is None
 
 
+def test_builder_legacy_shape_no_download_tool_omits_http_block() -> None:
+    """Legacy v0.2 shape with only an upload (and no download) emits no http block.
+
+    Upload cannot ride the flat v0.2 shape (no nested ``http.upload`` key),
+    so without a download tool the http block is omitted entirely; the only
+    transfer methods left would be ``exchange``. With nothing else set, the
+    builder returns ``None``.
+    """
+    b = _FileExchangeCapabilityBuilder(
+        namespace="ns",
+        legacy_capability_shape=True,
+    )
+    b.set_upload(tool_name="create_upload_link", max_bytes=10, max_ttl_seconds=60)
+    assert b.build() is None
+
+
+def test_builder_upload_with_explicit_accepts_includes_accepts_in_capability() -> None:
+    """Non-default ``accepts`` is reflected in the upload capability dict."""
+    b = _FileExchangeCapabilityBuilder(namespace="ns")
+    b.set_upload(
+        tool_name="create_upload_link",
+        max_bytes=1000,
+        max_ttl_seconds=300,
+        accepts=("text/markdown", "application/octet-stream"),
+    )
+    cap = b.build()
+    assert cap is not None
+    upload = cap.to_capability_dict()["transfer_methods"]["http"]["upload"]
+    assert upload["accepts"] == ["text/markdown", "application/octet-stream"]
+
+
+def test_emit_capability_returns_none_when_no_builder_registered() -> None:
+    """``_emit_capability`` is idempotent on a FastMCP that has no builder.
+
+    Covers the early-out branch in ``_emit_capability``: a caller may
+    invoke it on a FastMCP instance no registrar has touched (e.g. a
+    transport-noop branch that still tries to publish), and the helper
+    must return ``None`` rather than raising.
+    """
+    from fastmcp_pvl_core.file_exchange import (
+        _capability_builders,
+        _emit_capability,
+    )
+
+    mcp = FastMCP(name="no-builder")
+    # Sanity: id(mcp) is not in the registry yet.
+    assert id(mcp) not in _capability_builders
+    assert _emit_capability(mcp) is None
+
+
+def test_builder_set_exchange_false_drops_exchange_method() -> None:
+    """``set_exchange(False)`` is the explicit no-op path (toggle off after on)."""
+    b = _FileExchangeCapabilityBuilder(namespace="ns")
+    b.set_exchange(True)
+    b.set_exchange(False)
+    # No download/upload either, so the builder should produce nothing.
+    assert b.build() is None
+    # And with a download tool added, exchange must be absent from the
+    # transfer_methods even though set_exchange was called once with True.
+    b.set_download(tool_name="create_download_link")
+    cap = b.build()
+    assert cap is not None
+    assert "exchange" not in cap.to_capability_dict()["transfer_methods"]
+
+
 @pytest.mark.asyncio
 async def test_register_both_directions_emits_merged_http(
     monkeypatch: pytest.MonkeyPatch,

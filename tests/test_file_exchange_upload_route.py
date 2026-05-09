@@ -370,6 +370,41 @@ async def test_post_receiver_other_exception_returns_500(
 
 
 @pytest.mark.asyncio
+async def test_post_receiver_returning_non_dict_is_coerced_to_empty_dict(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Receiver mis-implementations return 200 with ``{}`` and an ERROR log.
+
+    The route's contract is "JSON object back to the agent"; if a receiver
+    returns a string/list/None, the route logs at ERROR (callers can grep
+    for the misbehaviour) and coerces to ``{}`` so the response is still
+    well-formed JSON.
+    """
+
+    def recv(record: UploadRecord, body: bytes) -> dict[str, Any]:
+        return "not-a-dict"  # type: ignore[return-value]
+
+    mcp, store = _build_app(recv)
+    token = store.reserve(target_id="x", max_bytes=10)
+    with caplog.at_level(logging.ERROR):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=mcp.http_app()),
+            base_url="http://test",
+        ) as client:
+            resp = await client.post(
+                f"/ns/uploads/{token}",
+                content=b"x",
+                headers={"Content-Type": "application/octet-stream"},
+            )
+    assert resp.status_code == 200
+    assert resp.json() == {}
+    assert any(
+        "non-dict" in r.getMessage() and "coercing" in r.getMessage()
+        for r in caplog.records
+    )
+
+
+@pytest.mark.asyncio
 async def test_post_async_buffered_receiver_runs_to_completion() -> None:
     """The buffered receiver path also accepts an async function returning a dict."""
     captured: dict[str, Any] = {}
