@@ -18,6 +18,7 @@ Lifecycle constraints from the spec:
 from __future__ import annotations
 
 import errno
+import inspect
 import logging
 import os
 import secrets
@@ -625,6 +626,9 @@ def register_upload_route(
     happy-path implementation is extended in later tasks with token-
     error distinction (404/410), size enforcement (413), MIME filter
     (415), and exception mapping (400/409/500).
+
+    ``accepts`` is captured but not yet enforced by the handler — Task 8
+    wires it through ``_accepts_match`` to return 415 on mismatch.
     """
     if (receiver is None) == (stream_receiver is None):
         raise ValueError(
@@ -644,11 +648,13 @@ def register_upload_route(
         body = await request.body()
         if receiver is not None:
             result = receiver(record, body)
-            if hasattr(result, "__await__"):
+            if inspect.isawaitable(result):
                 result = await result
         else:
             assert stream_receiver is not None  # narrow
 
+            # Task 10 will replace this with bounded chunked streaming
+            # (currently buffers the entire body, then yields it once).
             async def _single_chunk() -> AsyncIterator[bytes]:
                 yield body
 

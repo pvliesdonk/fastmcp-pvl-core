@@ -53,3 +53,24 @@ async def test_post_happy_path_returns_receiver_dict() -> None:
     assert resp.json() == {"path": "hello.txt", "size_bytes": 11}
     assert captured["target_id"] == "hello.txt"
     assert captured["body"] == b"hello world"
+
+
+def test_register_upload_route_requires_exactly_one_receiver() -> None:
+    mcp = FastMCP(name="t")
+    store = UploadStore()
+    # Neither receiver is provided.
+    with pytest.raises(ValueError, match="exactly one"):
+        register_upload_route(mcp, store=store, namespace="ns")
+    # Both receivers are provided.
+    with pytest.raises(ValueError, match="exactly one"):
+
+        async def _stream(record, body):  # type: ignore[no-untyped-def]
+            return {}
+
+        register_upload_route(
+            mcp,
+            store=store,
+            namespace="ns",
+            receiver=lambda r, b: {},
+            stream_receiver=_stream,
+        )
