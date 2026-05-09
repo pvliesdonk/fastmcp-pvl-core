@@ -58,11 +58,19 @@ from fastmcp_pvl_core._file_exchange_protocol import (
     register_file_exchange_capability,
 )
 from fastmcp_pvl_core._file_exchange_runtime import (
+    BufferedReceiver,
     ExchangeGroupMismatch,
     FileExchange,
     FileExchangeConfigError,
+    StreamReceiver,
+    register_upload_route,
 )
-from fastmcp_pvl_core._token_store import ArtifactStore, set_artifact_store
+from fastmcp_pvl_core._token_store import (
+    ArtifactStore,
+    UploadStore,
+    set_artifact_store,
+    set_upload_store,
+)
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
@@ -1210,10 +1218,277 @@ def _filename_from_disposition(value: str | None) -> str | None:
     return msg.get_filename()
 
 
+# ---------------------------------------------------------------------------
+# Upload direction (intake) — public facade
+# ---------------------------------------------------------------------------
+
+
+_DEFAULT_UPLOAD_TOOL = "create_upload_link"
+_DEFAULT_UPLOAD_TTL_SECONDS = 300.0
+_DEFAULT_UPLOAD_TTL_MAX_SECONDS = 3600.0
+_DEFAULT_UPLOAD_MAX_BYTES = 10 * 1024 * 1024
+
+PreLinkValidator = Callable[[str, "dict[str, Any] | None"], None]
+
+
+@dataclass(frozen=True)
+class UploadHandle:
+    """Handle returned by :func:`register_file_exchange_upload`.
+
+    Attributes:
+        namespace: The server's logical name (also the URL prefix for
+            the upload route).
+        tool_name: The name under which ``create_upload_link`` was
+            registered (overridable; default ``"create_upload_link"``).
+        enabled: ``True`` iff upload is wired (transport != stdio AND
+            ``{PREFIX}_BASE_URL`` is set AND opt-in env not disabled).
+        upload_store: The :class:`UploadStore` instance, or ``None``
+            when upload is disabled.
+        ttl_default: Default TTL applied when ``ttl_seconds`` is omitted
+            on ``create_upload_link``.
+        ttl_max: Operator ceiling — requested TTL is clamped to this
+            value, with the effective TTL returned to the caller.
+        max_bytes_default: Default ``max_bytes`` applied when caller
+            omits the field.
+    """
+
+    namespace: str
+    tool_name: str
+    enabled: bool
+    upload_store: UploadStore | None
+    ttl_default: float
+    ttl_max: float
+    max_bytes_default: int
+
+    def create_link(
+        self,
+        *,
+        target_id: str,
+        ttl_seconds: float | None = None,
+        max_bytes: int | None = None,
+        extra: dict[str, Any] | None = None,
+    ) -> tuple[str, float]:
+        """Mint an upload reservation directly. Escape valve for advanced wraps.
+
+        Returns:
+            ``(upload_url, effective_ttl_seconds)``.
+
+        Raises:
+            RuntimeError: if upload is not enabled (transport is stdio,
+                or ``{PREFIX}_BASE_URL`` was not set, or upload was
+                disabled by env).
+        """
+        if self.upload_store is None:
+            raise RuntimeError(
+                "upload not enabled (transport=stdio, missing BASE_URL, or disabled)"
+            )
+        ttl = float(self.ttl_default if ttl_seconds is None else ttl_seconds)
+        ttl = min(ttl, self.ttl_max)
+        cap = int(self.max_bytes_default if max_bytes is None else max_bytes)
+        token = self.upload_store.reserve(
+            target_id=target_id,
+            max_bytes=cap,
+            ttl_seconds=ttl,
+            extra=extra,
+        )
+        return self.upload_store.build_url(token), ttl
+
+
+def register_file_exchange_upload(
+    mcp: FastMCP,
+    *,
+    namespace: str,
+    env_prefix: str,
+    receiver: BufferedReceiver | None = None,
+    stream_receiver: StreamReceiver | None = None,
+    pre_link_validator: PreLinkValidator | None = None,
+    transport: Literal["http", "stdio", "auto"] = "auto",
+    upload_tool_name: str = _DEFAULT_UPLOAD_TOOL,
+    tool_tags: frozenset[str] = frozenset({"write"}),
+    accepts: tuple[str, ...] = ("*/*",),
+    max_bytes_default: int = _DEFAULT_UPLOAD_MAX_BYTES,
+    ttl_default: float = _DEFAULT_UPLOAD_TTL_SECONDS,
+    ttl_max: float = _DEFAULT_UPLOAD_TTL_MAX_SECONDS,
+) -> UploadHandle:
+    """Wire MCP File Exchange upload direction onto ``mcp``.
+
+    Mirrors :func:`register_file_exchange` for the inbound half. Exactly
+    one of ``receiver`` / ``stream_receiver`` MUST be supplied. The
+    helper:
+
+    1. Resolves transport (``auto`` → reads ``{PREFIX}_TRANSPORT`` /
+       ``FASTMCP_TRANSPORT``).
+    2. Reads ``{PREFIX}_UPLOAD_ENABLED`` (default ``true``),
+       ``{PREFIX}_UPLOAD_MAX_BYTES``, ``{PREFIX}_UPLOAD_TTL`` for env
+       overrides.
+    3. Builds an :class:`UploadStore`, mounts ``POST /<namespace>/uploads/{token}``
+       via :func:`register_upload_route`, installs the module-level
+       singleton.
+    4. Registers an MCP tool named ``upload_tool_name`` (default
+       ``create_upload_link``) with tags ``tool_tags`` (default
+       ``{"write"}``). The tool wraps :meth:`UploadHandle.create_link`
+       and runs ``pre_link_validator`` (if provided) before token
+       creation so an invalid ``target_id`` surfaces as a clean tool
+       error in-band rather than after a wasted upload round-trip.
+
+    When transport is stdio OR ``{PREFIX}_BASE_URL`` is unset, the
+    helper returns an :class:`UploadHandle` with ``enabled=False`` and
+    no route or tool registered.
+
+    Args:
+        mcp: The :class:`fastmcp.FastMCP` server instance.
+        namespace: Logical server name; used as the URL prefix for the
+            upload route.
+        env_prefix: Per-server env var prefix (e.g.
+            ``"MARKDOWN_VAULT_MCP"``).
+        receiver: Buffered receiver; mutually exclusive with
+            ``stream_receiver``.
+        stream_receiver: Streaming receiver; receives chunks live.
+        pre_link_validator: Optional callback ``(target_id, extra) -> None``
+            run inside the registered tool BEFORE token creation;
+            raising ``ValueError`` surfaces as an in-band tool error.
+        transport: ``"auto"`` (default), ``"http"``, or ``"stdio"``.
+        upload_tool_name: Tool name override. Default
+            ``"create_upload_link"``.
+        tool_tags: Tags applied to the registered tool. Default
+            ``frozenset({"write"})`` — change for downstream authz
+            mappings that need a finer grain.
+        accepts: ``Content-Type`` filter at the route layer. Default
+            ``("*/*",)`` disables the gate. See
+            :func:`register_upload_route` for semantics.
+        max_bytes_default: Default body cap if caller omits
+            ``max_bytes``. Operator-overridable via
+            ``{PREFIX}_UPLOAD_MAX_BYTES``.
+        ttl_default: Default TTL if caller omits ``ttl_seconds``.
+            Operator-overridable via ``{PREFIX}_UPLOAD_TTL``.
+        ttl_max: Operator ceiling. Requested TTL is clamped; the
+            effective value is returned to the caller.
+
+    Returns:
+        An :class:`UploadHandle`. Stash if you need ``create_link`` for
+        advanced wrapping; otherwise discard — registration side-effects
+        are sufficient for normal use.
+
+    Raises:
+        ValueError: if neither or both of ``receiver``/``stream_receiver``
+            are supplied.
+    """
+    if (receiver is None) == (stream_receiver is None):
+        raise ValueError(
+            "register_file_exchange_upload requires exactly one of "
+            "receiver= or stream_receiver="
+        )
+
+    resolved_transport = _resolve_transport(env_prefix, transport)
+    enabled = resolved_transport != "stdio" and parse_bool(
+        env(env_prefix, "UPLOAD_ENABLED", "true"),
+    )
+    if not enabled:
+        return UploadHandle(
+            namespace=namespace,
+            tool_name=upload_tool_name,
+            enabled=False,
+            upload_store=None,
+            ttl_default=ttl_default,
+            ttl_max=ttl_max,
+            max_bytes_default=max_bytes_default,
+        )
+
+    base_url = env(env_prefix, "BASE_URL")
+    if not base_url:
+        logger.warning(
+            "register_file_exchange_upload: %s_BASE_URL not set; upload "
+            "endpoint disabled (would mint links without a public URL)",
+            env_prefix,
+        )
+        return UploadHandle(
+            namespace=namespace,
+            tool_name=upload_tool_name,
+            enabled=False,
+            upload_store=None,
+            ttl_default=ttl_default,
+            ttl_max=ttl_max,
+            max_bytes_default=max_bytes_default,
+        )
+
+    # Env-driven knob overrides.
+    mb_raw = env(env_prefix, "UPLOAD_MAX_BYTES")
+    if mb_raw:
+        max_bytes_default = int(mb_raw)
+    ttl_raw = env(env_prefix, "UPLOAD_TTL")
+    if ttl_raw:
+        ttl_default = float(ttl_raw)
+
+    store = UploadStore(
+        ttl_seconds=ttl_default,
+        base_url=base_url,
+        route_path=f"/{namespace}/uploads/{{token}}",
+    )
+    set_upload_store(store)
+    register_upload_route(
+        mcp,
+        store=store,
+        namespace=namespace,
+        receiver=receiver,
+        stream_receiver=stream_receiver,
+        accepts=accepts,
+    )
+
+    handle = UploadHandle(
+        namespace=namespace,
+        tool_name=upload_tool_name,
+        enabled=True,
+        upload_store=store,
+        ttl_default=ttl_default,
+        ttl_max=ttl_max,
+        max_bytes_default=max_bytes_default,
+    )
+
+    @mcp.tool(name=upload_tool_name, tags=set(tool_tags))
+    async def create_upload_link(
+        target_id: str,
+        ttl_seconds: int = int(ttl_default),
+        max_bytes: int | None = None,
+        extra: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Mint a one-time HTTPS POST URL for an inbound upload.
+
+        Args:
+            target_id: Opaque destination identifier the receiver
+                interprets (e.g. a vault path or document id).
+            ttl_seconds: Requested lifetime. Clamped to ``ttl_max``.
+            max_bytes: Body cap. Defaults to the server's configured
+                ``max_bytes_default``.
+            extra: Caller-supplied dict passed verbatim to the
+                receiver. Snapshotted at link creation.
+
+        Returns:
+            ``{upload_url, expires_in_seconds, target_id}``.
+        """
+        if pre_link_validator is not None:
+            pre_link_validator(target_id, extra)
+        url, eff = handle.create_link(
+            target_id=target_id,
+            ttl_seconds=ttl_seconds,
+            max_bytes=max_bytes,
+            extra=extra,
+        )
+        return {
+            "upload_url": url,
+            "expires_in_seconds": int(eff),
+            "target_id": target_id,
+        }
+
+    return handle
+
+
 __all__ = [
     "ConsumerSink",
     "FetchContext",
     "FetchResult",
     "FileExchangeHandle",
+    "PreLinkValidator",
+    "UploadHandle",
     "register_file_exchange",
+    "register_file_exchange_upload",
 ]
