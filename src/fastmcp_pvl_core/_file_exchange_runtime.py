@@ -648,7 +648,40 @@ def register_upload_route(
         if record is None:
             logger.debug("upload_handler_miss token_prefix=%s", (token or "")[:8])
             return Response(content="Not Found", status_code=404)
-        body = await request.body()
+        # Content-Length precheck — reject before reading any body bytes.
+        cl = request.headers.get("content-length")
+        if cl is not None:
+            try:
+                cl_int = int(cl)
+            except ValueError:
+                cl_int = -1
+            if cl_int > record.max_bytes:
+                logger.debug(
+                    "upload_handler_oversize_cl token_prefix=%s declared=%d max=%d",
+                    token[:8],
+                    cl_int,
+                    record.max_bytes,
+                )
+                return Response(content="Payload Too Large", status_code=413)
+
+        # Defense in depth — the client may lie about Content-Length. Read in
+        # chunks tracking the running total ourselves; bail as soon as we
+        # exceed the cap rather than after a full buffer fill. Streaming
+        # receivers will be wired through this same bounded read in Task 10.
+        chunks: list[bytes] = []
+        total = 0
+        async for chunk in request.stream():
+            total += len(chunk)
+            if total > record.max_bytes:
+                logger.debug(
+                    "upload_handler_oversize_chunk token_prefix=%s total=%d max=%d",
+                    token[:8],
+                    total,
+                    record.max_bytes,
+                )
+                return Response(content="Payload Too Large", status_code=413)
+            chunks.append(chunk)
+        body = b"".join(chunks)
         if receiver is not None:
             result = receiver(record, body)
             if inspect.isawaitable(result):

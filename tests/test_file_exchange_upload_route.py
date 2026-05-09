@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from typing import Any
 
 import httpx
@@ -119,3 +120,51 @@ async def test_post_expired_token_returns_410() -> None:
             headers={"Content-Type": "application/octet-stream"},
         )
     assert resp.status_code == 410
+
+
+@pytest.mark.asyncio
+async def test_post_oversize_by_content_length_returns_413() -> None:
+    mcp, store = _build_app(lambda rec, body: {"ok": True})
+    token = store.reserve(target_id="x", max_bytes=10)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=mcp.http_app()),
+        base_url="http://test",
+    ) as client:
+        resp = await client.post(
+            f"/ns/uploads/{token}",
+            content=b"x" * 11,
+            headers={
+                "Content-Type": "application/octet-stream",
+                "Content-Length": "11",
+            },
+        )
+    assert resp.status_code == 413
+
+
+@pytest.mark.asyncio
+async def test_post_oversize_via_chunk_overrun_returns_413() -> None:
+    """Defense-in-depth: client lies about Content-Length, real body is bigger."""
+    captured: dict[str, Any] = {"called": False}
+
+    def recv(record: UploadRecord, body: bytes) -> dict[str, Any]:
+        captured["called"] = True
+        return {"ok": True}
+
+    mcp, store = _build_app(recv)
+    token = store.reserve(target_id="x", max_bytes=10)
+
+    async def chunk_iter() -> AsyncIterator[bytes]:
+        yield b"x" * 8
+        yield b"x" * 8  # total 16 > 10
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=mcp.http_app()),
+        base_url="http://test",
+    ) as client:
+        resp = await client.post(
+            f"/ns/uploads/{token}",
+            content=chunk_iter(),
+            headers={"Content-Type": "application/octet-stream"},
+        )
+    assert resp.status_code == 413
+    assert captured["called"] is False
