@@ -91,3 +91,54 @@ async def test_missing_base_url_returns_disabled_handle(
         "TEST_UPLOAD_BASE_URL" in r.getMessage() and r.levelno == logging.WARNING
         for r in caplog.records
     )
+
+
+@pytest.mark.asyncio
+async def test_pre_link_validator_blocks_invalid_target(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("TEST_UPLOAD_TRANSPORT", "http")
+    monkeypatch.setenv("TEST_UPLOAD_BASE_URL", "http://srv.test")
+
+    def reject(target_id: str, extra: dict[str, Any] | None) -> None:
+        if ".." in target_id:
+            raise ValueError(f"path traversal rejected: {target_id}")
+
+    mcp = FastMCP(name="test")
+    register_file_exchange_upload(
+        mcp,
+        namespace="ns",
+        env_prefix="TEST_UPLOAD",
+        receiver=lambda rec, body: {"ok": True},
+        pre_link_validator=reject,
+    )
+    tool = await mcp.get_tool("create_upload_link")
+    assert tool is not None
+    with pytest.raises(Exception, match="path traversal rejected"):
+        await tool.run({"target_id": "../../etc/passwd"})
+
+
+@pytest.mark.asyncio
+async def test_pre_link_validator_passes_extra_through(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("TEST_UPLOAD_TRANSPORT", "http")
+    monkeypatch.setenv("TEST_UPLOAD_BASE_URL", "http://srv.test")
+    seen: dict[str, Any] = {}
+
+    def vlog(target_id: str, extra: dict[str, Any] | None) -> None:
+        seen["target_id"] = target_id
+        seen["extra"] = extra
+
+    mcp = FastMCP(name="test")
+    register_file_exchange_upload(
+        mcp,
+        namespace="ns",
+        env_prefix="TEST_UPLOAD",
+        receiver=lambda rec, body: {"ok": True},
+        pre_link_validator=vlog,
+    )
+    tool = await mcp.get_tool("create_upload_link")
+    assert tool is not None
+    await tool.run({"target_id": "x.md", "extra": {"k": 1}})
+    assert seen == {"target_id": "x.md", "extra": {"k": 1}}
