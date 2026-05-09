@@ -747,25 +747,6 @@ def _resolve_enabled(env_prefix: str, transport: Literal["http", "stdio"]) -> bo
     return transport == "http"
 
 
-def _build_transfer_methods(
-    *,
-    produce: bool,
-    consume: bool,
-    exchange: FileExchange | None,
-    store: ArtifactStore | None,
-    download_tool_name: str,
-    fetch_tool_name: str,
-) -> dict[str, dict[str, Any]]:
-    methods: dict[str, dict[str, Any]] = {}
-    if exchange is not None and (produce or consume):
-        methods["exchange"] = {}
-    if produce and store is not None and store.has_base_url:
-        methods["http"] = {"tool": download_tool_name}
-    elif consume:
-        methods["http"] = {"tool": fetch_tool_name}
-    return methods
-
-
 # ---------------------------------------------------------------------------
 # create_download_link tool
 # ---------------------------------------------------------------------------
@@ -1470,10 +1451,16 @@ def register_file_exchange_upload(
         stream_receiver: Streaming receiver; receives chunks live.
         pre_link_validator: Optional callback ``(target_id, extra) -> None``
             run inside the registered tool BEFORE token creation;
-            raising ``ValueError`` surfaces as an in-band tool error.
+            raising ``ValueError`` surfaces as an in-band tool error
+            with the exception message visible to the caller. Any
+            other exception type also surfaces in-band (FastMCP wraps
+            tool errors uniformly), but ``ValueError`` is the
+            conventional choice for caller-facing diagnostics.
         transport: ``"auto"`` (default), ``"http"``, or ``"stdio"``.
         upload_tool_name: Tool name override. Default
-            ``"create_upload_link"``.
+            ``"create_upload_link"``. Override this when registering
+            more than one upload direction on the same FastMCP
+            instance (FastMCP rejects duplicate tool names).
         tool_tags: Tags applied to the registered tool. Default
             ``frozenset({"write"})`` — change for downstream authz
             mappings that need a finer grain.
@@ -1591,7 +1578,12 @@ def register_file_exchange_upload(
         Args:
             target_id: Opaque destination identifier the receiver
                 interprets (e.g. a vault path or document id).
-            ttl_seconds: Requested lifetime. Clamped to ``ttl_max``.
+            ttl_seconds: Requested lifetime in integer seconds. Clamped
+                to the server's ``ttl_max`` ceiling; values <= 0 fall
+                back to the configured default. Sub-second TTLs are not
+                supported through this tool — use
+                :meth:`UploadHandle.create_link` for the
+                fractional-second escape valve.
             max_bytes: Body cap. Defaults to the server's configured
                 ``max_bytes_default``.
             extra: Caller-supplied dict passed verbatim to the
