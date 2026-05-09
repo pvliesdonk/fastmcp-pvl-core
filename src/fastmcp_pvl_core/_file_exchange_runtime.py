@@ -661,6 +661,11 @@ def register_upload_route(
     completes. The buffered-receiver path consumes the same bounded
     generator into a ``bytes`` object before dispatch.
 
+    Stream receivers MUST NOT broadly catch ``Exception`` while iterating
+    the body — the runtime uses a private exception type to signal
+    oversize-mid-iteration; swallowing it would let the receiver
+    complete on a truncated body.
+
     ``accepts`` is enforced before any body read — a request whose
     ``Content-Type`` does not match any entry returns 415. Use ``"*/*"``
     (the default) to disable the gate. Glob patterns like ``"image/*"``
