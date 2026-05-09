@@ -1007,14 +1007,24 @@ In `src/fastmcp_pvl_core/_token_store.py`, add a method on `UploadStore`:
             (None,   "expired")  — token existed but had passed expires_at; removed.
             (None,   "missing")  — token unknown (never existed, or already consumed).
         """
-        self._purge_expired()
+        # Pop the requested token BEFORE purging. ``_purge_expired`` would
+        # otherwise erase a record whose ``expires_at`` is already in the
+        # past, collapsing the expired-vs-missing distinction this method
+        # exists to provide.
         record = self._records.pop(token, None)
+        # Sweep the rest of the table for tidiness so the lazy-purge
+        # invariant ("each access path triggers a purge") still holds.
+        self._purge_expired()
         if record is None:
             return None, "missing"
         if time.time() > record.expires_at:
             return None, "expired"
         return record, "ok"
 ```
+
+(Implementations MAY tighten the second tuple element to `Literal["ok", "expired", "missing"]` for caller-side narrowing; the plan keeps `str` for readability.)
+
+> Note: this method's pop-then-purge ordering is intentionally inverted from `_atomic_consume`'s purge-then-pop. `_atomic_consume` conflates expired and missing into `None`, so a pre-pop purge is fine there; `consume_or_status` distinguishes the two states, which requires capturing the record before any sweep removes it. The post-pop `time.time() > record.expires_at` check is the standard defense-in-depth for the microsecond-window race between the pop and the comparison.
 
 In `src/fastmcp_pvl_core/_file_exchange_runtime.py`, update the handler to use it:
 

@@ -643,7 +643,7 @@ def register_upload_route(
         token = request.path_params.get("token", "")
         record, status = store.consume_or_status(token)
         if status == "expired":
-            logger.debug("upload_handler_expired token_prefix=%s", token[:8])
+            logger.info("upload_handler_expired token_prefix=%s", token[:8])
             return Response(content="Gone", status_code=410)
         if record is None:
             logger.debug("upload_handler_miss token_prefix=%s", (token or "")[:8])

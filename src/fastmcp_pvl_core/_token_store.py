@@ -504,9 +504,12 @@ class UploadStore(_BaseTokenStore[UploadRecord]):
         return token
 
     def consume(self, token: str) -> UploadRecord | None:
-        """Atomic: return record + mark consumed.
+        """Atomic consume; returns the record or ``None`` for missing/expired/consumed.
 
-        Returns ``None`` if the token is missing, expired, or already consumed.
+        Use this when callers do not need to distinguish "expired" from
+        "missing/consumed". For HTTP routes that map the three states to
+        distinct status codes (200 / 410 / 404), see
+        :meth:`consume_or_status`.
         """
         return self._atomic_consume(token)
 
