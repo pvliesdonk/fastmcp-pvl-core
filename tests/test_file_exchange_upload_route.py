@@ -168,3 +168,34 @@ async def test_post_oversize_via_chunk_overrun_returns_413() -> None:
         )
     assert resp.status_code == 413
     assert captured["called"] is False
+
+
+@pytest.mark.asyncio
+async def test_post_malformed_content_length_falls_through_to_chunk_reader() -> None:
+    """A non-integer Content-Length is tolerated; chunk-reader enforces the cap."""
+    captured: dict[str, Any] = {"called": False}
+
+    def recv(record: UploadRecord, body: bytes) -> dict[str, Any]:
+        captured["called"] = True
+        return {"size_bytes": len(body), "ok": True}
+
+    mcp, store = _build_app(recv)
+    token = store.reserve(target_id="x", max_bytes=100)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=mcp.http_app()),
+        base_url="http://test",
+    ) as client:
+        resp = await client.post(
+            f"/ns/uploads/{token}",
+            content=b"hello",
+            headers={
+                "Content-Type": "application/octet-stream",
+                "Content-Length": "abc",  # malformed
+            },
+        )
+
+    # Tolerated: handler proceeds to chunk reader, body fits, receiver runs.
+    assert resp.status_code == 200
+    assert captured["called"] is True
+    assert resp.json() == {"size_bytes": 5, "ok": True}

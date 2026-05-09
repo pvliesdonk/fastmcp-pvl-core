@@ -651,12 +651,16 @@ def register_upload_route(
         # Content-Length precheck — reject before reading any body bytes.
         cl = request.headers.get("content-length")
         if cl is not None:
+            # Tolerate malformed/negative Content-Length: fall through to
+            # the chunk-reader cap below. Rejecting here with 400 would
+            # over-reject conformant clients sending unusual transfer
+            # encodings; the real cap is enforced regardless of header.
             try:
                 cl_int = int(cl)
             except ValueError:
                 cl_int = -1
             if cl_int > record.max_bytes:
-                logger.debug(
+                logger.info(
                     "upload_handler_oversize_cl token_prefix=%s declared=%d max=%d",
                     token[:8],
                     cl_int,
@@ -673,7 +677,7 @@ def register_upload_route(
         async for chunk in request.stream():
             total += len(chunk)
             if total > record.max_bytes:
-                logger.debug(
+                logger.info(
                     "upload_handler_oversize_chunk token_prefix=%s total=%d max=%d",
                     token[:8],
                     total,
