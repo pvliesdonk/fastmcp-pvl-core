@@ -199,3 +199,74 @@ async def test_post_malformed_content_length_falls_through_to_chunk_reader() -> 
     assert resp.status_code == 200
     assert captured["called"] is True
     assert resp.json() == {"size_bytes": 5, "ok": True}
+
+
+@pytest.mark.asyncio
+async def test_post_unaccepted_content_type_returns_415() -> None:
+    def recv(record: UploadRecord, body: bytes) -> dict[str, Any]:
+        return {"ok": True}
+
+    mcp = FastMCP(name="test-upload")
+    store = UploadStore(base_url="http://test.invalid")
+    register_upload_route(
+        mcp,
+        store=store,
+        namespace="ns",
+        receiver=recv,
+        accepts=("application/octet-stream", "image/png"),
+    )
+    token = store.reserve(target_id="x", max_bytes=1024)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=mcp.http_app()),
+        base_url="http://test",
+    ) as client:
+        resp = await client.post(
+            f"/ns/uploads/{token}",
+            content=b"x",
+            headers={"Content-Type": "text/plain"},
+        )
+    assert resp.status_code == 415
+
+
+@pytest.mark.asyncio
+async def test_post_wildcard_accepts_disables_check() -> None:
+    mcp, store = _build_app(lambda rec, body: {"ok": True}, accepts=("*/*",))
+    token = store.reserve(target_id="x", max_bytes=1024)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=mcp.http_app()),
+        base_url="http://test",
+    ) as client:
+        resp = await client.post(
+            f"/ns/uploads/{token}",
+            content=b"x",
+            headers={"Content-Type": "audio/weird"},
+        )
+    assert resp.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_post_glob_accepts_matches_subtype() -> None:
+    def recv(record: UploadRecord, body: bytes) -> dict[str, Any]:
+        return {"ok": True}
+
+    mcp = FastMCP(name="test-upload")
+    store = UploadStore(base_url="http://test.invalid")
+    register_upload_route(
+        mcp,
+        store=store,
+        namespace="ns",
+        receiver=recv,
+        accepts=("image/*",),
+    )
+    token = store.reserve(target_id="x", max_bytes=1024)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=mcp.http_app()),
+        base_url="http://test",
+    ) as client:
+        resp = await client.post(
+            f"/ns/uploads/{token}",
+            content=b"x",
+            headers={"Content-Type": "image/png"},
+        )
+    assert resp.status_code == 200

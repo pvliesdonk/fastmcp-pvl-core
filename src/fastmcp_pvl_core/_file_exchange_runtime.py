@@ -627,8 +627,10 @@ def register_upload_route(
     error distinction (404/410), size enforcement (413), MIME filter
     (415), and exception mapping (400/409/500).
 
-    ``accepts`` is captured but not yet enforced by the handler — Task 8
-    wires it through ``_accepts_match`` to return 415 on mismatch.
+    ``accepts`` is enforced before any body read — a request whose
+    ``Content-Type`` does not match any entry returns 415. Use ``"*/*"``
+    (the default) to disable the gate. Glob patterns like ``"image/*"``
+    match any subtype.
     """
     if (receiver is None) == (stream_receiver is None):
         raise ValueError(
@@ -648,6 +650,21 @@ def register_upload_route(
         if record is None:
             logger.debug("upload_handler_miss token_prefix=%s", (token or "")[:8])
             return Response(content="Not Found", status_code=404)
+
+        # Reject unsupported media types BEFORE any size check or body
+        # read. ``"*/*"`` in ``accepts`` (the default) disables this gate.
+        ct_header = request.headers.get("content-type", "")
+        if not _accepts_match(ct_header, accepts):
+            logger.info(
+                "upload_handler_unsupported_media_type token_prefix=%s ct=%r",
+                token[:8],
+                ct_header,
+            )
+            return Response(
+                content="Unsupported Media Type",
+                status_code=415,
+            )
+
         # Content-Length precheck — reject before reading any body bytes.
         cl = request.headers.get("content-length")
         if cl is not None:
