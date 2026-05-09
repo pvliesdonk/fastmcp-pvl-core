@@ -505,7 +505,7 @@ uv run pytest tests/test_uploads.py -v
 
 Expected: ImportError on `UploadRecord`.
 
-- [ ] **Step 3: Add `UploadRecord` to `_token_store.py`** (append at end-of-file before the `# Module-level singleton accessor` block from Task 2 — i.e. group it with the upload section we'll keep growing):
+- [ ] **Step 3: Add `UploadRecord` to `_token_store.py`** (Place the new section AFTER `class ArtifactStore` and AFTER the artifact singleton accessor block, BEFORE the end of the file. The artifact section (record → store → singleton) stays self-contained; the upload section sits below it, parallel-shaped, and will gain `UploadStore` + its singleton in Task 4.):
 
 ```python
 # ---------------------------------------------------------------------------
@@ -575,7 +575,7 @@ class TestUploadStore:
     def test_reserve_returns_token_and_url(self) -> None:
         store = UploadStore(base_url="https://srv.test")
         token = store.reserve(target_id="vault/foo.md", max_bytes=1024)
-        assert isinstance(token, str) and len(token) >= 32
+        assert isinstance(token, str) and len(token) == 32
         url = store.build_url(token)
         assert url == f"https://srv.test/uploads/{token}"
 
@@ -709,6 +709,10 @@ class UploadStore(_BaseTokenStore[UploadRecord]):
         path = "/" + self._route_path.lstrip("/")
         return f"{base}{path}".replace("{token}", token)
 
+
+# ---------------------------------------------------------------------------
+# Upload singleton accessor
+# ---------------------------------------------------------------------------
 
 _upload_store: UploadStore | None = None
 

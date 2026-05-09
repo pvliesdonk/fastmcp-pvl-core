@@ -22,13 +22,19 @@ class TestUploadRecord:
         with pytest.raises(dataclasses.FrozenInstanceError):
             record.target_id = "x"  # type: ignore[misc]
 
-    def test_default_extra_is_empty_dict_via_factory(self) -> None:
-        # Two records must not share the default mutable.
-        a = UploadRecord(target_id="a", max_bytes=10, extra={}, expires_at=0.0)
-        b = UploadRecord(target_id="b", max_bytes=10, extra={}, expires_at=0.0)
-        # Records frozen, so we can't mutate; check identity differs only
-        # if the caller supplied distinct dicts.
-        assert a.extra is not b.extra or (a.extra == {} and b.extra == {})
+    def test_extra_is_held_by_reference(self) -> None:
+        """UploadRecord does not snapshot ``extra`` on construction.
+
+        The snapshot policy lives one layer up in ``UploadStore.reserve``
+        (Task 4); direct construction holds the caller's dict by reference.
+        Pinning this behavior here makes any future change of mind explicit
+        rather than silent.
+        """
+        extra = {"k": "v1"}
+        record = UploadRecord(target_id="a", max_bytes=10, extra=extra, expires_at=0.0)
+        extra["k"] = "v2"
+        assert record.extra["k"] == "v2"
+        assert record.extra is extra
 
     def test_required_fields(self) -> None:
         with pytest.raises(TypeError):
