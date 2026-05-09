@@ -48,7 +48,6 @@ from urllib.parse import urlsplit
 
 import httpx
 
-from fastmcp_pvl_core._artifacts import ArtifactStore, set_artifact_store
 from fastmcp_pvl_core._env import env, parse_bool
 from fastmcp_pvl_core._file_exchange_protocol import (
     ExchangeURI,
@@ -63,6 +62,7 @@ from fastmcp_pvl_core._file_exchange_runtime import (
     FileExchange,
     FileExchangeConfigError,
 )
+from fastmcp_pvl_core._token_store import ArtifactStore, set_artifact_store
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP

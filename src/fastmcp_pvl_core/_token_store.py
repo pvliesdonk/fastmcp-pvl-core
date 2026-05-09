@@ -349,7 +349,7 @@ class ArtifactStore(_BaseTokenStore[TokenRecord]):
 
 
 # ---------------------------------------------------------------------------
-# Module-level singleton accessor
+# Artifact singleton accessor
 # ---------------------------------------------------------------------------
 #
 # The HTTP route handler registered via ``mcp.custom_route`` runs outside

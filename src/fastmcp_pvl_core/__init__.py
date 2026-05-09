@@ -5,12 +5,6 @@ middleware wiring, logging setup, config helpers, and server
 factory building blocks without duplicating them per repo.
 """
 
-from fastmcp_pvl_core._artifacts import (
-    ArtifactStore,
-    TokenRecord,
-    get_artifact_store,
-    set_artifact_store,
-)
 from fastmcp_pvl_core._auth import (
     AuthMode,
     build_auth,
@@ -62,6 +56,12 @@ from fastmcp_pvl_core._server_info import (
     register_server_info_tool,
 )
 from fastmcp_pvl_core._subject import get_subject
+from fastmcp_pvl_core._token_store import (
+    ArtifactStore,
+    TokenRecord,
+    get_artifact_store,
+    set_artifact_store,
+)
 from fastmcp_pvl_core.file_exchange import (
     ConsumerSink,
     FetchContext,
