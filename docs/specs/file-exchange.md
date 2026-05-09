@@ -767,7 +767,7 @@ A server may declare either, both, or (for the consumer-of-downloads case) just 
 
 **Authorization:** the `/uploads/{token}` route is intentionally outside the MCP authorization middleware — possession of a fresh, unconsumed, cryptographically unguessable token IS the authorization, exactly as the existing `/artifacts/{token}` GET route works for downloads. The auth gate is the `create_upload_link` tool, which IS subject to standard MCP tool-tag authorization.
 
-**Streaming receiver receivers:** receivers MUST NOT broadly catch `Exception` while iterating the request body — implementations use a private exception type internally to abort oversize requests mid-stream; swallowing it would let the receiver complete on a truncated body.
+**Streaming receivers:** receivers MUST NOT broadly catch `Exception` while iterating the request body. Implementations use a private exception type to abort oversize requests mid-stream; swallowing it would let the receiver complete on a truncated body. (Implementations MAY base the sentinel on `BaseException` for structural defence, but the receiver-side `MUST NOT` rule stays for portability across implementations that do not.)
 
 **Rationale:** completes the symmetric story for HTTP transfer. Reuses the existing one-time-token pattern, status-code conventions, and capability-declaration shape.
 
