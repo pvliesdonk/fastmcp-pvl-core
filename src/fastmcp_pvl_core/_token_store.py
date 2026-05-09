@@ -431,3 +431,126 @@ class UploadRecord:
     max_bytes: int
     extra: dict[str, Any]
     expires_at: float
+
+
+class UploadStore(_BaseTokenStore[UploadRecord]):
+    """In-memory reservation store for inbound uploads.
+
+    Mirrors :class:`ArtifactStore` lifecycle (UUID4 token, lazy expiry,
+    atomic consume) but inverts the data flow: the tool reserves a slot
+    and the bytes arrive over HTTP later. The bytes themselves never
+    live in the record.
+    """
+
+    def __init__(
+        self,
+        ttl_seconds: float = 300.0,
+        *,
+        base_url: str | None = None,
+        route_path: str = "/uploads/{token}",
+    ) -> None:
+        super().__init__()
+        if "{token}" not in route_path:
+            raise ValueError(
+                f"route_path must contain '{{token}}' placeholder; got {route_path!r}"
+            )
+        self._ttl = float(ttl_seconds)
+        self._base_url = base_url
+        self._route_path = route_path
+
+    def reserve(
+        self,
+        *,
+        target_id: str,
+        max_bytes: int,
+        ttl_seconds: float | None = None,
+        extra: dict[str, Any] | None = None,
+    ) -> str:
+        """Mint a token reserving a one-shot upload slot.
+
+        ``extra`` is snapshotted (``dict(extra)``) at reservation time so
+        post-construction caller mutations are not visible to the
+        receiver. Pairs with the by-reference semantic documented on
+        :class:`UploadRecord`.
+        """
+        self._purge_expired()
+        token = self._mint_token()
+        ttl = self._ttl if ttl_seconds is None else float(ttl_seconds)
+        self._records[token] = UploadRecord(
+            target_id=target_id,
+            max_bytes=int(max_bytes),
+            extra=dict(extra or {}),
+            expires_at=time.time() + ttl,
+        )
+        logger.debug(
+            "upload_reserve token_prefix=%s target_id=%s max_bytes=%d ttl=%.1fs",
+            token[:8],
+            target_id,
+            max_bytes,
+            ttl,
+        )
+        return token
+
+    def consume(self, token: str) -> UploadRecord | None:
+        """Atomic: return record + mark consumed.
+
+        Returns ``None`` if the token is missing, expired, or already consumed.
+        """
+        return self._atomic_consume(token)
+
+    def peek(self, token: str) -> UploadRecord | None:
+        """Inspect without consuming.
+
+        Test-only; production callers MUST use :meth:`consume`.
+        """
+        record = self._records.get(token)
+        if record is None or time.time() > record.expires_at:
+            return None
+        return record
+
+    @property
+    def has_base_url(self) -> bool:
+        return self._base_url is not None
+
+    def build_url(self, token: str) -> str:
+        if self._base_url is None:
+            raise RuntimeError("UploadStore.base_url is required for URL construction")
+        base = self._base_url.rstrip("/")
+        path = "/" + self._route_path.lstrip("/")
+        return f"{base}{path}".replace("{token}", token)
+
+
+# ---------------------------------------------------------------------------
+# Upload singleton accessor
+# ---------------------------------------------------------------------------
+#
+# Same module-level-singleton pattern as the artifact direction: the HTTP
+# POST handler runs outside any DI/lifespan context, so tool bodies and
+# the route handler need to share state without explicit plumbing.
+
+_upload_store: UploadStore | None = None
+
+
+def set_upload_store(store: UploadStore | None) -> None:
+    """Install ``store`` as the module-level singleton.
+
+    Pass ``None`` to clear (e.g. between tests).
+    """
+    global _upload_store
+    _upload_store = store
+
+
+def get_upload_store() -> UploadStore:
+    """Return the module-level :class:`UploadStore` singleton.
+
+    Raises:
+        RuntimeError: if no store has been installed via
+            :func:`set_upload_store` — typically because the server's
+            HTTP wiring did not run (e.g. stdio transport).
+    """
+    if _upload_store is None:
+        raise RuntimeError(
+            "UploadStore singleton is not set — call set_upload_store(...) "
+            "during server startup (HTTP/SSE transports only)"
+        )
+    return _upload_store
