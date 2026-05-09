@@ -23,12 +23,21 @@ import os
 import secrets
 import time
 import uuid
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Final
+from typing import TYPE_CHECKING, Any, Final
+
+from starlette.requests import Request
+from starlette.responses import JSONResponse, Response
 
 from fastmcp_pvl_core._env import env
 from fastmcp_pvl_core._file_exchange_protocol import ExchangeURI, ExchangeURIError
+
+if TYPE_CHECKING:
+    from fastmcp import FastMCP
+
+    from fastmcp_pvl_core._token_store import UploadRecord, UploadStore
 
 logger = logging.getLogger(__name__)
 
@@ -568,3 +577,86 @@ __all__ = [
     "FileExchange",
     "FileExchangeConfigError",
 ]
+
+
+# ---------------------------------------------------------------------------
+# Upload route (POST /<ns>/uploads/{token}) — spec §"Inbound HTTP transfer"
+# ---------------------------------------------------------------------------
+
+
+BufferedReceiver = Callable[
+    ["UploadRecord", bytes],
+    "dict[str, Any] | Awaitable[dict[str, Any]]",
+]
+StreamReceiver = Callable[
+    ["UploadRecord", AsyncIterator[bytes]],
+    "Awaitable[dict[str, Any]]",
+]
+
+
+def _accepts_match(content_type: str, accepts: tuple[str, ...]) -> bool:
+    if "*/*" in accepts:
+        return True
+    ct = (content_type or "").split(";", 1)[0].strip().lower()
+    for entry in accepts:
+        e = entry.strip().lower()
+        if e == ct:
+            return True
+        if e.endswith("/*") and ct.startswith(e[:-1]):
+            return True
+    return False
+
+
+def register_upload_route(
+    mcp: FastMCP,
+    *,
+    store: UploadStore,
+    namespace: str,
+    receiver: BufferedReceiver | None = None,
+    stream_receiver: StreamReceiver | None = None,
+    accepts: tuple[str, ...] = ("*/*",),
+) -> None:
+    """Mount ``POST /<namespace>/uploads/{token}`` on ``mcp``.
+
+    Exactly one of ``receiver`` (buffered) or ``stream_receiver``
+    (chunked) MUST be supplied. The route handles token lookup, size
+    enforcement, MIME filtering, atomic one-time consumption, and
+    receiver dispatch with the documented status-code mapping. This
+    happy-path implementation is extended in later tasks with token-
+    error distinction (404/410), size enforcement (413), MIME filter
+    (415), and exception mapping (400/409/500).
+    """
+    if (receiver is None) == (stream_receiver is None):
+        raise ValueError(
+            "register_upload_route requires exactly one of receiver= or "
+            "stream_receiver="
+        )
+
+    path = f"/{namespace}/uploads/{{token}}"
+
+    @mcp.custom_route(path, methods=["POST"])
+    async def _upload_handler(request: Request) -> Response:
+        token = request.path_params.get("token", "")
+        record = store.consume(token)
+        if record is None:
+            logger.debug("upload_handler_miss token_prefix=%s", (token or "")[:8])
+            return Response(content="Not Found", status_code=404)
+        body = await request.body()
+        if receiver is not None:
+            result = receiver(record, body)
+            if hasattr(result, "__await__"):
+                result = await result
+        else:
+            assert stream_receiver is not None  # narrow
+
+            async def _single_chunk() -> AsyncIterator[bytes]:
+                yield body
+
+            result = await stream_receiver(record, _single_chunk())
+        if not isinstance(result, dict):
+            logger.error(
+                "upload_receiver returned non-dict (%s); coercing to {} for response",
+                type(result).__name__,
+            )
+            result = {}
+        return JSONResponse(result, status_code=200)
