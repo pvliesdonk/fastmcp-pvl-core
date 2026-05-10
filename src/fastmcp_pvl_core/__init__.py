@@ -76,7 +76,7 @@ from fastmcp_pvl_core.file_exchange import (
     register_file_exchange_upload,
 )
 
-__version__ = "2.0.0"  # PSR overrides at build time
+__version__ = "2.1.0"  # PSR overrides at build time
 
 __all__ = [
     "ArtifactStore",
