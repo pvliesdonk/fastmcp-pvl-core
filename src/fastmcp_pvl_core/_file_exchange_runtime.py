@@ -573,13 +573,6 @@ def _try_unlink(path: Path) -> bool:
         return False
 
 
-__all__ = [
-    "ExchangeGroupMismatch",
-    "FileExchange",
-    "FileExchangeConfigError",
-]
-
-
 # ---------------------------------------------------------------------------
 # Upload route (POST /<ns>/uploads/{token}) — spec §"Inbound HTTP transfer"
 # ---------------------------------------------------------------------------
@@ -832,3 +825,13 @@ def register_upload_route(
             )
             return Response(content="Internal Server Error", status_code=500)
         return JSONResponse(result, status_code=200)
+
+
+__all__ = [
+    "BufferedReceiver",
+    "ExchangeGroupMismatch",
+    "FileExchange",
+    "FileExchangeConfigError",
+    "StreamReceiver",
+    "register_upload_route",
+]

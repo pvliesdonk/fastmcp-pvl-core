@@ -356,3 +356,33 @@ def test_create_link_floors_non_positive_ttl_to_default(
     assert eff_neg == 222.0
     _, eff_none = handle.create_link(target_id="z", ttl_seconds=None)
     assert eff_none == 222.0
+
+
+@pytest.mark.asyncio
+async def test_create_upload_link_rejects_path_traversal_target_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Baseline ExchangeURI.validate_segment fires before pre_link_validator.
+
+    Spec Amendment 11 requires `target_id` to follow the same character
+    rules as `origin_id` and `exchange://` segments. The
+    ``create_upload_link`` tool calls ``ExchangeURI.validate_segment(...,
+    role="json_param")`` BEFORE running ``pre_link_validator``, so a
+    traversal attempt is rejected even when no validator is configured.
+    """
+    monkeypatch.setenv("TEST_UPLOAD_TRANSPORT", "http")
+    monkeypatch.setenv("TEST_UPLOAD_BASE_URL", "http://srv.test")
+
+    mcp = FastMCP(name="test")
+    register_file_exchange_upload(
+        mcp,
+        namespace="ns",
+        env_prefix="TEST_UPLOAD",
+        receiver=lambda rec, body: {"ok": True},
+    )
+    tool = await mcp.get_tool("create_upload_link")
+    assert tool is not None
+    # ExchangeURIError is a ValueError subclass; FastMCP surfaces it
+    # in-band as a tool error.
+    with pytest.raises(Exception, match="forbidden|traversal|segment|/"):
+        await tool.run({"target_id": "../etc/passwd"})
