@@ -569,3 +569,35 @@ async def test_post_stream_receiver_oversize_aborts_before_completion() -> None:
             headers={"Content-Type": "application/octet-stream"},
         )
     assert resp.status_code == 413
+
+
+@pytest.mark.asyncio
+async def test_post_sync_stream_receiver_returning_plain_dict() -> None:
+    """A sync stream_receiver returning a plain dict (not a coroutine) works.
+
+    Pins the round-2 fix that added ``inspect.isawaitable`` symmetry to
+    the streaming path. Without the guard, ``await`` on a plain dict
+    raises TypeError.
+    """
+
+    def sync_recv(record: UploadRecord, body: AsyncIterator[bytes]) -> dict[str, Any]:
+        # Sync receiver — ignores the body iterator and returns a plain dict.
+        return {"ok": True, "target_id": record.target_id}
+
+    mcp = FastMCP(name="test-upload")
+    store = UploadStore(base_url="http://test.invalid")
+    register_upload_route(mcp, store=store, namespace="ns", stream_receiver=sync_recv)
+    token = store.reserve(target_id="x.md", max_bytes=100)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=mcp.http_app()),
+        base_url="http://test",
+    ) as client:
+        resp = await client.post(
+            f"/ns/uploads/{token}",
+            content=b"hello",
+            headers={"Content-Type": "application/octet-stream"},
+        )
+
+    assert resp.status_code == 200
+    assert resp.json() == {"ok": True, "target_id": "x.md"}

@@ -384,5 +384,5 @@ async def test_create_upload_link_rejects_path_traversal_target_id(
     assert tool is not None
     # ExchangeURIError is a ValueError subclass; FastMCP surfaces it
     # in-band as a tool error.
-    with pytest.raises(Exception, match="forbidden|traversal|segment|/"):
+    with pytest.raises(Exception, match="forbidden|traversal|segment"):
         await tool.run({"target_id": "../etc/passwd"})
