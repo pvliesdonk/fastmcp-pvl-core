@@ -454,6 +454,66 @@ def test_malformed_upload_ttl_max_raises_configuration_error(
         )
 
 
+def test_negative_upload_max_bytes_raises_configuration_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Non-positive ``{PREFIX}_UPLOAD_MAX_BYTES`` raises a named error."""
+    from fastmcp_pvl_core._errors import ConfigurationError
+
+    monkeypatch.setenv("TEST_UPLOAD_TRANSPORT", "http")
+    monkeypatch.setenv("TEST_UPLOAD_BASE_URL", "http://srv.test")
+    monkeypatch.setenv("TEST_UPLOAD_UPLOAD_MAX_BYTES", "-1")
+
+    mcp = FastMCP(name="test")
+    with pytest.raises(ConfigurationError, match="UPLOAD_MAX_BYTES.*positive"):
+        register_file_exchange_upload(
+            mcp,
+            namespace="ns",
+            env_prefix="TEST_UPLOAD",
+            receiver=lambda rec, body: {"ok": True},
+        )
+
+
+def test_negative_upload_ttl_raises_configuration_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Non-positive ``{PREFIX}_UPLOAD_TTL`` raises a named error."""
+    from fastmcp_pvl_core._errors import ConfigurationError
+
+    monkeypatch.setenv("TEST_UPLOAD_TRANSPORT", "http")
+    monkeypatch.setenv("TEST_UPLOAD_BASE_URL", "http://srv.test")
+    monkeypatch.setenv("TEST_UPLOAD_UPLOAD_TTL", "-5")
+
+    mcp = FastMCP(name="test")
+    with pytest.raises(ConfigurationError, match="UPLOAD_TTL.*positive"):
+        register_file_exchange_upload(
+            mcp,
+            namespace="ns",
+            env_prefix="TEST_UPLOAD",
+            receiver=lambda rec, body: {"ok": True},
+        )
+
+
+def test_negative_upload_ttl_max_raises_configuration_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Non-positive ``{PREFIX}_UPLOAD_TTL_MAX`` raises a named error."""
+    from fastmcp_pvl_core._errors import ConfigurationError
+
+    monkeypatch.setenv("TEST_UPLOAD_TRANSPORT", "http")
+    monkeypatch.setenv("TEST_UPLOAD_BASE_URL", "http://srv.test")
+    monkeypatch.setenv("TEST_UPLOAD_UPLOAD_TTL_MAX", "-1")
+
+    mcp = FastMCP(name="test")
+    with pytest.raises(ConfigurationError, match="UPLOAD_TTL_MAX.*positive"):
+        register_file_exchange_upload(
+            mcp,
+            namespace="ns",
+            env_prefix="TEST_UPLOAD",
+            receiver=lambda rec, body: {"ok": True},
+        )
+
+
 @pytest.mark.asyncio
 async def test_sync_pre_link_validator_runs_in_threadpool(
     monkeypatch: pytest.MonkeyPatch,
