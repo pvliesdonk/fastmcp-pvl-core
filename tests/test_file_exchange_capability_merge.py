@@ -275,3 +275,10 @@ async def test_register_both_directions_emits_merged_http(
     http = d["transfer_methods"]["http"]
     assert "download" in http and http["download"]["tool"] == "create_download_link"
     assert "upload" in http and http["upload"]["tool"] == "create_upload_link"
+    # ``accepts`` is advertised verbatim — including the default
+    # ``("*/*",)`` wildcard. Per Amendment 11 an absent ``accepts`` key
+    # means the route inherits the server-wide ``consumes`` list, so a
+    # wildcard route MUST advertise ``["*/*"]`` explicitly to avoid
+    # misleading clients into thinking only ``consumes`` types are
+    # accepted.
+    assert http["upload"]["accepts"] == ["*/*"]

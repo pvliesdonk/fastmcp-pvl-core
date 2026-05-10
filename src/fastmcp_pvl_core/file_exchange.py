@@ -1714,9 +1714,13 @@ def register_file_exchange_upload(
     # Push upload contribution into the shared per-FastMCP builder so a
     # paired ``register_file_exchange`` (download direction) advertises
     # both halves under one ``http`` block instead of clobbering.
-    # ``accepts=("*/*",)`` is the default no-filter; omit from the
-    # capability so we don't advertise a wildcard the spec already
-    # treats as the absent-default.
+    # ``accepts`` is passed verbatim — including the default
+    # ``("*/*",)`` wildcard. Per Amendment 11 an absent ``accepts`` key
+    # means the route inherits the server-wide ``consumes`` list; if a
+    # server has a non-empty ``consumes`` AND a wildcard route, omitting
+    # ``accepts`` would mislead clients into thinking only ``consumes``
+    # types are accepted. Advertising ``["*/*"]`` explicitly keeps the
+    # wire signal aligned with the route's actual permissiveness.
     builder = _get_or_create_builder(
         mcp,
         namespace=namespace,
@@ -1726,7 +1730,7 @@ def register_file_exchange_upload(
         tool_name=upload_tool_name,
         max_bytes=int(max_bytes_default),
         max_ttl_seconds=int(ttl_max),
-        accepts=accepts if accepts != ("*/*",) else None,
+        accepts=accepts,
     )
     _emit_capability(mcp)
 
