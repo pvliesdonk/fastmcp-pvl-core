@@ -140,15 +140,12 @@ def test_emit_capability_returns_none_when_no_builder_registered() -> None:
     """
     from fastmcp_pvl_core.file_exchange import (
         _BUILDER_ATTR,
-        _capability_builders_fallback,
         _emit_capability,
     )
 
     mcp = FastMCP(name="no-builder")
-    # Sanity: builder is not yet attached to the instance, and not in
-    # the fallback registry either.
-    assert not hasattr(mcp, _BUILDER_ATTR)
-    assert id(mcp) not in _capability_builders_fallback
+    # Sanity: builder is not yet attached to the instance.
+    assert getattr(mcp, _BUILDER_ATTR, None) is None
     assert _emit_capability(mcp) is None
 
 
@@ -217,29 +214,17 @@ def test_builder_is_attached_per_instance_not_module_level() -> None:
     """
     from fastmcp_pvl_core.file_exchange import (
         _BUILDER_ATTR,
-        _capability_builders_fallback,
         _get_or_create_builder,
-        reset_capability_builders_for_test,
     )
 
     mcp_a = FastMCP(name="probe-a")
     _get_or_create_builder(mcp_a, namespace="ns-a")
-    assert hasattr(mcp_a, _BUILDER_ATTR)
+    assert getattr(mcp_a, _BUILDER_ATTR, None) is not None
     assert mcp_a._pvl_file_exchange_builder.namespace == "ns-a"  # type: ignore[attr-defined]
 
     # A second, untouched FastMCP must not see ``mcp_a``'s state.
     mcp_b = FastMCP(name="probe-b")
-    assert not hasattr(mcp_b, _BUILDER_ATTR)
-
-    # The fallback dict (defensive path for pydantic-strict configs) is
-    # untouched — the primary path went through attribute assignment.
-    assert _capability_builders_fallback == {}
-
-    # ``reset_capability_builders_for_test`` clears the fallback. The
-    # per-instance attribute survives (and is freed naturally on gc).
-    reset_capability_builders_for_test()
-    assert _capability_builders_fallback == {}
-    assert hasattr(mcp_a, _BUILDER_ATTR)
+    assert getattr(mcp_b, _BUILDER_ATTR, None) is None
 
 
 @pytest.mark.asyncio

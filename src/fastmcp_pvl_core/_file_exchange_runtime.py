@@ -17,6 +17,7 @@ Lifecycle constraints from the spec:
 
 from __future__ import annotations
 
+import asyncio
 import errno
 import inspect
 import logging
@@ -682,6 +683,16 @@ def register_upload_route(
     match any subtype. A request with no ``Content-Type`` header is
     treated as not matching any non-wildcard entry — explicit
     accept-lists therefore demand the header.
+
+    Sync vs async receivers: sync buffered receivers run in an asyncio
+    threadpool (``asyncio.to_thread``) so blocking I/O (file writes, DB
+    writes, etc.) does not stall the event loop. Async receivers run on
+    the loop. Stream receivers should be ``async def``; the
+    ``_bounded_chunks`` generator is an async iterator whose
+    ``__anext__`` must be awaited on the event loop, so a sync stream
+    receiver cannot consume the body from a thread. Sync stream
+    receivers are tolerated only in the degenerate "ignore the body"
+    case.
     """
     if (receiver is None) == (stream_receiver is None):
         raise ValueError(
@@ -772,16 +783,33 @@ def register_upload_route(
                 async for c in _bounded_chunks():
                     buf.append(c)
                 body = b"".join(buf)
-                result = receiver(record, body)
-                if inspect.isawaitable(result):
-                    result = await result
+                if inspect.iscoroutinefunction(receiver):
+                    result = await receiver(record, body)
+                else:
+                    # Sync receiver — run in a thread so blocking I/O
+                    # (file writes, DB writes, etc.) does not stall the
+                    # asyncio event loop. Receivers that want to stay on
+                    # the loop should declare ``async def`` and use
+                    # ``asyncio.to_thread`` themselves for any blocking
+                    # call.
+                    result = await asyncio.to_thread(receiver, record, body)
+                    if inspect.isawaitable(result):
+                        # Sync function that returned an awaitable
+                        # (uncommon but legal). Await on the loop.
+                        result = await result
             else:
                 # Streaming path: pass the bounded generator directly. The
                 # receiver iterates it; oversize aborts mid-iteration.
                 # Mirror the buffered path: support both sync and async
                 # receivers via ``inspect.isawaitable`` so a sync receiver
                 # returning a plain dict does not raise a confusing
-                # TypeError on ``await``.
+                # TypeError on ``await``. Note: a sync stream receiver
+                # cannot iterate the body — ``_bounded_chunks`` is an
+                # async generator whose ``__anext__`` must be awaited on
+                # the event loop, which is impossible from a thread.
+                # The supported pattern for stream receivers is
+                # ``async def``; sync stream receivers are tolerated only
+                # in the degenerate "ignore the body" case.
                 assert stream_receiver is not None  # narrow
                 result = stream_receiver(record, _bounded_chunks())
                 if inspect.isawaitable(result):

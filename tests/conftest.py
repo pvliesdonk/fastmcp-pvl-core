@@ -38,29 +38,6 @@ def _reset_authorizer() -> Iterator[None]:
     set_current_authorizer(None)
 
 
-@pytest.fixture(autouse=True)
-def _reset_capability_builders() -> Iterator[None]:
-    """Clear the capability-builder fallback registry between tests.
-
-    Capability builders are stashed as a private attribute on each
-    FastMCP instance (``_pvl_file_exchange_builder``), so test
-    isolation for the primary path is automatic — builders go away
-    when the FastMCP instance is gc'd. This fixture only clears the
-    defensive fallback dict in
-    ``fastmcp_pvl_core.file_exchange._capability_builders_fallback``,
-    which exists for pydantic-strict configs that forbid attribute
-    assignment. In practice the fallback is unused; clearing it costs
-    nothing and protects tests that intentionally exercise it.
-    """
-    from fastmcp_pvl_core.file_exchange import (
-        reset_capability_builders_for_test,
-    )
-
-    reset_capability_builders_for_test()
-    yield
-    reset_capability_builders_for_test()
-
-
 @pytest.fixture
 def clean_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     """Strip all env vars whose name starts with a common test prefix."""

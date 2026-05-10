@@ -49,6 +49,7 @@ from urllib.parse import urlsplit
 import httpx
 
 from fastmcp_pvl_core._env import env, parse_bool
+from fastmcp_pvl_core._errors import ConfigurationError
 from fastmcp_pvl_core._file_exchange_protocol import (
     ExchangeURI,
     ExchangeURIError,
@@ -101,20 +102,8 @@ _DEFAULT_HTTP_FETCH_MAX_BYTES = 256 * 1024 * 1024  # 256 MiB hard cap
 # FastMCP instance is garbage-collected, CPython is free to reuse its
 # id for a future allocation, which would alias unrelated instances'
 # state.
-#
-# A defensive ``_capability_builders_fallback`` dict (keyed by
-# ``id(mcp)``) survives only for FastMCP configurations that forbid
-# dynamic attribute assignment (e.g. pydantic ``ConfigDict(extra=
-# "forbid")``). In practice this fallback is unused — but
-# ``reset_capability_builders_for_test`` keeps it clean across tests
-# that would intentionally exercise the fallback path.
 
 _BUILDER_ATTR: Final = "_pvl_file_exchange_builder"
-
-# Defensive fallback for pydantic-strict FastMCP configs that forbid
-# attribute assignment. In practice this is unused — the primary path
-# is per-instance attribute storage in ``_get_or_create_builder``.
-_capability_builders_fallback: dict[int, _FileExchangeCapabilityBuilder] = {}
 
 
 def _get_or_create_builder(
@@ -146,12 +135,7 @@ def _get_or_create_builder(
     Likewise, ``exchange_id`` is set by the first caller that supplies
     a non-``None`` value and not overwritten thereafter.
     """
-    builder = getattr(mcp, _BUILDER_ATTR, None)
-    if builder is None:
-        # The attribute may also live in the defensive fallback dict
-        # (for pydantic-strict configs). Check there before deciding to
-        # create a fresh one.
-        builder = _capability_builders_fallback.get(id(mcp))
+    builder: _FileExchangeCapabilityBuilder | None = getattr(mcp, _BUILDER_ATTR, None)
     if builder is None:
         builder = _FileExchangeCapabilityBuilder(
             namespace=namespace,
@@ -160,20 +144,16 @@ def _get_or_create_builder(
             consumes=consumes,
             legacy_capability_shape=legacy_capability_shape,
         )
-        try:
-            mcp._pvl_file_exchange_builder = builder  # type: ignore[attr-defined]
-        except (AttributeError, TypeError):
-            # Defensive — pydantic-strict configs may forbid attribute
-            # assignment. Fall back to module-level dict keyed by
-            # id(mcp) so callers still get a builder, with a warning.
-            logger.warning(
-                "FastMCP instance rejects attribute assignment "
-                "(_pvl_file_exchange_builder); falling back to id(mcp) "
-                "registry — capability merge may leak across instances "
-                "if id(mcp) is reused after gc. Investigate FastMCP "
-                'config (model_config = ConfigDict(extra="forbid")).'
-            )
-            _capability_builders_fallback[id(mcp)] = builder
+        # If FastMCP ever forbids dynamic attribute assignment (e.g. via
+        # ``ConfigDict(extra="forbid")``) the AttributeError will surface
+        # here at registration — louder failure than a silent fallback,
+        # but appropriate for an internal-API change we'd want to learn
+        # about quickly.
+        # ``setattr`` rather than ``mcp._pvl_file_exchange_builder =``
+        # so pyright does not require a per-line type-ignore — the
+        # constant is the same one ``_emit_capability`` reads via
+        # ``getattr`` below.
+        setattr(mcp, _BUILDER_ATTR, builder)
     else:
         # Existing builder — merge new contributions.
         if namespace != builder.namespace:
@@ -215,29 +195,13 @@ def _emit_capability(mcp: FastMCP) -> FileExchangeCapability | None:
     middleware stores the latest payload, so redundant calls just
     overwrite-with-same-value.
     """
-    builder = getattr(mcp, _BUILDER_ATTR, None)
-    if builder is None:
-        builder = _capability_builders_fallback.get(id(mcp))
+    builder: _FileExchangeCapabilityBuilder | None = getattr(mcp, _BUILDER_ATTR, None)
     if builder is None:
         return None
     cap = builder.build()
     if cap is not None:
         register_file_exchange_capability(mcp, cap)
     return cap
-
-
-def reset_capability_builders_for_test() -> None:
-    """Test-only: clear the fallback registry.
-
-    Per-instance builders go away naturally when the FastMCP instance
-    is garbage-collected — they live as a private attribute on the
-    instance, so test isolation is automatic for the primary path.
-    This helper only clears the (in-practice-unused) pydantic-strict
-    fallback dict so tests that intentionally exercise the fallback
-    don't bleed across each other. Called by the autouse fixture in
-    ``tests/conftest.py``.
-    """
-    _capability_builders_fallback.clear()
 
 
 class FetchTransportError(RuntimeError):
@@ -1585,9 +1549,14 @@ def register_file_exchange_upload(
             "non-ValueError" marker so operators can distinguish
             server-side validator bugs from caller-input errors.
             ``ValueError`` is the conventional choice for caller-facing
-            diagnostics. Async validators are awaited; the call site uses
-            :func:`inspect.isawaitable` to detect coroutines so that
-            ``async def`` callbacks are not silently no-op'd.
+            diagnostics. Sync validators run in an asyncio threadpool
+            (``asyncio.to_thread``) so blocking work (DB lookups,
+            filesystem checks) does not stall the event loop; async
+            validators run on the loop. The call site uses
+            :func:`inspect.iscoroutinefunction` to dispatch and falls
+            back to :func:`inspect.isawaitable` for the unusual
+            sync-function-returning-an-awaitable shape, so ``async def``
+            callbacks are not silently no-op'd.
         transport: ``"auto"`` (default), ``"http"``, or ``"stdio"``.
         upload_tool_name: Tool name override. Default
             ``"create_upload_link"``. Override this when registering
@@ -1628,6 +1597,38 @@ def register_file_exchange_upload(
             "receiver= or stream_receiver="
         )
 
+    # Env-driven knob overrides — validate first so a malformed value
+    # fails fast with an operator-readable error before any state is
+    # half-installed (transport resolution, set_upload_store, route
+    # registration). A bare ``int()``/``float()`` would surface a raw
+    # ``ValueError`` whose message does not name the offending env var.
+    mb_raw = env(env_prefix, "UPLOAD_MAX_BYTES")
+    if mb_raw:
+        try:
+            max_bytes_default = int(mb_raw)
+        except ValueError as exc:
+            raise ConfigurationError(
+                f"{env_prefix}_UPLOAD_MAX_BYTES must be a non-negative "
+                f"integer; got {mb_raw!r}"
+            ) from exc
+    ttl_raw = env(env_prefix, "UPLOAD_TTL")
+    if ttl_raw:
+        try:
+            ttl_default = float(ttl_raw)
+        except ValueError as exc:
+            raise ConfigurationError(
+                f"{env_prefix}_UPLOAD_TTL must be a number (seconds); got {ttl_raw!r}"
+            ) from exc
+    ttl_max_raw = env(env_prefix, "UPLOAD_TTL_MAX")
+    if ttl_max_raw:
+        try:
+            ttl_max = float(ttl_max_raw)
+        except ValueError as exc:
+            raise ConfigurationError(
+                f"{env_prefix}_UPLOAD_TTL_MAX must be a number (seconds); "
+                f"got {ttl_max_raw!r}"
+            ) from exc
+
     resolved_transport = _resolve_transport(env_prefix, transport)
     upload_enabled_env = parse_bool(env(env_prefix, "UPLOAD_ENABLED", "true"))
     enabled = resolved_transport != "stdio" and upload_enabled_env
@@ -1666,17 +1667,6 @@ def register_file_exchange_upload(
             ttl_max=ttl_max,
             max_bytes_default=max_bytes_default,
         )
-
-    # Env-driven knob overrides.
-    mb_raw = env(env_prefix, "UPLOAD_MAX_BYTES")
-    if mb_raw:
-        max_bytes_default = int(mb_raw)
-    ttl_raw = env(env_prefix, "UPLOAD_TTL")
-    if ttl_raw:
-        ttl_default = float(ttl_raw)
-    ttl_max_raw = env(env_prefix, "UPLOAD_TTL_MAX")
-    if ttl_max_raw:
-        ttl_max = float(ttl_max_raw)
 
     store = UploadStore(
         ttl_seconds=ttl_default,
@@ -1764,13 +1754,25 @@ def register_file_exchange_upload(
         ExchangeURI.validate_segment(target_id, role="json_param")
         if pre_link_validator is not None:
             try:
-                # Mirror the buffered/streaming receiver pattern: accept
-                # both sync and async validators. Without inspect.isawaitable
-                # an `async def` validator would silently no-op (the coroutine
-                # would never be awaited).
-                result = pre_link_validator(target_id, extra)
-                if inspect.isawaitable(result):
-                    await result
+                # Mirror the buffered receiver pattern: accept both sync
+                # and async validators, and dispatch sync ones via
+                # ``asyncio.to_thread`` so blocking work (DB lookups,
+                # filesystem checks) does not stall the event loop.
+                # Without ``inspect.iscoroutinefunction`` / ``isawaitable``
+                # an ``async def`` validator would silently no-op (the
+                # coroutine would never be awaited).
+                if inspect.iscoroutinefunction(pre_link_validator):
+                    await pre_link_validator(target_id, extra)
+                else:
+                    validator_result = await asyncio.to_thread(
+                        pre_link_validator,
+                        target_id,
+                        extra,
+                    )
+                    if inspect.isawaitable(validator_result):
+                        # Sync function that returned an awaitable
+                        # (uncommon but legal). Await on the loop.
+                        await validator_result
             except ValueError:
                 # Caller-facing validation rejection — surface to the
                 # LLM with the exception's message intact.

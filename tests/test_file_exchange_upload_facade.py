@@ -386,3 +386,69 @@ async def test_create_upload_link_rejects_path_traversal_target_id(
     # in-band as a tool error.
     with pytest.raises(Exception, match="forbidden|traversal|segment"):
         await tool.run({"target_id": "../etc/passwd"})
+
+
+def test_malformed_upload_max_bytes_raises_configuration_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Non-numeric ``{PREFIX}_UPLOAD_MAX_BYTES`` raises a named error.
+
+    A bare ``int()`` would surface ``ValueError: invalid literal for
+    int() with base 10: 'ten'`` — operator has to grep the source to
+    locate the offending env var. Wrapping in ``ConfigurationError``
+    names the variable explicitly.
+    """
+    from fastmcp_pvl_core._errors import ConfigurationError
+
+    monkeypatch.setenv("TEST_UPLOAD_TRANSPORT", "http")
+    monkeypatch.setenv("TEST_UPLOAD_BASE_URL", "http://srv.test")
+    monkeypatch.setenv("TEST_UPLOAD_UPLOAD_MAX_BYTES", "ten")
+
+    mcp = FastMCP(name="test")
+    with pytest.raises(ConfigurationError, match="UPLOAD_MAX_BYTES.*ten"):
+        register_file_exchange_upload(
+            mcp,
+            namespace="ns",
+            env_prefix="TEST_UPLOAD",
+            receiver=lambda rec, body: {"ok": True},
+        )
+
+
+def test_malformed_upload_ttl_raises_configuration_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Non-numeric ``{PREFIX}_UPLOAD_TTL`` raises a named error."""
+    from fastmcp_pvl_core._errors import ConfigurationError
+
+    monkeypatch.setenv("TEST_UPLOAD_TRANSPORT", "http")
+    monkeypatch.setenv("TEST_UPLOAD_BASE_URL", "http://srv.test")
+    monkeypatch.setenv("TEST_UPLOAD_UPLOAD_TTL", "soon")
+
+    mcp = FastMCP(name="test")
+    with pytest.raises(ConfigurationError, match="UPLOAD_TTL.*soon"):
+        register_file_exchange_upload(
+            mcp,
+            namespace="ns",
+            env_prefix="TEST_UPLOAD",
+            receiver=lambda rec, body: {"ok": True},
+        )
+
+
+def test_malformed_upload_ttl_max_raises_configuration_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Non-numeric ``{PREFIX}_UPLOAD_TTL_MAX`` raises a named error."""
+    from fastmcp_pvl_core._errors import ConfigurationError
+
+    monkeypatch.setenv("TEST_UPLOAD_TRANSPORT", "http")
+    monkeypatch.setenv("TEST_UPLOAD_BASE_URL", "http://srv.test")
+    monkeypatch.setenv("TEST_UPLOAD_UPLOAD_TTL_MAX", "lots")
+
+    mcp = FastMCP(name="test")
+    with pytest.raises(ConfigurationError, match="UPLOAD_TTL_MAX.*lots"):
+        register_file_exchange_upload(
+            mcp,
+            namespace="ns",
+            env_prefix="TEST_UPLOAD",
+            receiver=lambda rec, body: {"ok": True},
+        )

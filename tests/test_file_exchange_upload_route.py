@@ -601,3 +601,40 @@ async def test_post_sync_stream_receiver_returning_plain_dict() -> None:
 
     assert resp.status_code == 200
     assert resp.json() == {"ok": True, "target_id": "x.md"}
+
+
+@pytest.mark.asyncio
+async def test_post_sync_receiver_runs_in_threadpool() -> None:
+    """Sync buffered receivers dispatch via ``asyncio.to_thread``.
+
+    A sync receiver doing blocking I/O would otherwise stall the event
+    loop for the I/O duration. The handler dispatches sync receivers
+    onto a thread; the receiver therefore runs on a non-main worker
+    thread (i.e. not the event-loop thread). Pins the threadpool
+    dispatch added in the post-Gemini-round-2 follow-up.
+    """
+    import threading
+
+    captured: dict[str, Any] = {}
+
+    def sync_recv(record: UploadRecord, body: bytes) -> dict[str, Any]:
+        captured["is_main"] = threading.current_thread() is threading.main_thread()
+        captured["thread_name"] = threading.current_thread().name
+        return {"ok": True}
+
+    mcp, store = _build_app(sync_recv)
+    token = store.reserve(target_id="x.md", max_bytes=100)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=mcp.http_app()),
+        base_url="http://test",
+    ) as client:
+        resp = await client.post(
+            f"/ns/uploads/{token}",
+            content=b"hello",
+            headers={"Content-Type": "application/octet-stream"},
+        )
+
+    assert resp.status_code == 200
+    # Sync receiver ran on a worker thread, not the event-loop thread.
+    assert captured["is_main"] is False
