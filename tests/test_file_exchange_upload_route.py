@@ -638,3 +638,42 @@ async def test_post_sync_receiver_runs_in_threadpool() -> None:
     assert resp.status_code == 200
     # Sync receiver ran on a worker thread, not the event-loop thread.
     assert captured["is_main"] is False
+
+
+@pytest.mark.asyncio
+async def test_post_sync_stream_receiver_runs_in_threadpool() -> None:
+    """Sync stream_receiver dispatches via asyncio.to_thread (not on event loop).
+
+    Symmetric with the buffered-receiver threadpool dispatch test.
+    Sync stream receivers can't iterate the async body generator, but
+    they may do blocking bookkeeping (DB lookups, etc.); offloading to
+    a thread keeps the event loop healthy.
+    """
+    import threading
+
+    captured: dict[str, Any] = {}
+
+    def sync_recv(record: UploadRecord, body: AsyncIterator[bytes]) -> dict[str, Any]:
+        # Ignore body (degenerate case); record the running thread.
+        captured["thread"] = threading.current_thread().name
+        captured["is_main"] = threading.current_thread() is threading.main_thread()
+        return {"ok": True}
+
+    mcp = FastMCP(name="test-upload")
+    store = UploadStore(base_url="http://test.invalid")
+    register_upload_route(mcp, store=store, namespace="ns", stream_receiver=sync_recv)
+    token = store.reserve(target_id="x.md", max_bytes=100)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=mcp.http_app()),
+        base_url="http://test",
+    ) as client:
+        resp = await client.post(
+            f"/ns/uploads/{token}",
+            content=b"hello",
+            headers={"Content-Type": "application/octet-stream"},
+        )
+
+    assert resp.status_code == 200
+    # Sync stream receiver ran on a worker thread.
+    assert captured["is_main"] is False

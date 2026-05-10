@@ -800,20 +800,26 @@ def register_upload_route(
             else:
                 # Streaming path: pass the bounded generator directly. The
                 # receiver iterates it; oversize aborts mid-iteration.
-                # Mirror the buffered path: support both sync and async
-                # receivers via ``inspect.isawaitable`` so a sync receiver
-                # returning a plain dict does not raise a confusing
-                # TypeError on ``await``. Note: a sync stream receiver
-                # cannot iterate the body — ``_bounded_chunks`` is an
-                # async generator whose ``__anext__`` must be awaited on
-                # the event loop, which is impossible from a thread.
-                # The supported pattern for stream receivers is
-                # ``async def``; sync stream receivers are tolerated only
-                # in the degenerate "ignore the body" case.
+                # Mirror the buffered path's threadpool dispatch: async
+                # receivers run on the loop, sync receivers run via
+                # ``asyncio.to_thread`` so blocking work (DB lookups,
+                # bookkeeping) does not stall the event loop. Note: a
+                # sync stream receiver still cannot iterate the body —
+                # ``_bounded_chunks`` is an async generator whose
+                # ``__anext__`` must be awaited on the event loop, which
+                # is impossible from a thread. The supported pattern for
+                # stream receivers is ``async def``; sync stream
+                # receivers are tolerated only in the degenerate "ignore
+                # the body" case (DB-only bookkeeping etc.).
                 assert stream_receiver is not None  # narrow
-                result = stream_receiver(record, _bounded_chunks())
-                if inspect.isawaitable(result):
-                    result = await result
+                if inspect.iscoroutinefunction(stream_receiver):
+                    result = await stream_receiver(record, _bounded_chunks())
+                else:
+                    result = await asyncio.to_thread(
+                        stream_receiver, record, _bounded_chunks()
+                    )
+                    if inspect.isawaitable(result):
+                        result = await result
         except _UploadOversizeError:
             return Response(content="Payload Too Large", status_code=413)
         except ValueError as exc:
