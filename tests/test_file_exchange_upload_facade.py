@@ -452,3 +452,38 @@ def test_malformed_upload_ttl_max_raises_configuration_error(
             env_prefix="TEST_UPLOAD",
             receiver=lambda rec, body: {"ok": True},
         )
+
+
+@pytest.mark.asyncio
+async def test_sync_pre_link_validator_runs_in_threadpool(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Sync ``pre_link_validator`` dispatches via ``asyncio.to_thread``.
+
+    Symmetric pin to ``test_post_sync_receiver_runs_in_threadpool`` for
+    the receiver path. Without the threadpool dispatch, a sync validator
+    doing DB / filesystem I/O would stall the event loop.
+    """
+    import threading
+
+    monkeypatch.setenv("TEST_UPLOAD_TRANSPORT", "http")
+    monkeypatch.setenv("TEST_UPLOAD_BASE_URL", "http://srv.test")
+
+    captured: dict[str, Any] = {}
+
+    def sync_vld(target_id: str, extra: dict[str, Any] | None) -> None:
+        captured["thread"] = threading.current_thread().name
+        captured["is_main"] = threading.current_thread() is threading.main_thread()
+
+    mcp = FastMCP(name="test")
+    register_file_exchange_upload(
+        mcp,
+        namespace="ns",
+        env_prefix="TEST_UPLOAD",
+        receiver=lambda rec, body: {"ok": True},
+        pre_link_validator=sync_vld,
+    )
+    tool = await mcp.get_tool("create_upload_link")
+    assert tool is not None
+    await tool.run({"target_id": "x.md"})
+    assert captured["is_main"] is False

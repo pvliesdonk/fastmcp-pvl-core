@@ -1608,26 +1608,40 @@ def register_file_exchange_upload(
             max_bytes_default = int(mb_raw)
         except ValueError as exc:
             raise ConfigurationError(
-                f"{env_prefix}_UPLOAD_MAX_BYTES must be a non-negative "
+                f"{env_prefix}_UPLOAD_MAX_BYTES must be a positive "
                 f"integer; got {mb_raw!r}"
             ) from exc
+        if max_bytes_default <= 0:
+            raise ConfigurationError(
+                f"{env_prefix}_UPLOAD_MAX_BYTES must be positive; "
+                f"got {max_bytes_default}"
+            )
     ttl_raw = env(env_prefix, "UPLOAD_TTL")
     if ttl_raw:
         try:
             ttl_default = float(ttl_raw)
         except ValueError as exc:
             raise ConfigurationError(
-                f"{env_prefix}_UPLOAD_TTL must be a number (seconds); got {ttl_raw!r}"
+                f"{env_prefix}_UPLOAD_TTL must be a positive number "
+                f"(seconds); got {ttl_raw!r}"
             ) from exc
+        if ttl_default <= 0:
+            raise ConfigurationError(
+                f"{env_prefix}_UPLOAD_TTL must be positive; got {ttl_default}"
+            )
     ttl_max_raw = env(env_prefix, "UPLOAD_TTL_MAX")
     if ttl_max_raw:
         try:
             ttl_max = float(ttl_max_raw)
         except ValueError as exc:
             raise ConfigurationError(
-                f"{env_prefix}_UPLOAD_TTL_MAX must be a number (seconds); "
-                f"got {ttl_max_raw!r}"
+                f"{env_prefix}_UPLOAD_TTL_MAX must be a positive number "
+                f"(seconds); got {ttl_max_raw!r}"
             ) from exc
+        if ttl_max <= 0:
+            raise ConfigurationError(
+                f"{env_prefix}_UPLOAD_TTL_MAX must be positive; got {ttl_max}"
+            )
 
     resolved_transport = _resolve_transport(env_prefix, transport)
     upload_enabled_env = parse_bool(env(env_prefix, "UPLOAD_ENABLED", "true"))
