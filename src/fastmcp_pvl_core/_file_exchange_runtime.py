@@ -591,7 +591,7 @@ BufferedReceiver = Callable[
 ]
 StreamReceiver = Callable[
     ["UploadRecord", AsyncIterator[bytes]],
-    "Awaitable[dict[str, Any]]",
+    "dict[str, Any] | Awaitable[dict[str, Any]]",
 ]
 
 
@@ -785,8 +785,14 @@ def register_upload_route(
             else:
                 # Streaming path: pass the bounded generator directly. The
                 # receiver iterates it; oversize aborts mid-iteration.
+                # Mirror the buffered path: support both sync and async
+                # receivers via ``inspect.isawaitable`` so a sync receiver
+                # returning a plain dict does not raise a confusing
+                # TypeError on ``await``.
                 assert stream_receiver is not None  # narrow
-                result = await stream_receiver(record, _bounded_chunks())
+                result = stream_receiver(record, _bounded_chunks())
+                if inspect.isawaitable(result):
+                    result = await result
         except _UploadOversizeError:
             return Response(content="Payload Too Large", status_code=413)
         except ValueError as exc:

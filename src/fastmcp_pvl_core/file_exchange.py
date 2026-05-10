@@ -1337,7 +1337,10 @@ _DEFAULT_UPLOAD_TTL_SECONDS = 300.0
 _DEFAULT_UPLOAD_TTL_MAX_SECONDS = 3600.0
 _DEFAULT_UPLOAD_MAX_BYTES = 10 * 1024 * 1024
 
-PreLinkValidator = Callable[[str, "dict[str, Any] | None"], None]
+PreLinkValidator = Callable[
+    [str, "dict[str, Any] | None"],
+    "None | Awaitable[None]",
+]
 
 
 @dataclass(frozen=True)
@@ -1531,16 +1534,18 @@ def register_file_exchange_upload(
             ``stream_receiver``.
         stream_receiver: Streaming receiver; receives chunks live.
         pre_link_validator: Optional callback ``(target_id, extra) -> None``
-            run inside the registered tool AFTER baseline ``target_id``
-            character validation but BEFORE token creation. Raising
-            ``ValueError`` surfaces as an in-band tool error with the
-            exception message visible to the caller. Any other
+            (sync OR async) run inside the registered tool AFTER baseline
+            ``target_id`` character validation but BEFORE token creation.
+            Raising ``ValueError`` surfaces as an in-band tool error with
+            the exception message visible to the caller. Any other
             exception type also propagates (FastMCP wraps tool errors
             uniformly) but is additionally logged at ERROR with a
             "non-ValueError" marker so operators can distinguish
             server-side validator bugs from caller-input errors.
             ``ValueError`` is the conventional choice for caller-facing
-            diagnostics.
+            diagnostics. Async validators are awaited; the call site uses
+            :func:`inspect.isawaitable` to detect coroutines so that
+            ``async def`` callbacks are not silently no-op'd.
         transport: ``"auto"`` (default), ``"http"``, or ``"stdio"``.
         upload_tool_name: Tool name override. Default
             ``"create_upload_link"``. Override this when registering
@@ -1717,7 +1722,13 @@ def register_file_exchange_upload(
         ExchangeURI.validate_segment(target_id, role="json_param")
         if pre_link_validator is not None:
             try:
-                pre_link_validator(target_id, extra)
+                # Mirror the buffered/streaming receiver pattern: accept
+                # both sync and async validators. Without inspect.isawaitable
+                # an `async def` validator would silently no-op (the coroutine
+                # would never be awaited).
+                result = pre_link_validator(target_id, extra)
+                if inspect.isawaitable(result):
+                    await result
             except ValueError:
                 # Caller-facing validation rejection — surface to the
                 # LLM with the exception's message intact.

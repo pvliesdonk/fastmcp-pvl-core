@@ -184,6 +184,38 @@ async def test_pre_link_validator_passes_extra_through(
 
 
 @pytest.mark.asyncio
+async def test_pre_link_validator_async_is_awaited(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An ``async def`` validator must actually run, not be silently no-op'd.
+
+    Regression guard: without ``inspect.isawaitable`` at the call site
+    the coroutine returned by an async validator would be discarded
+    unawaited and validation would silently pass.
+    """
+    monkeypatch.setenv("TEST_UPLOAD_TRANSPORT", "http")
+    monkeypatch.setenv("TEST_UPLOAD_BASE_URL", "http://srv.test")
+    seen: dict[str, Any] = {}
+
+    async def vlog(target_id: str, extra: dict[str, Any] | None) -> None:
+        seen["target_id"] = target_id
+        seen["called"] = True
+
+    mcp = FastMCP(name="test")
+    register_file_exchange_upload(
+        mcp,
+        namespace="ns",
+        env_prefix="TEST_UPLOAD",
+        receiver=lambda rec, body: {"ok": True},
+        pre_link_validator=vlog,
+    )
+    tool = await mcp.get_tool("create_upload_link")
+    assert tool is not None
+    await tool.run({"target_id": "x.md"})
+    assert seen == {"target_id": "x.md", "called": True}
+
+
+@pytest.mark.asyncio
 async def test_ttl_clamped_to_ttl_max(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("TEST_UPLOAD_TRANSPORT", "http")
     monkeypatch.setenv("TEST_UPLOAD_BASE_URL", "http://srv.test")
