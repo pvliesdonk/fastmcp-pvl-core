@@ -40,14 +40,17 @@ def _reset_authorizer() -> Iterator[None]:
 
 @pytest.fixture(autouse=True)
 def _reset_capability_builders() -> Iterator[None]:
-    """Clear the per-FastMCP capability-builder registry between tests.
+    """Clear the capability-builder fallback registry between tests.
 
-    Builders are keyed by ``id(mcp)`` (see
-    ``fastmcp_pvl_core.file_exchange._capability_builders``); pytest
-    fixtures may recycle FastMCP instances across the process. Without
-    this reset, capability state from one test can leak into the next
-    — e.g. an upload-direction contribution showing up in a
-    download-only test's capability dict.
+    Capability builders are stashed as a private attribute on each
+    FastMCP instance (``_pvl_file_exchange_builder``), so test
+    isolation for the primary path is automatic — builders go away
+    when the FastMCP instance is gc'd. This fixture only clears the
+    defensive fallback dict in
+    ``fastmcp_pvl_core.file_exchange._capability_builders_fallback``,
+    which exists for pydantic-strict configs that forbid attribute
+    assignment. In practice the fallback is unused; clearing it costs
+    nothing and protects tests that intentionally exercise it.
     """
     from fastmcp_pvl_core.file_exchange import (
         reset_capability_builders_for_test,

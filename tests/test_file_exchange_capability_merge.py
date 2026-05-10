@@ -139,13 +139,16 @@ def test_emit_capability_returns_none_when_no_builder_registered() -> None:
     must return ``None`` rather than raising.
     """
     from fastmcp_pvl_core.file_exchange import (
-        _capability_builders,
+        _BUILDER_ATTR,
+        _capability_builders_fallback,
         _emit_capability,
     )
 
     mcp = FastMCP(name="no-builder")
-    # Sanity: id(mcp) is not in the registry yet.
-    assert id(mcp) not in _capability_builders
+    # Sanity: builder is not yet attached to the instance, and not in
+    # the fallback registry either.
+    assert not hasattr(mcp, _BUILDER_ATTR)
+    assert id(mcp) not in _capability_builders_fallback
     assert _emit_capability(mcp) is None
 
 
@@ -189,9 +192,7 @@ async def test_register_file_exchange_legacy_shape_emits_v0_2_flat_http(
         legacy_capability_shape=True,
     )
 
-    from fastmcp_pvl_core.file_exchange import _capability_builders
-
-    builder = _capability_builders[id(mcp)]
+    builder = mcp._pvl_file_exchange_builder  # type: ignore[attr-defined]
     cap = builder.build()
     assert cap is not None
     d = cap.to_capability_dict()
@@ -199,27 +200,46 @@ async def test_register_file_exchange_legacy_shape_emits_v0_2_flat_http(
     assert d["transfer_methods"]["http"] == {"tool": "create_download_link"}
 
 
-def test_reset_capability_builders_clears_registry() -> None:
-    """The autouse reset fixture clears _capability_builders between tests.
+def test_builder_is_attached_per_instance_not_module_level() -> None:
+    """Capability builders live on the FastMCP instance, not in a global dict.
 
-    Without this reset, a builder created in one test's FastMCP would
-    leak to a subsequent test if id(mcp) coincidentally matched.
+    The earlier implementation kept builders in a module-level
+    ``_capability_builders`` dict keyed by ``id(mcp)``; CPython is free
+    to reuse the id of a gc'd FastMCP for a future instance, which
+    would alias unrelated capability state across tests. The current
+    implementation stashes the builder as a private attribute on the
+    FastMCP itself, so the builder's lifetime is tied to the instance.
+
+    This test verifies (a) the attribute is set on the instance the
+    registrar acted on, and (b) a freshly-constructed FastMCP starts
+    out without the attribute — i.e. there is no shared global state
+    leaking across instances.
     """
     from fastmcp_pvl_core.file_exchange import (
-        _capability_builders,
+        _BUILDER_ATTR,
+        _capability_builders_fallback,
         _get_or_create_builder,
         reset_capability_builders_for_test,
     )
 
-    # Simulate the prior-test state.
-    mcp = FastMCP(name="probe")
-    _get_or_create_builder(mcp, namespace="ns")
-    assert id(mcp) in _capability_builders
+    mcp_a = FastMCP(name="probe-a")
+    _get_or_create_builder(mcp_a, namespace="ns-a")
+    assert hasattr(mcp_a, _BUILDER_ATTR)
+    assert mcp_a._pvl_file_exchange_builder.namespace == "ns-a"  # type: ignore[attr-defined]
 
+    # A second, untouched FastMCP must not see ``mcp_a``'s state.
+    mcp_b = FastMCP(name="probe-b")
+    assert not hasattr(mcp_b, _BUILDER_ATTR)
+
+    # The fallback dict (defensive path for pydantic-strict configs) is
+    # untouched — the primary path went through attribute assignment.
+    assert _capability_builders_fallback == {}
+
+    # ``reset_capability_builders_for_test`` clears the fallback. The
+    # per-instance attribute survives (and is freed naturally on gc).
     reset_capability_builders_for_test()
-
-    assert id(mcp) not in _capability_builders
-    assert _capability_builders == {}
+    assert _capability_builders_fallback == {}
+    assert hasattr(mcp_a, _BUILDER_ATTR)
 
 
 @pytest.mark.asyncio
@@ -261,9 +281,7 @@ async def test_register_both_directions_emits_merged_http(
         receiver=lambda rec, body: {"ok": True},
     )
 
-    from fastmcp_pvl_core.file_exchange import _capability_builders
-
-    builder = _capability_builders[id(mcp)]
+    builder = mcp._pvl_file_exchange_builder  # type: ignore[attr-defined]
     cap = builder.build()
     assert cap is not None
     d = cap.to_capability_dict()

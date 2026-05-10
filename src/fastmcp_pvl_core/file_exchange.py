@@ -43,7 +43,7 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from email.message import Message
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, NamedTuple
+from typing import TYPE_CHECKING, Any, Final, Literal, NamedTuple
 from urllib.parse import urlsplit
 
 import httpx
@@ -93,14 +93,28 @@ _DEFAULT_HTTP_FETCH_MAX_BYTES = 256 * 1024 * 1024  # 256 MiB hard cap
 # A single FastMCP instance may have both ``register_file_exchange``
 # (download direction) and ``register_file_exchange_upload`` (upload
 # direction) called against it. Both registrars need to contribute to
-# the same ``experimental.file_exchange`` capability dict. We key the
-# builder by ``id(mcp)`` (an int) rather than by the FastMCP object
-# itself: FastMCP instances may not be hashable / weakref-able in all
-# pydantic configurations, and ``id`` is stable for the lifetime of the
-# instance — which is exactly the lifetime we care about. The registry
-# is reset between tests via ``reset_capability_builders_for_test``.
+# the same ``experimental.file_exchange`` capability dict. We stash the
+# builder on the FastMCP instance via a private attribute (mirroring
+# the ``_pvl_experimental_middleware`` pattern in
+# :mod:`fastmcp_pvl_core._file_exchange_protocol`). This avoids the
+# ``id(mcp)`` reuse hazard a module-level registry would have: when a
+# FastMCP instance is garbage-collected, CPython is free to reuse its
+# id for a future allocation, which would alias unrelated instances'
+# state.
+#
+# A defensive ``_capability_builders_fallback`` dict (keyed by
+# ``id(mcp)``) survives only for FastMCP configurations that forbid
+# dynamic attribute assignment (e.g. pydantic ``ConfigDict(extra=
+# "forbid")``). In practice this fallback is unused — but
+# ``reset_capability_builders_for_test`` keeps it clean across tests
+# that would intentionally exercise the fallback path.
 
-_capability_builders: dict[int, _FileExchangeCapabilityBuilder] = {}
+_BUILDER_ATTR: Final = "_pvl_file_exchange_builder"
+
+# Defensive fallback for pydantic-strict FastMCP configs that forbid
+# attribute assignment. In practice this is unused — the primary path
+# is per-instance attribute storage in ``_get_or_create_builder``.
+_capability_builders_fallback: dict[int, _FileExchangeCapabilityBuilder] = {}
 
 
 def _get_or_create_builder(
@@ -113,6 +127,11 @@ def _get_or_create_builder(
     legacy_capability_shape: bool = False,
 ) -> _FileExchangeCapabilityBuilder:
     """Return (creating if needed) the per-FastMCP capability builder.
+
+    The builder is stashed on the FastMCP instance via a private
+    attribute (mirrors the ``_pvl_experimental_middleware`` pattern in
+    :mod:`fastmcp_pvl_core._file_exchange_protocol`). This avoids the
+    ``id(mcp)`` reuse hazard a module-level registry would have.
 
     Subsequent calls on the same ``mcp`` reuse the existing builder and
     additively extend ``produces`` / ``consumes`` (so download and
@@ -127,8 +146,12 @@ def _get_or_create_builder(
     Likewise, ``exchange_id`` is set by the first caller that supplies
     a non-``None`` value and not overwritten thereafter.
     """
-    key = id(mcp)
-    builder = _capability_builders.get(key)
+    builder = getattr(mcp, _BUILDER_ATTR, None)
+    if builder is None:
+        # The attribute may also live in the defensive fallback dict
+        # (for pydantic-strict configs). Check there before deciding to
+        # create a fresh one.
+        builder = _capability_builders_fallback.get(id(mcp))
     if builder is None:
         builder = _FileExchangeCapabilityBuilder(
             namespace=namespace,
@@ -137,8 +160,22 @@ def _get_or_create_builder(
             consumes=consumes,
             legacy_capability_shape=legacy_capability_shape,
         )
-        _capability_builders[key] = builder
+        try:
+            mcp._pvl_file_exchange_builder = builder  # type: ignore[attr-defined]
+        except (AttributeError, TypeError):
+            # Defensive — pydantic-strict configs may forbid attribute
+            # assignment. Fall back to module-level dict keyed by
+            # id(mcp) so callers still get a builder, with a warning.
+            logger.warning(
+                "FastMCP instance rejects attribute assignment "
+                "(_pvl_file_exchange_builder); falling back to id(mcp) "
+                "registry — capability merge may leak across instances "
+                "if id(mcp) is reused after gc. Investigate FastMCP "
+                'config (model_config = ConfigDict(extra="forbid")).'
+            )
+            _capability_builders_fallback[id(mcp)] = builder
     else:
+        # Existing builder — merge new contributions.
         if namespace != builder.namespace:
             logger.warning(
                 "_get_or_create_builder: namespace mismatch on FastMCP "
@@ -178,7 +215,9 @@ def _emit_capability(mcp: FastMCP) -> FileExchangeCapability | None:
     middleware stores the latest payload, so redundant calls just
     overwrite-with-same-value.
     """
-    builder = _capability_builders.get(id(mcp))
+    builder = getattr(mcp, _BUILDER_ATTR, None)
+    if builder is None:
+        builder = _capability_builders_fallback.get(id(mcp))
     if builder is None:
         return None
     cap = builder.build()
@@ -188,14 +227,17 @@ def _emit_capability(mcp: FastMCP) -> FileExchangeCapability | None:
 
 
 def reset_capability_builders_for_test() -> None:
-    """Test-only: clear the per-FastMCP builder registry.
+    """Test-only: clear the fallback registry.
 
-    Required because builders are keyed by ``id(mcp)`` and pytest
-    fixtures recycle FastMCP instances across the process. Without this
-    reset, a test that builds capability state can leak it into the
-    next. Called by the autouse fixture in ``tests/conftest.py``.
+    Per-instance builders go away naturally when the FastMCP instance
+    is garbage-collected — they live as a private attribute on the
+    instance, so test isolation is automatic for the primary path.
+    This helper only clears the (in-practice-unused) pydantic-strict
+    fallback dict so tests that intentionally exercise the fallback
+    don't bleed across each other. Called by the autouse fixture in
+    ``tests/conftest.py``.
     """
-    _capability_builders.clear()
+    _capability_builders_fallback.clear()
 
 
 class FetchTransportError(RuntimeError):
