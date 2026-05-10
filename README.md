@@ -230,6 +230,50 @@ so it is safe to ship in default scaffolds.
 > port-forward`, `docker run -p 127.0.0.1:5678:5678` (loopback bind),
 > or an SSH tunnel. Never publish the debug port on a public network.
 
+### File Exchange
+
+Servers that produce or consume binary artefacts (PDFs, images,
+documents) wire the MCP File Exchange spec with a single call. The
+download direction registers a `create_download_link` tool and the
+artifact HTTP route:
+
+```python
+from fastmcp_pvl_core import register_file_exchange
+
+handle = register_file_exchange(
+    mcp,
+    namespace="vault",
+    env_prefix="MARKDOWN_VAULT_MCP",
+    produces=["text/markdown"],
+)
+```
+
+For the inbound direction (local agent pushes a file *into* the
+server), use the symmetric helper:
+
+```python
+from fastmcp_pvl_core import register_file_exchange_upload
+
+register_file_exchange_upload(
+    mcp,
+    namespace="vault",
+    env_prefix="MARKDOWN_VAULT_MCP",
+    receiver=_my_upload_receiver,
+    pre_link_validator=_validate_target_path,
+)
+```
+
+This mints one-time `POST` URLs via a `create_upload_link` tool and
+dispatches the bytes to your receiver. See File Exchange spec
+§"Inbound HTTP transfer" (v0.4 amendments) at
+[`docs/specs/file-exchange.md`](docs/specs/file-exchange.md) for the
+wire contract.
+
+Both helpers cooperate on the same `experimental.file_exchange`
+capability — registering both on one FastMCP instance advertises a
+single capability whose `transfer_methods.http` block carries both
+`download` and `upload` sub-keys.
+
 ## License
 
 MIT

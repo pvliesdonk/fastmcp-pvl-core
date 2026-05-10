@@ -29,6 +29,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   singleton accessor.
 - Spec doc at `docs/specs/file-exchange.md` (v0.2.5 verbatim plus
   proposed v0.4.0 amendments).
+- **`register_file_exchange_upload` — symmetric inbound mirror of
+  `register_file_exchange`.** Mints one-time `POST` URLs via a
+  registered `create_upload_link` tool; receiver callable handles
+  domain-specific commit. Buffered (`receiver=`) or streaming
+  (`stream_receiver=`) variants. Optional `pre_link_validator=` runs
+  at link creation so invalid `target_id`s surface as in-band tool
+  errors rather than after a wasted upload round-trip. Env-gated via
+  `{PREFIX}_UPLOAD_ENABLED` / `{PREFIX}_UPLOAD_MAX_BYTES` /
+  `{PREFIX}_UPLOAD_TTL`. Closes #64.
+- New public symbols: `UploadRecord`, `UploadStore`, `UploadHandle`,
+  `register_file_exchange_upload`, `get_upload_store`,
+  `set_upload_store`.
 
 ### Changed
 - **`httpx` is now a hard dependency** (was previously optional under
@@ -40,3 +52,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `fastmcp` dependency floor moved from `>=3.0,<4` to `>=3.2.4,<4`
   (the file-exchange capability advertisement uses fastmcp's
   `Middleware.on_initialize` hook, available since 3.2.4).
+- File Exchange capability `version` advertised by
+  `register_file_exchange` bumps from `"0.2"` to `"0.4"` to reflect
+  the v0.4.0 amendments draft (now including Amendments 10 and 11
+  for direction tagging and inbound HTTP). The `transfer_methods.http`
+  block now nests by direction (`download` and `upload` sub-keys)
+  rather than the flat shape — `register_file_exchange` and
+  `register_file_exchange_upload` cooperate via a shared capability
+  builder so a server hosting both directions advertises a single
+  merged capability.
+- Internal: `ArtifactStore` and `TokenRecord` now live in
+  `fastmcp_pvl_core._token_store` (alongside `UploadStore`,
+  `UploadRecord`, and the new `_BaseTokenStore[T]` generic).
+  `_artifacts.py` is a deprecation shim re-exporting the same names;
+  slated for removal one minor version after this release.

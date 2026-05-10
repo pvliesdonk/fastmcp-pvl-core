@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 #: field in the ``experimental.file_exchange`` capability declaration
 #: (spec §"Capability declaration"). Major.minor only — patch revisions
 #: are spec-internal.
-SPEC_VERSION = "0.2"
+SPEC_VERSION = "0.4"
 
 
 # ---------------------------------------------------------------------------
@@ -439,6 +439,115 @@ class FileExchangeCapability:
         if self.exchange_id is not None:
             out["exchange_id"] = self.exchange_id
         return out
+
+
+# ---------------------------------------------------------------------------
+# Capability builder — merges download + upload contributions
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class _FileExchangeCapabilityBuilder:
+    """Accumulates per-direction contributions into one capability dict.
+
+    Both ``register_file_exchange`` (download) and
+    ``register_file_exchange_upload`` (upload) push their entries into a
+    shared per-server instance keyed by the FastMCP instance; the actual
+    capability dict is materialised by :meth:`build` once both
+    registrars have run.
+
+    The builder is intentionally mutable (not frozen) — it accumulates
+    state across multiple registrar calls. The capability it produces
+    via :meth:`build` is the immutable :class:`FileExchangeCapability`.
+    """
+
+    namespace: str
+    exchange_id: str | None = None
+    produces: tuple[str, ...] = ()
+    consumes: tuple[str, ...] = ()
+    legacy_capability_shape: bool = False
+    _exchange_present: bool = False
+    _download_tool: str | None = None
+    _upload_tool: str | None = None
+    _upload_max_bytes: int | None = None
+    _upload_max_ttl_seconds: int | None = None
+    _upload_accepts: tuple[str, ...] | None = None
+
+    def set_exchange(self, present: bool = True) -> None:
+        """Mark the ``exchange://`` shared-volume method as available."""
+        self._exchange_present = present
+
+    def set_download(self, *, tool_name: str) -> None:
+        """Record the download-direction tool name."""
+        self._download_tool = tool_name
+
+    def set_upload(
+        self,
+        *,
+        tool_name: str,
+        max_bytes: int,
+        max_ttl_seconds: int,
+        accepts: tuple[str, ...] | None = None,
+    ) -> None:
+        """Record the upload-direction tool name plus per-method knobs."""
+        self._upload_tool = tool_name
+        self._upload_max_bytes = max_bytes
+        self._upload_max_ttl_seconds = max_ttl_seconds
+        self._upload_accepts = accepts
+
+    def build(self) -> FileExchangeCapability | None:
+        """Materialise the accumulated state into a FileExchangeCapability.
+
+        Returns:
+            ``None`` if no transfer method has been set (neither
+            exchange nor download nor upload). Otherwise a frozen
+            :class:`FileExchangeCapability` with ``version`` ``"0.2"``
+            (legacy shape) or ``"0.4"`` (nested-http shape).
+        """
+        transfer_methods: dict[str, dict[str, Any]] = {}
+        if self._exchange_present:
+            transfer_methods["exchange"] = {}
+        http_block = self._build_http_block()
+        if http_block is not None:
+            transfer_methods["http"] = http_block
+        if not transfer_methods:
+            return None
+        version = "0.2" if self.legacy_capability_shape else SPEC_VERSION
+        return FileExchangeCapability(
+            namespace=self.namespace,
+            exchange_id=self.exchange_id,
+            produces=self.produces,
+            consumes=self.consumes,
+            transfer_methods=transfer_methods,
+            version=version,
+        )
+
+    def _build_http_block(self) -> dict[str, Any] | None:
+        if self.legacy_capability_shape:
+            if self._upload_tool is not None:
+                logger.warning(
+                    "legacy_capability_shape=True drops the upload entry "
+                    "(no nested http.upload key in v0.2 spec); upgrade "
+                    "clients to v0.4 or unset legacy_capability_shape "
+                    "to advertise upload."
+                )
+            if self._download_tool is None:
+                return None
+            return {"tool": self._download_tool}
+
+        block: dict[str, Any] = {}
+        if self._download_tool is not None:
+            block["download"] = {"tool": self._download_tool}
+        if self._upload_tool is not None:
+            up: dict[str, Any] = {
+                "tool": self._upload_tool,
+                "max_bytes": self._upload_max_bytes,
+                "max_ttl_seconds": self._upload_max_ttl_seconds,
+            }
+            if self._upload_accepts is not None:
+                up["accepts"] = list(self._upload_accepts)
+            block["upload"] = up
+        return block or None
 
 
 # ---------------------------------------------------------------------------

@@ -719,6 +719,58 @@ The capability `version` field stays at `"0.2"` until these amendments are accep
 
 **Rationale:** closes a parser-bypass class where a query string slips past a naive `split('/')` and ends up concatenated into the file extension.
 
+### Amendment 10: HTTP method gains direction tagging
+
+**Where:** §"Transfer Methods / `http`" + §"Discovery / Capability declaration".
+
+**Status today:** v0.2.5 has `transfer_methods.http: { tool: "create_download_link" }` (or `{ tool: "fetch" }` for consumers). Direction is implicit — only download exists.
+
+**Amendment:** the `http` method nests by direction:
+
+```json
+"http": {
+  "download": { "tool": "create_download_link" },
+  "upload":   { "tool": "create_upload_link", "max_bytes": 10485760, "max_ttl_seconds": 3600 }
+}
+```
+
+A server may declare either, both, or (for the consumer-of-downloads case) just `download.tool: "fetch"`. The `exchange` method stays direction-agnostic — the URI scheme already works in either direction (an agent writes to its own namespace under `$MCP_EXCHANGE_DIR` and passes the URI to a server tool, mirroring today's download flow). This direction-agnosticism of `exchange` is documented as a non-amendment in the table at the end of this section.
+
+**Migration:** servers advertising `version: "0.2"` keep the flat shape; `version: "0.4"` uses the nested shape. Implementations SHOULD support reading the flat shape from older peers for one minor version. Upstream tooling (`register_file_exchange[_upload]`) accepts a `legacy_capability_shape: bool = False` flag during the migration window.
+
+**Rationale:** keeps a single `transfer_methods` block (no parallel `intake_methods`) while making both directions explicit. Forces a wire bump, but folds into the v0.4.0 bump cleanly.
+
+### Amendment 11: Inbound HTTP transfer (upload)
+
+**Where:** new §"Server Requirements / Server accepting uploads"; addition to §"Transfer Methods / `http`".
+
+**Status today:** v0.2.5 defines no inbound mechanism. `consumes` describes MIME types accepted via `file_ref` pull only.
+
+**Amendment:** a server that supports direct upload:
+
+- MUST register a tool named `create_upload_link` (or whatever name is advertised in `transfer_methods.http.upload.tool`).
+- Tool MUST accept `target_id` (opaque to client/consumer), `ttl_seconds`, `max_bytes`, optional `extra` dict; MUST return `{ upload_url, expires_in_seconds, target_id }`.
+- MUST expose `POST /<namespace>/uploads/{token}` with the documented status-code contract:
+  - `404 Not Found` for missing/consumed tokens (must NOT distinguish "never existed" from "consumed", to avoid leaking token-existence to a probing caller).
+  - `410 Gone` for expired tokens.
+  - `413 Payload Too Large` if `Content-Length` exceeds the reservation's `max_bytes` OR if the body's running total exceeds the cap mid-stream.
+  - `415 Unsupported Media Type` if `Content-Type` does not match the per-method `accepts` filter.
+  - `400 Bad Request` if the receiver raises `ValueError` (the exception's `str()` is the response body).
+  - `409 Conflict` if the receiver raises `FileExistsError` (same body convention as 400).
+  - `500 Internal Server Error` for any other receiver exception (full traceback at ERROR; response body is generic, does NOT echo `str(exc)`).
+- MUST atomically consume each token at most once before dispatching the bytes to the receiver (one-time guarantee). The exact step at which consume happens relative to the pre-checks (415, 413) is implementation-defined; consuming at the lookup step is allowed and provides additional anti-replay safety. The spec only requires that a successful POST consumes the token AND that a token is never consumed twice.
+- MAY clamp `ttl_seconds` to a server ceiling and SHOULD return the effective value (mirror of Amendment 7).
+
+`consumes` keeps its existing meaning: MIME types the server can ingest, regardless of mechanism. The presence of `transfer_methods.http.upload` advertises that direct upload is one available intake mechanism for those types. An optional **per-method filter** `transfer_methods.http.upload.accepts: [mime types]` MAY tighten the subset for the upload path specifically — for the case where a server consumes broadly via `fetch` but only accepts a narrower subset via direct upload. Absent → route inherits the full `consumes` list. `*/*` in this filter explicitly disables MIME checking at the route layer.
+
+`target_id` follows the same character rules as `origin_id` and `exchange://` segments (no `/`, `\`, `.`, `..`, control bytes, leading/trailing whitespace, `?`, `#`).
+
+**Authorization:** the `/uploads/{token}` route is intentionally outside the MCP authorization middleware — possession of a fresh, unconsumed, cryptographically unguessable token IS the authorization, exactly as the existing `/artifacts/{token}` GET route works for downloads. The auth gate is the `create_upload_link` tool, which IS subject to standard MCP tool-tag authorization.
+
+**Streaming receivers:** receivers MUST NOT broadly catch `Exception` while iterating the request body. Implementations use a private exception type to abort oversize requests mid-stream; swallowing it would let the receiver complete on a truncated body. (Implementations MAY base the sentinel on `BaseException` for structural defence, but the receiver-side `MUST NOT` rule stays for portability across implementations that do not.)
+
+**Rationale:** completes the symmetric story for HTTP transfer. Reuses the existing one-time-token pattern, status-code conventions, and capability-declaration shape.
+
 ### Non-amendments (sanity-checked, leaving v0.2.5 wording as-is)
 
 - Atomic write via dotfile + rename: correct as-is.
@@ -727,3 +779,4 @@ The capability `version` field stays at `"0.2"` until these amendments are accep
 - Once-decoded URI segment validation + raw-string JSON-param validation distinction: correct and important; v0.2.5 wording is precise.
 - `transfer` extension via string-keyed methods with priority order: correct, forward-compatible.
 - `preview` field intentionally loose: correct.
+- The `exchange://` URI scheme is already direction-agnostic. An agent writing to its own namespace under `$MCP_EXCHANGE_DIR` and passing the resulting `exchange://` URI to a server tool is the upload analogue of the existing download flow. The URI scheme requires no new code — segment validation, atomic write, and the read path all work in either direction. No amendment text needed; documented here so future authors do not propose a redundant "amendment" for it.

@@ -5,12 +5,6 @@ middleware wiring, logging setup, config helpers, and server
 factory building blocks without duplicating them per repo.
 """
 
-from fastmcp_pvl_core._artifacts import (
-    ArtifactStore,
-    TokenRecord,
-    get_artifact_store,
-    set_artifact_store,
-)
 from fastmcp_pvl_core._auth import (
     AuthMode,
     build_auth,
@@ -62,12 +56,24 @@ from fastmcp_pvl_core._server_info import (
     register_server_info_tool,
 )
 from fastmcp_pvl_core._subject import get_subject
+from fastmcp_pvl_core._token_store import (
+    ArtifactStore,
+    TokenRecord,
+    UploadRecord,
+    UploadStore,
+    get_artifact_store,
+    get_upload_store,
+    set_artifact_store,
+    set_upload_store,
+)
 from fastmcp_pvl_core.file_exchange import (
     ConsumerSink,
     FetchContext,
     FetchResult,
     FileExchangeHandle,
+    UploadHandle,
     register_file_exchange,
+    register_file_exchange_upload,
 )
 
 __version__ = "2.0.0"  # PSR overrides at build time
@@ -97,6 +103,9 @@ __all__ = [
     "ServerConfig",
     "TokenRecord",
     "Transport",
+    "UploadHandle",
+    "UploadRecord",
+    "UploadStore",
     "UpstreamProvider",
     "UpstreamResult",
     "build_auth",
@@ -111,6 +120,7 @@ __all__ = [
     "env",
     "get_artifact_store",
     "get_subject",
+    "get_upload_store",
     "load_acl",
     "make_acl_authorizer",
     "make_icon",
@@ -122,9 +132,11 @@ __all__ = [
     "parse_scopes",
     "register_file_exchange",
     "register_file_exchange_capability",
+    "register_file_exchange_upload",
     "register_server_info_tool",
     "register_tool_icons",
     "resolve_auth_mode",
     "set_artifact_store",
+    "set_upload_store",
     "wire_middleware_stack",
 ]

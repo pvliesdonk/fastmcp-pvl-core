@@ -17,18 +17,29 @@ Lifecycle constraints from the spec:
 
 from __future__ import annotations
 
+import asyncio
 import errno
+import inspect
 import logging
 import os
 import secrets
 import time
 import uuid
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Final
+from typing import TYPE_CHECKING, Any, Final
+
+from starlette.requests import Request
+from starlette.responses import JSONResponse, Response
 
 from fastmcp_pvl_core._env import env
 from fastmcp_pvl_core._file_exchange_protocol import ExchangeURI, ExchangeURIError
+
+if TYPE_CHECKING:
+    from fastmcp import FastMCP
+
+    from fastmcp_pvl_core._token_store import UploadRecord, UploadStore
 
 logger = logging.getLogger(__name__)
 
@@ -563,8 +574,298 @@ def _try_unlink(path: Path) -> bool:
         return False
 
 
+# ---------------------------------------------------------------------------
+# Upload route (POST /<ns>/uploads/{token}) — spec §"Inbound HTTP transfer"
+# ---------------------------------------------------------------------------
+
+
+BufferedReceiver = Callable[
+    ["UploadRecord", bytes],
+    "dict[str, Any] | Awaitable[dict[str, Any]]",
+]
+StreamReceiver = Callable[
+    ["UploadRecord", AsyncIterator[bytes]],
+    "dict[str, Any] | Awaitable[dict[str, Any]]",
+]
+
+
+class _UploadOversizeError(BaseException):  # noqa: N818  -- internal sentinel
+    """Internal sentinel for mid-stream oversize aborts.
+
+    Raised by the bounded chunk generator when the request body exceeds
+    ``record.max_bytes`` mid-stream. Caught inside the upload handler and
+    translated to a ``413`` response. Not part of the receiver contract —
+    never propagates to user code.
+
+    Derives from :class:`BaseException` (not :class:`Exception`) so a
+    stream receiver wrapping ``async for chunk in body`` in a broad
+    ``except Exception`` cannot accidentally swallow it and complete on
+    a truncated body. The handler catches it explicitly via
+    ``except _UploadOversizeError``; ``BaseException`` subclasses remain
+    catchable by name. Same pattern Python uses for
+    :class:`asyncio.CancelledError` (Python 3.8+).
+    """
+
+
+def _accepts_match(content_type: str, accepts: tuple[str, ...]) -> bool:
+    if "*/*" in accepts:
+        return True
+    ct = (content_type or "").split(";", 1)[0].strip().lower()
+    for entry in accepts:
+        e = entry.strip().lower()
+        if e == ct:
+            return True
+        if e.endswith("/*") and ct.startswith(e[:-1]):
+            return True
+    return False
+
+
+def register_upload_route(
+    mcp: FastMCP,
+    *,
+    store: UploadStore,
+    namespace: str,
+    receiver: BufferedReceiver | None = None,
+    stream_receiver: StreamReceiver | None = None,
+    accepts: tuple[str, ...] = ("*/*",),
+) -> None:
+    """Mount ``POST /<namespace>/uploads/{token}`` on ``mcp``.
+
+    Exactly one of ``receiver`` (buffered) or ``stream_receiver``
+    (chunked) MUST be supplied.
+
+    The route returns:
+
+    - ``200`` with the receiver's dict serialised as JSON on success.
+    - ``404 Not Found`` if the token is unknown or already consumed
+      (the response does NOT distinguish "never existed" from "consumed",
+      to avoid leaking token-existence to a probing caller).
+    - ``410 Gone`` if the token existed but has expired.
+    - ``413 Payload Too Large`` if ``Content-Length`` exceeds
+      ``record.max_bytes`` OR the body's running total exceeds the cap
+      mid-stream (defense in depth against lying clients).
+    - ``415 Unsupported Media Type`` if ``Content-Type`` does not match
+      any entry in ``accepts`` (with ``*/*`` semantics as below).
+    - ``400 Bad Request`` if the receiver raises ``ValueError`` —
+      the exception's ``str()`` is returned as the response body, so
+      receivers SHOULD frame ``ValueError`` messages as caller-facing
+      diagnostics ("invalid path", "extension not allowed").
+    - ``409 Conflict`` if the receiver raises ``FileExistsError`` —
+      same body convention as 400.
+    - ``500 Internal Server Error`` if the receiver raises any other
+      exception, OR if the receiver returns a non-dict (programmer
+      bug). The full traceback (or non-dict-marker log line) is
+      written at ERROR; the response body is a generic
+      ``"Internal Server Error"`` (does NOT echo ``str(exc)`` to avoid
+      leaking internal detail).
+
+    All non-success responses (4xx, 5xx) consume the token; clients
+    MUST re-call ``create_upload_link`` to retry. This is intentional —
+    the runtime consumes the token at the lookup step for anti-replay
+    safety, before the precondition gates (size, content-type) and
+    the receiver run. A naive retry on the same URL after a 413 / 415
+    therefore returns 404, not the original error code.
+
+    The streaming-receiver path feeds chunks directly from
+    ``request.stream()``; the running-total cap fires mid-iteration if
+    the body exceeds ``record.max_bytes``, aborting before the receiver
+    completes. The buffered-receiver path consumes the same bounded
+    generator into a ``bytes`` object before dispatch.
+
+    The runtime uses a :class:`BaseException` subclass internally to
+    signal oversize-mid-iteration, so a stream receiver's normal
+    ``except Exception`` cannot accidentally swallow the abort signal.
+    Receivers may catch ``Exception`` freely without truncation risk.
+
+    ``accepts`` is enforced before any body read — a request whose
+    ``Content-Type`` does not match any entry returns 415. Use ``"*/*"``
+    (the default) to disable the gate. Glob patterns like ``"image/*"``
+    match any subtype. A request with no ``Content-Type`` header is
+    treated as not matching any non-wildcard entry — explicit
+    accept-lists therefore demand the header.
+
+    Sync vs async receivers: sync buffered receivers run in an asyncio
+    threadpool (``asyncio.to_thread``) so blocking I/O (file writes, DB
+    writes, etc.) does not stall the event loop. Async receivers run on
+    the loop. Stream receivers should be ``async def``; the
+    ``_bounded_chunks`` generator is an async iterator whose
+    ``__anext__`` must be awaited on the event loop, so a sync stream
+    receiver cannot consume the body from a thread. Sync stream
+    receivers are tolerated only in the degenerate "ignore the body"
+    case.
+    """
+    if (receiver is None) == (stream_receiver is None):
+        raise ValueError(
+            "register_upload_route requires exactly one of receiver= or "
+            "stream_receiver="
+        )
+
+    path = f"/{namespace}/uploads/{{token}}"
+
+    @mcp.custom_route(path, methods=["POST"])
+    async def _upload_handler(request: Request) -> Response:
+        # Note: the request body is intentionally not consumed on
+        # early-return error paths (404/410/413/415). ASGI servers
+        # (uvicorn, hypercorn) handle the connection-state reset; we
+        # do NOT need to call await request.body() to drain.
+        token = request.path_params.get("token", "")
+        record, status = store.consume_or_status(token)
+        if status == "expired":
+            logger.info("upload_handler_expired token_prefix=%s", token[:8])
+            return Response(content="Gone", status_code=410)
+        if record is None:
+            # Log policy: 404-miss is DEBUG because the cause is ambiguous
+            # (typo, probe, replay of an already-consumed token). The other
+            # 4xx mappings (410 expired, 413 oversize, 415 unsupported) log
+            # at INFO because they signal a clear client-side misuse the
+            # operator likely wants to see in default logs.
+            logger.debug("upload_handler_miss token_prefix=%s", (token or "")[:8])
+            return Response(content="Not Found", status_code=404)
+
+        # Reject unsupported media types BEFORE any size check or body
+        # read. ``"*/*"`` in ``accepts`` (the default) disables this gate.
+        ct_header = request.headers.get("content-type", "")
+        if not _accepts_match(ct_header, accepts):
+            logger.info(
+                "upload_handler_unsupported_media_type token_prefix=%s ct=%r",
+                token[:8],
+                ct_header,
+            )
+            return Response(
+                content="Unsupported Media Type",
+                status_code=415,
+            )
+
+        # Content-Length precheck — reject before reading any body bytes.
+        cl = request.headers.get("content-length")
+        if cl is not None:
+            # Tolerate malformed/negative Content-Length: fall through to
+            # the chunk-reader cap below. Rejecting here with 400 would
+            # over-reject conformant clients sending unusual transfer
+            # encodings; the real cap is enforced regardless of header.
+            try:
+                cl_int = int(cl)
+            except ValueError:
+                cl_int = -1
+            if cl_int > record.max_bytes:
+                logger.info(
+                    "upload_handler_oversize_cl token_prefix=%s declared=%d max=%d",
+                    token[:8],
+                    cl_int,
+                    record.max_bytes,
+                )
+                return Response(content="Payload Too Large", status_code=413)
+
+        # Defense in depth — the client may lie about Content-Length. A single
+        # bounded async-generator wraps ``request.stream()`` with a running-
+        # total cap; both branches consume it. The buffered branch collects
+        # chunks into bytes before calling the receiver; the streaming branch
+        # passes the generator straight through, so oversize aborts mid-
+        # iteration without ever materialising the full body.
+        async def _bounded_chunks() -> AsyncIterator[bytes]:
+            total = 0
+            async for chunk in request.stream():
+                total += len(chunk)
+                if total > record.max_bytes:
+                    logger.info(
+                        "upload_handler_oversize_chunk token_prefix=%s total=%d max=%d",
+                        token[:8],
+                        total,
+                        record.max_bytes,
+                    )
+                    raise _UploadOversizeError()
+                yield chunk
+
+        try:
+            if receiver is not None:
+                # Buffered path: fully consume the bounded generator into bytes.
+                buf: list[bytes] = []
+                async for c in _bounded_chunks():
+                    buf.append(c)
+                body = b"".join(buf)
+                if inspect.iscoroutinefunction(receiver):
+                    result = await receiver(record, body)
+                else:
+                    # Sync receiver — run in a thread so blocking I/O
+                    # (file writes, DB writes, etc.) does not stall the
+                    # asyncio event loop. Receivers that want to stay on
+                    # the loop should declare ``async def`` and use
+                    # ``asyncio.to_thread`` themselves for any blocking
+                    # call.
+                    result = await asyncio.to_thread(receiver, record, body)
+                    if inspect.isawaitable(result):
+                        # Sync function that returned an awaitable
+                        # (uncommon but legal). Await on the loop.
+                        result = await result
+            else:
+                # Streaming path: pass the bounded generator directly. The
+                # receiver iterates it; oversize aborts mid-iteration.
+                # Mirror the buffered path's threadpool dispatch: async
+                # receivers run on the loop, sync receivers run via
+                # ``asyncio.to_thread`` so blocking work (DB lookups,
+                # bookkeeping) does not stall the event loop. Note: a
+                # sync stream receiver still cannot iterate the body —
+                # ``_bounded_chunks`` is an async generator whose
+                # ``__anext__`` must be awaited on the event loop, which
+                # is impossible from a thread. The supported pattern for
+                # stream receivers is ``async def``; sync stream
+                # receivers are tolerated only in the degenerate "ignore
+                # the body" case (DB-only bookkeeping etc.).
+                assert stream_receiver is not None  # narrow
+                if inspect.iscoroutinefunction(stream_receiver):
+                    result = await stream_receiver(record, _bounded_chunks())
+                else:
+                    result = await asyncio.to_thread(
+                        stream_receiver, record, _bounded_chunks()
+                    )
+                    if inspect.isawaitable(result):
+                        result = await result
+        except _UploadOversizeError:
+            return Response(content="Payload Too Large", status_code=413)
+        except ValueError as exc:
+            logger.info(
+                "upload_receiver_value_error token_prefix=%s: %s",
+                token[:8],
+                exc,
+            )
+            return Response(content=str(exc), status_code=400)
+        except FileExistsError as exc:
+            logger.info(
+                "upload_receiver_conflict token_prefix=%s: %s",
+                token[:8],
+                exc,
+            )
+            return Response(content=str(exc), status_code=409)
+        except Exception as exc:
+            # logger.exception attaches the full traceback (exc_info) at
+            # ERROR level. We also include str(exc) in the formatted
+            # message so the failure cause is visible in log scrapers
+            # that only render the message field — getMessage() does
+            # not include exc_info.
+            logger.exception(
+                "upload_receiver_failure token_prefix=%s: %s",
+                token[:8],
+                exc,
+            )
+            return Response(
+                content="Internal Server Error",
+                status_code=500,
+            )
+
+        if not isinstance(result, dict):
+            logger.error(
+                "upload_receiver returned non-dict (%s); responding 500 — receiver bug",
+                type(result).__name__,
+            )
+            return Response(content="Internal Server Error", status_code=500)
+        return JSONResponse(result, status_code=200)
+
+
 __all__ = [
+    "BufferedReceiver",
     "ExchangeGroupMismatch",
     "FileExchange",
     "FileExchangeConfigError",
+    "StreamReceiver",
+    "register_upload_route",
 ]
