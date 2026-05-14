@@ -6,6 +6,13 @@ the artifact store, the protocol surface, and the exchange-volume
 runtime, and registers the spec-compliant ``create_download_link``
 and ``fetch_file`` MCP tools.
 
+Implementation note: the ``experimental.file_exchange`` capability
+this module advertises uses the nested ``http.{download, upload}``
+shape (a leftover from the proposed v0.4 amendments that PR #77
+reverted). The spec is back to v0.2.5 but the implementation has not
+yet realigned its capability shape; that realignment is tracked in
+#74 alongside the upload-helper rewrite.
+
 Downstream usage::
 
     from fastmcp_pvl_core import register_file_exchange, FileRefPreview

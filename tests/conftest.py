@@ -48,13 +48,16 @@ def clean_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     yield
 
 
-@pytest.fixture
+@pytest.fixture(autouse=True)
 def reset_artifact_store_test_seam() -> Iterator[None]:
     """Reset the file-exchange artifact-store test seam on teardown.
 
-    Tests that call ``_set_artifact_store_for_test`` opt in by
-    requesting this fixture; it makes sure leakage between tests
-    doesn't poison unrelated tests.
+    Autouse so a test that calls ``_set_artifact_store_for_test`` and
+    forgets to request the fixture explicitly cannot poison subsequent
+    tests in the same session.  Zero cost in the common case where the
+    seam is ``None`` (the reset is a no-op).  Tests may still request
+    the fixture explicitly when they want to read its name in their
+    own signature — autouse and explicit-request do not double-run.
     """
     yield
     from fastmcp_pvl_core.file_exchange import _set_artifact_store_for_test

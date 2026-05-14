@@ -53,7 +53,13 @@ authoritatively in `README.md` `## Design principles` and `CLAUDE.md`
 `## The framing principle`. See pvliesdonk/fastmcp-pvl-core#73 and
 pvliesdonk/fastmcp-pvl-core#72 for context.
 
-## Unreleased
+## [2.1.0] - 2026-05-10
+
+> Note: this section accumulated entries across the 1.x → 2.x release
+> window and was never split per-release at tag time (PSR auto-bumps
+> the version tag but doesn't move CHANGELOG entries). Treat as the
+> cumulative `2.x` history; new entries go into the unreleased
+> section above.
 
 ### Added
 - **MCP File Exchange (spec v0.2.5) end-to-end implementation.** Single
