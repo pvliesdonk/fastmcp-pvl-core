@@ -8,7 +8,7 @@
 
 This specification is a **protocol extension** for MCP. It defines a wire-level convention — the `FileRef` envelope, the `exchange://` URI scheme, the capability declaration, the per-method tool contracts, and the security rules — that independently developed MCP servers MUST share to interoperate.
 
-It is not a design document for any particular implementation. Implementation choices (library defaults, lazy materialisation strategies, TTL clamping policy, route mechanics, framework-specific helpers, downstream tool naming and registration) are out of scope and belong in implementor docs, not here. Implementation feedback that surfaces a real spec gap is resolved through a proper spec evolution (a new release with the version field bumped per §"Versioning and compatibility"), not through inline amendments to a published version.
+It is not a design document for any particular implementation. Implementation strategies (lazy materialisation, per-server TTL ceilings and similar limit-enforcement policy, route mechanics, framework-specific helpers, downstream tool naming and registration mechanics) are out of scope and belong in implementor docs, not here. Spec-level defaults that conformant implementations coordinate on — see §"Defaults" — remain part of the spec. Implementation feedback that surfaces a real spec gap is resolved through a proper spec evolution (a new release with the version field bumped per §"Versioning and compatibility"), not through inline amendments to a published version.
 
 ## Problem
 
@@ -63,7 +63,7 @@ The interop surface. When an MCP tool produces a file intended for cross-server 
 | Field | Required | Description |
 |---|---|---|
 | `origin_server` | MUST | Namespace of the producing server. The client uses this to identify which server connection to call for transfer negotiation. |
-| `origin_id` | MUST | Opaque round-trip handle for this file on the origin server. The producer MAY interpret it as a path, document id, image id with embedded variant, HMAC token, or any other internally-meaningful handle; clients and consumers MUST treat it as opaque. The producer's only obligation is round-trip: the exact string returned in `file_ref.origin_id` must, when handed back to the producer's `create_download_link(origin_id=...)`, resolve to the same file (subject to TTL). Passed as a parameter when requesting transfer via any method. |
+| `origin_id` | MUST | Opaque round-trip handle for this file on the origin server. The producer MAY interpret it as a path, document id, image id with embedded variant, HMAC token, or any other internally-meaningful handle; clients and consumers MUST treat it as opaque. The producer's only obligation is round-trip: the exact string returned in `file_ref.origin_id` must, when handed back to the producer via any transfer method that accepts an `origin_id` parameter (e.g. the `http` method's producer tool — see [Transfer Methods](#transfer-methods)), resolve to the same file (subject to TTL). |
 | `mime_type` | SHOULD | MIME type of the file. |
 | `size_bytes` | MAY | File size in bytes. |
 | `transfer` | MUST | Object whose keys are transfer method names and whose values are method-specific metadata. At least one method MUST be present. See [Transfer Methods](#transfer-methods). |
@@ -288,7 +288,7 @@ After decoding (for URIs) or direct extraction (for JSON parameters), segments:
 - MUST NOT contain null bytes (`\0`) or control characters (U+0000 through U+001F).
 - MUST NOT contain leading or trailing whitespace.
 
-In addition, `exchange://` URIs themselves MUST NOT contain a query component (`?...`) or fragment (`#...`). A URI with either is rejected as `exchange_uri_invalid`. (Implementations using a URL parser that splits query and fragment into separate components — e.g. `urllib.parse.urlsplit` — get this for free; implementations doing string-split parsing must check explicitly. This closes a parser-bypass class where a query string slips past a naive `split('/')` and ends up concatenated into the file extension.)
+In addition, `exchange://` URIs themselves MUST NOT contain a query component (`?...`) or fragment (`#...`). A URI with either is rejected as `exchange_uri_invalid`. This closes a parser-bypass class where a query string or fragment could slip past naive parsing and be misinterpreted as part of a path segment or file extension.
 
 If a server detects an invalid segment, it MUST abort and return an error:
 
@@ -371,7 +371,7 @@ During the MCP `initialize` handshake, a participating server declares exchange 
 
 | Field | Required | Description |
 |---|---|---|
-| `version` | MUST | Spec version as `MAJOR.MINOR` (e.g. `"0.2"`). Patch versions are spec-internal and MUST NOT appear in the capability declaration; `"0.2"` and `"0.2.5"` advertise the same wire-level capability. |
+| `version` | MUST | Spec version as `MAJOR.MINOR` (e.g. `"0.2"`). Patch versions are spec-internal and MUST NOT appear in the capability declaration. A server implementing spec version `0.2.5` MUST advertise `"0.2"`; patch-level differences do not change the wire-level capability. |
 | `namespace` | MUST | The server's exchange namespace. |
 | `exchange_id` | SHOULD | The exchange group ID. Present when the server participates in an exchange group. |
 | `produces` | SHOULD | MIME types this server can produce as file references. |
@@ -417,7 +417,7 @@ volumes:
 
 `MCP_EXCHANGE_ID` is auto-generated on first use. The first server to start checks for `$MCP_EXCHANGE_DIR/.exchange-id`. If absent, it generates a UUID and attempts to create the file using an exclusive-create operation (e.g. `O_CREAT | O_EXCL` on POSIX, which fails atomically if the file already exists). If the exclusive create fails with a file-exists error (`EEXIST`), another server won the race; the server MUST read the UUID from the existing file instead. Implementations MUST NOT use rename-based initialisation for this file, because POSIX `rename(2)` silently overwrites an existing destination, causing split-brain if multiple servers race.
 
-The `.exchange-id` file is UTF-8 plaintext containing the UUID (8-4-4-4-12 hex with hyphens, lower or upper case), with or without a single trailing newline. Consumers MUST strip trailing whitespace before comparison. The file MUST be created with mode `0o644` so every server in the group (potentially running as different UIDs) can read it.
+The `.exchange-id` file is UTF-8 plaintext containing the UUID (8-4-4-4-12 hex with hyphens, lower or upper case), with or without a single trailing newline. Consumers MUST strip trailing whitespace and compare the UUID case-insensitively (e.g. by lowercasing both sides before equality). Producers SHOULD write the UUID in lowercase to match the convention emitted by common UUID libraries. The file MUST be created with mode `0o644` so every server in the group (potentially running as different UIDs) can read it.
 
 ### Multi-host
 
@@ -555,7 +555,7 @@ Consumers never delete exchange files. This prevents a class of bugs where one c
 
 ### Standardised parameter names per method
 
-Each transfer method defines standard parameter names (e.g. `origin_id` for http producer, `url` and `path` for http consumer). Servers that internally use different names must alias. This trades a one-time implementation cost for permanent simplicity: clients never need parameter mappings.
+Each transfer method defines standard parameter names (e.g. `origin_id` for http producer, `url` and `path` for http consumer). Servers that internally use different names MUST alias. This trades a one-time implementation cost for permanent simplicity: clients never need parameter mappings.
 
 ### Remaining methods in error payloads
 
