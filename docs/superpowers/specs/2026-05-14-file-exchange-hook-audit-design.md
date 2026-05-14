@@ -272,6 +272,39 @@ pvl-core does **not** wait for downstream migration to release.
   files the child issue only if the survey turns up a real change
   needed.
 
+## Downstream survey result (2026-05-14)
+
+`gh search code` for `register_file_exchange(` across each named
+consumer + the template, followed by reading every hit's call-site
+context. Result:
+
+| Consumer | Affected by 3.0.0? | Removed kwargs in use | Migration issue |
+|---|---|---|---|
+| pvliesdonk/scholar-mcp | Yes | `transport=` (computed from CLI flag) | [pvliesdonk/scholar-mcp#196](https://github.com/pvliesdonk/scholar-mcp/issues/196) |
+| pvliesdonk/image-generation-mcp | Yes (src + tests) | `transport=` | [pvliesdonk/image-generation-mcp#227](https://github.com/pvliesdonk/image-generation-mcp/issues/227) |
+| pvliesdonk/reqeng-mcp | Yes (scaffold-style) | `transport="auto"` | [pvliesdonk/reqeng-mcp#17](https://github.com/pvliesdonk/reqeng-mcp/issues/17) |
+| pvliesdonk/fastmcp-server-template | Yes (scaffold) | `transport="auto"` in `server.py.jinja` | [pvliesdonk/fastmcp-server-template#133](https://github.com/pvliesdonk/fastmcp-server-template/issues/133) (child of #131) |
+| pvliesdonk/markdown-vault-mcp | **No** (uses `register_file_exchange_upload` only; download helper deferred per their #431) | n/a — dep-pin bump only | [pvliesdonk/markdown-vault-mcp#492](https://github.com/pvliesdonk/markdown-vault-mcp/issues/492) |
+
+Notable findings:
+
+- **All four `register_file_exchange` users pass `transport=`** — either an
+  explicit `"auto"` (the default, no behaviour change after migration)
+  or a CLI-derived `"http"`/`"stdio"` (requires the CLI to set
+  `{PREFIX}_TRANSPORT` before `make_server()`). No consumer passes
+  `download_tool_name=`, `fetch_tool_name=`, `legacy_capability_shape=`,
+  or `artifact_store=`.
+- **markdown-vault-mcp is unaffected** in the direct sense:
+  `register_file_exchange` is commented out in its `server.py` pending
+  the `create_download_link(path)` vs `create_download_link(origin_id)`
+  tool collision (their #431). `register_file_exchange_upload` is the
+  helper they actually use, and its kwarg surface is #74's job (after
+  #71 lands a spec release), not this PR.
+- **The template** carries the scaffold form `transport="auto"`. Once
+  fastmcp-server-template#133 lands and a new template release is cut,
+  fresh consumers running `copier update` pick up the no-`transport=`
+  scaffold automatically.
+
 ## Acceptance (from #72)
 
 - [x] Each kwarg classified per the three-way split (table above).
@@ -282,5 +315,5 @@ pvl-core does **not** wait for downstream migration to release.
 - [ ] The principle written up authoritatively — done in #73; this
       PR sharpens the classification-test wording per the corrected
       framing.
-- [ ] Template impact: addressed via #131 (child issue filed only
-      if survey shows the template actually passes a removed kwarg).
+- [x] Template impact: addressed via fastmcp-server-template#133
+      (child of #131); scaffold drops `transport="auto"`.
