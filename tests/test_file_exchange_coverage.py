@@ -83,13 +83,13 @@ async def _capture_sink(captured: dict[str, Any]) -> Any:
 
 
 def _new_consumer_mcp(monkeypatch: pytest.MonkeyPatch, sink: Any) -> Any:
+    monkeypatch.setenv("TEST_FE_TRANSPORT", "http")
     mcp = FastMCP("test-fe")
     register_file_exchange(
         mcp,
         namespace="vault-mcp",
         env_prefix="TEST_FE",
         consumer_sink=sink,
-        transport="http",
     )
     return mcp
 
@@ -458,13 +458,13 @@ class TestCreateDownloadLinkExpiry:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv("TEST_FE_BASE_URL", "http://test.example")
+        monkeypatch.setenv("TEST_FE_TRANSPORT", "http")
         mcp = FastMCP("test-fe")
         h = register_file_exchange(
             mcp,
             namespace="image-mcp",
             env_prefix="TEST_FE",
             produces=("image/png",),
-            transport="http",
         )
         await h.publish(source=b"x", mime_type="image/png", origin_id="abc")
         # Backdate the publish-side expiry.
@@ -670,13 +670,13 @@ class TestPathDeletedAfterPublish:
         import json
 
         monkeypatch.setenv("TEST_FE_BASE_URL", "http://test.example")
+        monkeypatch.setenv("TEST_FE_TRANSPORT", "http")
         mcp = FastMCP("test-fe")
         h = register_file_exchange(
             mcp,
             namespace="image-mcp",
             env_prefix="TEST_FE",
             produces=("image/png",),
-            transport="http",
         )
         f = tmp_path / "img.png"
         f.write_bytes(b"PNG-bytes")
@@ -712,13 +712,13 @@ class TestExpiredRecordThrottleRegression:
         import json
 
         monkeypatch.setenv("TEST_FE_BASE_URL", "http://test.example")
+        monkeypatch.setenv("TEST_FE_TRANSPORT", "http")
         mcp = FastMCP("test-fe")
         h = register_file_exchange(
             mcp,
             namespace="image-mcp",
             env_prefix="TEST_FE",
             produces=("image/png",),
-            transport="http",
         )
         await h.publish(source=b"x", mime_type="image/png", origin_id="abc")
         # Set _last_expiry_sweep to "just now" so the throttle skips the
