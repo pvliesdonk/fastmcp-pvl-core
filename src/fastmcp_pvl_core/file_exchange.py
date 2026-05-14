@@ -1,10 +1,17 @@
 """MCP File Exchange — public facade.
 
 Single-entry-point wiring for downstream MCP servers that want to
-participate in the File Exchange convention (spec v0.4 with v0.4.0
-amendments). Composes the artifact store, the protocol surface, and
-the exchange-volume runtime, and registers the spec-compliant
-``create_download_link`` and ``fetch_file`` MCP tools.
+participate in the File Exchange convention (spec v0.2.5). Composes
+the artifact store, the protocol surface, and the exchange-volume
+runtime, and registers the spec-compliant ``create_download_link``
+and ``fetch_file`` MCP tools.
+
+Implementation note: the ``experimental.file_exchange`` capability
+this module advertises uses the nested ``http.{download, upload}``
+shape (a leftover from the proposed v0.4 amendments that PR #77
+reverted). The spec is back to v0.2.5 but the implementation has not
+yet realigned its capability shape; that realignment is tracked in
+#74 alongside the upload-helper rewrite.
 
 Downstream usage::
 
@@ -85,6 +92,26 @@ _DEFAULT_FETCH_TOOL = "fetch_file"
 _DEFAULT_TTL_SECONDS = 3600.0
 _DEFAULT_HTTP_FETCH_TIMEOUT = 30.0
 _DEFAULT_HTTP_FETCH_MAX_BYTES = 256 * 1024 * 1024  # 256 MiB hard cap
+
+
+# Private test seam: when set, ``register_file_exchange`` uses this store
+# instead of building one from env vars. NOT public API — leading
+# underscore is the signal. Tests that mutate this should request the
+# ``reset_artifact_store_test_seam`` fixture in tests/conftest.py to
+# reset it on teardown.
+_TEST_ARTIFACT_STORE: ArtifactStore | None = None
+
+
+def _set_artifact_store_for_test(store: ArtifactStore | None) -> None:
+    """Test-only seam for replacing the lazy-built artifact store.
+
+    NOT public API. ``register_file_exchange``'s kwarg surface
+    exposes only domain hooks; downstream production code has no
+    domain-specific basis to inject a different store at runtime.
+    Tests reach in here when they need fixture-level control.
+    """
+    global _TEST_ARTIFACT_STORE
+    _TEST_ARTIFACT_STORE = store
 
 
 # ---------------------------------------------------------------------------
@@ -309,8 +336,17 @@ class FileExchangeHandle:
     artifact_store: ArtifactStore | None
     exchange: FileExchange | None
     capability: FileExchangeCapability | None
-    download_tool_name: str = _DEFAULT_DOWNLOAD_TOOL
-    fetch_tool_name: str = _DEFAULT_FETCH_TOOL
+    # pvl-core owns these tool names as part of the shared shape (see
+    # framing principle in CLAUDE.md). ``init=False`` keeps them out of
+    # the constructor so a directly-constructed handle cannot advertise
+    # a tool name that doesn't match what pvl-core actually registered
+    # — silently breaking the file_ref ``transfer["http"]["tool"]``
+    # contract. The decorator sites read ``handle.download_tool_name``
+    # / ``handle.fetch_tool_name`` to register the tools, so the field
+    # stays as the single source of truth for "what tool name pvl-core
+    # advertises and registers."
+    download_tool_name: str = field(default=_DEFAULT_DOWNLOAD_TOOL, init=False)
+    fetch_tool_name: str = field(default=_DEFAULT_FETCH_TOOL, init=False)
     ttl_seconds: float = _DEFAULT_TTL_SECONDS
     publish_registry: dict[str, _PublishRecord] = field(default_factory=dict)
     # Throttle: skip ``expire_publish_registry`` if it ran more recently
@@ -605,16 +641,18 @@ def register_file_exchange(
     produces: Sequence[str] = (),
     consumes: Sequence[str] = (),
     consumer_sink: ConsumerSink | None = None,
-    artifact_store: ArtifactStore | None = None,
-    transport: Literal["http", "stdio", "auto"] = "auto",
-    download_tool_name: str = _DEFAULT_DOWNLOAD_TOOL,
-    fetch_tool_name: str = _DEFAULT_FETCH_TOOL,
-    legacy_capability_shape: bool = False,
 ) -> FileExchangeHandle:
     """Wire MCP File Exchange (v0.2.5) onto ``mcp``.
 
-    Performs four pieces of wiring, each gated by env vars and the
-    ``transport`` argument:
+    The kwarg surface is intentionally minimal — five domain hooks,
+    no operator-config kwargs, no override seams. Operator config
+    goes to environment variables (see "Environment" below).
+    Implementation choices pvl-core makes (tool names, transport
+    resolution, capability shape) are not overridable; downstream
+    collisions resolve by downstream migration. See ``CLAUDE.md``
+    "framing principle" for the rationale.
+
+    Performs four pieces of wiring, each gated by env vars:
 
     1. Builds (or adopts) an :class:`ArtifactStore`, mounts its
        ``/artifacts/{token}`` route, and installs the module-level
@@ -625,42 +663,51 @@ def register_file_exchange(
        ``initialize`` response (spec §"Capability declaration").
     4. Registers ``create_download_link`` (spec §"Transfer Methods /
        http") and ``fetch_file`` (spec §"Transfer Negotiation") MCP
-       tools as appropriate for the
-       resolved producer / consumer / transport state.
+       tools as appropriate for the resolved producer / consumer /
+       transport state.
 
     Args:
         mcp: The :class:`fastmcp.FastMCP` server instance.
-        namespace: This server's logical name. Used as both the
-            ``FileRef.origin_server`` and the exchange namespace.
-        env_prefix: Per-server env-var prefix (e.g.
+        namespace: **Domain hook.** This server's logical name. Used
+            as both the ``FileRef.origin_server`` and the exchange
+            namespace.
+        env_prefix: **Domain hook.** Per-server env-var prefix (e.g.
             ``"IMAGE_GENERATION_MCP"``).
-        produces: MIME types this server emits as file references —
-            advertised in the capability declaration.
-        consumes: MIME types this server can ingest via ``fetch_file``.
-        consumer_sink: Required to register ``fetch_file``. Receives
-            the resolved bytes and a :class:`FetchContext`; returns a
-            :class:`FetchResult`.
-        artifact_store: Optional pre-built store. When ``None`` and
-            HTTP is enabled, the facade builds one with ``base_url``
-            from ``{PREFIX}_BASE_URL`` and TTL from
-            ``{PREFIX}_FILE_EXCHANGE_TTL``.
-        transport: ``"auto"`` (default) infers from
-            ``{PREFIX}_TRANSPORT`` / ``FASTMCP_TRANSPORT``; ``"http"``
-            and ``"stdio"`` force the choice.
-        download_tool_name: Override the default ``create_download_link``
-            tool name.
-        fetch_tool_name: Override the default ``fetch_file`` tool name.
-        legacy_capability_shape: Set to True during a migration window
-            to advertise the v0.2 flat ``transfer_methods.http: {tool: ...}``
-            shape instead of the v0.4 nested
-            ``{download: ..., upload: ...}`` shape. The upload entry is
-            dropped (with a logged warning) when legacy shape is selected.
+        produces: **Domain hook.** MIME types this server emits as
+            file references — advertised in the capability declaration.
+        consumes: **Domain hook.** MIME types this server can ingest
+            via ``fetch_file``.
+        consumer_sink: **Domain hook.** Required to register
+            ``fetch_file``. Receives the resolved bytes and a
+            :class:`FetchContext`; returns a :class:`FetchResult`.
+            When ``None``, the consumer side is not advertised in the
+            capability declaration and ``fetch_file`` is not registered.
+
+    Environment:
+        Operator-controlled configuration. ``{PREFIX}`` matches the
+        ``env_prefix`` argument.
+
+        - ``{PREFIX}_TRANSPORT`` (fallback ``FASTMCP_TRANSPORT``, default
+          ``"stdio"``): selects transport. ``"http"`` / ``"sse"`` /
+          ``"streamable-http"`` enable HTTP-side wiring.
+        - ``{PREFIX}_BASE_URL``: required for the HTTP-side
+          ``create_download_link`` tool to produce reachable URLs;
+          unset means the producer side is silently skipped.
+        - ``{PREFIX}_FILE_EXCHANGE_TTL`` (default 3600 seconds): TTL
+          for issued download URLs and for published file records.
+        - ``{PREFIX}_FILE_EXCHANGE_PRODUCE`` (default ``"true"``):
+          operator opt-out of producer side independent of transport.
+        - ``{PREFIX}_FILE_EXCHANGE_CONSUME`` (default ``"true"``):
+          operator opt-out of consumer side independent of transport.
+        - ``MCP_EXCHANGE_DIR`` (unprefixed, deployer-controlled): the
+          shared volume for the ``exchange`` transfer method;
+          unset means the exchange-volume side is skipped.
 
     Returns:
         A :class:`FileExchangeHandle`. Stash it where your producer-side
         tools can reach it.
     """
-    resolved_transport = _resolve_transport(env_prefix, transport)
+    resolved_transport = _resolve_transport(env_prefix)
     enabled = _resolve_enabled(env_prefix, resolved_transport)
     produce = enabled and parse_bool(env(env_prefix, "FILE_EXCHANGE_PRODUCE", "true"))
     consume_env = parse_bool(env(env_prefix, "FILE_EXCHANGE_CONSUME", "true"))
@@ -681,7 +728,8 @@ def register_file_exchange(
 
     # --- Artifact store ---
     base_url = env(env_prefix, "BASE_URL")
-    store: ArtifactStore | None = artifact_store
+    # Lazy build from env vars; tests override via _set_artifact_store_for_test.
+    store: ArtifactStore | None = _TEST_ARTIFACT_STORE
     if enabled and produce and store is None:
         # Only build a store if we'll actually serve over http; without
         # base_url, build_url would fail and the store would be
@@ -723,21 +771,20 @@ def register_file_exchange(
             exchange_id=exchange.exchange_id if exchange is not None else None,
             produces=tuple(produces) if produce else (),
             consumes=tuple(consumes) if consume else (),
-            legacy_capability_shape=legacy_capability_shape,
         )
         if exchange is not None and (produce or consume):
             builder.set_exchange(True)
         if produce and store is not None and store.has_base_url:
-            # Producer-side download: caller invokes ``download_tool_name``
-            # (default ``create_download_link``) to mint a one-time URL.
-            builder.set_download(tool_name=download_tool_name)
+            # Producer-side download: caller invokes ``create_download_link``
+            # to mint a one-time URL.
+            builder.set_download(tool_name=_DEFAULT_DOWNLOAD_TOOL)
         elif consume:
             # Consumer-side intake: the server's ``fetch_file`` tool pulls
             # bytes when given a URL. Re-uses the ``download`` slot in the
             # nested-http shape — both producer download-link minting and
             # consumer fetch are "download-direction" from the spec's
             # transfer-method perspective.
-            builder.set_download(tool_name=fetch_tool_name)
+            builder.set_download(tool_name=_DEFAULT_FETCH_TOOL)
         capability = _emit_capability(mcp)
 
     handle = FileExchangeHandle(
@@ -748,8 +795,6 @@ def register_file_exchange(
         artifact_store=store,
         exchange=exchange,
         capability=capability,
-        download_tool_name=download_tool_name,
-        fetch_tool_name=fetch_tool_name,
         ttl_seconds=ttl_seconds,
     )
 
@@ -768,8 +813,17 @@ def register_file_exchange(
 
 
 def _resolve_transport(
-    env_prefix: str, override: Literal["http", "stdio", "auto"]
+    env_prefix: str,
+    override: Literal["http", "stdio", "auto"] = "auto",
 ) -> Literal["http", "stdio"]:
+    """Resolve transport from ``{PREFIX}_TRANSPORT`` / ``FASTMCP_TRANSPORT``.
+
+    Defaults to ``"stdio"`` when neither env var is set. ``override`` is
+    retained for :func:`register_file_exchange_upload` which still
+    accepts a ``transport=`` kwarg (its removal is tracked separately
+    under issue #74). :func:`register_file_exchange` no longer passes an
+    override — env-var resolution is the sole path.
+    """
     if override != "auto":
         return override
     raw = (

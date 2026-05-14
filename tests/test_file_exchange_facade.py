@@ -19,6 +19,8 @@ from fastmcp_pvl_core import (
     register_file_exchange,
     set_artifact_store,
 )
+from fastmcp_pvl_core._token_store import ArtifactStore
+from fastmcp_pvl_core.file_exchange import _set_artifact_store_for_test
 
 
 @pytest.fixture(autouse=True)
@@ -63,21 +65,19 @@ def _tool_names(mcp: FastMCP) -> set[str]:
 
 
 class TestEnableGating:
-    def test_stdio_default_disables(self) -> None:
+    def test_stdio_default_disables(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("TEST_FE_TRANSPORT", "stdio")
         mcp = _new_mcp()
-        h = register_file_exchange(
-            mcp, namespace="test-mcp", env_prefix="TEST_FE", transport="stdio"
-        )
+        h = register_file_exchange(mcp, namespace="test-mcp", env_prefix="TEST_FE")
         assert h.enabled is False
         assert "create_download_link" not in _tool_names(mcp)
         assert "fetch_file" not in _tool_names(mcp)
 
     def test_http_default_enables(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("TEST_FE_BASE_URL", "http://test.example")
+        monkeypatch.setenv("TEST_FE_TRANSPORT", "http")
         mcp = _new_mcp()
-        h = register_file_exchange(
-            mcp, namespace="test-mcp", env_prefix="TEST_FE", transport="http"
-        )
+        h = register_file_exchange(mcp, namespace="test-mcp", env_prefix="TEST_FE")
         assert h.enabled is True
         assert "create_download_link" in _tool_names(mcp)
 
@@ -85,11 +85,10 @@ class TestEnableGating:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv("TEST_FE_FILE_EXCHANGE_ENABLED", "true")
+        monkeypatch.setenv("TEST_FE_TRANSPORT", "stdio")
         mcp = _new_mcp()
         # stdio transport but env says enable.
-        h = register_file_exchange(
-            mcp, namespace="test-mcp", env_prefix="TEST_FE", transport="stdio"
-        )
+        h = register_file_exchange(mcp, namespace="test-mcp", env_prefix="TEST_FE")
         assert h.enabled is True
 
 
@@ -103,13 +102,13 @@ class TestProducerOnly:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv("TEST_FE_BASE_URL", "http://test.example")
+        monkeypatch.setenv("TEST_FE_TRANSPORT", "http")
         mcp = _new_mcp()
         register_file_exchange(
             mcp,
             namespace="test-mcp",
             env_prefix="TEST_FE",
             produces=("image/png",),
-            transport="http",
         )
         names = _tool_names(mcp)
         assert "create_download_link" in names
@@ -119,13 +118,13 @@ class TestProducerOnly:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv("TEST_FE_BASE_URL", "http://test.example")
+        monkeypatch.setenv("TEST_FE_TRANSPORT", "http")
         mcp = _new_mcp()
         h = register_file_exchange(
             mcp,
             namespace="test-mcp",
             env_prefix="TEST_FE",
             produces=("image/png",),
-            transport="http",
         )
         assert h.capability is not None
         cap = h.capability.to_capability_dict()
@@ -148,6 +147,7 @@ async def _identity_sink(data: bytes, ctx: FetchContext) -> FetchResult:
 class TestConsumerOnly:
     def test_registers_fetch_file_only(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # No BASE_URL → producer side (http) is not active.
+        monkeypatch.setenv("TEST_FE_TRANSPORT", "http")
         mcp = _new_mcp()
         register_file_exchange(
             mcp,
@@ -155,7 +155,6 @@ class TestConsumerOnly:
             env_prefix="TEST_FE",
             consumes=("image/png", "application/pdf"),
             consumer_sink=_identity_sink,
-            transport="http",
         )
         names = _tool_names(mcp)
         assert "fetch_file" in names
@@ -172,6 +171,7 @@ class TestFullModeCapability:
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         monkeypatch.setenv("TEST_FE_BASE_URL", "http://test.example")
+        monkeypatch.setenv("TEST_FE_TRANSPORT", "http")
         monkeypatch.setenv("MCP_EXCHANGE_DIR", str(tmp_path))
         mcp = _new_mcp()
         h = register_file_exchange(
@@ -181,7 +181,6 @@ class TestFullModeCapability:
             produces=("image/png",),
             consumes=("image/png",),
             consumer_sink=_identity_sink,
-            transport="http",
         )
         assert h.capability is not None
         cap = h.capability.to_capability_dict()
@@ -199,13 +198,13 @@ def _make_handle_http(
     monkeypatch: pytest.MonkeyPatch, *, base_url: str = "http://test.example"
 ) -> tuple[FastMCP, FileExchangeHandle]:
     monkeypatch.setenv("TEST_FE_BASE_URL", base_url)
+    monkeypatch.setenv("TEST_FE_TRANSPORT", "http")
     mcp = _new_mcp()
     h = register_file_exchange(
         mcp,
         namespace="image-mcp",
         env_prefix="TEST_FE",
         produces=("image/png",),
-        transport="http",
     )
     return mcp, h
 
@@ -277,13 +276,13 @@ class TestPublish:
     ) -> None:
         monkeypatch.setenv("MCP_EXCHANGE_DIR", str(tmp_path))
         monkeypatch.setenv("TEST_FE_BASE_URL", "http://test.example")
+        monkeypatch.setenv("TEST_FE_TRANSPORT", "http")
         mcp = _new_mcp()
         h = register_file_exchange(
             mcp,
             namespace="image-mcp",
             env_prefix="TEST_FE",
             produces=("image/png",),
-            transport="http",
         )
 
         invocations = 0
@@ -322,11 +321,12 @@ class TestPublish:
                 mime_type="image/png",
             )
 
-    async def test_publish_disabled_handle_raises(self) -> None:
+    async def test_publish_disabled_handle_raises(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("TEST_FE_TRANSPORT", "stdio")
         mcp = _new_mcp()
-        h = register_file_exchange(
-            mcp, namespace="x", env_prefix="TEST_FE", transport="stdio"
-        )
+        h = register_file_exchange(mcp, namespace="x", env_prefix="TEST_FE")
         with pytest.raises(RuntimeError, match="disabled"):
             await h.publish(source=b"x", mime_type="image/png")
 
@@ -445,6 +445,7 @@ class TestFetchFileTool:
                 extra={"saved_path": "generated/test.png"},
             )
 
+        monkeypatch.setenv("TEST_FE_TRANSPORT", "http")
         mcp = _new_mcp()
         register_file_exchange(
             mcp,
@@ -452,7 +453,6 @@ class TestFetchFileTool:
             env_prefix="TEST_FE",
             consumes=("image/png",),
             consumer_sink=vault_sink,
-            transport="http",
         )
         out = await _call_tool(mcp, "fetch_file", url=uri)
         assert out["method"] == "exchange"
@@ -463,13 +463,13 @@ class TestFetchFileTool:
     async def test_invalid_input_neither_or_both(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        monkeypatch.setenv("TEST_FE_TRANSPORT", "http")
         mcp = _new_mcp()
         register_file_exchange(
             mcp,
             namespace="vault-mcp",
             env_prefix="TEST_FE",
             consumer_sink=_identity_sink,
-            transport="http",
         )
         # Neither
         out = await _call_tool(mcp, "fetch_file")
@@ -482,13 +482,13 @@ class TestFetchFileTool:
         assert out2["error"] == "invalid_input"
 
     async def test_unsupported_scheme(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("TEST_FE_TRANSPORT", "http")
         mcp = _new_mcp()
         register_file_exchange(
             mcp,
             namespace="vault-mcp",
             env_prefix="TEST_FE",
             consumer_sink=_identity_sink,
-            transport="http",
         )
         out = await _call_tool(mcp, "fetch_file", url="ftp://nope/x")
         assert out["error"] == "invalid_input"
@@ -500,6 +500,7 @@ class TestFetchFileTool:
         # Exchange resolution fails with ExchangeGroupMismatch → tool reports
         # transfer_failed with remaining_transfer.
         monkeypatch.setenv("MCP_EXCHANGE_DIR", str(tmp_path))
+        monkeypatch.setenv("TEST_FE_TRANSPORT", "http")
         # Pre-create .exchange-id so the consumer attaches to "vault-group".
         (tmp_path / ".exchange-id").write_text("vault-group\n")
         mcp = _new_mcp()
@@ -508,7 +509,6 @@ class TestFetchFileTool:
             namespace="vault-mcp",
             env_prefix="TEST_FE",
             consumer_sink=_identity_sink,
-            transport="http",
         )
         ref = FileRef(
             origin_server="image-mcp",
@@ -527,13 +527,13 @@ class TestFetchFileTool:
     async def test_ssrf_guard_rejects_private_ip(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        monkeypatch.setenv("TEST_FE_TRANSPORT", "http")
         mcp = _new_mcp()
         register_file_exchange(
             mcp,
             namespace="vault-mcp",
             env_prefix="TEST_FE",
             consumer_sink=_identity_sink,
-            transport="http",
         )
         # Bare-URL SSRF refusals come back as a structured transfer_failed
         # envelope (the same shape as a file_ref-supplied http failure).
@@ -551,13 +551,13 @@ class TestFetchFileTool:
 class TestMisc:
     def test_handle_exposes_status_flags(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("TEST_FE_BASE_URL", "http://t")
+        monkeypatch.setenv("TEST_FE_TRANSPORT", "http")
         mcp = _new_mcp()
         h = register_file_exchange(
             mcp,
             namespace="x",
             env_prefix="TEST_FE",
             produces=("image/png",),
-            transport="http",
         )
         assert h.http_enabled is True
         assert h.exchange_enabled is False  # no MCP_EXCHANGE_DIR
@@ -566,13 +566,13 @@ class TestMisc:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv("TEST_FE_BASE_URL", "http://t")
+        monkeypatch.setenv("TEST_FE_TRANSPORT", "http")
         mcp = _new_mcp()
         h = register_file_exchange(
             mcp,
             namespace="x",
             env_prefix="TEST_FE",
             produces=("image/png",),
-            transport="http",
         )
         preview = FileRefPreview(description="Test", dimensions=(10, 20))
         import asyncio
@@ -585,3 +585,82 @@ class TestMisc:
             "description": "Test",
             "dimensions": {"width": 10, "height": 20},
         }
+
+    def test_internal_artifact_store_seam_injects_fake(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        reset_artifact_store_test_seam: None,
+    ) -> None:
+        """``_set_artifact_store_for_test`` swaps in a fake store for
+        the next register_file_exchange call.  Private API; tests only."""
+        monkeypatch.setenv("TEST_FE_TRANSPORT", "http")
+        monkeypatch.setenv("TEST_FE_BASE_URL", "http://example.test")
+        fake = ArtifactStore(ttl_seconds=10.0, base_url="http://fake.test")
+        _set_artifact_store_for_test(fake)
+        mcp = _new_mcp()
+        h = register_file_exchange(
+            mcp,
+            namespace="x",
+            env_prefix="TEST_FE",
+            produces=("application/pdf",),
+        )
+        assert h.artifact_store is fake
+
+    def test_register_file_exchange_rejects_artifact_store_kwarg(self) -> None:
+        """artifact_store is no longer accepted — pvl-core builds the
+        store from env vars; test injection goes through the private
+        _set_artifact_store_for_test seam."""
+        mcp = _new_mcp()
+        with pytest.raises(TypeError, match="artifact_store"):
+            register_file_exchange(
+                mcp,
+                namespace="x",
+                env_prefix="TEST_FE",
+                artifact_store=object(),  # type: ignore[call-arg]
+            )
+
+    def test_register_file_exchange_rejects_transport_kwarg(self) -> None:
+        """transport is no longer accepted — pvl-core resolves transport
+        from {PREFIX}_TRANSPORT (fallback FASTMCP_TRANSPORT)."""
+        mcp = _new_mcp()
+        with pytest.raises(TypeError, match="transport"):
+            register_file_exchange(
+                mcp,
+                namespace="x",
+                env_prefix="TEST_FE",
+                transport="http",  # type: ignore[call-arg]
+            )
+
+    def test_register_file_exchange_rejects_download_tool_name_kwarg(self) -> None:
+        """Tool name is pvl-core's shape decision; not overridable."""
+        mcp = _new_mcp()
+        with pytest.raises(TypeError, match="download_tool_name"):
+            register_file_exchange(
+                mcp,
+                namespace="x",
+                env_prefix="TEST_FE",
+                download_tool_name="not_allowed",  # type: ignore[call-arg]
+            )
+
+    def test_register_file_exchange_rejects_fetch_tool_name_kwarg(self) -> None:
+        """Tool name is pvl-core's shape decision; not overridable."""
+        mcp = _new_mcp()
+        with pytest.raises(TypeError, match="fetch_tool_name"):
+            register_file_exchange(
+                mcp,
+                namespace="x",
+                env_prefix="TEST_FE",
+                fetch_tool_name="not_allowed",  # type: ignore[call-arg]
+            )
+
+    def test_register_file_exchange_rejects_legacy_capability_shape_kwarg(self) -> None:
+        """legacy_capability_shape was a v0.4-amendments-window shim;
+        removed in 3.0.0."""
+        mcp = _new_mcp()
+        with pytest.raises(TypeError, match="legacy_capability_shape"):
+            register_file_exchange(
+                mcp,
+                namespace="x",
+                env_prefix="TEST_FE",
+                legacy_capability_shape=True,  # type: ignore[call-arg]
+            )

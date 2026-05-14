@@ -164,39 +164,6 @@ def test_builder_set_exchange_false_drops_exchange_method() -> None:
     assert "exchange" not in cap.to_capability_dict()["transfer_methods"]
 
 
-@pytest.mark.asyncio
-async def test_register_file_exchange_legacy_shape_emits_v0_2_flat_http(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """``legacy_capability_shape=True`` is plumbed through the public registrar.
-
-    Verifies the migration-window kwarg surfaces in the emitted capability
-    dict: the version drops to ``"0.2"`` and the http block is flat
-    ``{tool: ...}`` instead of the v0.4 nested ``{download: {...}}`` shape.
-    """
-    monkeypatch.setenv("TEST_LEGACY_TRANSPORT", "http")
-    monkeypatch.setenv("TEST_LEGACY_BASE_URL", "http://srv.test")
-    monkeypatch.delenv("MCP_EXCHANGE_DIR", raising=False)
-
-    from fastmcp_pvl_core import register_file_exchange
-
-    mcp = FastMCP(name="legacy")
-    register_file_exchange(
-        mcp,
-        namespace="ns",
-        env_prefix="TEST_LEGACY",
-        produces=["image/png"],
-        legacy_capability_shape=True,
-    )
-
-    builder = mcp._pvl_file_exchange_builder  # type: ignore[attr-defined]
-    cap = builder.build()
-    assert cap is not None
-    d = cap.to_capability_dict()
-    assert d["version"] == "0.2"
-    assert d["transfer_methods"]["http"] == {"tool": "create_download_link"}
-
-
 def test_builder_is_attached_per_instance_not_module_level() -> None:
     """Capability builders live on the FastMCP instance, not in a global dict.
 
