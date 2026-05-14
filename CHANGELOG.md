@@ -3,6 +3,53 @@
 All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [3.0.0] - UNRELEASED
+
+### Removed
+
+- **`register_file_exchange` no longer accepts the following kwargs.**
+  Every one was either an override of a pvl-core shape decision or
+  operator config that already had an env-var counterpart:
+  - `artifact_store=` — pvl-core builds the store from
+    `{PREFIX}_BASE_URL` + `{PREFIX}_FILE_EXCHANGE_TTL`. Tests
+    inject via the private `_set_artifact_store_for_test` seam.
+  - `transport=` — resolved from `{PREFIX}_TRANSPORT` (fallback
+    `FASTMCP_TRANSPORT`, default `"stdio"`).
+  - `download_tool_name=` and `fetch_tool_name=` — pvl-core's tool
+    names (`create_download_link`, `fetch_file`) are the shared
+    shape; downstream collisions resolve by downstream renaming
+    the local tool.
+  - `legacy_capability_shape=` — transitional shim from the v0.4
+    amendments window (#76 / #77); the spec is back to v0.2.5 and
+    the nested v0.4-style capability shape is the only shape
+    advertised.
+
+### Migration
+
+Downstream consumers tracked per-repo:
+
+- pvliesdonk/markdown-vault-mcp#492 — dep-pin bump only (this repo
+  uses `register_file_exchange_upload`, not `register_file_exchange`).
+- pvliesdonk/scholar-mcp#196 — drop `transport=` kwarg; ensure
+  `SCHOLAR_MCP_TRANSPORT` env var is set by the CLI.
+- pvliesdonk/image-generation-mcp#227 — drop `transport=` from
+  `src/` and tests.
+- pvliesdonk/reqeng-mcp#17 — drop `transport="auto"` (default; no
+  behaviour change after migration).
+- pvliesdonk/fastmcp-server-template#133 (child of #131) — drop
+  `transport="auto"` from `server.py.jinja`.
+
+### Notes
+
+`register_file_exchange_upload` is intentionally untouched in this
+release; #74 redoes it wholesale against the #71 spec evolution.
+Its kwarg surface is audited at that point.
+
+The framing principle that drives this change is documented
+authoritatively in `README.md` `## Design principles` and `CLAUDE.md`
+`## The framing principle`. See pvliesdonk/fastmcp-pvl-core#73 and
+pvliesdonk/fastmcp-pvl-core#72 for context.
+
 ## Unreleased
 
 ### Added
