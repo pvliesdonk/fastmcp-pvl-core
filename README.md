@@ -1,7 +1,13 @@
 # fastmcp-pvl-core
 
-Shared FastMCP infrastructure for the `pvliesdonk/*-mcp` server family:
-auth, middleware, logging, config helpers, server-factory building blocks.
+The opinionated shared implementation for the `pvliesdonk/*-mcp`
+server family. `fastmcp-pvl-core` owns the shape of cross-cutting
+concerns — auth, middleware, logging, config, server-factory builders,
+the file-exchange wire surface — and exposes narrow hooks to
+downstream servers for domain-specific behaviour. Downstream conforms
+to the shape; pvl-core does not adapt to downstream preferences. See
+[Design principles](#design-principles) for the rationale and the
+classification test that follows from it.
 
 ## Ecosystem
 
@@ -15,6 +21,83 @@ auth, middleware, logging, config helpers, server-factory building blocks.
   `copier update` runs against the template.
 - See the template's README for the update flow and the expected project
   shape.
+
+## Design principles
+
+`fastmcp-pvl-core` is not a buffet of helpers downstream picks from
+à la carte. It is the load-bearing layer that fixes the shape of
+cross-cutting concerns across the server family so the family stays
+coherent as it grows. Four principles follow from that role.
+
+### Shape decisions live in pvl-core
+
+Tool names, parameter shapes, route structures, capability
+declarations, error envelopes, environment-variable contracts —
+pvl-core picks one shape and downstream conforms. If two downstream
+servers would each prefer a different shape, the resolution is for
+pvl-core to pick one and migrate the others to it, not for pvl-core
+to grow an override kwarg.
+
+### Hooks expose domain-specific behaviour only
+
+A hook like *"where in my storage model do these bytes go?"* is
+appropriate — pvl-core cannot know the answer for a particular
+downstream. A hook like *"what should this tool be called?"* or
+*"what HTTP status code should an oversize body return?"* is not —
+those are shape decisions pvl-core owns, and downstream accepts them.
+
+Classification test for a proposed new keyword argument on a
+`register_*` helper, `Build*` factory, or middleware constructor:
+
+- The caller is supplying a value pvl-core could not reasonably know
+  on its own (a callback to its own storage, a per-instance label
+  visible only to the deployer) — **domain hook**, accept.
+- The caller is asking to override a decision pvl-core has already
+  made or should make (rename a tool, change a parameter shape,
+  swap a status code) — **reject**. If downstream genuinely needs
+  different behaviour, pvl-core changes shape and *all* downstreams
+  follow.
+- The caller is supplying a deployer-side value (TTL ceiling, max
+  body size, listening port, debug flag) — **operator
+  configuration**: expose via environment variable, not kwarg.
+
+If a proposed kwarg mixes categories — a legitimate hook bundled
+with an override of shape — split it: keep the hook, drop the
+override. PRs that grow override kwargs disguised as hooks are
+rejected.
+
+### Spec docs are protocol extensions, not design docs
+
+Files under `docs/specs/` describe the wire format and behaviour
+requirements between independently developed servers — what bytes
+move between systems and under what rules. Implementation choices
+that pvl-core happens to make (lazy materialisation strategies, route
+mechanics, framework-specific helpers, downstream tool naming and
+registration mechanics) do not belong in a spec doc; they belong in
+pvl-core's own implementor docs and code comments. Real spec gaps are
+resolved through a proper spec evolution — a new release with the
+version field bumped — not through inline amendments to a published
+version. The opening of
+[`docs/specs/file-exchange.md`](docs/specs/file-exchange.md) is the
+worked example of this distinction.
+
+### Pre-existing downstream conflicts resolve by migration
+
+If a downstream server has already shipped a different *shape* (a
+differently named tool, a divergent parameter, a custom error
+envelope), the resolution is for the downstream to migrate.
+pvl-core does not grow a compatibility shim to spare downstream the
+migration cost, even when the migration is large. If the migration
+cannot land immediately, file a tracked downstream issue and ship
+the breaking change in pvl-core anyway — the umbrella tracker
+coordinates the cutover and the
+[`fastmcp-server-template`](https://github.com/pvliesdonk/fastmcp-server-template)
+scaffold updates carry the new shape forward to fresh consumers.
+
+This applies to *shape* divergence (the things owned by pvl-core).
+Domain-specific divergence between downstreams is expected and does
+not require any migration — downstreams are *supposed* to differ in
+domain logic.
 
 ## API stability
 
