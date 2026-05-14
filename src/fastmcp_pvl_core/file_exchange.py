@@ -628,6 +628,14 @@ def register_file_exchange(
 ) -> FileExchangeHandle:
     """Wire MCP File Exchange (v0.2.5) onto ``mcp``.
 
+    The kwarg surface is intentionally minimal — five domain hooks,
+    no operator-config kwargs, no override seams. Operator config
+    goes to environment variables (see "Environment" below).
+    Implementation choices pvl-core makes (tool names, transport
+    resolution, capability shape) are not overridable; downstream
+    collisions resolve by downstream migration. See ``CLAUDE.md``
+    "framing principle" for the rationale.
+
     Performs four pieces of wiring, each gated by env vars:
 
     1. Builds (or adopts) an :class:`ArtifactStore`, mounts its
@@ -639,21 +647,45 @@ def register_file_exchange(
        ``initialize`` response (spec §"Capability declaration").
     4. Registers ``create_download_link`` (spec §"Transfer Methods /
        http") and ``fetch_file`` (spec §"Transfer Negotiation") MCP
-       tools as appropriate for the
-       resolved producer / consumer / transport state.
+       tools as appropriate for the resolved producer / consumer /
+       transport state.
 
     Args:
         mcp: The :class:`fastmcp.FastMCP` server instance.
-        namespace: This server's logical name. Used as both the
-            ``FileRef.origin_server`` and the exchange namespace.
-        env_prefix: Per-server env-var prefix (e.g.
+        namespace: **Domain hook.** This server's logical name. Used
+            as both the ``FileRef.origin_server`` and the exchange
+            namespace.
+        env_prefix: **Domain hook.** Per-server env-var prefix (e.g.
             ``"IMAGE_GENERATION_MCP"``).
-        produces: MIME types this server emits as file references —
-            advertised in the capability declaration.
-        consumes: MIME types this server can ingest via ``fetch_file``.
-        consumer_sink: Required to register ``fetch_file``. Receives
-            the resolved bytes and a :class:`FetchContext`; returns a
-            :class:`FetchResult`.
+        produces: **Domain hook.** MIME types this server emits as
+            file references — advertised in the capability declaration.
+        consumes: **Domain hook.** MIME types this server can ingest
+            via ``fetch_file``.
+        consumer_sink: **Domain hook.** Required to register
+            ``fetch_file``. Receives the resolved bytes and a
+            :class:`FetchContext`; returns a :class:`FetchResult`.
+            When ``None``, the consumer side is not advertised in the
+            capability declaration and ``fetch_file`` is not registered.
+
+    Environment:
+        Operator-controlled configuration. ``{PREFIX}`` matches the
+        ``env_prefix`` argument.
+
+        - ``{PREFIX}_TRANSPORT`` (fallback ``FASTMCP_TRANSPORT``, default
+          ``"stdio"``): selects transport. ``"http"`` / ``"sse"`` /
+          ``"streamable-http"`` enable HTTP-side wiring.
+        - ``{PREFIX}_BASE_URL``: required for the HTTP-side
+          ``create_download_link`` tool to produce reachable URLs;
+          unset means the producer side is silently skipped.
+        - ``{PREFIX}_FILE_EXCHANGE_TTL`` (default 3600 seconds): TTL
+          for issued download URLs and for published file records.
+        - ``{PREFIX}_FILE_EXCHANGE_PRODUCE`` (default ``"true"``):
+          operator opt-out of producer side independent of transport.
+        - ``{PREFIX}_FILE_EXCHANGE_CONSUME`` (default ``"true"``):
+          operator opt-out of consumer side independent of transport.
+        - ``MCP_EXCHANGE_DIR`` (unprefixed, deployer-controlled): the
+          shared volume for the ``exchange`` transfer method;
+          unset means the exchange-volume side is skipped.
 
     Returns:
         A :class:`FileExchangeHandle`. Stash it where your producer-side
