@@ -89,8 +89,9 @@ _DEFAULT_HTTP_FETCH_MAX_BYTES = 256 * 1024 * 1024  # 256 MiB hard cap
 
 # Private test seam: when set, ``register_file_exchange`` uses this store
 # instead of building one from env vars. NOT public API — leading
-# underscore is the signal. Reset to None between tests via the
-# ``reset_artifact_store_test_seam`` fixture in tests/conftest.py.
+# underscore is the signal. Tests that mutate this should request the
+# ``reset_artifact_store_test_seam`` fixture in tests/conftest.py to
+# reset it on teardown.
 _TEST_ARTIFACT_STORE: ArtifactStore | None = None
 
 
