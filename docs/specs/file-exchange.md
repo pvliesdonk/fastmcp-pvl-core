@@ -63,7 +63,7 @@ The interop surface. When an MCP tool produces a file intended for cross-server 
 | Field | Required | Description |
 |---|---|---|
 | `origin_server` | MUST | Namespace of the producing server. The client uses this to identify which server connection to call for transfer negotiation. |
-| `origin_id` | MUST | Opaque round-trip handle for this file on the origin server. The producer MAY interpret it as a path, document id, image id with embedded variant, HMAC token, or any other internally-meaningful handle; clients and consumers MUST treat it as opaque. The producer's only obligation is round-trip: the exact string returned in `file_ref.origin_id` must, when handed back to the producer via any transfer method that accepts an `origin_id` parameter (e.g. the `http` method's producer tool — see [Transfer Methods](#transfer-methods)), resolve to the same file (subject to TTL). |
+| `origin_id` | MUST | Opaque round-trip handle for this file on the origin server. The producer MAY interpret it as a path, document id, image id with embedded variant, HMAC token, or any other internally-meaningful handle; clients and consumers MUST treat it as opaque. The producer's only obligation is round-trip: the exact string returned in `file_ref.origin_id` MUST, when handed back to the producer via any transfer method that accepts an `origin_id` parameter (e.g. the `http` method's producer tool — see [Transfer Methods](#transfer-methods)), resolve to the same file (subject to TTL). |
 | `mime_type` | SHOULD | MIME type of the file. |
 | `size_bytes` | MAY | File size in bytes. |
 | `transfer` | MUST | Object whose keys are transfer method names and whose values are method-specific metadata. At least one method MUST be present. See [Transfer Methods](#transfer-methods). |
@@ -555,7 +555,7 @@ Consumers never delete exchange files. This prevents a class of bugs where one c
 
 ### Standardised parameter names per method
 
-Each transfer method defines standard parameter names (e.g. `origin_id` for http producer, `url` and `path` for http consumer). Servers that internally use different names MUST alias. This trades a one-time implementation cost for permanent simplicity: clients never need parameter mappings.
+Each transfer method defines standard parameter names (e.g. `origin_id` for the `http` producer, `url` and `path` for the `http` consumer). Servers that internally use different names MUST alias. This trades a one-time implementation cost for permanent simplicity: clients never need parameter mappings.
 
 ### Remaining methods in error payloads
 
