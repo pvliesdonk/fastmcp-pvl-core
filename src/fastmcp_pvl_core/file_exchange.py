@@ -625,8 +625,6 @@ def register_file_exchange(
     produces: Sequence[str] = (),
     consumes: Sequence[str] = (),
     consumer_sink: ConsumerSink | None = None,
-    download_tool_name: str = _DEFAULT_DOWNLOAD_TOOL,
-    fetch_tool_name: str = _DEFAULT_FETCH_TOOL,
     legacy_capability_shape: bool = False,
 ) -> FileExchangeHandle:
     """Wire MCP File Exchange (v0.2.5) onto ``mcp``.
@@ -657,9 +655,6 @@ def register_file_exchange(
         consumer_sink: Required to register ``fetch_file``. Receives
             the resolved bytes and a :class:`FetchContext`; returns a
             :class:`FetchResult`.
-        download_tool_name: Override the default ``create_download_link``
-            tool name.
-        fetch_tool_name: Override the default ``fetch_file`` tool name.
         legacy_capability_shape: Set to True during a migration window
             to advertise the v0.2 flat ``transfer_methods.http: {tool: ...}``
             shape instead of the v0.4 nested
@@ -739,16 +734,16 @@ def register_file_exchange(
         if exchange is not None and (produce or consume):
             builder.set_exchange(True)
         if produce and store is not None and store.has_base_url:
-            # Producer-side download: caller invokes ``download_tool_name``
-            # (default ``create_download_link``) to mint a one-time URL.
-            builder.set_download(tool_name=download_tool_name)
+            # Producer-side download: caller invokes ``create_download_link``
+            # to mint a one-time URL.
+            builder.set_download(tool_name=_DEFAULT_DOWNLOAD_TOOL)
         elif consume:
             # Consumer-side intake: the server's ``fetch_file`` tool pulls
             # bytes when given a URL. Re-uses the ``download`` slot in the
             # nested-http shape — both producer download-link minting and
             # consumer fetch are "download-direction" from the spec's
             # transfer-method perspective.
-            builder.set_download(tool_name=fetch_tool_name)
+            builder.set_download(tool_name=_DEFAULT_FETCH_TOOL)
         capability = _emit_capability(mcp)
 
     handle = FileExchangeHandle(
@@ -759,8 +754,8 @@ def register_file_exchange(
         artifact_store=store,
         exchange=exchange,
         capability=capability,
-        download_tool_name=download_tool_name,
-        fetch_tool_name=fetch_tool_name,
+        download_tool_name=_DEFAULT_DOWNLOAD_TOOL,
+        fetch_tool_name=_DEFAULT_FETCH_TOOL,
         ttl_seconds=ttl_seconds,
     )
 

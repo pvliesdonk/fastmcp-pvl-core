@@ -630,3 +630,25 @@ class TestMisc:
                 env_prefix="TEST_FE",
                 transport="http",  # type: ignore[call-arg]
             )
+
+    def test_register_file_exchange_rejects_download_tool_name_kwarg(self) -> None:
+        """Tool name is pvl-core's shape decision; not overridable."""
+        mcp = _new_mcp()
+        with pytest.raises(TypeError, match="download_tool_name"):
+            register_file_exchange(
+                mcp,
+                namespace="x",
+                env_prefix="TEST_FE",
+                download_tool_name="not_allowed",  # type: ignore[call-arg]
+            )
+
+    def test_register_file_exchange_rejects_fetch_tool_name_kwarg(self) -> None:
+        """Tool name is pvl-core's shape decision; not overridable."""
+        mcp = _new_mcp()
+        with pytest.raises(TypeError, match="fetch_tool_name"):
+            register_file_exchange(
+                mcp,
+                namespace="x",
+                env_prefix="TEST_FE",
+                fetch_tool_name="not_allowed",  # type: ignore[call-arg]
+            )
