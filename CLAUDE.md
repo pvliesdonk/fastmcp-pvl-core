@@ -38,25 +38,32 @@ A hook like *"where in my storage model do these bytes go?"* is
 appropriate — pvl-core cannot know the answer for a particular
 downstream. A hook like *"what should this tool be called?"* or
 *"what HTTP status code should an oversize body return?"* is not —
-those are shape decisions pvl-core owns and downstream must accept.
+those are shape decisions pvl-core owns and downstream accepts them.
 
-**Classification test** for a proposed new keyword argument on a
+**The classification test for a proposed new keyword argument** on a
 `register_*` helper, `Build*` factory, or middleware constructor:
+**would pvl-core be wrong to make this decision itself?**
 
-- Is the caller supplying a value pvl-core could not reasonably know
-  on its own? → **domain hook** — accept the kwarg.
-- Is the caller asking to override a decision pvl-core has already
-  made (or should make)? → **reject**. Keep the decision in pvl-core;
-  if downstream genuinely needs different behaviour, pvl-core changes
+- pvl-core *could* pick a sensible value and downstream has no
+  domain-specific basis to disagree → **pvl-core picks it; no kwarg.**
+  If downstream genuinely needs different behaviour, pvl-core changes
   shape and *all* downstreams follow.
-- Is the caller supplying a deployer-side value (TTL ceiling, max body
-  size, listening port, debug flag)? → **operator configuration**
-  — expose via environment variable, not kwarg.
+- pvl-core *literally cannot* answer because the answer is about the
+  downstream's domain → **domain hook**, accept the kwarg. The kwarg
+  is not optional unless the entire feature is opt-in. There is no
+  third bucket of "pvl-core has a default but downstream can override."
 
-If a proposed kwarg mixes categories — a legitimate hook bundled
-with an override of shape — split it: keep the hook component, drop
-the override component. Reviewers reject PRs that grow override
-kwargs disguised as hooks.
+Operator-side configuration (TTL ceilings, max body sizes, listening
+ports, debug flags) is a separate axis — environment variables, not
+kwargs at all. The kwarg surface stays purely domain hooks.
+
+If a proposed kwarg mixes the two — a legitimate hook bundled with an
+override of shape — split it: keep the hook component, drop the
+override component. Reviewers reject PRs that grow override kwargs
+disguised as hooks. `register_file_exchange` in
+`src/fastmcp_pvl_core/file_exchange.py` is the worked example of the
+sharpened test applied end-to-end: five kwargs, all domain hooks,
+every operator value on an env var.
 
 ### Spec docs are protocol extensions, not design docs
 
