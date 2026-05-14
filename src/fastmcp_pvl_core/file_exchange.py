@@ -87,6 +87,25 @@ _DEFAULT_HTTP_FETCH_TIMEOUT = 30.0
 _DEFAULT_HTTP_FETCH_MAX_BYTES = 256 * 1024 * 1024  # 256 MiB hard cap
 
 
+# Private test seam: when set, ``register_file_exchange`` uses this store
+# instead of building one from env vars. NOT public API — leading
+# underscore is the signal. Reset to None between tests via the
+# ``reset_artifact_store_test_seam`` fixture in tests/conftest.py.
+_TEST_ARTIFACT_STORE: ArtifactStore | None = None
+
+
+def _set_artifact_store_for_test(store: ArtifactStore | None) -> None:
+    """Test-only seam for replacing the lazy-built artifact store.
+
+    NOT public API. ``register_file_exchange``'s kwarg surface
+    exposes only domain hooks; downstream production code has no
+    domain-specific basis to inject a different store at runtime.
+    Tests reach in here when they need fixture-level control.
+    """
+    global _TEST_ARTIFACT_STORE
+    _TEST_ARTIFACT_STORE = store
+
+
 # ---------------------------------------------------------------------------
 # Per-FastMCP capability builder registry
 # ---------------------------------------------------------------------------
@@ -681,7 +700,12 @@ def register_file_exchange(
 
     # --- Artifact store ---
     base_url = env(env_prefix, "BASE_URL")
-    store: ArtifactStore | None = artifact_store
+    # Test seam takes precedence if set; otherwise fall through to the
+    # legacy public kwarg path. The kwarg goes away in Task 3 and this
+    # collapses to a single source.
+    store: ArtifactStore | None = (
+        _TEST_ARTIFACT_STORE if _TEST_ARTIFACT_STORE is not None else artifact_store
+    )
     if enabled and produce and store is None:
         # Only build a store if we'll actually serve over http; without
         # base_url, build_url would fail and the store would be

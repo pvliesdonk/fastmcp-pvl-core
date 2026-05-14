@@ -46,3 +46,17 @@ def clean_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
         if key.startswith(prefixes):
             monkeypatch.delenv(key, raising=False)
     yield
+
+
+@pytest.fixture
+def reset_artifact_store_test_seam() -> Iterator[None]:
+    """Reset the file-exchange artifact-store test seam on teardown.
+
+    Tests that call ``_set_artifact_store_for_test`` opt in by
+    requesting this fixture; it makes sure leakage between tests
+    doesn't poison unrelated tests.
+    """
+    yield
+    from fastmcp_pvl_core.file_exchange import _set_artifact_store_for_test
+
+    _set_artifact_store_for_test(None)

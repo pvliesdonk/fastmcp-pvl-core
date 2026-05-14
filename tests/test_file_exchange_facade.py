@@ -585,3 +585,24 @@ class TestMisc:
             "description": "Test",
             "dimensions": {"width": 10, "height": 20},
         }
+
+
+def test_internal_artifact_store_seam_injects_fake(
+    monkeypatch, reset_artifact_store_test_seam
+):
+    """``_set_artifact_store_for_test`` swaps in a fake store for
+    the next register_file_exchange call.  Private API; tests only."""
+    from fastmcp import FastMCP
+    from fastmcp_pvl_core import register_file_exchange
+    from fastmcp_pvl_core.file_exchange import _set_artifact_store_for_test
+    from fastmcp_pvl_core._artifacts import ArtifactStore
+
+    monkeypatch.setenv("TEST_FE_TRANSPORT", "http")
+    monkeypatch.setenv("TEST_FE_BASE_URL", "http://example.test")
+    fake = ArtifactStore(ttl_seconds=10.0, base_url="http://fake.test")
+    _set_artifact_store_for_test(fake)
+    mcp = FastMCP(name="t")
+    h = register_file_exchange(
+        mcp, namespace="x", env_prefix="TEST_FE", produces=["application/pdf"]
+    )
+    assert h.artifact_store is fake
