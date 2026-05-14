@@ -1,8 +1,14 @@
 # MCP File Exchange Specification
 
-**Version:** 0.2.5 (with proposed v0.4.0 amendments — see end of document)
+**Version:** 0.2.5
 **Status:** experimental
 **Tags:** mcp, spec, interop
+
+## About this document
+
+This specification is a **protocol extension** for MCP. It defines a wire-level convention — the `FileRef` envelope, the `exchange://` URI scheme, the capability declaration, the per-method tool contracts, and the security rules — that independently developed MCP servers MUST share to interoperate.
+
+It is not a design document for any particular implementation. Implementation strategies (lazy materialisation, per-server TTL ceilings and similar limit-enforcement policy, route mechanics, framework-specific helpers, downstream tool naming and registration mechanics) are out of scope and belong in implementor docs, not here. Spec-level defaults that conformant implementations coordinate on — see §"Defaults" — remain part of the spec. Implementation feedback that surfaces a real spec gap is resolved through a proper spec evolution (a new release with the version field bumped per §"Versioning and compatibility"), not through inline amendments to a published version.
 
 ## Problem
 
@@ -57,7 +63,7 @@ The interop surface. When an MCP tool produces a file intended for cross-server 
 | Field | Required | Description |
 |---|---|---|
 | `origin_server` | MUST | Namespace of the producing server. The client uses this to identify which server connection to call for transfer negotiation. |
-| `origin_id` | MUST | Opaque identifier for this file on the origin server. Passed as a parameter when requesting transfer via any method. |
+| `origin_id` | MUST | Opaque round-trip handle for this file on the origin server. The producer MAY interpret it as a path, document id, image id with embedded variant, HMAC token, or any other internally-meaningful handle; clients and consumers MUST treat it as opaque. The producer's only obligation is round-trip: the exact string returned in `file_ref.origin_id` MUST, when handed back to the producer via any transfer method that accepts an `origin_id` parameter (e.g. the `http` method's producer tool — see [Transfer Methods](#transfer-methods)), resolve to the same file (subject to TTL). |
 | `mime_type` | SHOULD | MIME type of the file. |
 | `size_bytes` | MAY | File size in bytes. |
 | `transfer` | MUST | Object whose keys are transfer method names and whose values are method-specific metadata. At least one method MUST be present. See [Transfer Methods](#transfer-methods). |
@@ -282,6 +288,8 @@ After decoding (for URIs) or direct extraction (for JSON parameters), segments:
 - MUST NOT contain null bytes (`\0`) or control characters (U+0000 through U+001F).
 - MUST NOT contain leading or trailing whitespace.
 
+In addition, `exchange://` URIs themselves MUST NOT contain a query component (`?...`) or fragment (`#...`). A URI with either is rejected as `exchange_uri_invalid`. This closes a parser-bypass class where a query string or fragment could slip past naive parsing and be misinterpreted as part of a path segment or file extension.
+
 If a server detects an invalid segment, it MUST abort and return an error:
 
 ```json
@@ -363,7 +371,7 @@ During the MCP `initialize` handshake, a participating server declares exchange 
 
 | Field | Required | Description |
 |---|---|---|
-| `version` | MUST | Spec version (e.g. `"0.2"`). |
+| `version` | MUST | Spec version as `MAJOR.MINOR` (e.g. `"0.2"`). Patch versions are spec-internal and MUST NOT appear in the capability declaration. A server implementing spec version `0.2.5` MUST advertise `"0.2"`; patch-level differences do not change the wire-level capability. |
 | `namespace` | MUST | The server's exchange namespace. |
 | `exchange_id` | SHOULD | The exchange group ID. Present when the server participates in an exchange group. |
 | `produces` | SHOULD | MIME types this server can produce as file references. |
@@ -408,6 +416,8 @@ volumes:
 ```
 
 `MCP_EXCHANGE_ID` is auto-generated on first use. The first server to start checks for `$MCP_EXCHANGE_DIR/.exchange-id`. If absent, it generates a UUID and attempts to create the file using an exclusive-create operation (e.g. `O_CREAT | O_EXCL` on POSIX, which fails atomically if the file already exists). If the exclusive create fails with a file-exists error (`EEXIST`), another server won the race; the server MUST read the UUID from the existing file instead. Implementations MUST NOT use rename-based initialisation for this file, because POSIX `rename(2)` silently overwrites an existing destination, causing split-brain if multiple servers race.
+
+The `.exchange-id` file is UTF-8 plaintext containing the UUID (8-4-4-4-12 hex with hyphens, lower or upper case), with or without a single trailing newline. Consumers MUST strip trailing whitespace and compare the UUID case-insensitively (e.g. by lowercasing both sides before equality). Producers SHOULD write the UUID in lowercase to match the convention emitted by common UUID libraries. The file MUST be created with mode `0o644` so every server in the group (potentially running as different UIDs) can read it.
 
 ### Multi-host
 
@@ -545,7 +555,7 @@ Consumers never delete exchange files. This prevents a class of bugs where one c
 
 ### Standardised parameter names per method
 
-Each transfer method defines standard parameter names (e.g. `origin_id` for http producer, `url` and `path` for http consumer). Servers that internally use different names must alias. This trades a one-time implementation cost for permanent simplicity: clients never need parameter mappings.
+Each transfer method defines standard parameter names (e.g. `origin_id` for the `http` producer, `url` and `path` for the `http` consumer). Servers that internally use different names MUST alias. This trades a one-time implementation cost for permanent simplicity: clients never need parameter mappings.
 
 ### Remaining methods in error payloads
 
@@ -617,166 +627,3 @@ The spec assumes POSIX filesystem semantics. Mixed-OS exchange groups would requ
 
 - **markdown-vault-mcp** ([pvliesdonk/markdown-vault-mcp](https://github.com/pvliesdonk/markdown-vault-mcp)): Consumer. Has `fetch` tool (accepts URL + path). Would add exchange resolution and declare `transfer_methods: {exchange: {}, http: {tool: "fetch"}}`.
 - **image-mcp**: Producer. Has `create_download_link` tool with TTL. Would add exchange writes, file references in tool responses, and declare `transfer_methods: {exchange: {}, http: {tool: "create_download_link"}}`. The `create_download_link` tool would need to accept `origin_id` as a parameter.
-
----
-
-## Proposed v0.4.0 Amendments
-
-The amendments below were surfaced during the `fastmcp-pvl-core` v1.2.0 implementation of v0.2.5. They fill gaps the source spec leaves underspecified — places where the implementation had to make a choice the spec did not explicitly cover. Each is tightly scoped and additive. They are gathered here as a draft change-set rather than a separate spec document so the diff against v0.2.5 stays reviewable in one file.
-
-The capability `version` field stays at `"0.2"` until these amendments are accepted (per the spec's own §"Versioning and compatibility" rule that within-minor changes are additive — these are still additive, but enough cohere into a minor bump). When accepted, the field bumps to `"0.4"`.
-
-### Amendment 1: `origin_id` is an opaque round-trip handle
-
-**Where:** §"File Reference" / §"Server Requirements / Producing server" (`origin_id` field).
-
-**Status today:** v0.2.5 says the producer tool MUST accept a parameter named `origin_id` but does not say anything about the value's structure or the producer's freedom to interpret it.
-
-**Amendment:** The `origin_id` value is opaque to the client and to the consumer. The producer MAY interpret it as a path, a document id, an image id with embedded variant, an HMAC token, or any other internally-meaningful handle. The producer's only obligation is round-trip: the exact string returned in `file_ref.origin_id` must, when handed back to the producer's `create_download_link(origin_id=...)`, resolve to the same file (subject to TTL).
-
-**Rationale:** without this, a consumer might be tempted to parse the `origin_id` (e.g. as a path, or as an integer doc id) and construct its own URLs — which the spec already forbids implicitly but never makes explicit.
-
-### Amendment 2: Lazy materialisation is allowed for `http`-only refs, forbidden for `exchange`
-
-**Where:** §"Server Requirements / Producing server".
-
-**Status today:** v0.2.5 is silent on whether the producer must have bytes in hand at the moment it returns a `file_ref`, or whether it may defer computation until the bytes are actually requested.
-
-**Amendment:**
-
-- A producer MAY defer materialisation until `create_download_link` is called when the file reference advertises only the `http` method.
-- A producer MUST have the file on disk at publish time when the file reference advertises the `exchange` method. The exchange method has no pull trigger — the consumer reads directly from the volume.
-
-**Rationale:** image-generator-mcp's transform-on-fly tools (resize/format-convert at serve time) need lazy semantics; markdown-vault-mcp's note-attachment serves do not. The spec should be explicit about which method permits laziness so producers and clients can reason about timing.
-
-### Amendment 3: Capability `version` is `MAJOR.MINOR` only
-
-**Where:** §"Discovery / Capability declaration".
-
-**Status today:** v0.2.5 the document is at version 0.2.5 (patch-level granularity) but its own example capability advertises `version: "0.2"`. The implication is correct but undocumented.
-
-**Amendment:** the `version` field in the capability declaration MUST be `MAJOR.MINOR` only. Patch versions are spec-internal and not relevant to capability negotiation.
-
-**Rationale:** removes ambiguity for implementers — `0.2` and `0.2.5` are the same wire-level capability.
-
-### Amendment 4: `.exchange-id` file format
-
-**Where:** §"Deployer Setup / Single host".
-
-**Status today:** v0.2.5 says "a UUID is generated, persisted in `.exchange-id`" but does not specify encoding, line-ending, file mode, or how consumers compare values.
-
-**Amendment:** the `.exchange-id` file is UTF-8 plaintext containing the UUID (8-4-4-4-12 hex with hyphens, lower or upper case), with or without a single trailing newline. Consumers MUST strip trailing whitespace before comparison. The file MUST be created with mode `0o644` so every server in the group (potentially running as different UIDs) can read it.
-
-**Rationale:** without this every implementation makes its own choice, and a writer that includes a trailing newline plus a strict reader without `.strip()` produces a silent group mismatch.
-
-### Amendment 5: Consumer's intake tool dispatches by URI scheme
-
-**Where:** §"Server Requirements / Consuming server" + §"Transfer Methods / `http`".
-
-**Status today:** v0.2.5 says the consumer MUST attempt `exchange` resolution before signalling failure, but does not pin down whether `exchange` and `http` resolution happen in the same tool call or separate ones.
-
-**Amendment:** when a consumer advertises both `exchange` and `http` in its `transfer_methods`, its declared intake tool MUST accept both `exchange://` and `http(s)://` URIs in its `url` parameter and dispatch internally by scheme. (The tool name in `transfer_methods.http.tool` is therefore the same as the tool name a client uses for `exchange://` resolution.)
-
-**Rationale:** halves the number of tool names a consumer-aware client needs to track, and matches the de-facto behaviour of every consumer in the pvl family.
-
-### Amendment 6: `create_download_link` on unknown `origin_id` returns `transfer_failed`
-
-**Where:** §"Transfer Methods / `http`" + §"Transfer Negotiation".
-
-**Status today:** v0.2.5 defines `transfer_failed` for `exchange` URI resolution but does not say what the producer's `http` tool does when the `origin_id` is unknown (expired, never published, mismatched producer).
-
-**Amendment:** when `create_download_link(origin_id=X)` is called on an `origin_id` the server cannot resolve, it MUST return a `transfer_failed` envelope with `method: "http"`. This lets the client decide whether to give up or try another method (if the original `file_ref` advertised one).
-
-**Rationale:** consistent error shape across both methods; lets implicit clients fall through cleanly.
-
-### Amendment 7: Producer MAY clamp `ttl_seconds`
-
-**Where:** §"Transfer Methods / `http`".
-
-**Status today:** v0.2.5 says the producer's tool MAY return `ttl_seconds`, but says nothing about whether the producer is allowed to clamp the requested value.
-
-**Amendment:** the producer MAY clamp the requested `ttl_seconds` to a server-configured maximum, and SHOULD return the effective value in the response so the client knows the actual lifetime. A clamp is not an error — it is a successful issuance with a shorter TTL.
-
-**Rationale:** prevents a client from holding a download URL for arbitrary periods of time, which would force the server to retain the bytes indefinitely.
-
-### Amendment 8: Multiple file_refs in one tool result
-
-**Where:** §"File Reference" / §"Usage Patterns".
-
-**Status today:** v0.2.5 mentions `file_ref` as a conventional field name for embedding a single reference but is silent on returning multiple references (e.g. a batch image generation, a multi-page PDF split, a directory listing).
-
-**Amendment:** tools MAY return a `file_refs: [...]` array in addition to or instead of a single `file_ref`. Each element of the array follows the spec §3.1 shape exactly. Consumers that understand `file_ref` SHOULD also understand `file_refs`.
-
-**Rationale:** image-generator-mcp's batch generation already needs this; without an explicit blessing, producers will invent variants.
-
-### Amendment 9: Defensive rejection of `?` and `#` in exchange URIs
-
-**Where:** §"Security and Path Resolution".
-
-**Status today:** v0.2.5 enumerates forbidden characters in segments (separators, traversal, control bytes, whitespace) but does not address what happens if an exchange URI contains a query string or fragment.
-
-**Amendment:** `exchange://` URIs MUST NOT contain a query component (`?...`) or fragment (`#...`). A URI with either is rejected as `exchange_uri_invalid`. (Implementations using `urllib.parse.urlsplit` get this for free — a query/fragment ends up in a separate component and never reaches segment validation.)
-
-**Rationale:** closes a parser-bypass class where a query string slips past a naive `split('/')` and ends up concatenated into the file extension.
-
-### Amendment 10: HTTP method gains direction tagging
-
-**Where:** §"Transfer Methods / `http`" + §"Discovery / Capability declaration".
-
-**Status today:** v0.2.5 has `transfer_methods.http: { tool: "create_download_link" }` (or `{ tool: "fetch" }` for consumers). Direction is implicit — only download exists.
-
-**Amendment:** the `http` method nests by direction:
-
-```json
-"http": {
-  "download": { "tool": "create_download_link" },
-  "upload":   { "tool": "create_upload_link", "max_bytes": 10485760, "max_ttl_seconds": 3600 }
-}
-```
-
-A server may declare either, both, or (for the consumer-of-downloads case) just `download.tool: "fetch"`. The `exchange` method stays direction-agnostic — the URI scheme already works in either direction (an agent writes to its own namespace under `$MCP_EXCHANGE_DIR` and passes the URI to a server tool, mirroring today's download flow). This direction-agnosticism of `exchange` is documented as a non-amendment in the table at the end of this section.
-
-**Migration:** servers advertising `version: "0.2"` keep the flat shape; `version: "0.4"` uses the nested shape. Implementations SHOULD support reading the flat shape from older peers for one minor version. Upstream tooling (`register_file_exchange[_upload]`) accepts a `legacy_capability_shape: bool = False` flag during the migration window.
-
-**Rationale:** keeps a single `transfer_methods` block (no parallel `intake_methods`) while making both directions explicit. Forces a wire bump, but folds into the v0.4.0 bump cleanly.
-
-### Amendment 11: Inbound HTTP transfer (upload)
-
-**Where:** new §"Server Requirements / Server accepting uploads"; addition to §"Transfer Methods / `http`".
-
-**Status today:** v0.2.5 defines no inbound mechanism. `consumes` describes MIME types accepted via `file_ref` pull only.
-
-**Amendment:** a server that supports direct upload:
-
-- MUST register a tool named `create_upload_link` (or whatever name is advertised in `transfer_methods.http.upload.tool`).
-- Tool MUST accept `target_id` (opaque to client/consumer), `ttl_seconds`, `max_bytes`, optional `extra` dict; MUST return `{ upload_url, expires_in_seconds, target_id }`.
-- MUST expose `POST /<namespace>/uploads/{token}` with the documented status-code contract:
-  - `404 Not Found` for missing/consumed tokens (must NOT distinguish "never existed" from "consumed", to avoid leaking token-existence to a probing caller).
-  - `410 Gone` for expired tokens.
-  - `413 Payload Too Large` if `Content-Length` exceeds the reservation's `max_bytes` OR if the body's running total exceeds the cap mid-stream.
-  - `415 Unsupported Media Type` if `Content-Type` does not match the per-method `accepts` filter.
-  - `400 Bad Request` if the receiver raises `ValueError` (the exception's `str()` is the response body).
-  - `409 Conflict` if the receiver raises `FileExistsError` (same body convention as 400).
-  - `500 Internal Server Error` for any other receiver exception (full traceback at ERROR; response body is generic, does NOT echo `str(exc)`).
-- MUST atomically consume each token at most once before dispatching the bytes to the receiver (one-time guarantee). The exact step at which consume happens relative to the pre-checks (415, 413) is implementation-defined; consuming at the lookup step is allowed and provides additional anti-replay safety. The spec only requires that a successful POST consumes the token AND that a token is never consumed twice.
-- MAY clamp `ttl_seconds` to a server ceiling and SHOULD return the effective value (mirror of Amendment 7).
-
-`consumes` keeps its existing meaning: MIME types the server can ingest, regardless of mechanism. The presence of `transfer_methods.http.upload` advertises that direct upload is one available intake mechanism for those types. An optional **per-method filter** `transfer_methods.http.upload.accepts: [mime types]` MAY tighten the subset for the upload path specifically — for the case where a server consumes broadly via `fetch` but only accepts a narrower subset via direct upload. Absent → route inherits the full `consumes` list. `*/*` in this filter explicitly disables MIME checking at the route layer.
-
-`target_id` follows the same character rules as `origin_id` and `exchange://` segments (no `/`, `\`, `.`, `..`, control bytes, leading/trailing whitespace, `?`, `#`).
-
-**Authorization:** the `/uploads/{token}` route is intentionally outside the MCP authorization middleware — possession of a fresh, unconsumed, cryptographically unguessable token IS the authorization, exactly as the existing `/artifacts/{token}` GET route works for downloads. The auth gate is the `create_upload_link` tool, which IS subject to standard MCP tool-tag authorization.
-
-**Streaming receivers:** receivers MUST NOT broadly catch `Exception` while iterating the request body. Implementations use a private exception type to abort oversize requests mid-stream; swallowing it would let the receiver complete on a truncated body. (Implementations MAY base the sentinel on `BaseException` for structural defence, but the receiver-side `MUST NOT` rule stays for portability across implementations that do not.)
-
-**Rationale:** completes the symmetric story for HTTP transfer. Reuses the existing one-time-token pattern, status-code conventions, and capability-declaration shape.
-
-### Non-amendments (sanity-checked, leaving v0.2.5 wording as-is)
-
-- Atomic write via dotfile + rename: correct as-is.
-- `O_CREAT | O_EXCL` for `.exchange-id` initialisation: correct as-is.
-- Producer-owned lifecycle: correct as-is.
-- Once-decoded URI segment validation + raw-string JSON-param validation distinction: correct and important; v0.2.5 wording is precise.
-- `transfer` extension via string-keyed methods with priority order: correct, forward-compatible.
-- `preview` field intentionally loose: correct.
-- The `exchange://` URI scheme is already direction-agnostic. An agent writing to its own namespace under `$MCP_EXCHANGE_DIR` and passing the resulting `exchange://` URI to a server tool is the upload analogue of the existing download flow. The URI scheme requires no new code — segment validation, atomic write, and the read path all work in either direction. No amendment text needed; documented here so future authors do not propose a redundant "amendment" for it.
