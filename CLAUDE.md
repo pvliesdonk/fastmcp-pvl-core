@@ -75,7 +75,8 @@ Real spec gaps are resolved through a proper spec evolution: a new
 release with the version field bumped per the spec's own
 versioning-and-compatibility section. Inline amendments to a
 published version are not a valid spec-evolution mechanism. The
-opening of `docs/specs/file-exchange.md` is the worked example.
+opening of [`docs/specs/file-exchange.md`](docs/specs/file-exchange.md)
+is the worked example.
 
 ### Pre-existing downstream conflicts resolve by migration
 
@@ -134,6 +135,7 @@ CI runs the same checks on Python 3.10 through 3.13.
 - `docs/specs/` — wire-format specs (what goes between systems).
   Read these to understand the protocol; do not put pvl-core's
   implementation choices in here.
-- README.md — `## Design principles` section carries the same
-  framing in user-facing voice; this file is the contributor-facing
-  voice. Keep them aligned when one changes.
+- [README.md](README.md#design-principles) — `## Design principles`
+  section carries the same framing in user-facing voice; this file
+  is the contributor-facing voice. Keep them aligned when one
+  changes.
