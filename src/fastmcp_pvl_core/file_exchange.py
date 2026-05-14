@@ -1,10 +1,10 @@
 """MCP File Exchange — public facade.
 
 Single-entry-point wiring for downstream MCP servers that want to
-participate in the File Exchange convention (spec v0.4 with v0.4.0
-amendments). Composes the artifact store, the protocol surface, and
-the exchange-volume runtime, and registers the spec-compliant
-``create_download_link`` and ``fetch_file`` MCP tools.
+participate in the File Exchange convention (spec v0.2.5). Composes
+the artifact store, the protocol surface, and the exchange-volume
+runtime, and registers the spec-compliant ``create_download_link``
+and ``fetch_file`` MCP tools.
 
 Downstream usage::
 
@@ -329,8 +329,17 @@ class FileExchangeHandle:
     artifact_store: ArtifactStore | None
     exchange: FileExchange | None
     capability: FileExchangeCapability | None
-    download_tool_name: str = _DEFAULT_DOWNLOAD_TOOL
-    fetch_tool_name: str = _DEFAULT_FETCH_TOOL
+    # pvl-core owns these tool names as part of the shared shape (see
+    # framing principle in CLAUDE.md). ``init=False`` keeps them out of
+    # the constructor so a directly-constructed handle cannot advertise
+    # a tool name that doesn't match what pvl-core actually registered
+    # — silently breaking the file_ref ``transfer["http"]["tool"]``
+    # contract. The decorator sites read ``handle.download_tool_name``
+    # / ``handle.fetch_tool_name`` to register the tools, so the field
+    # stays as the single source of truth for "what tool name pvl-core
+    # advertises and registers."
+    download_tool_name: str = field(default=_DEFAULT_DOWNLOAD_TOOL, init=False)
+    fetch_tool_name: str = field(default=_DEFAULT_FETCH_TOOL, init=False)
     ttl_seconds: float = _DEFAULT_TTL_SECONDS
     publish_registry: dict[str, _PublishRecord] = field(default_factory=dict)
     # Throttle: skip ``expire_publish_registry`` if it ran more recently
@@ -779,8 +788,6 @@ def register_file_exchange(
         artifact_store=store,
         exchange=exchange,
         capability=capability,
-        download_tool_name=_DEFAULT_DOWNLOAD_TOOL,
-        fetch_tool_name=_DEFAULT_FETCH_TOOL,
         ttl_seconds=ttl_seconds,
     )
 

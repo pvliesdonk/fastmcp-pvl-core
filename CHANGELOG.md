@@ -20,9 +20,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     shape; downstream collisions resolve by downstream renaming
     the local tool.
   - `legacy_capability_shape=` — transitional shim from the v0.4
-    amendments window (#76 / #77); the spec is back to v0.2.5 and
-    the nested v0.4-style capability shape is the only shape
-    advertised.
+    amendments window (#76 / #77). The nested `http.{download,upload}`
+    capability shape is *kept* as the only shape advertised; what's
+    removed is the kwarg that let downstream toggle to the older flat
+    v0.2 shape. Spec doc itself remains at v0.2.5 (PR #77 reverted
+    the proposed amendments without changing the wire shape this
+    helper emits).
 
 ### Migration
 
