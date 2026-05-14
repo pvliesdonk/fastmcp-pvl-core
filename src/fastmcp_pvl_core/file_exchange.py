@@ -625,15 +625,13 @@ def register_file_exchange(
     produces: Sequence[str] = (),
     consumes: Sequence[str] = (),
     consumer_sink: ConsumerSink | None = None,
-    transport: Literal["http", "stdio", "auto"] = "auto",
     download_tool_name: str = _DEFAULT_DOWNLOAD_TOOL,
     fetch_tool_name: str = _DEFAULT_FETCH_TOOL,
     legacy_capability_shape: bool = False,
 ) -> FileExchangeHandle:
     """Wire MCP File Exchange (v0.2.5) onto ``mcp``.
 
-    Performs four pieces of wiring, each gated by env vars and the
-    ``transport`` argument:
+    Performs four pieces of wiring, each gated by env vars:
 
     1. Builds (or adopts) an :class:`ArtifactStore`, mounts its
        ``/artifacts/{token}`` route, and installs the module-level
@@ -659,9 +657,6 @@ def register_file_exchange(
         consumer_sink: Required to register ``fetch_file``. Receives
             the resolved bytes and a :class:`FetchContext`; returns a
             :class:`FetchResult`.
-        transport: ``"auto"`` (default) infers from
-            ``{PREFIX}_TRANSPORT`` / ``FASTMCP_TRANSPORT``; ``"http"``
-            and ``"stdio"`` force the choice.
         download_tool_name: Override the default ``create_download_link``
             tool name.
         fetch_tool_name: Override the default ``fetch_file`` tool name.
@@ -675,7 +670,7 @@ def register_file_exchange(
         A :class:`FileExchangeHandle`. Stash it where your producer-side
         tools can reach it.
     """
-    resolved_transport = _resolve_transport(env_prefix, transport)
+    resolved_transport = _resolve_transport(env_prefix)
     enabled = _resolve_enabled(env_prefix, resolved_transport)
     produce = enabled and parse_bool(env(env_prefix, "FILE_EXCHANGE_PRODUCE", "true"))
     consume_env = parse_bool(env(env_prefix, "FILE_EXCHANGE_CONSUME", "true"))
@@ -784,8 +779,17 @@ def register_file_exchange(
 
 
 def _resolve_transport(
-    env_prefix: str, override: Literal["http", "stdio", "auto"]
+    env_prefix: str,
+    override: Literal["http", "stdio", "auto"] = "auto",
 ) -> Literal["http", "stdio"]:
+    """Resolve transport from ``{PREFIX}_TRANSPORT`` / ``FASTMCP_TRANSPORT``.
+
+    Defaults to ``"stdio"`` when neither env var is set. ``override`` is
+    retained for :func:`register_file_exchange_upload` which still
+    accepts a ``transport=`` kwarg (its removal is tracked separately
+    under issue #74). :func:`register_file_exchange` no longer passes an
+    override — env-var resolution is the sole path.
+    """
     if override != "auto":
         return override
     raw = (

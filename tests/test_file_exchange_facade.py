@@ -618,3 +618,15 @@ class TestMisc:
                 env_prefix="TEST_FE",
                 artifact_store=object(),  # type: ignore[call-arg]
             )
+
+    def test_register_file_exchange_rejects_transport_kwarg(self) -> None:
+        """transport is no longer accepted — pvl-core resolves transport
+        from {PREFIX}_TRANSPORT (fallback FASTMCP_TRANSPORT)."""
+        mcp = _new_mcp()
+        with pytest.raises(TypeError, match="transport"):
+            register_file_exchange(
+                mcp,
+                namespace="x",
+                env_prefix="TEST_FE",
+                transport="http",  # type: ignore[call-arg]
+            )
