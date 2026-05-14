@@ -625,7 +625,6 @@ def register_file_exchange(
     produces: Sequence[str] = (),
     consumes: Sequence[str] = (),
     consumer_sink: ConsumerSink | None = None,
-    artifact_store: ArtifactStore | None = None,
     transport: Literal["http", "stdio", "auto"] = "auto",
     download_tool_name: str = _DEFAULT_DOWNLOAD_TOOL,
     fetch_tool_name: str = _DEFAULT_FETCH_TOOL,
@@ -660,10 +659,6 @@ def register_file_exchange(
         consumer_sink: Required to register ``fetch_file``. Receives
             the resolved bytes and a :class:`FetchContext`; returns a
             :class:`FetchResult`.
-        artifact_store: Optional pre-built store. When ``None`` and
-            HTTP is enabled, the facade builds one with ``base_url``
-            from ``{PREFIX}_BASE_URL`` and TTL from
-            ``{PREFIX}_FILE_EXCHANGE_TTL``.
         transport: ``"auto"`` (default) infers from
             ``{PREFIX}_TRANSPORT`` / ``FASTMCP_TRANSPORT``; ``"http"``
             and ``"stdio"`` force the choice.
@@ -701,12 +696,8 @@ def register_file_exchange(
 
     # --- Artifact store ---
     base_url = env(env_prefix, "BASE_URL")
-    # Test seam takes precedence if set; otherwise fall through to the
-    # legacy public kwarg path. The kwarg goes away in Task 3 and this
-    # collapses to a single source.
-    store: ArtifactStore | None = (
-        _TEST_ARTIFACT_STORE if _TEST_ARTIFACT_STORE is not None else artifact_store
-    )
+    # Lazy build from env vars; tests override via _set_artifact_store_for_test.
+    store: ArtifactStore | None = _TEST_ARTIFACT_STORE
     if enabled and produce and store is None:
         # Only build a store if we'll actually serve over http; without
         # base_url, build_url would fail and the store would be

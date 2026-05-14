@@ -608,4 +608,17 @@ class TestMisc:
         )
         assert h.artifact_store is fake
 
+    def test_register_file_exchange_rejects_artifact_store_kwarg(self) -> None:
+        """artifact_store is no longer accepted — pvl-core builds the
+        store from env vars; test injection goes through the private
+        _set_artifact_store_for_test seam."""
+        mcp = _new_mcp()
+        with pytest.raises(TypeError, match="artifact_store"):
+            register_file_exchange(
+                mcp,
+                namespace="x",
+                env_prefix="TEST_FE",
+                artifact_store=object(),  # type: ignore[call-arg]
+            )
+
 
