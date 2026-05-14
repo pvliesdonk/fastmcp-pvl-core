@@ -652,3 +652,15 @@ class TestMisc:
                 env_prefix="TEST_FE",
                 fetch_tool_name="not_allowed",  # type: ignore[call-arg]
             )
+
+    def test_register_file_exchange_rejects_legacy_capability_shape_kwarg(self) -> None:
+        """legacy_capability_shape was a v0.4-amendments-window shim;
+        removed in 3.0.0."""
+        mcp = _new_mcp()
+        with pytest.raises(TypeError, match="legacy_capability_shape"):
+            register_file_exchange(
+                mcp,
+                namespace="x",
+                env_prefix="TEST_FE",
+                legacy_capability_shape=True,  # type: ignore[call-arg]
+            )

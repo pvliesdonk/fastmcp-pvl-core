@@ -625,7 +625,6 @@ def register_file_exchange(
     produces: Sequence[str] = (),
     consumes: Sequence[str] = (),
     consumer_sink: ConsumerSink | None = None,
-    legacy_capability_shape: bool = False,
 ) -> FileExchangeHandle:
     """Wire MCP File Exchange (v0.2.5) onto ``mcp``.
 
@@ -655,11 +654,6 @@ def register_file_exchange(
         consumer_sink: Required to register ``fetch_file``. Receives
             the resolved bytes and a :class:`FetchContext`; returns a
             :class:`FetchResult`.
-        legacy_capability_shape: Set to True during a migration window
-            to advertise the v0.2 flat ``transfer_methods.http: {tool: ...}``
-            shape instead of the v0.4 nested
-            ``{download: ..., upload: ...}`` shape. The upload entry is
-            dropped (with a logged warning) when legacy shape is selected.
 
     Returns:
         A :class:`FileExchangeHandle`. Stash it where your producer-side
@@ -729,7 +723,6 @@ def register_file_exchange(
             exchange_id=exchange.exchange_id if exchange is not None else None,
             produces=tuple(produces) if produce else (),
             consumes=tuple(consumes) if consume else (),
-            legacy_capability_shape=legacy_capability_shape,
         )
         if exchange is not None and (produce or consume):
             builder.set_exchange(True)
