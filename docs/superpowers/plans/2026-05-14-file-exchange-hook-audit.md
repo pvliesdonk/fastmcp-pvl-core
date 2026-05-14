@@ -270,14 +270,15 @@ Refs #72."
 
 ---
 
-## Task 2: Migrate `artifact_store=None` test usages
+## Task 2: ~~Migrate `artifact_store=None` test usages~~ — SKIPPED
 
-**Goal:** The four existing `artifact_store=None` call sites all pass the default-equivalent value. Drop the kwarg — no behaviour change.
+**Why skipped (recorded 2026-05-14 during execution):** the four lines surfaced by the original grep (`tests/test_file_exchange_coverage.py:627/648/758/791`) are **direct `FileExchangeHandle(...)` dataclass constructions in test bodies**, NOT `register_file_exchange(...)` helper calls. The dataclass field `artifact_store: ArtifactStore | None` has no default, so dropping the argument breaks construction (`TypeError: FileExchangeHandle.__init__() missing 1 required positional argument: 'artifact_store'`). Task 3 (which removes the kwarg from the *public helper*) is independent of these usages and proceeds without this task.
 
-**Files:**
-- Modify: `tests/test_file_exchange_coverage.py` (lines 627, 648, 758, 791 currently; line numbers may shift after Task 1)
+The 4 dataclass constructions are internal test pattern, not part of #72's audit surface (the audit covers the *public* helper kwargs). Leaving them as-is is correct.
 
-- [ ] **Step 1: Verify current usages**
+Original Step 1 content retained below for reference.
+
+- [ ] **Step 1: ~~Verify current usages~~** (skipped)
 
 ```bash
 grep -n 'artifact_store=' tests/test_file_exchange_coverage.py
