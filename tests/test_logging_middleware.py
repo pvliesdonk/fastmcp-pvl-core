@@ -191,13 +191,17 @@ async def test_render_value_escapes_embedded_quotes(caplog):
     assert r'error="say\"hi\""' in caplog.records[-1].getMessage()
 
 
-async def test_render_value_escapes_newlines_to_one_line(caplog):
+@pytest.mark.parametrize(
+    ("raw", "escaped"),
+    [("\n", "\\n"), ("\r", "\\r"), ("\t", "\\t")],
+)
+async def test_render_value_escapes_control_chars_to_one_line(caplog, raw, escaped):
     mw = RequestLoggingMiddleware()
     ctx = _context(method="tools/call", message=_ToolParams("read"))
-    err = ValueError("line one\nline two")
+    err = ValueError("line one" + raw + "line two")
     with caplog.at_level(logging.INFO, logger=_LOGGER_NAME):
         with pytest.raises(ValueError):
             await mw.on_message(ctx, _failing_call_next(err))
     msg = caplog.records[-1].getMessage()
-    assert "\n" not in msg
-    assert r'error="line one\nline two"' in msg
+    assert raw not in msg
+    assert 'error="line one' + escaped + 'line two"' in msg
