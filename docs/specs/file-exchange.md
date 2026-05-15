@@ -1,6 +1,6 @@
 # MCP File Exchange Specification
 
-**Version:** 0.2.5
+**Version:** 0.3.0
 **Status:** experimental
 **Tags:** mcp, spec, interop
 
@@ -230,6 +230,199 @@ In a capability declaration (consumer):
 - The generated URL MUST be cryptographically unguessable (e.g. containing a UUID or HMAC token in the path or query string). The producer SHOULD invalidate the URL after a single successful download (one-time use). TLS/HTTPS is assumed; the URL path is encrypted in transit, so embedding secrets in the URL is equivalent in security to using an `Authorization` header while being compatible with any consumer that can fetch a URL.
 - Consumer tool MUST accept a parameter named `url`. It SHOULD accept an optional parameter named `path` to allow client-directed placement. If `path` is omitted or invalid, the consumer MUST auto-generate a safe local path (e.g. derived from `origin_id` or a UUID). This prevents failures caused by LLMs hallucinating invalid directory structures.
 
+#### `http_upload` (push to receiver-issued URL)
+
+The reverse of the `http` method: the *receiver* mints a one-time POST URL; any party with the URL pushes bytes. The sender can be an LLM/agent, another MCP server, or a human with an HTTP client (`curl`, browser, custom script) — the spec does not constrain who pushes. The motivating use case is when the *sender* cannot serve an HTTP endpoint: with the `http` (download) method the consumer must pull bytes from a producer-served URL, which fails if the sender is a local agent, a `curl` invocation, or any client that can make outbound requests but cannot receive inbound connections. `http_upload` inverts the direction — the receiver issues the URL, the sender only needs outbound HTTP access to reach it.
+
+Like the existing `http` (download) method, both the URL-mint tool on the receiver side and the POST-perform tool on the sender side are wire-optional from the spec's perspective. Any HTTP client that can issue a `POST` is a valid sender, just as any HTTP client that can `GET` is a valid consumer of the existing `http` method. The tool definitions exist to standardize MCP-mediated transfer between MCP servers; they are not the only valid implementation of either side.
+
+In a capability declaration (receiver):
+
+```json
+"http_upload": {
+  "tool": "create_upload_link",
+  "accepts": ["application/pdf", "text/markdown"],
+  "max_bytes": 10485760,
+  "max_ttl_seconds": 3600
+}
+```
+
+In a capability declaration (sender, optional):
+
+```json
+"http_upload": {
+  "tool": "upload",
+  "source_variants": ["path", "exchange_uri", "http_url", "inline_b64"]
+}
+```
+
+- `tool` (MUST) — name of the POST-perform tool.
+- `source_variants` (SHOULD) — array of the `source` tagged-union variants the sender's tool implements. Allows callers to pre-filter and avoid round-trips on unsupported variants. If omitted, callers MUST assume only `path` is supported (the lowest-common-denominator variant per the `source` table below).
+
+Both sides advertise the same key (`http_upload`) with the same `{tool: <name>, ...}` shape. The role is identified by **field presence**, not by the tool name (which is implementation-defined): receiver-side blocks carry `accepts` / `max_bytes` / `max_ttl_seconds`; sender-side blocks carry `source_variants`. A client classifying a peer's capability MUST look at these field presences, not at the string value of `tool`.
+
+A single server that implements both roles cannot express both in a single `http_upload` capability block — the JSON object has one value per key, and the receiver/sender shapes are not isomorphic. Such a server advertises only the side relevant to its peer's use case in any given handshake (receiver-side when the peer will push bytes to it; sender-side when it acts as the pusher). A future spec version MAY introduce explicit sub-keying (`http_upload.receiver` / `http_upload.sender`) if simultaneous dual-role advertisement becomes a common need.
+
+**Receiver-side tool: `create_upload_link`**
+
+The receiver registers a tool that mints upload URLs given a sender's identifier and (optionally) a destination instruction.
+
+| Param | Cardinality | Rules | Description |
+|---|---|---|---|
+| `origin_id` | MUST | Same rules as `origin_id` in the `http` method's `create_download_link` (raw-JSON validation; no path separators `/` or `\`; not equal to `.` or `..`; no null bytes / control characters; no leading or trailing whitespace). | The sender's opaque stable handle for the bytes (the *what*). The receiver MAY treat it as a filename, document id, content hash, or any internally-meaningful key, but MUST NOT interpret it as a path component. |
+| `destination` | MAY | Forbids only null bytes, control characters (U+0000 through U+001F), and leading/trailing whitespace. Path separators, dots, and traversal-shaped strings are **NOT** spec-rejected. The receiver MUST validate per its own domain rules before any filesystem interaction. | The sender's destination instruction (the *where*). The receiver decides semantics — path, slot, parent document key, anything. The relaxed character rules vs. `origin_id` reflect the asymmetric role: `destination` is consumed only by the receiver's own domain logic and never embedded in a URI by anyone else. |
+| `ttl_seconds` | MAY | Positive number of seconds. | Sender's TTL hint for the minted URL. The receiver MAY clamp to its own ceiling (`max_ttl_seconds`); the effective TTL is returned. |
+| `max_bytes` | MAY | Positive integer. | Sender's intended upper bound on the upload size, used as a hint to the receiver. The receiver MAY clamp to its own ceiling (`max_bytes` in its capability declaration); the *effective* ceiling — the value the receiver will enforce at POST time — is returned in the response's `max_bytes` field. The receiver MAY use this hint to reject the link request early (via `transfer_failed`) if the requested size already exceeds policy, sparing a POST round-trip; no resource is pre-allocated. |
+| `content_type` | MAY | Standard MIME type string. | Sender's hint about what `Content-Type` the upload will declare. The receiver MAY pre-filter against its `accepts` list at link-mint time and surface a `transfer_failed` envelope in-band, sparing the sender a 415 round-trip. |
+
+The tool MUST return:
+
+```json
+{
+  "url": "https://receiver.example/uploads/<token>",
+  "ttl_seconds": 3600,
+  "max_bytes": 10485760
+}
+```
+
+- `url` (MUST) — the POST endpoint.
+- `ttl_seconds` (MUST) — effective TTL after clamping. Same field name as the `http` method's `create_download_link` response.
+- `max_bytes` (MUST) — effective body-size ceiling the receiver will enforce at POST time. Receivers MUST always return this field, so senders can pre-validate body size and avoid unnecessary `413` round-trips. (Receivers MUST enforce a ceiling per the §"Receiver server (`http_upload`)" conformance checklist, so a "no ceiling" case does not arise; if the receiver chose not to clamp the sender's `max_bytes` hint, it returns the sender's value verbatim.)
+
+On in-band failure (invalid `destination`, `content_type` not in `accepts`, quota exhausted, dedup conflict, etc.), the receiver returns a `transfer_failed` envelope:
+
+```json
+{
+  "error": "transfer_failed",
+  "method": "http_upload",
+  "receiver_server": "<receiver namespace>",
+  "origin_id": "<the origin_id passed in>",
+  "message": "destination validation failed: ..."
+}
+```
+
+**Clients that handle `transfer_failed` from both directions MUST branch on `method` before reading the server-identifying field.** The download direction's `transfer_failed` carries `origin_server` (the file's provenance — the producer server), because the failure is in retrieving an already-produced file. The `http_upload` `transfer_failed` carries `receiver_server` instead, because no file has been produced yet — the responding server is the *receiver* of an attempted upload, not the origin of any file. The two field names reflect the role split; the per-direction shapes are intentional.
+
+**POST contract (at the minted URL):**
+
+The sender POSTs raw bytes to the receiver-issued URL.
+
+- **Method**: `POST`.
+- **Body**: raw bytes.
+- **`Content-Type` header**: MUST be set by the sender. The receiver MAY enforce per its `accepts` list at this point; mismatch yields `415 Unsupported Media Type`.
+- **`Content-Length` header**: SHOULD be set by the sender. The receiver MAY require it.
+
+The URL token:
+
+- MUST be cryptographically unguessable (≥128 bits of entropy in the URL path or query).
+- MUST be one-time use: the receiver MUST atomically consume the token on the first POST attempt — success OR failure. A retry on the same URL returns `404`, not the original error. Senders that need to retry MUST call `create_upload_link` again.
+- MUST be TTL-bounded: the receiver MUST reject expired tokens.
+
+Status code classes (the receiver picks specific codes within each class; senders SHOULD treat the class as the actionable signal):
+
+| Class | When | Spec rule |
+|---|---|---|
+| `2xx` | bytes accepted | MUST emit one of these on success. |
+| `404 Not Found` | token unknown, expired, OR already consumed | MUST NOT distinguish between these three conditions (anti-leak: avoid revealing token-existence to a probing caller). MUST emit with an empty body — no `transfer_failed` envelope, no framework-default HTML — for the same reason. |
+| `413 Payload Too Large` | body exceeds the receiver's enforced `max_bytes` (either `Content-Length` declares too much, or the running body total exceeds the cap mid-stream) | MUST emit when the cap is breached. |
+| `415 Unsupported Media Type` | `Content-Type` does not match the receiver's `accepts` filter | MUST emit when the filter rejects. |
+| Other `4xx` | receiver-domain rejection (invalid destination, quota, dedup conflict, etc.) | The receiver picks the code; the response body MUST carry a `transfer_failed` envelope. |
+| `5xx` | server-side error | The body MAY be generic; the receiver MUST NOT echo internal error details (the full traceback is logged server-side). |
+
+Success body: the spec does NOT mandate a shape. Receivers MAY return JSON with domain-specific data (saved-path confirmation, generated id, etc.). Senders SHOULD parse JSON when the response `Content-Type` indicates JSON; otherwise treat the body as opaque acknowledgment.
+
+Failure body for the "Other 4xx" class only (as specified in the status-code table above): a `transfer_failed` envelope, same shape as the in-band failure example above. The mandatory 4xx classes (`404`, `413`, `415`) do NOT carry a `transfer_failed` body — `404` intentionally has no body (anti-leak), and `413`/`415` are unambiguously identified by the status code alone.
+
+**Sender-side tool: `upload` (optional)**
+
+A server that wants to act as an MCP-mediated *pusher* of bytes (e.g., a mover-server that reads from a remote source and POSTs to a receiver-issued upload URL) advertises a sender-side tool. Servers that don't have a push role simply omit this side of the capability.
+
+| Param | Cardinality | Description |
+|---|---|---|
+| `url` | MUST | The receiver-issued POST endpoint (returned from `create_upload_link`). |
+| `source` | MUST | Tagged union: exactly one of `{ "path": "<local path>" }`, `{ "exchange_uri": "exchange://..." }`, `{ "http_url": "https://..." }`, or `{ "inline_b64": "<base64 content>" }`. Implementations MAY support a subset; `path` is the lowest-common-denominator. |
+| `content_type` | SHOULD | The MIME type the sender will declare in the POST `Content-Type` header. If omitted, the sender SHOULD sniff or default. |
+
+The tool MUST return:
+
+```json
+{
+  "status": 201,
+  "body": "<receiver's response body, passed through>"
+}
+```
+
+- `status` (MUST) — the receiver's HTTP status code.
+- `body` (MAY) — the receiver's response body, passed through to the caller (opaque to the sender tool itself).
+
+On 4xx with a structured `transfer_failed` envelope, the sender tool SHOULD unwrap and re-raise as a tool error, mirroring how the existing `http` method's `fetch` tool propagates `transfer_failed`.
+
+When called with a `source` variant the sender tool does not implement, the tool MUST return an in-band failure envelope with `error: "unsupported_source_variant"` (a defined error code distinct from the generic `transfer_failed`-with-message form). The envelope MUST include the `url` parameter the caller passed (so a unified handler can correlate the error to the in-flight upload), SHOULD include a `requested_variant` field naming the variant the caller asked for, and SHOULD include a `supported_variants` field listing the variants the tool *does* implement — equivalent in content to the `source_variants` capability field if advertised:
+
+```json
+{
+  "error": "unsupported_source_variant",
+  "method": "http_upload",
+  "url": "https://receiver.example/uploads/<token>",
+  "requested_variant": "exchange_uri",
+  "supported_variants": ["path"],
+  "message": "this sender only implements 'path'; caller requested 'exchange_uri'"
+}
+```
+
+Callers that pre-checked against `source_variants` in the capability declaration will normally avoid this error; the envelope exists for the case where the capability was unavailable or stale.
+
+**Worked example — agent push:**
+
+An LLM agent has a local PDF at `/tmp/draft.pdf` and wants to upload it to a vault server with `namespace: "vault-mcp"`. The agent calls the vault's `create_upload_link` tool:
+
+```jsonc
+// request
+{
+  "origin_id": "draft-2026-05-15.pdf",
+  "destination": "projects/research/papers/draft.pdf",
+  "content_type": "application/pdf"
+}
+
+// response
+{
+  "url": "https://vault-mcp.example/uploads/8f3a9e2b...",
+  "ttl_seconds": 3600,
+  "max_bytes": 10485760
+}
+```
+
+The agent then pushes the bytes with `curl`:
+
+```
+curl -X POST --data-binary @/tmp/draft.pdf \
+     -H "Content-Type: application/pdf" \
+     https://vault-mcp.example/uploads/8f3a9e2b...
+```
+
+The receiver responds `201 Created` with an optional JSON body (e.g., `{"saved_path": "projects/research/papers/draft.pdf"}`).
+
+**Worked example — MCP-mediated push:**
+
+A mover-server is asked to copy bytes from an internal `exchange://` URI into an external vault. The mover calls the vault's `create_upload_link` to obtain the URL, then calls its own `upload` tool to actually POST the bytes:
+
+```jsonc
+// step 1: vault.create_upload_link
+{
+  "origin_id": "moved-from-vault",
+  "destination": "incoming/2026-05-15/movement.bin"
+}
+// -> {"url": "https://vault-mcp.example/uploads/<token>", "ttl_seconds": 3600, "max_bytes": 10485760}
+
+// step 2: mover.upload
+{
+  "url": "https://vault-mcp.example/uploads/<token>",
+  "source": {"exchange_uri": "exchange://hades-01/mover-mcp/moved-from-vault.bin"},
+  "content_type": "application/octet-stream"
+}
+// -> {"status": 201, "body": {"saved_path": "incoming/2026-05-15/movement.bin"}}
+```
+
 #### Method priority
 
 When multiple methods are available, the client SHOULD prefer them in this order:
@@ -239,16 +432,20 @@ When multiple methods are available, the client SHOULD prefer them in this order
 
 Future methods slot into this priority list by convention. Methods with lower latency, lower cost, or stronger privacy properties are preferred.
 
+The `http_upload` method introduced in v0.3 is NOT included in the priority list. The priority list compares methods for the same transfer *direction* (consumer pull from a producer-side endpoint); `http_upload` is the inverse direction (sender push to a receiver-side endpoint). It is selected by a different mechanism — the sender looks for `http_upload` in a receiver's capability declaration and uses it when the use case calls for an upload, not when comparing alternative consumer-pull methods.
+
 #### Adding future methods
 
 A new transfer method (e.g. `s3`, `scp`, `gdrive`) is defined by:
 
 1. A method key string.
-2. The metadata it carries in the file reference.
+2. The metadata it carries in the file reference (if the method participates in file-reference-based transfer at all — push-direction methods like `http_upload` do not appear in file references).
 3. The metadata it carries in the capability declaration (tool names and standard parameter names).
-4. Its position in the priority order.
+4. Its position in the priority order, **if** it is a consumer-pull (download-direction) method. Push-direction methods (e.g. `http_upload`) are not slotted into the priority list; they are selected by presence in the receiver's capability declaration.
 
-Servers that do not recognise a method ignore it. Clients that do not recognise a method skip it and try the next one. This makes the protocol forward-compatible: old clients degrade gracefully when new methods appear.
+Servers that do not recognise a method ignore it. Clients that do not recognise a method skip it and try the next one. This makes the protocol forward-compatible: old clients degrade gracefully when new methods appear. The same skip-unknown-keys rule applies inside the `transfer_methods` object of a server's **capability declaration**: implementations MUST silently ignore any `transfer_methods` key they do not recognise rather than rejecting the handshake. The rule applies recursively: implementations MUST also silently ignore any unrecognised *sub-fields* inside a method's block (e.g. a future `min_bytes` field added to `http_upload` blocks alongside the current `max_bytes`), so that within-minor additive extensions to a method's shape stay backward-compatible.
+
+Note that whether a new method's introduction *also* requires a spec-version bump is governed separately by §"Versioning and compatibility" (the bump-trigger checklist). The structural recipe above is necessary but not always sufficient — methods that introduce a new direction, validation regime, error class, or tool-contract shape additionally warrant a minor-version bump.
 
 ### Exchange Group
 
@@ -287,6 +484,8 @@ After decoding (for URIs) or direct extraction (for JSON parameters), segments:
 - MUST NOT be equal to `.` or `..`.
 - MUST NOT contain null bytes (`\0`) or control characters (U+0000 through U+001F).
 - MUST NOT contain leading or trailing whitespace.
+
+The `destination` parameter passed to a receiver's `create_upload_link` tool (new in v0.3, used by the `http_upload` method) is **not** subject to the segment-validation rules above. It is opaque to anyone but the receiver — the spec mandates only minimum safety constraints (no null bytes, no control characters U+0000 through U+001F, no leading or trailing whitespace). Path separators, dots, and traversal-shaped strings are NOT spec-rejected; the receiver MUST validate per its own domain rules before any filesystem interaction. The asymmetric rules vs. `origin_id` reflect the role split: `origin_id` MAY be echoed by the receiver into URIs or filenames (so it MUST be URI-safe), but `destination` is consumed only by the receiver's own domain logic and never embedded in a URI by anyone else.
 
 In addition, `exchange://` URIs themselves MUST NOT contain a query component (`?...`) or fragment (`#...`). A URI with either is rejected as `exchange_uri_invalid`. This closes a parser-bypass class where a query string or fragment could slip past naive parsing and be misinterpreted as part of a path segment or file extension.
 
@@ -328,7 +527,7 @@ During the MCP `initialize` handshake, a participating server declares exchange 
   "capabilities": {
     "experimental": {
       "file_exchange": {
-        "version": "0.2",
+        "version": "0.3",
         "namespace": "image-mcp",
         "exchange_id": "hades-01",
         "produces": ["image/png", "image/webp", "image/jpeg"],
@@ -352,7 +551,7 @@ During the MCP `initialize` handshake, a participating server declares exchange 
   "capabilities": {
     "experimental": {
       "file_exchange": {
-        "version": "0.2",
+        "version": "0.3",
         "namespace": "vault-mcp",
         "exchange_id": "hades-01",
         "produces": [],
@@ -361,6 +560,12 @@ During the MCP `initialize` handshake, a participating server declares exchange 
           "exchange": {},
           "http": {
             "tool": "fetch"
+          },
+          "http_upload": {
+            "tool": "create_upload_link",
+            "accepts": ["application/pdf", "text/markdown"],
+            "max_bytes": 10485760,
+            "max_ttl_seconds": 3600
           }
         }
       }
@@ -371,11 +576,11 @@ During the MCP `initialize` handshake, a participating server declares exchange 
 
 | Field | Required | Description |
 |---|---|---|
-| `version` | MUST | Spec version as `MAJOR.MINOR` (e.g. `"0.2"`). Patch versions are spec-internal and MUST NOT appear in the capability declaration. A server implementing spec version `0.2.5` MUST advertise `"0.2"`; patch-level differences do not change the wire-level capability. |
+| `version` | MUST | Spec version as `MAJOR.MINOR` (e.g. `"0.3"`). Patch versions are spec-internal and MUST NOT appear in the capability declaration. A server implementing spec version `0.3.0` MUST advertise `"0.3"`; patch-level differences do not change the wire-level capability. |
 | `namespace` | MUST | The server's exchange namespace. |
 | `exchange_id` | SHOULD | The exchange group ID. Present when the server participates in an exchange group. |
 | `produces` | SHOULD | MIME types this server can produce as file references. |
-| `consumes` | SHOULD | MIME types this server can accept via file references. |
+| `consumes` | SHOULD | MIME types this server can accept via file references (the pull-flow / `fetch` path). The push-flow `http_upload` method has its own independent `accepts` filter inside `transfer_methods.http_upload`; the two lists are not required to match. |
 | `transfer_methods` | MUST | Object whose keys are supported transfer method names. Values contain method-specific configuration (e.g. tool names). |
 
 A capability-aware client can determine before any tool calls:
@@ -446,7 +651,7 @@ When a client receives a file reference and needs to deliver it to a consuming s
 
 ### Step 1: Method selection
 
-**Capability-aware client:** intersect the file reference's `transfer` keys with the consumer's `transfer_methods` keys. Pick the highest-priority method that both sides support.
+**Capability-aware client:** intersect the file reference's `transfer` keys with the consumer's `transfer_methods` keys, restricted to pull-direction methods (those that appear in a file reference's `transfer` object — currently `exchange` and `http`). Pick the highest-priority method that both sides support. Push-direction methods like `http_upload` are NOT part of this intersection because they don't appear in file references; they are selected separately by looking for the receiver-side shape (field-presence test: `accepts` / `max_bytes` / `max_ttl_seconds`) in the destination server's capability declaration.
 
 **Implicit client:** pass the file reference to the consumer and let it attempt the highest-priority method it recognises.
 
@@ -525,6 +730,17 @@ This signals definitively to the client that retrying is pointless. The client S
 - **MUST** include `remaining_transfer` in the `transfer_failed` error, containing the file reference's `transfer` with the failed method removed.
 - **SHOULD**, for tools declared in `transfer_methods.http`, accept a parameter named `url` and an optional parameter named `path`. If `path` is omitted, the tool MUST auto-generate a safe local path.
 
+### Receiver server (`http_upload`)
+
+Servers that advertise `http_upload` on the receiver side (i.e. that register a `create_upload_link` tool to accept pushed bytes) MUST meet the obligations listed below. The wire-format details are defined normatively in §"Transfer Methods / `http_upload`"; this section is a conformance checklist that points back to the canonical text.
+
+- **MUST** validate the `destination` parameter per the server's own domain rules **before** any filesystem interaction (spec-level rules in §"Security and Path Resolution"; receiver-specific rules are domain-defined).
+- **MUST** honour the URL token requirements — cryptographically unguessable entropy, one-time atomic consumption on first POST, TTL-bounded expiry, indistinguishable `404` for the three "token unusable" conditions (never existed / expired / already consumed). See §"Transfer Methods / `http_upload` / POST contract / URL token".
+- **MUST** honour the status-code class table in §"Transfer Methods / `http_upload` / POST contract": `2xx` on success, `404` on token issues, `413` on body-size overflow, `415` on `Content-Type` mismatch with `accepts`, other `4xx` for receiver-domain rejection with `transfer_failed` envelope, `5xx` for server errors with the no-internal-detail-echo rule.
+- **MUST** enforce a `max_bytes` body-size ceiling. If `max_bytes` is advertised in the capability declaration, that value is the ceiling. If no capability-declared ceiling applies, the receiver MUST establish and enforce a server-defined default ceiling and return it in every `create_upload_link` response, so the response's `max_bytes` (MUST) field always has a concrete value to echo. This obligation backs the always-return rule in §"Transfer Methods / `http_upload` / Receiver-side tool: `create_upload_link`".
+
+Implementors writing a `http_upload` receiver should treat this checklist plus the wire-format section as a unit; the two are kept separate to surface the receiver-side obligations alongside §"Producing server" and §"Consuming server" without duplicating normative content.
+
 ### Defaults
 
 | Parameter | Default |
@@ -597,7 +813,7 @@ The transfer methods abstraction is designed for extension. Candidate methods in
 
 ### Content negotiation
 
-A producing server could check the consuming server's `consumes` list and produce files in a preferred format (e.g. WebP over PNG). Enabled by the existing `produces`/`consumes` fields but out of scope for v0.2.
+A producing server could check the consuming server's `consumes` list and produce files in a preferred format (e.g. WebP over PNG). Enabled by the existing `produces`/`consumes` fields but out of scope for the current spec version.
 
 ### Streaming / large files
 
@@ -617,7 +833,9 @@ The spec uses semantic versioning (`major.minor`). The `version` field in capabi
 
 **Across major versions** (e.g. 0.x to 1.0): no backward compatibility guaranteed. Major version changes signal a fundamental redesign, likely prompted by MCP adopting native file transfer.
 
-Transfer methods provide additional agility: because methods are identified by string keys and unknown methods are silently skipped, new methods can be introduced without a spec version bump. A server advertising version `0.2` can include a `gdrive` transfer method that older clients simply ignore.
+Transfer methods provide additional agility: because methods are identified by string keys and unknown methods are silently skipped, new methods can usually be introduced without a spec version bump. A server advertising version `0.3` can include a `gdrive` transfer method that older clients simply ignore.
+
+The general rule above ("Across minor versions: may introduce new required fields or change semantics") manifests in practice as the **bump-trigger checklist** for new methods. A new method warrants a minor version bump when it introduces wire-level constructs that other implementations need to know about beyond the method key itself — specifically, any of: a new transfer *direction* (push vs pull), a new validation regime with carve-outs in the spec's security rules, a new error class or envelope field, or a new tool-contract shape that requires explicit advertisement. The `http_upload` method introduced in v0.3 met all four of these criteria and warranted the 0.2 → 0.3 bump; a hypothetical `gdrive` method that just adds a new pull-direction method key with the existing `http`-style contract would not. The rule of thumb: if a v0.x implementation that doesn't know about the new method would behave correctly when ignoring it AND the method introduces no new validation rules or error vocabulary, ship without a bump. Otherwise bump minor and document the new constructs. §"Adding future methods" defines the structural recipe for declaring a method; this section governs whether the declaration also requires a spec-version bump.
 
 ### Mixed-OS exchange groups
 
