@@ -498,9 +498,10 @@ class _FileExchangeCapabilityBuilder:
         max_ttl_seconds: int,
         accepts: tuple[str, ...] | None = None,
     ) -> None:
-        """Record the ``http_upload`` receiver (``sink``) tool plus its
-        admission metadata (the body-size and TTL ceilings and the
-        accepted-``Content-Type`` filter)."""
+        """Record the upload receiver (``sink``) tool and its admission metadata.
+
+        Stores body-size and TTL ceilings and the accepted-``Content-Type`` filter.
+        """
         self._http_upload_sink_tool = tool_name
         self._http_upload_max_bytes = max_bytes
         self._http_upload_max_ttl_seconds = max_ttl_seconds

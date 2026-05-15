@@ -1607,6 +1607,7 @@ def register_file_exchange_upload(
         ttl_max: Operator ceiling. Requested TTL is clamped; the
             effective value is returned to the caller.
             Operator-overridable via ``{PREFIX}_UPLOAD_TTL_MAX``.
+
     Returns:
         An :class:`UploadHandle`. Stash if you need ``create_link`` for
         advanced wrapping; otherwise discard — registration side-effects
