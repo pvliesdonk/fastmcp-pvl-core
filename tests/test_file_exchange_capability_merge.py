@@ -15,6 +15,7 @@ from fastmcp_pvl_core import (
     FetchContext,
     FetchResult,
     register_file_exchange,
+    register_file_exchange_upload,
 )
 from fastmcp_pvl_core._file_exchange_protocol import (
     _FileExchangeCapabilityBuilder,
@@ -239,3 +240,33 @@ def test_register_file_exchange_dual_role_advertises_http_source_and_sink(
         "source": {"tool": "create_download_link"},
         "sink": {"tool": "fetch_file"},
     }
+
+
+def test_register_file_exchange_upload_default_accepts_wildcard_on_wire(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The default ("*/*",) accepts reaches the http_upload.sink wire shape.
+
+    Complements ``test_builder_http_upload_sink_includes_explicit_accepts``,
+    which covers an *explicit* accepts value at the builder-unit level. This
+    confirms the default propagates through the ``register_file_exchange_upload``
+    public helper unchanged.
+    """
+    from fastmcp_pvl_core.file_exchange import _BUILDER_ATTR
+
+    monkeypatch.setenv("TEST_UP_TRANSPORT", "http")
+    monkeypatch.setenv("TEST_UP_BASE_URL", "http://test.example")
+
+    mcp = FastMCP(name="upload-accepts-probe")
+    register_file_exchange_upload(
+        mcp,
+        namespace="ns",
+        env_prefix="TEST_UP",
+        receiver=lambda record, body: {"ok": True},
+    )
+
+    builder = getattr(mcp, _BUILDER_ATTR)
+    cap = builder.build()
+    assert cap is not None
+    sink = cap.to_capability_dict()["transfer_methods"]["http_upload"]["sink"]
+    assert sink["accepts"] == ["*/*"]
