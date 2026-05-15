@@ -473,6 +473,7 @@ class _FileExchangeCapabilityBuilder:
     _exchange_present: bool = False
     _http_source_tool: str | None = None
     _http_sink_tool: str | None = None
+    _http_upload_source_tool: str | None = None
     _http_upload_sink_tool: str | None = None
     _http_upload_max_bytes: int | None = None
     _http_upload_max_ttl_seconds: int | None = None
@@ -506,6 +507,11 @@ class _FileExchangeCapabilityBuilder:
         self._http_upload_max_bytes = max_bytes
         self._http_upload_max_ttl_seconds = max_ttl_seconds
         self._http_upload_accepts = accepts
+
+    def set_http_upload_source(self, *, tool_name: str) -> None:
+        """Record the ``http_upload`` sender (``source``) tool — POSTs bytes
+        to a receiver-issued upload URL."""
+        self._http_upload_source_tool = tool_name
 
     def build(self) -> FileExchangeCapability | None:
         """Materialise the accumulated state into a FileExchangeCapability.
@@ -549,20 +555,23 @@ class _FileExchangeCapabilityBuilder:
         return block or None
 
     def _build_http_upload_block(self) -> dict[str, Any] | None:
-        """Build ``transfer_methods.http_upload`` with the receiver ``sink`` block.
+        """Build ``transfer_methods.http_upload`` with ``source`` / ``sink`` roles.
 
-        Returns ``None`` when no upload-receiver tool was registered.
+        Returns ``None`` when the server fills neither ``http_upload`` role.
         """
-        if self._http_upload_sink_tool is None:
-            return None
-        sink: dict[str, Any] = {
-            "tool": self._http_upload_sink_tool,
-            "max_bytes": self._http_upload_max_bytes,
-            "max_ttl_seconds": self._http_upload_max_ttl_seconds,
-        }
-        if self._http_upload_accepts is not None:
-            sink["accepts"] = list(self._http_upload_accepts)
-        return {"sink": sink}
+        block: dict[str, Any] = {}
+        if self._http_upload_source_tool is not None:
+            block["source"] = {"tool": self._http_upload_source_tool}
+        if self._http_upload_sink_tool is not None:
+            sink: dict[str, Any] = {
+                "tool": self._http_upload_sink_tool,
+                "max_bytes": self._http_upload_max_bytes,
+                "max_ttl_seconds": self._http_upload_max_ttl_seconds,
+            }
+            if self._http_upload_accepts is not None:
+                sink["accepts"] = list(self._http_upload_accepts)
+            block["sink"] = sink
+        return block or None
 
 
 # ---------------------------------------------------------------------------
