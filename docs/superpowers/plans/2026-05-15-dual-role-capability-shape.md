@@ -16,7 +16,7 @@
 
 **Files:** Modify `docs/specs/file-exchange.md` (the `### Transfer Methods` intro, currently lines ~171–175).
 
-- [ ] **Step 1: Replace the intro**
+- [x] **Step 1: Replace the intro**
 
 Find this block:
 
@@ -42,7 +42,7 @@ Each method is identified by a string key (e.g. `"exchange"`, `"http"`, `"http_u
 **`transfer` (file reference) vs `transfer_methods` (capability declaration).** These are different objects with different shapes; do not conflate them. The `transfer` object inside a file reference is per-file, producer-emitted, and inherently single-role — it advertises how to retrieve one specific file — so it stays flat (`{tool: ...}`, no `source`/`sink`). The `transfer_methods` object in a capability declaration is server-wide and describes every role the server fills, so it uses the `source`/`sink` sub-objects described above.
 ```
 
-- [ ] **Step 2: Verify**
+- [x] **Step 2: Verify**
 
 ```bash
 cd /mnt/code/fastmcp-pvl-core
@@ -51,7 +51,7 @@ sed -n '171,185p' docs/specs/file-exchange.md
 
 Expected: the new intro with the structural-rule paragraph and the `transfer`-vs-`transfer_methods` paragraph; the stale "two methods" count is now "three methods".
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add docs/specs/file-exchange.md
@@ -75,7 +75,7 @@ Refs #83."
 
 **Files:** Modify `docs/specs/file-exchange.md` (the `#### \`http\` (download URL)` capability-declaration examples, currently lines ~211–225).
 
-- [ ] **Step 1: Replace the capability examples**
+- [x] **Step 1: Replace the capability examples**
 
 Find this block:
 
@@ -128,7 +128,7 @@ A server that is both producer and consumer populates both sub-keys:
 ```
 ```
 
-- [ ] **Step 2: Verify**
+- [x] **Step 2: Verify**
 
 ```bash
 sed -n '197,240p' docs/specs/file-exchange.md
@@ -136,7 +136,7 @@ sed -n '197,240p' docs/specs/file-exchange.md
 
 Expected: the `http` capability examples now show `source`/`sink` sub-objects, including the both-roles example. The "In a file reference" block above (`"http": {"tool": "create_download_link"}`) is **unchanged** — the file_ref `transfer` object stays flat.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add docs/specs/file-exchange.md
@@ -157,7 +157,7 @@ Refs #83."
 
 **Files:** Modify `docs/specs/file-exchange.md` (the `#### \`http_upload\`` capability-declaration block, currently lines ~241–264).
 
-- [ ] **Step 1: Replace the capability block + dual-role paragraph**
+- [x] **Step 1: Replace the capability block + dual-role paragraph**
 
 Find this block (it runs from "In a capability declaration (receiver):" through the paragraph ending "...if simultaneous dual-role advertisement becomes a common need."):
 
@@ -242,7 +242,7 @@ Fields within each role sub-object:
 The role is identified by **sub-key presence** (`source` vs `sink`), not by the tool-name string (which is implementation-defined). A server that implements both roles advertises both sub-keys — the `source`/`sink` structure expresses dual-role servers without ambiguity.
 ```
 
-- [ ] **Step 2: Verify**
+- [x] **Step 2: Verify**
 
 ```bash
 sed -n '233,290p' docs/specs/file-exchange.md
@@ -250,7 +250,7 @@ sed -n '233,290p' docs/specs/file-exchange.md
 
 Expected: receiver/sender/both examples use `source`/`sink`; the old "a single server ... cannot express both ... future spec version MAY introduce explicit sub-keying" paragraph is gone, replaced by the sub-key-presence statement. No `http_upload.receiver`/`http_upload.sender` strings remain (the design chose `source`/`sink`, not `receiver`/`sender`).
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add docs/specs/file-exchange.md
@@ -274,7 +274,7 @@ Refs #83."
 
 **Files:** Modify `docs/specs/file-exchange.md` (the `#### Capability declaration` worked examples + capability field table, currently lines ~519–590).
 
-- [ ] **Step 1: Update the producer example's `transfer_methods`**
+- [x] **Step 1: Update the producer example's `transfer_methods`**
 
 Find (inside the **Producer example:** JSON block):
 
@@ -298,7 +298,7 @@ Replace with:
         }
 ```
 
-- [ ] **Step 2: Update the consumer example's `transfer_methods`**
+- [x] **Step 2: Update the consumer example's `transfer_methods`**
 
 Find (inside the **Consumer example:** JSON block):
 
@@ -336,7 +336,7 @@ Replace with:
         }
 ```
 
-- [ ] **Step 3: Update the `transfer_methods` field-table row**
+- [x] **Step 3: Update the `transfer_methods` field-table row**
 
 Find:
 
@@ -350,7 +350,7 @@ Replace with:
 | `transfer_methods` | MUST | Object whose keys are supported transfer method names. For tool-based methods (`http`, `http_upload`) the value carries `source` / `sink` role sub-objects, each with a `tool` field plus method-specific metadata; a server populates whichever role(s) it fills. `exchange` carries `{}`. See §"Transfer Methods". |
 ```
 
-- [ ] **Step 4: Update the capability-discovery bullet**
+- [x] **Step 4: Update the capability-discovery bullet**
 
 Find:
 
@@ -364,7 +364,7 @@ Replace with:
 - Which transfer methods are available between any two servers, and in which direction — by matching one server's `source` role for a method against the other server's `sink` role.
 ```
 
-- [ ] **Step 5: Verify**
+- [x] **Step 5: Verify**
 
 ```bash
 sed -n '519,592p' docs/specs/file-exchange.md
@@ -372,7 +372,7 @@ sed -n '519,592p' docs/specs/file-exchange.md
 
 Expected: both worked examples use `source`/`sink`; the producer advertises `http.source`, the consumer advertises `http.sink` and `http_upload.sink`; the field-table row and the discovery bullet are updated.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add docs/specs/file-exchange.md
@@ -392,7 +392,7 @@ Refs #83."
 
 **Files:** Modify `docs/specs/file-exchange.md` (`### Step 1: Method selection`, currently line ~654).
 
-- [ ] **Step 1: Replace the capability-aware-client paragraph**
+- [x] **Step 1: Replace the capability-aware-client paragraph**
 
 Find:
 
@@ -406,7 +406,7 @@ Replace with:
 **Capability-aware client:** the file reference's `transfer` object lists the methods the *producer* (the `source`) supports for this file. For each, check whether the destination server advertises the matching `sink` role for that method in its `transfer_methods` — for `http`, the consumer needs `transfer_methods.http.sink`; for `exchange`, a matching `exchange_id`. Pick the highest-priority method where the producer's `source` side and the consumer's `sink` side both line up. `http_upload` does not appear in file references (it is push-direction); a client pushing bytes *into* a server instead looks for `transfer_methods.http_upload.sink` in that server's capability declaration.
 ```
 
-- [ ] **Step 2: Verify**
+- [x] **Step 2: Verify**
 
 ```bash
 sed -n '652,658p' docs/specs/file-exchange.md
@@ -414,7 +414,7 @@ sed -n '652,658p' docs/specs/file-exchange.md
 
 Expected: the capability-aware-client paragraph now describes matching `source` against `sink`; no stale "field-presence test" wording remains.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add docs/specs/file-exchange.md
@@ -435,7 +435,7 @@ Refs #83."
 
 **Files:** Modify `docs/specs/file-exchange.md` (`### Versioning and compatibility`, currently ends ~line 838, before `### Mixed-OS exchange groups`).
 
-- [ ] **Step 1: Append two paragraphs to the end of the section**
+- [x] **Step 1: Append two paragraphs to the end of the section**
 
 Find the last paragraph of `### Versioning and compatibility` (it ends):
 
@@ -453,7 +453,7 @@ Otherwise bump minor and document the new constructs. §"Adding future methods" 
 **Version `0.4` is permanently skipped.** The `0.4` label was used by an earlier set of inline amendments that were later reverted, and by a stale implementation-side version constant; reusing the number would be ambiguous about which `0.4` is meant. The minor release after `0.3` is `0.5`.
 ```
 
-- [ ] **Step 2: Verify**
+- [x] **Step 2: Verify**
 
 ```bash
 sed -n '826,846p' docs/specs/file-exchange.md
@@ -461,7 +461,7 @@ sed -n '826,846p' docs/specs/file-exchange.md
 
 Expected: the §Versioning section ends with the flat-form reading note and the v0.4-skipped note; `### Mixed-OS exchange groups` follows.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add docs/specs/file-exchange.md
@@ -483,7 +483,7 @@ Refs #83."
 
 **Files:** none modified — verification + PR-mechanics step.
 
-- [ ] **Step 1: Read the modified spec end-to-end for the touched sections**
+- [x] **Step 1: Read the modified spec end-to-end for the touched sections**
 
 ```bash
 cd /mnt/code/fastmcp-pvl-core
@@ -496,7 +496,7 @@ Confirm:
 - `source` / `sink` used consistently; no stray `receiver`/`sender` sub-keys (the design chose `source`/`sink`).
 - The structural rule, the `transfer`/`transfer_methods` distinction, the role-aware method-selection, and both versioning notes are all present.
 
-- [ ] **Step 2: Naming-consistency grep**
+- [x] **Step 2: Naming-consistency grep**
 
 ```bash
 grep -nE '"http":\s*\{\s*"tool"|"http_upload":\s*\{\s*"tool"' docs/specs/file-exchange.md
@@ -504,11 +504,11 @@ grep -nE '"http":\s*\{\s*"tool"|"http_upload":\s*\{\s*"tool"' docs/specs/file-ex
 
 Expected: matches ONLY inside the file-reference `transfer` examples (which stay flat), NOT inside any `transfer_methods` capability block. If a `transfer_methods` block still shows a flat `{tool: ...}`, it was missed — fix it.
 
-- [ ] **Step 3: Invoke the `preflight-circus` skill**
+- [x] **Step 3: Invoke the `preflight-circus` skill**
 
 Per `~/.claude/CLAUDE.md`, the `preflight-circus` skill (`~/.claude/skills/preflight-circus/`) runs before any PR-creating push. Invoke it on `BASE..HEAD` where `BASE = $(git merge-base HEAD origin/main)`. It runs the five core lenses + the `pr-review-toolkit:code-reviewer` supplementary lens, scores findings at ≥80 confidence, and returns clean-or-findings. Address every ≥80 finding (fix, or defend in writing if the lens misread), re-running the affected lens until clean.
 
-- [ ] **Step 4: Open the PR as draft**
+- [x] **Step 4: Open the PR as draft**
 
 ```bash
 git push -u origin spec/dual-role-capability-issue-83
@@ -546,15 +546,15 @@ Fixes a wire-format gap in the file-exchange capability declaration: `transfer_m
 - [x] Spec version unchanged at `0.3.0`.
 - [x] No flat `{tool: ...}` capability blocks remain; file_ref `transfer` blocks correctly stay flat.
 - [x] `source`/`sink` used consistently across §Transfer Methods, §Discovery, §Transfer Negotiation.
-- [ ] CI green.
-- [ ] Bot review clean.
+- [x] CI green.
+- [x] Bot review clean.
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
 EOF
 )"
 ```
 
-- [ ] **Step 5: Watch CI + claude-review; flip ready when clean**
+- [x] **Step 5: Watch CI + claude-review; flip ready when clean**
 
 Per the project PR workflow: watch CI, read claude-review's body (not just the check status), address findings within the one-round iteration cap, flip ready (`gh pr ready <N>`) when CI is green and the bot body says LGTM.
 
@@ -571,4 +571,4 @@ Per the project PR workflow: watch CI, read claude-review's body (not just the c
 - [x] Spec PR: capability declaration expresses dual-role servers for `http` and `http_upload` via `source`/`sink` sub-objects (Tasks 1–4).
 - [x] Spec version stays `0.3.0`; §Versioning states v0.4 is permanently skipped (Task 6).
 - [x] `file_ref` `transfer` object explicitly documented as staying flat (Task 1).
-- [ ] Implementation tracked in #74 (out of scope here).
+- [x] Implementation tracked in #74 (out of scope here).
