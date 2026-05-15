@@ -591,12 +591,9 @@ async def test_upload_stream_read_oserror_returns_transfer_failed(
 ) -> None:
     """An OSError from the byte_source stream during POST body → transfer_failed."""
 
-    class _FailingStream(io.RawIOBase):
-        def read(self, n: int = -1) -> bytes:
+    class _FailingStream(io.BytesIO):
+        def read(self, size: int | None = -1, /) -> bytes:
             raise OSError("disk read failed")
-
-        def readable(self) -> bool:
-            return True
 
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={"ok": True})
