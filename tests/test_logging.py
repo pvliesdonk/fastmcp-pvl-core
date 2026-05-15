@@ -66,37 +66,50 @@ _NOISY_LOGGER_NAMES = (
 )
 
 
-@pytest.fixture
+@pytest.fixture(autouse=True)
 def _restore_noisy_levels():
-    """Save and restore the levels of every logger the demotion logic touches."""
+    """Save and restore the levels of every logger the demotion logic touches.
+
+    Applied module-wide via ``autouse`` because ``configure_logging_from_env``
+    mutates these process-global loggers as a side effect — every test that
+    calls it (not just the demotion tests) would otherwise leak logger state
+    into later test modules.
+    """
     saved = {name: logging.getLogger(name).level for name in _NOISY_LOGGER_NAMES}
     yield
     for name, level in saved.items():
         logging.getLogger(name).setLevel(level)
 
 
-def test_noisy_loggers_demoted_to_warning_at_info(monkeypatch, _restore_noisy_levels):
+def test_noisy_loggers_demoted_to_warning_at_info(monkeypatch):
     monkeypatch.setenv("FASTMCP_LOG_LEVEL", "INFO")
     configure_logging_from_env(verbose=False)
     assert logging.getLogger("uvicorn.access").level == logging.WARNING
     assert logging.getLogger("mcp.server.lowlevel.server").level == logging.WARNING
 
 
-def test_noisy_loggers_notset_at_debug(monkeypatch, _restore_noisy_levels):
+def test_noisy_loggers_notset_at_debug(monkeypatch):
     monkeypatch.setenv("FASTMCP_LOG_LEVEL", "DEBUG")
     configure_logging_from_env(verbose=False)
     assert logging.getLogger("uvicorn.access").level == logging.NOTSET
     assert logging.getLogger("mcp.server.lowlevel.server").level == logging.NOTSET
 
 
-def test_uvicorn_error_logger_untouched(monkeypatch, _restore_noisy_levels):
+def test_noisy_loggers_notset_at_debug_via_verbose(monkeypatch):
+    monkeypatch.delenv("FASTMCP_LOG_LEVEL", raising=False)
+    configure_logging_from_env(verbose=True)
+    assert logging.getLogger("uvicorn.access").level == logging.NOTSET
+    assert logging.getLogger("mcp.server.lowlevel.server").level == logging.NOTSET
+
+
+def test_uvicorn_error_logger_untouched(monkeypatch):
     monkeypatch.setenv("FASTMCP_LOG_LEVEL", "INFO")
     logging.getLogger("uvicorn.error").setLevel(logging.INFO)
     configure_logging_from_env(verbose=False)
     assert logging.getLogger("uvicorn.error").level == logging.INFO
 
 
-def test_demotion_idempotent_across_level_flips(monkeypatch, _restore_noisy_levels):
+def test_demotion_idempotent_across_level_flips(monkeypatch):
     access = logging.getLogger("uvicorn.access")
 
     monkeypatch.setenv("FASTMCP_LOG_LEVEL", "DEBUG")
