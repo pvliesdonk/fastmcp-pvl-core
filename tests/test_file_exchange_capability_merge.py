@@ -193,9 +193,13 @@ def _clean_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
         "TEST_FE_FILE_EXCHANGE_ENABLED",
         "TEST_FE_FILE_EXCHANGE_PRODUCE",
         "TEST_FE_FILE_EXCHANGE_CONSUME",
+        "TEST_FE_FILE_EXCHANGE_TTL",
         "TEST_UP_TRANSPORT",
         "TEST_UP_BASE_URL",
         "TEST_UP_UPLOAD_ENABLED",
+        "TEST_UP_UPLOAD_MAX_BYTES",
+        "TEST_UP_UPLOAD_TTL",
+        "TEST_UP_UPLOAD_TTL_MAX",
     ):
         monkeypatch.delenv(var, raising=False)
     yield
