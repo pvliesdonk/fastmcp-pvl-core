@@ -172,7 +172,7 @@ A producer MAY offer both patterns, controlled by a tool parameter (e.g. `return
 
 A transfer method defines how a file moves between a *source* server (where the bytes originate) and a *sink* server (where they land). The spec defines three methods (`exchange`, `http`, `http_upload`); future extensions may add more.
 
-Each method is identified by a string key (e.g. `"exchange"`, `"http"`, `"http_upload"`) and has method-specific metadata in both the file reference and the capability declaration.
+Each method is identified by a string key (e.g. `"exchange"`, `"http"`, `"http_upload"`) and has method-specific metadata in the capability declaration and, where the method participates in file-reference-based transfer, the file reference. Pull-direction methods (`exchange`, `http`) appear in both; push-direction methods (`http_upload`) appear only in the capability declaration, never in a file reference.
 
 **Capability-declaration shape.** Within the capability declaration's `transfer_methods` object, every *tool-based* method declares its tool(s) under `source` / `sink` role sub-objects. `source` is the endpoint bytes originate from; `sink` is the endpoint bytes land at. Within each role sub-object, `tool` is the one mandatory field; any further fields are method-specific metadata a caller needs up front. A server populates whichever role(s) it implements — both sub-keys for a server that fills both roles of a method, one for a single-role server. The role is identified by sub-key presence, never by the tool-name string (tool names are implementation-defined). `exchange` is the sole *tool-less* method and carries `{}`.
 
