@@ -456,6 +456,8 @@ After decoding (for URIs) or direct extraction (for JSON parameters), segments:
 - MUST NOT contain null bytes (`\0`) or control characters (U+0000 through U+001F).
 - MUST NOT contain leading or trailing whitespace.
 
+The `destination` parameter passed to a receiver's `create_upload_link` tool (new in v0.3, used by the `http_upload` method) is **not** subject to the segment-validation rules above. It is opaque to anyone but the receiver — the spec mandates only minimum safety constraints (no null bytes, no control characters U+0000 through U+001F, no leading or trailing whitespace). Path separators, dots, and traversal-shaped strings are NOT spec-rejected; the receiver MUST validate per its own domain rules before any filesystem interaction. The asymmetric rules vs. `origin_id` reflect the role split: `origin_id` MAY be echoed by the receiver into URIs or filenames (so it must be URI-safe), but `destination` is consumed only by the receiver's own domain logic and never embedded in a URI by anyone else.
+
 In addition, `exchange://` URIs themselves MUST NOT contain a query component (`?...`) or fragment (`#...`). A URI with either is rejected as `exchange_uri_invalid`. This closes a parser-bypass class where a query string or fragment could slip past naive parsing and be misinterpreted as part of a path segment or file extension.
 
 If a server detects an invalid segment, it MUST abort and return an error:
