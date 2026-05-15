@@ -170,9 +170,13 @@ A producer MAY offer both patterns, controlled by a tool parameter (e.g. `return
 
 ### Transfer Methods
 
-A transfer method defines how a file moves from a producing server to a consuming server. The spec defines two methods; future extensions may add more.
+A transfer method defines how a file moves between a *source* server (where the bytes originate) and a *sink* server (where they land). The spec defines three methods (`exchange`, `http`, `http_upload`); future extensions may add more.
 
-Each method is identified by a string key (e.g. `"exchange"`, `"http"`) and has method-specific metadata in both the file reference and the capability declaration.
+Each method is identified by a string key (e.g. `"exchange"`, `"http"`, `"http_upload"`) and has method-specific metadata in both the file reference and the capability declaration.
+
+**Capability-declaration shape.** Within the capability declaration's `transfer_methods` object, every *tool-based* method declares its tool(s) under `source` / `sink` role sub-objects. `source` is the endpoint bytes originate from; `sink` is the endpoint bytes land at. Within each role sub-object, `tool` is the one mandatory field; any further fields are method-specific metadata a caller needs up front. A server populates whichever role(s) it implements — both sub-keys for a server that fills both roles of a method, one for a single-role server. The role is identified by sub-key presence, never by the tool-name string (tool names are implementation-defined). `exchange` is the sole *tool-less* method and carries `{}`.
+
+**`transfer` (file reference) vs `transfer_methods` (capability declaration).** These are different objects with different shapes; do not conflate them. The `transfer` object inside a file reference is per-file, producer-emitted, and inherently single-role — it advertises how to retrieve one specific file — so it stays flat (`{tool: ...}`, no `source`/`sink`). The `transfer_methods` object in a capability declaration is server-wide and describes every role the server fills, so it uses the `source`/`sink` sub-objects described above.
 
 #### `exchange` (shared volume)
 
