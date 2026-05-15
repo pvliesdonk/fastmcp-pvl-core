@@ -376,7 +376,7 @@ A server that wants to act as an MCP-mediated *pusher* of bytes (e.g., a mover-s
 | Param | Cardinality | Description |
 |---|---|---|
 | `url` | MUST | The receiver-issued POST endpoint (returned from `create_upload_link`). |
-| `origin_id` | MUST | The sender's opaque stable handle for the bytes to push. Same raw-JSON validation rules as `origin_id` in the `http` method's `create_download_link` (no path separators `/` or `\`; not `.` or `..`; no null bytes / control characters; no leading or trailing whitespace). The sender resolves it to bytes by its own domain logic — a file, a database row, an in-memory object, anything; callers treat it as opaque. |
+| `origin_id` | MUST | The sender's opaque stable handle for the bytes to push. Same rules as `origin_id` in the `http` method's `create_download_link` (raw-JSON validation; no path separators `/` or `\`; not equal to `.` or `..`; no null bytes / control characters; no leading or trailing whitespace). The sender resolves it to bytes by its own domain logic — a file, a database row, an in-memory object, anything; callers treat it as opaque. |
 | `content_type` | SHOULD | The MIME type the sender will declare in the POST `Content-Type` header. If omitted, the sender SHOULD sniff or default. |
 
 The tool MUST return:
