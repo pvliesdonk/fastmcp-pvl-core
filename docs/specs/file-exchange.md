@@ -285,7 +285,7 @@ The tool MUST return:
 
 - `url` (MUST) — the POST endpoint.
 - `ttl_seconds` (MUST) — effective TTL after clamping. Same field name as the `http` method's `create_download_link` response.
-- `max_bytes` (SHOULD) — effective body-size ceiling after clamping.
+- `max_bytes` (MUST) — effective body-size ceiling after clamping. Receivers MUST return this field when they enforce a size limit; if no limit applies, receivers SHOULD still return the value from their capability declaration so senders can plan body size accordingly and avoid unnecessary `413` round-trips.
 
 On in-band failure (invalid `destination`, `content_type` not in `accepts`, quota exhausted, dedup conflict, etc.), the receiver returns a `transfer_failed` envelope:
 
