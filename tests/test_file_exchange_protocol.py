@@ -262,18 +262,18 @@ class TestFileExchangeCapability:
     def test_minimum_required_fields(self) -> None:
         cap = FileExchangeCapability(
             namespace="image-mcp",
-            transfer_methods={"http": {"tool": "create_download_link"}},
+            transfer_methods={"http": {"source": {"tool": "create_download_link"}}},
         )
         assert cap.to_capability_dict() == {
             "version": SPEC_VERSION,
             "namespace": "image-mcp",
             "produces": [],
             "consumes": [],
-            "transfer_methods": {"http": {"tool": "create_download_link"}},
+            "transfer_methods": {"http": {"source": {"tool": "create_download_link"}}},
         }
 
     def test_full_round_trip_matches_spec_3_9(self) -> None:
-        # Verbatim shape from spec §3.9 producer example.
+        # Verbatim shape from spec §3.9 producer example (v0.3.0 source/sink shape).
         cap = FileExchangeCapability(
             namespace="image-mcp",
             exchange_id="hades-01",
@@ -281,19 +281,19 @@ class TestFileExchangeCapability:
             consumes=(),
             transfer_methods={
                 "exchange": {},
-                "http": {"tool": "create_download_link"},
+                "http": {"source": {"tool": "create_download_link"}},
             },
         )
         d = cap.to_capability_dict()
         assert d == {
-            "version": "0.4",
+            "version": "0.3",
             "namespace": "image-mcp",
             "exchange_id": "hades-01",
             "produces": ["image/png", "image/webp", "image/jpeg"],
             "consumes": [],
             "transfer_methods": {
                 "exchange": {},
-                "http": {"tool": "create_download_link"},
+                "http": {"source": {"tool": "create_download_link"}},
             },
         }
 
@@ -301,12 +301,12 @@ class TestFileExchangeCapability:
         with pytest.raises(ExchangeURIError):
             FileExchangeCapability(
                 namespace="bad/namespace",
-                transfer_methods={"http": {"tool": "t"}},
+                transfer_methods={"http": {"source": {"tool": "t"}}},
             )
         with pytest.raises(ExchangeURIError, match="dot"):
             FileExchangeCapability(
                 namespace=".hidden",
-                transfer_methods={"http": {"tool": "t"}},
+                transfer_methods={"http": {"source": {"tool": "t"}}},
             )
 
     def test_invalid_exchange_id_rejected_at_construction(self) -> None:
@@ -314,13 +314,13 @@ class TestFileExchangeCapability:
             FileExchangeCapability(
                 namespace="ok",
                 exchange_id="bad/id",
-                transfer_methods={"http": {"tool": "t"}},
+                transfer_methods={"http": {"source": {"tool": "t"}}},
             )
 
     def test_list_inputs_are_normalised_to_tuples(self) -> None:
         cap = FileExchangeCapability(
             namespace="ok",
-            transfer_methods={"http": {"tool": "t"}},
+            transfer_methods={"http": {"source": {"tool": "t"}}},
             produces=["image/png"],  # type: ignore[arg-type]
         )
         assert cap.produces == ("image/png",)
@@ -336,7 +336,7 @@ class TestRegisterCapability:
         mcp = FastMCP("test")
         cap = FileExchangeCapability(
             namespace="vault-mcp",
-            transfer_methods={"http": {"tool": "fetch_file"}},
+            transfer_methods={"http": {"sink": {"tool": "fetch_file"}}},
         )
         before = len(mcp.middleware)
         register_file_exchange_capability(mcp, cap)
@@ -346,12 +346,12 @@ class TestRegisterCapability:
         mcp = FastMCP("test")
         cap1 = FileExchangeCapability(
             namespace="vault-mcp",
-            transfer_methods={"http": {"tool": "fetch_file"}},
+            transfer_methods={"http": {"sink": {"tool": "fetch_file"}}},
         )
         cap2 = FileExchangeCapability(
             namespace="vault-mcp",
             consumes=("image/png",),
-            transfer_methods={"http": {"tool": "fetch_file"}},
+            transfer_methods={"http": {"sink": {"tool": "fetch_file"}}},
         )
         register_file_exchange_capability(mcp, cap1)
         register_file_exchange_capability(mcp, cap2)
@@ -375,7 +375,7 @@ class TestRegisterCapability:
             consumes=("image/png", "application/pdf"),
             transfer_methods={
                 "exchange": {},
-                "http": {"tool": "fetch_file"},
+                "http": {"sink": {"tool": "fetch_file"}},
             },
         )
         register_file_exchange_capability(mcp, cap)

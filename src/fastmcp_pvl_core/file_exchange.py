@@ -1,17 +1,15 @@
 """MCP File Exchange — public facade.
 
 Single-entry-point wiring for downstream MCP servers that want to
-participate in the File Exchange convention (spec v0.2.5). Composes
+participate in the File Exchange convention (spec v0.3.0). Composes
 the artifact store, the protocol surface, and the exchange-volume
 runtime, and registers the spec-compliant ``create_download_link``
 and ``fetch_file`` MCP tools.
 
-Implementation note: the ``experimental.file_exchange`` capability
-this module advertises uses the nested ``http.{download, upload}``
-shape (a leftover from the proposed v0.4 amendments that PR #77
-reverted). The spec is back to v0.2.5 but the implementation has not
-yet realigned its capability shape; that realignment is tracked in
-#74 alongside the upload-helper rewrite.
+The ``experimental.file_exchange`` capability this module advertises
+uses the v0.3.0 ``transfer_methods`` shape: ``http`` and
+``http_upload`` are separate method keys, each carrying ``source`` /
+``sink`` role sub-objects for whichever role(s) the server fills.
 
 Downstream usage::
 
@@ -140,7 +138,6 @@ def _get_or_create_builder(
     exchange_id: str | None = None,
     produces: tuple[str, ...] = (),
     consumes: tuple[str, ...] = (),
-    legacy_capability_shape: bool = False,
 ) -> _FileExchangeCapabilityBuilder:
     """Return (creating if needed) the per-FastMCP capability builder.
 
@@ -153,12 +150,9 @@ def _get_or_create_builder(
     additively extend ``produces`` / ``consumes`` (so download and
     upload registrations don't clobber each other's MIME lists).
 
-    Merge contract for the non-mergeable fields (``namespace``,
-    ``legacy_capability_shape``): first-caller-wins. A subsequent
-    caller passing a different value logs a WARNING and the original
-    value is retained — ``namespace`` always, and
-    ``legacy_capability_shape`` only when the second caller actively
-    tries to enable it (the common ``False`` default does not warn).
+    Merge contract for the non-mergeable field ``namespace``:
+    first-caller-wins. A subsequent caller passing a different
+    namespace logs a WARNING and the original value is retained.
     Likewise, ``exchange_id`` is set by the first caller that supplies
     a non-``None`` value and not overwritten thereafter.
     """
@@ -169,7 +163,6 @@ def _get_or_create_builder(
             exchange_id=exchange_id,
             produces=produces,
             consumes=consumes,
-            legacy_capability_shape=legacy_capability_shape,
         )
         # If FastMCP ever forbids dynamic attribute assignment (e.g. via
         # ``ConfigDict(extra="forbid")``) the AttributeError will surface
@@ -192,18 +185,6 @@ def _get_or_create_builder(
                 id(mcp),
                 builder.namespace,
                 namespace,
-            )
-        if (
-            legacy_capability_shape != builder.legacy_capability_shape
-            and legacy_capability_shape  # only warn if second caller TRIED to set True
-        ):
-            logger.warning(
-                "_get_or_create_builder: legacy_capability_shape mismatch "
-                "on FastMCP id=%d — first caller set %r, second tried "
-                "%r; first-caller-wins.",
-                id(mcp),
-                builder.legacy_capability_shape,
-                legacy_capability_shape,
             )
         builder.exchange_id = builder.exchange_id or exchange_id
         # Set-union the MIME lists; using ``set`` and back to tuple
@@ -642,7 +623,7 @@ def register_file_exchange(
     consumes: Sequence[str] = (),
     consumer_sink: ConsumerSink | None = None,
 ) -> FileExchangeHandle:
-    """Wire MCP File Exchange (v0.2.5) onto ``mcp``.
+    """Wire MCP File Exchange (v0.3.0) onto ``mcp``.
 
     The kwarg surface is intentionally minimal — five domain hooks,
     no operator-config kwargs, no override seams. Operator config
@@ -761,8 +742,7 @@ def register_file_exchange(
     # --- Capability declaration ---
     # Push contributions into the per-FastMCP builder so that an upload
     # registrar on the same ``mcp`` can merge into one capability dict.
-    # The shape emitted is v0.4 (nested ``http.download`` / ``http.upload``);
-    # legacy v0.2 flat shape is no longer wired here.
+    # The shape emitted is the v0.3.0 ``source``/``sink`` role-keyed form.
     capability: FileExchangeCapability | None = None
     if enabled:
         builder = _get_or_create_builder(
@@ -774,17 +754,13 @@ def register_file_exchange(
         )
         if exchange is not None and (produce or consume):
             builder.set_exchange(True)
+        # The two http roles are independent — a server that both produces
+        # and consumes fills both. ``create_download_link`` is the producer
+        # (``source``) tool; ``fetch_file`` is the consumer (``sink``) tool.
         if produce and store is not None and store.has_base_url:
-            # Producer-side download: caller invokes ``create_download_link``
-            # to mint a one-time URL.
-            builder.set_download(tool_name=_DEFAULT_DOWNLOAD_TOOL)
-        elif consume:
-            # Consumer-side intake: the server's ``fetch_file`` tool pulls
-            # bytes when given a URL. Re-uses the ``download`` slot in the
-            # nested-http shape — both producer download-link minting and
-            # consumer fetch are "download-direction" from the spec's
-            # transfer-method perspective.
-            builder.set_download(tool_name=_DEFAULT_FETCH_TOOL)
+            builder.set_http_source(tool_name=_DEFAULT_DOWNLOAD_TOOL)
+        if consume:
+            builder.set_http_sink(tool_name=_DEFAULT_FETCH_TOOL)
         capability = _emit_capability(mcp)
 
     handle = FileExchangeHandle(
@@ -1551,7 +1527,6 @@ def register_file_exchange_upload(
     max_bytes_default: int = _DEFAULT_UPLOAD_MAX_BYTES,
     ttl_default: float = _DEFAULT_UPLOAD_TTL_SECONDS,
     ttl_max: float = _DEFAULT_UPLOAD_TTL_MAX_SECONDS,
-    legacy_capability_shape: bool = False,
 ) -> UploadHandle:
     """Wire MCP File Exchange upload direction onto ``mcp``.
 
@@ -1630,11 +1605,6 @@ def register_file_exchange_upload(
         ttl_max: Operator ceiling. Requested TTL is clamped; the
             effective value is returned to the caller.
             Operator-overridable via ``{PREFIX}_UPLOAD_TTL_MAX``.
-        legacy_capability_shape: Set to True during a migration window
-            to advertise the v0.2 flat ``transfer_methods.http: {tool: ...}``
-            shape instead of the v0.4 nested
-            ``{download: ..., upload: ...}`` shape. The upload entry is
-            dropped (with a logged warning) when legacy shape is selected.
 
     Returns:
         An :class:`UploadHandle`. Stash if you need ``create_link`` for
@@ -1775,12 +1745,8 @@ def register_file_exchange_upload(
     # ``accepts`` would mislead clients into thinking only ``consumes``
     # types are accepted. Advertising ``["*/*"]`` explicitly keeps the
     # wire signal aligned with the route's actual permissiveness.
-    builder = _get_or_create_builder(
-        mcp,
-        namespace=namespace,
-        legacy_capability_shape=legacy_capability_shape,
-    )
-    builder.set_upload(
+    builder = _get_or_create_builder(mcp, namespace=namespace)
+    builder.set_http_upload_sink(
         tool_name=upload_tool_name,
         max_bytes=int(max_bytes_default),
         max_ttl_seconds=int(ttl_max),
