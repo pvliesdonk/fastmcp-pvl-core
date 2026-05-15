@@ -443,7 +443,7 @@ A new transfer method (e.g. `s3`, `scp`, `gdrive`) is defined by:
 3. The metadata it carries in the capability declaration (tool names and standard parameter names).
 4. Its position in the priority order, **if** it is a consumer-pull (download-direction) method. Push-direction methods (e.g. `http_upload`) are not slotted into the priority list; they are selected by presence in the receiver's capability declaration.
 
-Servers that do not recognise a method ignore it. Clients that do not recognise a method skip it and try the next one. This makes the protocol forward-compatible: old clients degrade gracefully when new methods appear. The same skip-unknown-keys rule applies inside the `transfer_methods` object of a server's **capability declaration**: implementations MUST silently ignore any `transfer_methods` key they do not recognise rather than rejecting the handshake.
+Servers that do not recognise a method ignore it. Clients that do not recognise a method skip it and try the next one. This makes the protocol forward-compatible: old clients degrade gracefully when new methods appear. The same skip-unknown-keys rule applies inside the `transfer_methods` object of a server's **capability declaration**: implementations MUST silently ignore any `transfer_methods` key they do not recognise rather than rejecting the handshake. The rule applies recursively: implementations MUST also silently ignore any unrecognised *sub-fields* inside a method's block (e.g. a future `min_bytes` field added to `http_upload` blocks alongside the current `max_bytes`), so that within-minor additive extensions to a method's shape stay backward-compatible.
 
 Note that whether a new method's introduction *also* requires a spec-version bump is governed separately by §"Versioning and compatibility" (the bump-trigger checklist). The structural recipe above is necessary but not always sufficient — methods that introduce a new direction, validation regime, error class, or tool-contract shape additionally warrant a minor-version bump.
 
@@ -651,7 +651,7 @@ When a client receives a file reference and needs to deliver it to a consuming s
 
 ### Step 1: Method selection
 
-**Capability-aware client:** intersect the file reference's `transfer` keys with the consumer's `transfer_methods` keys. Pick the highest-priority method that both sides support.
+**Capability-aware client:** intersect the file reference's `transfer` keys with the consumer's `transfer_methods` keys, restricted to pull-direction methods (those that appear in a file reference's `transfer` object — currently `exchange` and `http`). Pick the highest-priority method that both sides support. Push-direction methods like `http_upload` are NOT part of this intersection because they don't appear in file references; they are selected separately by looking for the receiver-side shape (field-presence test: `accepts` / `max_bytes` / `max_ttl_seconds`) in the destination server's capability declaration.
 
 **Implicit client:** pass the file reference to the consumer and let it attempt the highest-priority method it recognises.
 

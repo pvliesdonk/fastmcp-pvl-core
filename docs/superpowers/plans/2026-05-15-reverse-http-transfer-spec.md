@@ -102,10 +102,13 @@ In a capability declaration (receiver):
 In a capability declaration (sender, optional):
 
 ```json
-"http_upload": {"tool": "upload"}
+"http_upload": {
+  "tool": "upload",
+  "source_variants": ["path", "exchange_uri", "http_url", "inline_b64"]
+}
 ```
 
-Both sides advertise the same key (`http_upload`) with the same `{tool: <name>}` shape; the role is implicit based on which tool name the server registers. A single server MAY advertise both sides if it implements both roles.
+Both sides advertise the same key (`http_upload`) with the same `{tool: <name>, ...}` shape. The role is identified by **field presence**, not by the tool name (which is implementation-defined): receiver-side blocks carry `accepts` / `max_bytes` / `max_ttl_seconds`; sender-side blocks carry `source_variants`. A client classifying a peer's capability MUST look at these field presences, not at the string value of `tool`. A single server that implements both roles cannot express both in a single `http_upload` capability block — the JSON object has one value per key, and the receiver/sender shapes are not isomorphic; such a server advertises only the side relevant to each peer's use case.
 
 **Receiver-side tool: `create_upload_link`**
 
@@ -131,7 +134,7 @@ The tool MUST return:
 
 - `url` (MUST) — the POST endpoint.
 - `ttl_seconds` (MUST) — effective TTL after clamping.
-- `max_bytes` (SHOULD) — effective body-size ceiling after clamping.
+- `max_bytes` (MUST) — effective body-size ceiling the receiver will enforce at POST time. Always returned (receivers MUST always enforce a ceiling per the §"Receiver server (`http_upload`)" conformance checklist).
 
 On in-band failure (invalid `destination`, `content_type` not in `accepts`, quota exhausted, dedup conflict, etc.), the receiver returns a `transfer_failed` envelope:
 
@@ -165,7 +168,7 @@ Status code classes (the receiver picks specific codes within each class; sender
 | Class | When | Spec rule |
 |---|---|---|
 | `2xx` | bytes accepted | MUST emit one of these on success. |
-| `404 Not Found` | token unknown, expired, OR already consumed | MUST NOT distinguish between these three conditions (anti-leak: avoid revealing token-existence to a probing caller). |
+| `404 Not Found` | token unknown, expired, OR already consumed | MUST NOT distinguish between these three conditions (anti-leak: avoid revealing token-existence to a probing caller). MUST emit with an empty body — no `transfer_failed` envelope, no framework-default HTML — for the same reason. |
 | `413 Payload Too Large` | body exceeds the receiver's enforced `max_bytes` (either `Content-Length` declares too much, or the running body total exceeds the cap mid-stream) | MUST emit when the cap is breached. |
 | `415 Unsupported Media Type` | `Content-Type` does not match the receiver's `accepts` filter | MUST emit when the filter rejects. |
 | Other `4xx` | receiver-domain rejection (invalid destination, quota, dedup conflict, etc.) | The receiver picks the code; the response body MUST carry a `transfer_failed` envelope. |
@@ -271,7 +274,7 @@ Read the new content. Confirm:
 - The wire-optional note explicitly says "any HTTP client that can issue a POST is a valid sender."
 - The two capability-declaration JSON blocks (receiver + sender) appear before the receiver-side tool details.
 - The receiver-side `create_upload_link` table has 5 rows (`origin_id`, `destination`, `ttl_seconds`, `max_bytes`, `content_type`).
-- The POST contract has 5 status-code rows (2xx, 404, 413, 415, other 4xx, 5xx — actually 6).
+- The POST contract has 6 status-code rows (2xx, 404, 413, 415, Other 4xx, 5xx).
 - The sender-side `upload` table has 3 rows (`url`, `source`, `content_type`).
 - Both worked examples (agent push, MCP-mediated push) are present.
 

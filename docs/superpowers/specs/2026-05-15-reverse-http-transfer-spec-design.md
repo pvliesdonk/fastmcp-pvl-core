@@ -141,8 +141,9 @@ existing spec already permits any HTTP client.
 
 - `url` (MUST) — the POST endpoint.
 - `ttl_seconds` (MUST) — effective TTL after clamping.
-- `max_bytes` (SHOULD) — effective body-size ceiling after
-  clamping. Sender uses this to decide whether to abort early.
+- `max_bytes` (MUST) — effective body-size ceiling after
+  clamping; always returned. Sender uses this to decide whether to
+  abort early.
 
 **Failure shape** (in-band tool error): `transfer_failed` envelope
 matching the existing download spec:
@@ -255,16 +256,23 @@ download's `fetch` propagates `transfer_failed`.
 
 ```json
 "transfer_methods": {
-  "http_upload": {"tool": "upload"}
+  "http_upload": {
+    "tool": "upload",
+    "source_variants": ["path", "exchange_uri", "http_url", "inline_b64"]
+  }
 }
 ```
 
-Just the tool name. No `accepts` / `max_bytes` / `max_ttl_seconds`
-on the sender side; those are receiver-side constraints.
+Tool name plus `source_variants` (SHOULD, default `path` if omitted).
+No `accepts` / `max_bytes` / `max_ttl_seconds` on the sender side;
+those are receiver-side constraints.
 
-A single server can advertise both sides simultaneously (one as
-`create_upload_link`, the other as `upload`) if it implements both
-roles — but in practice most servers will pick one.
+The role is identified by **field presence**, not by the tool name
+(implementation-defined): receiver blocks carry `accepts` etc.;
+sender blocks carry `source_variants`. A single server that
+implements both roles cannot express both in a single `http_upload`
+block (the JSON object has one value per key); it advertises only
+the side relevant to each peer's use case.
 
 ### 7. Method priority
 
