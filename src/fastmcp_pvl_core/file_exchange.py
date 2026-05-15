@@ -1,17 +1,15 @@
 """MCP File Exchange — public facade.
 
 Single-entry-point wiring for downstream MCP servers that want to
-participate in the File Exchange convention (spec v0.2.5). Composes
+participate in the File Exchange convention (spec v0.3.0). Composes
 the artifact store, the protocol surface, and the exchange-volume
 runtime, and registers the spec-compliant ``create_download_link``
 and ``fetch_file`` MCP tools.
 
-Implementation note: the ``experimental.file_exchange`` capability
-this module advertises uses the nested ``http.{download, upload}``
-shape (a leftover from the proposed v0.4 amendments that PR #77
-reverted). The spec is back to v0.2.5 but the implementation has not
-yet realigned its capability shape; that realignment is tracked in
-#74 alongside the upload-helper rewrite.
+The ``experimental.file_exchange`` capability this module advertises
+uses the v0.3.0 ``transfer_methods`` shape: ``http`` and
+``http_upload`` are separate method keys, each carrying ``source`` /
+``sink`` role sub-objects for whichever role(s) the server fills.
 
 Downstream usage::
 
@@ -625,7 +623,7 @@ def register_file_exchange(
     consumes: Sequence[str] = (),
     consumer_sink: ConsumerSink | None = None,
 ) -> FileExchangeHandle:
-    """Wire MCP File Exchange (v0.2.5) onto ``mcp``.
+    """Wire MCP File Exchange (v0.3.0) onto ``mcp``.
 
     The kwarg surface is intentionally minimal — five domain hooks,
     no operator-config kwargs, no override seams. Operator config
