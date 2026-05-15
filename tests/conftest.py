@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from collections.abc import Iterator
 
@@ -36,6 +37,27 @@ def _reset_authorizer() -> Iterator[None]:
     set_current_authorizer(None)
     yield
     set_current_authorizer(None)
+
+
+@pytest.fixture(autouse=True)
+def _fastmcp_logger_propagates() -> Iterator[None]:
+    """Allow pytest's caplog to capture records from the ``fastmcp.*`` hierarchy.
+
+    FastMCP installs a RichHandler on the ``fastmcp`` root logger and sets
+    ``propagate=False``, which prevents records from reaching the stdlib root
+    logger that pytest's caplog handler is attached to.  Any test that uses
+    ``caplog`` with a logger under ``fastmcp.*`` would silently capture nothing
+    without this fixture.
+
+    The fixture temporarily re-enables propagation and yields; teardown
+    restores the original state so other tests (and the RichHandler output
+    stream) are not affected.
+    """
+    fastmcp_logger = logging.getLogger("fastmcp")
+    original_propagate = fastmcp_logger.propagate
+    fastmcp_logger.propagate = True
+    yield
+    fastmcp_logger.propagate = original_propagate
 
 
 @pytest.fixture
