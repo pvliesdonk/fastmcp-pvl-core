@@ -272,13 +272,13 @@ The tool MUST return:
 ```json
 {
   "url": "https://receiver.example/uploads/<token>",
-  "expires_in_seconds": 3600,
+  "ttl_seconds": 3600,
   "max_bytes": 10485760
 }
 ```
 
 - `url` (MUST) — the POST endpoint.
-- `expires_in_seconds` (MUST) — effective TTL after clamping.
+- `ttl_seconds` (MUST) — effective TTL after clamping. Same field name as the `http` method's `create_download_link` response.
 - `max_bytes` (SHOULD) — effective body-size ceiling after clamping.
 
 On in-band failure (invalid `destination`, `content_type` not in `accepts`, quota exhausted, dedup conflict, etc.), the receiver returns a `transfer_failed` envelope:
@@ -287,11 +287,13 @@ On in-band failure (invalid `destination`, `content_type` not in `accepts`, quot
 {
   "error": "transfer_failed",
   "method": "http_upload",
-  "origin_server": "<receiver namespace>",
+  "receiver_server": "<receiver namespace>",
   "origin_id": "<the origin_id passed in>",
   "message": "destination validation failed: ..."
 }
 ```
+
+Note the field-name asymmetry vs the download direction's `transfer_failed` envelope: the download `transfer_failed` carries `origin_server` (the file's provenance — the producer server), because the failure is in retrieving an already-produced file. The `http_upload` `transfer_failed` carries `receiver_server` instead, because no file has been produced yet — the responding server is the *receiver* of an attempted upload, not the origin of any file. The two field names reflect the role split: a client building a unified error handler MUST branch on `method` before reading the server-identifying field.
 
 **POST contract (at the minted URL):**
 
@@ -362,7 +364,7 @@ An LLM agent has a local PDF at `/tmp/draft.pdf` and wants to upload it to a vau
 // response
 {
   "url": "https://vault-mcp.example/uploads/8f3a9e2b...",
-  "expires_in_seconds": 3600,
+  "ttl_seconds": 3600,
   "max_bytes": 10485760
 }
 ```
@@ -387,7 +389,7 @@ A mover-server is asked to copy bytes from an internal `exchange://` URI into an
   "origin_id": "moved-from-vault",
   "destination": "incoming/2026-05-15/movement.bin"
 }
-// -> {"url": "https://vault-mcp.example/uploads/<token>", "expires_in_seconds": 3600, "max_bytes": 10485760}
+// -> {"url": "https://vault-mcp.example/uploads/<token>", "ttl_seconds": 3600, "max_bytes": 10485760}
 
 // step 2: mover.upload
 {
@@ -414,11 +416,11 @@ The `http_upload` method introduced in v0.3 is NOT included in the priority list
 A new transfer method (e.g. `s3`, `scp`, `gdrive`) is defined by:
 
 1. A method key string.
-2. The metadata it carries in the file reference.
+2. The metadata it carries in the file reference (if the method participates in file-reference-based transfer at all — push-direction methods like `http_upload` do not appear in file references).
 3. The metadata it carries in the capability declaration (tool names and standard parameter names).
-4. Its position in the priority order.
+4. Its position in the priority order, **if** it is a consumer-pull (download-direction) method. Push-direction methods (e.g. `http_upload`) are not slotted into the priority list; they are selected by presence in the receiver's capability declaration.
 
-Servers that do not recognise a method ignore it. Clients that do not recognise a method skip it and try the next one. This makes the protocol forward-compatible: old clients degrade gracefully when new methods appear.
+Servers that do not recognise a method ignore it. Clients that do not recognise a method skip it and try the next one. This makes the protocol forward-compatible: old clients degrade gracefully when new methods appear. The same skip-unknown-keys rule applies inside the `transfer_methods` object of a server's **capability declaration**: implementations MUST silently ignore any `transfer_methods` key they do not recognise rather than rejecting the handshake.
 
 ### Exchange Group
 
@@ -553,7 +555,7 @@ During the MCP `initialize` handshake, a participating server declares exchange 
 | `namespace` | MUST | The server's exchange namespace. |
 | `exchange_id` | SHOULD | The exchange group ID. Present when the server participates in an exchange group. |
 | `produces` | SHOULD | MIME types this server can produce as file references. |
-| `consumes` | SHOULD | MIME types this server can accept via file references. |
+| `consumes` | SHOULD | MIME types this server can accept via file references (the pull-flow / `fetch` path). The push-flow `http_upload` method has its own independent `accepts` filter inside `transfer_methods.http_upload`; the two lists are not required to match. |
 | `transfer_methods` | MUST | Object whose keys are supported transfer method names. Values contain method-specific configuration (e.g. tool names). |
 
 A capability-aware client can determine before any tool calls:
@@ -775,7 +777,7 @@ The transfer methods abstraction is designed for extension. Candidate methods in
 
 ### Content negotiation
 
-A producing server could check the consuming server's `consumes` list and produce files in a preferred format (e.g. WebP over PNG). Enabled by the existing `produces`/`consumes` fields but out of scope for v0.2.
+A producing server could check the consuming server's `consumes` list and produce files in a preferred format (e.g. WebP over PNG). Enabled by the existing `produces`/`consumes` fields but out of scope for the current spec version.
 
 ### Streaming / large files
 
@@ -795,7 +797,9 @@ The spec uses semantic versioning (`major.minor`). The `version` field in capabi
 
 **Across major versions** (e.g. 0.x to 1.0): no backward compatibility guaranteed. Major version changes signal a fundamental redesign, likely prompted by MCP adopting native file transfer.
 
-Transfer methods provide additional agility: because methods are identified by string keys and unknown methods are silently skipped, new methods can be introduced without a spec version bump. A server advertising version `0.2` can include a `gdrive` transfer method that older clients simply ignore.
+Transfer methods provide additional agility: because methods are identified by string keys and unknown methods are silently skipped, new methods can usually be introduced without a spec version bump. A server advertising version `0.3` can include a `gdrive` transfer method that older clients simply ignore.
+
+A new method warrants a **minor version bump** when it introduces wire-level constructs that other implementations need to know about beyond the method key itself — for example, a new transfer *direction* (push vs pull), a new validation regime with carve-outs in the spec's security rules, a new error class or envelope field, or a new tool-contract shape that requires explicit advertisement. The `http_upload` method introduced in v0.3 met all four of these criteria and warranted the 0.2 → 0.3 bump; a hypothetical `gdrive` method that just adds a new pull-direction method key with the existing `http`-style contract would not. The rule of thumb: if a v0.x implementation that doesn't know about the new method would behave correctly when ignoring it AND the method introduces no new validation rules or error vocabulary, ship without a bump. Otherwise bump minor and document the new constructs.
 
 ### Mixed-OS exchange groups
 
