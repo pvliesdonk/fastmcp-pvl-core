@@ -250,10 +250,16 @@ In a capability declaration (receiver):
 In a capability declaration (sender, optional):
 
 ```json
-"http_upload": {"tool": "upload"}
+"http_upload": {
+  "tool": "upload",
+  "source_variants": ["path", "exchange_uri", "http_url", "inline_b64"]
+}
 ```
 
-Both sides advertise the same key (`http_upload`) with the same `{tool: <name>}` shape; the role is implicit based on which tool name the server registers. A single server MAY advertise both sides if it implements both roles.
+- `tool` (MUST) — name of the POST-perform tool.
+- `source_variants` (SHOULD) — array of the `source` tagged-union variants the sender's tool implements. Allows callers to pre-filter and avoid round-trips on unsupported variants. If omitted, callers MUST assume only `path` is supported (the lowest-common-denominator variant per the `source` table below).
+
+Both sides advertise the same key (`http_upload`) with the same `{tool: <name>, ...}` shape; the role is implicit based on which tool name the server registers. A single server MAY advertise both sides if it implements both roles.
 
 **Receiver-side tool: `create_upload_link`**
 
@@ -264,7 +270,7 @@ The receiver registers a tool that mints upload URLs given a sender's identifier
 | `origin_id` | MUST | Same rules as `origin_id` in the `http` method's `create_download_link` (raw-JSON validation; no path separators `/` or `\`; not equal to `.` or `..`; no null bytes / control characters; no leading or trailing whitespace). | The sender's opaque stable handle for the bytes (the *what*). The receiver MAY treat it as a filename, document id, content hash, or any internally-meaningful key, but MUST NOT interpret it as a path component. |
 | `destination` | MAY | Forbids only null bytes, control characters (U+0000 through U+001F), and leading/trailing whitespace. Path separators, dots, and traversal-shaped strings are **NOT** spec-rejected. The receiver MUST validate per its own domain rules before any filesystem interaction. | The sender's destination instruction (the *where*). The receiver decides semantics — path, slot, parent document key, anything. The relaxed character rules vs. `origin_id` reflect the asymmetric role: `destination` is consumed only by the receiver's own domain logic and never embedded in a URI by anyone else. |
 | `ttl_seconds` | MAY | Positive number of seconds. | Sender's TTL hint for the minted URL. The receiver MAY clamp to its own ceiling (`max_ttl_seconds`); the effective TTL is returned. |
-| `max_bytes` | MAY | Positive integer. | Sender's size hint. The receiver MAY clamp to its own ceiling (`max_bytes`); the effective ceiling is returned. |
+| `max_bytes` | MAY | Positive integer. | Sender's intended upper bound on the upload size. Doubles as a request to reserve room: the receiver MAY clamp to its own ceiling (`max_bytes` in its capability declaration); the *effective* ceiling — the value the receiver will enforce at POST time — is returned in the response's `max_bytes` field. |
 | `content_type` | MAY | Standard MIME type string. | Sender's hint about what `Content-Type` the upload will declare. The receiver MAY pre-filter against its `accepts` list at link-mint time and surface a `transfer_failed` envelope in-band, sparing the sender a 415 round-trip. |
 
 The tool MUST return:
@@ -323,7 +329,7 @@ Status code classes (the receiver picks specific codes within each class; sender
 
 Success body: the spec does NOT mandate a shape. Receivers MAY return JSON with domain-specific data (saved-path confirmation, generated id, etc.). Senders SHOULD parse JSON when the response `Content-Type` indicates JSON; otherwise treat the body as opaque acknowledgment.
 
-Failure body (4xx with structured information): a `transfer_failed` envelope, same shape as the in-band failure example above.
+Failure body for the "Other 4xx" class only (as specified in the status-code table above): a `transfer_failed` envelope, same shape as the in-band failure example above. The mandatory 4xx classes (`404`, `413`, `415`) do NOT carry a `transfer_failed` body — `404` intentionally has no body (anti-leak), and `413`/`415` are unambiguously identified by the status code alone.
 
 **Sender-side tool: `upload` (optional)**
 
@@ -348,6 +354,20 @@ The tool MUST return:
 - `body` (MAY) — the receiver's response body, passed through to the caller (opaque to the sender tool itself).
 
 On 4xx with a structured `transfer_failed` envelope, the sender tool SHOULD unwrap and re-raise as a tool error, mirroring how the existing `http` method's `fetch` tool propagates `transfer_failed`.
+
+When called with a `source` variant the sender tool does not implement, the tool MUST return an in-band `transfer_failed` envelope with `error: "unsupported_source_variant"` (a defined error code distinct from the generic `transfer_failed`-with-message form). The envelope SHOULD include a `requested_variant` field naming the variant the caller asked for, and a `supported_variants` field listing the variants the tool *does* implement — equivalent in content to the `source_variants` capability field if advertised:
+
+```json
+{
+  "error": "unsupported_source_variant",
+  "method": "http_upload",
+  "requested_variant": "exchange_uri",
+  "supported_variants": ["path"],
+  "message": "this sender only implements 'path'; caller requested 'exchange_uri'"
+}
+```
+
+Callers that pre-checked against `source_variants` in the capability declaration will normally avoid this error; the envelope exists for the case where the capability was unavailable or stale.
 
 **Worked example — agent push:**
 
@@ -704,6 +724,20 @@ This signals definitively to the client that retrying is pointless. The client S
 - **MUST** validate all path segments from exchange URIs after a single pass of URI decoding. JSON-RPC parameters (such as `origin_id`) MUST be validated as raw strings without URI decoding.
 - **MUST** include `remaining_transfer` in the `transfer_failed` error, containing the file reference's `transfer` with the failed method removed.
 - **SHOULD**, for tools declared in `transfer_methods.http`, accept a parameter named `url` and an optional parameter named `path`. If `path` is omitted, the tool MUST auto-generate a safe local path.
+
+### Receiver server (`http_upload`)
+
+Servers that advertise `http_upload` on the receiver side (i.e. that register a `create_upload_link` tool to accept pushed bytes) MUST meet the following obligations:
+
+- **MUST** atomically consume the URL token on the first POST attempt — success OR failure. A retry against the same URL MUST return `404 Not Found`, not the original error. Senders that need to retry call `create_upload_link` again.
+- **MUST** reject expired tokens with `404 Not Found`. The `404` response MUST NOT distinguish between "token never existed," "token expired," and "token already consumed" — these three conditions collapse to the same status to avoid leaking token-existence information to a probing caller.
+- **MUST** validate the `destination` parameter per the server's own domain rules **before** any filesystem interaction. Spec-level rules forbid only null bytes, control characters, and leading/trailing whitespace; the receiver decides everything else (per §"Security and Path Resolution").
+- **MUST** enforce the body-size ceiling (`max_bytes`, returned in the `create_upload_link` response). Bodies exceeding the ceiling — declared via `Content-Length` or detected mid-stream — MUST yield `413 Payload Too Large`.
+- **MUST** generate URL tokens with at least 128 bits of cryptographically unguessable entropy in the URL path or query.
+- **MAY** filter incoming `Content-Type` against the `accepts` list advertised in the capability declaration; mismatch MUST yield `415 Unsupported Media Type`.
+- **MUST NOT** echo internal error details (tracebacks, library exception strings) in `5xx` response bodies. The full traceback is logged server-side; the response body MAY be generic.
+
+These obligations parallel the pull-flow obligations in §"Consuming server" above; readers writing a `http_upload` receiver should treat both sections as the applicable conformance checklist.
 
 ### Defaults
 
