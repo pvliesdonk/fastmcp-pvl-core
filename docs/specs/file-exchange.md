@@ -407,6 +407,8 @@ When multiple methods are available, the client SHOULD prefer them in this order
 
 Future methods slot into this priority list by convention. Methods with lower latency, lower cost, or stronger privacy properties are preferred.
 
+The `http_upload` method introduced in v0.3 is NOT included in the priority list. The priority list compares methods for the same transfer *direction* (consumer pull from a producer-side endpoint); `http_upload` is the inverse direction (sender push to a receiver-side endpoint). It is selected by a different mechanism — the sender looks for `http_upload` in a receiver's capability declaration and uses it when the use case calls for an upload, not when comparing alternative consumer-pull methods.
+
 #### Adding future methods
 
 A new transfer method (e.g. `s3`, `scp`, `gdrive`) is defined by:
