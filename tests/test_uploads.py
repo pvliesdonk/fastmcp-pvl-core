@@ -18,72 +18,68 @@ from fastmcp_pvl_core._token_store import (
 class TestUploadRecord:
     def test_is_frozen(self) -> None:
         record = UploadRecord(
-            target_id="foo.md",
+            origin_id="foo.md",
+            destination=None,
+            content_type=None,
             max_bytes=1024,
-            extra={},
             expires_at=time.time() + 60,
         )
         assert dataclasses.is_dataclass(record)
         with pytest.raises(dataclasses.FrozenInstanceError):
-            record.target_id = "x"  # type: ignore[misc]
-
-    def test_extra_is_held_by_reference(self) -> None:
-        """UploadRecord does not snapshot ``extra`` on construction.
-
-        The snapshot policy lives one layer up in ``UploadStore.reserve``
-        (Task 4); direct construction holds the caller's dict by reference.
-        Pinning this behavior here makes any future change of mind explicit
-        rather than silent.
-        """
-        extra = {"k": "v1"}
-        record = UploadRecord(target_id="a", max_bytes=10, extra=extra, expires_at=0.0)
-        extra["k"] = "v2"
-        assert record.extra["k"] == "v2"
-        assert record.extra is extra
+            record.origin_id = "x"  # type: ignore[misc]
 
     def test_required_fields(self) -> None:
         with pytest.raises(TypeError):
             UploadRecord()  # type: ignore[call-arg]
 
+    def test_upload_record_carries_origin_id_destination_content_type(self) -> None:
+        rec = UploadRecord(
+            origin_id="a",
+            destination="d/x.md",
+            content_type="text/markdown",
+            max_bytes=10,
+            expires_at=time.time() + 60,
+        )
+        assert rec.origin_id == "a"
+        assert rec.destination == "d/x.md"
+        assert rec.content_type == "text/markdown"
+        assert not hasattr(rec, "target_id")
+        assert not hasattr(rec, "extra")
+
 
 class TestUploadStore:
     def test_reserve_returns_token_and_url(self) -> None:
         store = UploadStore(base_url="https://srv.test")
-        token = store.reserve(target_id="foo.md", max_bytes=1024)
+        token = store.reserve(origin_id="foo.md", max_bytes=1024)
         assert isinstance(token, str) and len(token) == 32
         url = store.build_url(token)
         assert url == f"https://srv.test/uploads/{token}"
 
-    def test_reserve_with_explicit_ttl_and_extra(self) -> None:
+    def test_reserve_with_explicit_ttl_destination_content_type(self) -> None:
         store = UploadStore(base_url="https://srv.test")
         token = store.reserve(
-            target_id="x.md", max_bytes=10, ttl_seconds=42, extra={"k": 1}
+            origin_id="x.md",
+            max_bytes=10,
+            ttl_seconds=42,
+            destination="vault/x.md",
+            content_type="text/markdown",
         )
         record = store._peek_for_tests(token)
         assert record is not None
-        assert record.extra == {"k": 1}
+        assert record.destination == "vault/x.md"
+        assert record.content_type == "text/markdown"
         assert record.expires_at - time.time() == pytest.approx(42, abs=2)
-
-    def test_reserve_snapshots_extra(self) -> None:
-        """Mutating the source dict after reserve must not affect the record."""
-        store = UploadStore(base_url="https://srv.test")
-        extra = {"k": "v1"}
-        token = store.reserve(target_id="x", max_bytes=10, extra=extra)
-        extra["k"] = "v2"
-        record = store._peek_for_tests(token)
-        assert record is not None
-        assert record.extra == {"k": "v1"}
 
     def test_consume_returns_record_then_none(self) -> None:
         store = UploadStore(base_url="https://srv.test")
-        token = store.reserve(target_id="x", max_bytes=10)
+        token = store.reserve(origin_id="x", max_bytes=10)
         first = store.consume(token)
-        assert first is not None and first.target_id == "x"
+        assert first is not None and first.origin_id == "x"
         assert store.consume(token) is None
 
     def test_consume_returns_none_for_expired(self) -> None:
         store = UploadStore(base_url="https://srv.test")
-        token = store.reserve(target_id="x", max_bytes=10, ttl_seconds=-1)
+        token = store.reserve(origin_id="x", max_bytes=10, ttl_seconds=-1)
         assert store.consume(token) is None
 
     def test_consume_returns_none_for_unknown(self) -> None:
@@ -92,7 +88,7 @@ class TestUploadStore:
 
     def test_build_url_requires_base_url(self) -> None:
         store = UploadStore()
-        token = store.reserve(target_id="x", max_bytes=10)
+        token = store.reserve(origin_id="x", max_bytes=10)
         with pytest.raises(RuntimeError, match="base_url"):
             store.build_url(token)
 

@@ -637,10 +637,9 @@ def register_upload_route(
     The route returns:
 
     - ``200`` with the receiver's dict serialised as JSON on success.
-    - ``404 Not Found`` if the token is unknown or already consumed
-      (the response does NOT distinguish "never existed" from "consumed",
-      to avoid leaking token-existence to a probing caller).
-    - ``410 Gone`` if the token existed but has expired.
+    - ``404 Not Found`` if the token is unknown, expired, or already
+      consumed (indistinguishable, to avoid leaking token state to a
+      probing caller).
     - ``413 Payload Too Large`` if ``Content-Length`` exceeds
       ``record.max_bytes`` OR the body's running total exceeds the cap
       mid-stream (defense in depth against lying clients).
@@ -709,16 +708,11 @@ def register_upload_route(
         # (uvicorn, hypercorn) handle the connection-state reset; we
         # do NOT need to call await request.body() to drain.
         token = request.path_params.get("token", "")
-        record, status = store.consume_or_status(token)
-        if status == "expired":
-            logger.info("upload_handler_expired token_prefix=%s", token[:8])
-            return Response(content="Gone", status_code=410)
+        record = store.consume(token)
         if record is None:
-            # Log policy: 404-miss is DEBUG because the cause is ambiguous
-            # (typo, probe, replay of an already-consumed token). The other
-            # 4xx mappings (410 expired, 413 oversize, 415 unsupported) log
-            # at INFO because they signal a clear client-side misuse the
-            # operator likely wants to see in default logs.
+            # 404 covers all three token-unusable conditions — unknown,
+            # expired, already-consumed — indistinguishably (spec
+            # §"http_upload / POST contract": anti-leak, no 410).
             logger.debug("upload_handler_miss token_prefix=%s", (token or "")[:8])
             return Response(content="Not Found", status_code=404)
 
