@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 #: field in the ``experimental.file_exchange`` capability declaration
 #: (spec §"Capability declaration"). Major.minor only — patch revisions
 #: are spec-internal.
-SPEC_VERSION = "0.4"
+SPEC_VERSION = "0.3"
 
 
 # ---------------------------------------------------------------------------
@@ -448,13 +448,18 @@ class FileExchangeCapability:
 
 @dataclass
 class _FileExchangeCapabilityBuilder:
-    """Accumulates per-direction contributions into one capability dict.
+    """Accumulates per-role contributions into one capability dict.
 
-    Both ``register_file_exchange`` (download) and
-    ``register_file_exchange_upload`` (upload) push their entries into a
-    shared per-server instance keyed by the FastMCP instance; the actual
-    capability dict is materialised by :meth:`build` once both
-    registrars have run.
+    Both ``register_file_exchange`` (the ``http`` download method) and
+    ``register_file_exchange_upload`` (the ``http_upload`` method) push
+    their entries into a shared per-server instance keyed by the FastMCP
+    instance; the capability dict is materialised by :meth:`build` once
+    every registrar has run.
+
+    Transfer methods are advertised in the v0.3.0 ``source``/``sink``
+    role-keyed shape (spec §"Transfer Methods"): ``http`` and
+    ``http_upload`` are separate top-level method keys, and each carries
+    whichever of the ``source`` / ``sink`` roles the server fills.
 
     The builder is intentionally mutable (not frozen) — it accumulates
     state across multiple registrar calls. The capability it produces
@@ -465,23 +470,27 @@ class _FileExchangeCapabilityBuilder:
     exchange_id: str | None = None
     produces: tuple[str, ...] = ()
     consumes: tuple[str, ...] = ()
-    legacy_capability_shape: bool = False
     _exchange_present: bool = False
-    _download_tool: str | None = None
-    _upload_tool: str | None = None
-    _upload_max_bytes: int | None = None
-    _upload_max_ttl_seconds: int | None = None
-    _upload_accepts: tuple[str, ...] | None = None
+    _http_source_tool: str | None = None
+    _http_sink_tool: str | None = None
+    _http_upload_sink_tool: str | None = None
+    _http_upload_max_bytes: int | None = None
+    _http_upload_max_ttl_seconds: int | None = None
+    _http_upload_accepts: tuple[str, ...] | None = None
 
     def set_exchange(self, present: bool = True) -> None:
         """Mark the ``exchange://`` shared-volume method as available."""
         self._exchange_present = present
 
-    def set_download(self, *, tool_name: str) -> None:
-        """Record the download-direction tool name."""
-        self._download_tool = tool_name
+    def set_http_source(self, *, tool_name: str) -> None:
+        """Record the ``http`` producer (``source``) tool — mints download URLs."""
+        self._http_source_tool = tool_name
 
-    def set_upload(
+    def set_http_sink(self, *, tool_name: str) -> None:
+        """Record the ``http`` consumer (``sink``) tool — fetches from a URL."""
+        self._http_sink_tool = tool_name
+
+    def set_http_upload_sink(
         self,
         *,
         tool_name: str,
@@ -489,20 +498,22 @@ class _FileExchangeCapabilityBuilder:
         max_ttl_seconds: int,
         accepts: tuple[str, ...] | None = None,
     ) -> None:
-        """Record the upload-direction tool name plus per-method knobs."""
-        self._upload_tool = tool_name
-        self._upload_max_bytes = max_bytes
-        self._upload_max_ttl_seconds = max_ttl_seconds
-        self._upload_accepts = accepts
+        """Record the ``http_upload`` receiver (``sink``) tool plus its
+        admission metadata (the body-size and TTL ceilings and the
+        accepted-``Content-Type`` filter)."""
+        self._http_upload_sink_tool = tool_name
+        self._http_upload_max_bytes = max_bytes
+        self._http_upload_max_ttl_seconds = max_ttl_seconds
+        self._http_upload_accepts = accepts
 
     def build(self) -> FileExchangeCapability | None:
         """Materialise the accumulated state into a FileExchangeCapability.
 
         Returns:
             ``None`` if no transfer method has been set (neither
-            exchange nor download nor upload). Otherwise a frozen
-            :class:`FileExchangeCapability` with ``version`` ``"0.2"``
-            (legacy shape) or ``"0.4"`` (nested-http shape).
+            exchange nor an ``http`` role nor an ``http_upload`` role).
+            Otherwise a frozen :class:`FileExchangeCapability` whose
+            ``transfer_methods`` uses the v0.3.0 ``source``/``sink`` shape.
         """
         transfer_methods: dict[str, dict[str, Any]] = {}
         if self._exchange_present:
@@ -510,44 +521,47 @@ class _FileExchangeCapabilityBuilder:
         http_block = self._build_http_block()
         if http_block is not None:
             transfer_methods["http"] = http_block
+        http_upload_block = self._build_http_upload_block()
+        if http_upload_block is not None:
+            transfer_methods["http_upload"] = http_upload_block
         if not transfer_methods:
             return None
-        version = "0.2" if self.legacy_capability_shape else SPEC_VERSION
         return FileExchangeCapability(
             namespace=self.namespace,
             exchange_id=self.exchange_id,
             produces=self.produces,
             consumes=self.consumes,
             transfer_methods=transfer_methods,
-            version=version,
+            version=SPEC_VERSION,
         )
 
     def _build_http_block(self) -> dict[str, Any] | None:
-        if self.legacy_capability_shape:
-            if self._upload_tool is not None:
-                logger.warning(
-                    "legacy_capability_shape=True drops the upload entry "
-                    "(no nested http.upload key in v0.2 spec); upgrade "
-                    "clients to v0.4 or unset legacy_capability_shape "
-                    "to advertise upload."
-                )
-            if self._download_tool is None:
-                return None
-            return {"tool": self._download_tool}
+        """Build ``transfer_methods.http`` with ``source`` / ``sink`` roles.
 
+        Returns ``None`` when the server fills neither ``http`` role.
+        """
         block: dict[str, Any] = {}
-        if self._download_tool is not None:
-            block["download"] = {"tool": self._download_tool}
-        if self._upload_tool is not None:
-            up: dict[str, Any] = {
-                "tool": self._upload_tool,
-                "max_bytes": self._upload_max_bytes,
-                "max_ttl_seconds": self._upload_max_ttl_seconds,
-            }
-            if self._upload_accepts is not None:
-                up["accepts"] = list(self._upload_accepts)
-            block["upload"] = up
+        if self._http_source_tool is not None:
+            block["source"] = {"tool": self._http_source_tool}
+        if self._http_sink_tool is not None:
+            block["sink"] = {"tool": self._http_sink_tool}
         return block or None
+
+    def _build_http_upload_block(self) -> dict[str, Any] | None:
+        """Build ``transfer_methods.http_upload`` with the receiver ``sink`` block.
+
+        Returns ``None`` when no upload-receiver tool was registered.
+        """
+        if self._http_upload_sink_tool is None:
+            return None
+        sink: dict[str, Any] = {
+            "tool": self._http_upload_sink_tool,
+            "max_bytes": self._http_upload_max_bytes,
+            "max_ttl_seconds": self._http_upload_max_ttl_seconds,
+        }
+        if self._http_upload_accepts is not None:
+            sink["accepts"] = list(self._http_upload_accepts)
+        return {"sink": sink}
 
 
 # ---------------------------------------------------------------------------
