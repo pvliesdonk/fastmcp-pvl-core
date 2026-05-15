@@ -498,10 +498,11 @@ class UploadStore(_BaseTokenStore[UploadRecord]):
         return token
 
     def consume(self, token: str) -> UploadRecord | None:
-        """Atomic consume; returns the record, or ``None`` for an
-        unusable token — unknown, expired, or already consumed are
-        indistinguishable, per the spec's anti-leak rule for the
-        ``http_upload`` POST route.
+        """Atomic consume; return the record, or ``None`` if unusable.
+
+        Unknown, expired, and already-consumed tokens are
+        indistinguishable (all yield ``None``), per the spec's
+        anti-leak rule for the ``http_upload`` POST route.
         """
         return self._atomic_consume(token)
 

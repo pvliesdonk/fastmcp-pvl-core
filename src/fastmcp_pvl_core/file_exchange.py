@@ -795,11 +795,11 @@ def _resolve_transport(
 ) -> Literal["http", "stdio"]:
     """Resolve transport from ``{PREFIX}_TRANSPORT`` / ``FASTMCP_TRANSPORT``.
 
-    Defaults to ``"stdio"`` when neither env var is set. ``override`` is
-    retained for :func:`register_file_exchange_upload` which still
-    accepts a ``transport=`` kwarg (its removal is tracked separately
-    under issue #74). :func:`register_file_exchange` no longer passes an
-    override — env-var resolution is the sole path.
+    Defaults to ``"stdio"`` when neither env var is set. ``override``
+    allows callers to force a specific transport; both
+    :func:`register_file_exchange` and :func:`register_file_exchange_upload`
+    currently rely on the ``"auto"`` default so resolution goes through
+    the env-var path.
     """
     if override != "auto":
         return override
@@ -1806,7 +1806,7 @@ def register_file_exchange_upload(
             return _upload_transfer_failed(
                 receiver_server=namespace,
                 origin_id=origin_id,
-                message=f"content_type {content_type!r} is not accepted by this receiver",
+                message=f"content_type {content_type!r} is not accepted",
             )
         if pre_link_validator is not None:
             try:
