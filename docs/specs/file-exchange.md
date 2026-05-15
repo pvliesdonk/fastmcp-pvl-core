@@ -496,7 +496,7 @@ During the MCP `initialize` handshake, a participating server declares exchange 
   "capabilities": {
     "experimental": {
       "file_exchange": {
-        "version": "0.2",
+        "version": "0.3",
         "namespace": "image-mcp",
         "exchange_id": "hades-01",
         "produces": ["image/png", "image/webp", "image/jpeg"],
@@ -520,7 +520,7 @@ During the MCP `initialize` handshake, a participating server declares exchange 
   "capabilities": {
     "experimental": {
       "file_exchange": {
-        "version": "0.2",
+        "version": "0.3",
         "namespace": "vault-mcp",
         "exchange_id": "hades-01",
         "produces": [],
@@ -529,6 +529,12 @@ During the MCP `initialize` handshake, a participating server declares exchange 
           "exchange": {},
           "http": {
             "tool": "fetch"
+          },
+          "http_upload": {
+            "tool": "create_upload_link",
+            "accepts": ["application/pdf", "text/markdown"],
+            "max_bytes": 10485760,
+            "max_ttl_seconds": 3600
           }
         }
       }
