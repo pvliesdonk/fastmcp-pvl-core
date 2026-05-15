@@ -77,6 +77,7 @@ async def test_upload_success_returns_status_and_body(
         byte_source=_resolver(b"PAYLOAD", content_type="application/pdf"),
     )
     tool = await mcp.get_tool("upload")
+    assert tool is not None
     result = await tool.run(
         {"url": "https://recv.test/ns/uploads/tok", "origin_id": "doc-1"}
     )
@@ -109,6 +110,7 @@ async def test_upload_content_type_param_overrides_resolver(
         byte_source=_resolver(b"x", content_type="application/pdf"),
     )
     tool = await mcp.get_tool("upload")
+    assert tool is not None
     await tool.run(
         {
             "url": "https://recv.test/u/t",
@@ -126,6 +128,7 @@ async def test_upload_ssrf_guard_rejects_loopback_url() -> None:
         mcp, namespace="ns", env_prefix="TEST_SEND", byte_source=_resolver(b"x")
     )
     tool = await mcp.get_tool("upload")
+    assert tool is not None
     result = await tool.run({"url": "http://169.254.169.254/u/t", "origin_id": "d"})
     payload = result.structured_content or {}
     assert payload["error"] == "transfer_failed"
@@ -143,6 +146,7 @@ async def test_upload_resolver_value_error_returns_transfer_failed() -> None:
         mcp, namespace="ns", env_prefix="TEST_SEND", byte_source=bad_resolver
     )
     tool = await mcp.get_tool("upload")
+    assert tool is not None
     result = await tool.run({"url": "https://recv.test/u/t", "origin_id": "d"})
     payload = result.structured_content or {}
     assert payload["error"] == "transfer_failed"
@@ -174,6 +178,7 @@ async def test_upload_4xx_transfer_failed_body_passed_through(
         mcp, namespace="ns", env_prefix="TEST_SEND", byte_source=_resolver(b"x")
     )
     tool = await mcp.get_tool("upload")
+    assert tool is not None
     result = await tool.run({"url": "https://recv.test/u/t", "origin_id": "d"})
     assert (result.structured_content or {}) == envelope
 
@@ -199,6 +204,7 @@ async def test_upload_async_resolver_supported(
         mcp, namespace="ns", env_prefix="TEST_SEND", byte_source=aresolve
     )
     tool = await mcp.get_tool("upload")
+    assert tool is not None
     result = await tool.run({"url": "https://recv.test/u/t", "origin_id": "d"})
     assert (result.structured_content or {})["status"] == 200
 
@@ -220,6 +226,7 @@ async def test_upload_transport_error_returns_transfer_failed(
         mcp, namespace="ns", env_prefix="TEST_SEND", byte_source=_resolver(b"data")
     )
     tool = await mcp.get_tool("upload")
+    assert tool is not None
     result = await tool.run({"url": "https://recv.test/u/t", "origin_id": "d"})
     payload = result.structured_content or {}
     assert payload["error"] == "transfer_failed"
@@ -259,6 +266,7 @@ async def test_upload_closes_stream_on_transport_error(
         mcp, namespace="ns", env_prefix="TEST_SEND", byte_source=source_with_tracking
     )
     tool = await mcp.get_tool("upload")
+    assert tool is not None
     await tool.run({"url": "https://recv.test/u/t", "origin_id": "d"})
     assert tracking_stream.closed_flag is True
 
@@ -287,6 +295,7 @@ async def test_upload_sets_content_length_from_size_bytes(
         byte_source=_resolver(payload),
     )
     tool = await mcp.get_tool("upload")
+    assert tool is not None
     await tool.run({"url": "https://recv.test/u/t", "origin_id": "d"})
     assert captured["content_length"] == str(len(payload))
 
@@ -317,6 +326,7 @@ async def test_upload_omits_content_length_when_size_unknown(
         mcp, namespace="ns", env_prefix="TEST_SEND", byte_source=no_size_resolver
     )
     tool = await mcp.get_tool("upload")
+    assert tool is not None
     await tool.run({"url": "https://recv.test/u/t", "origin_id": "d"})
     assert captured["has_cl"] is False
 
@@ -340,5 +350,6 @@ async def test_upload_non_json_body_passed_through_as_text(
         mcp, namespace="ns", env_prefix="TEST_SEND", byte_source=_resolver(b"x")
     )
     tool = await mcp.get_tool("upload")
+    assert tool is not None
     result = await tool.run({"url": "https://recv.test/u/t", "origin_id": "d"})
     assert (result.structured_content or {}) == {"status": 200, "body": "plain ack"}
