@@ -156,6 +156,21 @@ so they do not flood the operator log stream:
 Both reappear at `DEBUG` (`-v` or `FASTMCP_LOG_LEVEL=DEBUG`). `uvicorn.error`
 is never demoted — it carries genuine bind / startup failures.
 
+`wire_middleware_stack` installs a single conforming request-logging
+middleware. Every line it emits starts with a bare snake_case event name,
+followed by `key=value` pairs, with request timing carried inline:
+
+```
+tool_call_started   tool=read method=tools/call source=client
+tool_call_completed tool=read duration_ms=68.57
+tool_call_failed    tool=read duration_ms=109.84 error_type=ValueError error="Section '1.3' not found"
+```
+
+Non-tool messages use a generic `request_*` / `notification_*` vocabulary
+keyed by `method=`. Set `FASTMCP_ENABLE_RICH_LOGGING=false` to emit one JSON
+object per record instead of `key=value` text — for log aggregators such as
+the ELK stack or Splunk.
+
 ### Per-user subject mapping (bearer auth)
 
 Bearer auth has two modes:
