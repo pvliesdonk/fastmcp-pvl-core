@@ -170,9 +170,13 @@ A producer MAY offer both patterns, controlled by a tool parameter (e.g. `return
 
 ### Transfer Methods
 
-A transfer method defines how a file moves from a producing server to a consuming server. The spec defines two methods; future extensions may add more.
+A transfer method defines how a file moves between a *source* server (where the bytes originate) and a *sink* server (where they land). The spec defines three methods (`exchange`, `http`, `http_upload`); future extensions may add more.
 
-Each method is identified by a string key (e.g. `"exchange"`, `"http"`) and has method-specific metadata in both the file reference and the capability declaration.
+Each method is identified by a string key (e.g. `"exchange"`, `"http"`, `"http_upload"`) and has method-specific metadata in the capability declaration and, where the method participates in file-reference-based transfer, the file reference. Pull-direction methods (`exchange`, `http`) appear in both; push-direction methods (`http_upload`) appear only in the capability declaration, never in a file reference.
+
+**Capability-declaration shape.** Within the capability declaration's `transfer_methods` object, every *tool-based* method declares its tool(s) under `source` / `sink` role sub-objects. `source` is the endpoint bytes originate from; `sink` is the endpoint bytes land at. Within each role sub-object, `tool` is the one mandatory field; any further fields are method-specific metadata a caller needs up front. A server populates whichever role(s) it implements — both sub-keys for a server that fills both roles of a method, one for a single-role server. The role is identified by sub-key presence, never by the tool-name string (tool names are implementation-defined). `exchange` is the sole *tool-less* method and carries `{}`.
+
+**`transfer` (file reference) vs `transfer_methods` (capability declaration).** These are different objects with different shapes; do not conflate them. The `transfer` object inside a file reference is per-file, producer-emitted, and inherently single-role — it advertises how to retrieve one specific file — so it stays flat (`{tool: ...}`, no `source`/`sink`). The `transfer_methods` object in a capability declaration is server-wide and describes every role the server fills, so it uses the `source`/`sink` sub-objects described above.
 
 #### `exchange` (shared volume)
 
@@ -208,19 +212,30 @@ In a file reference:
 }
 ```
 
-In a capability declaration (producer):
+In a capability declaration, the `http` method uses `source` / `sink` role sub-objects (see §"Transfer Methods" → "Capability-declaration shape"). The `source` role is the producer (mints the download URL via `create_download_link`); the `sink` role is the consumer (fetches from the URL).
+
+A producer-only server:
 
 ```json
 "http": {
-  "tool": "create_download_link"
+  "source": {"tool": "create_download_link"}
 }
 ```
 
-In a capability declaration (consumer):
+A consumer-only server:
 
 ```json
 "http": {
-  "tool": "fetch"
+  "sink": {"tool": "fetch"}
+}
+```
+
+A server that is both producer and consumer populates both sub-keys:
+
+```json
+"http": {
+  "source": {"tool": "create_download_link"},
+  "sink": {"tool": "fetch"}
 }
 ```
 
@@ -236,32 +251,55 @@ The reverse of the `http` method: the *receiver* mints a one-time POST URL; any 
 
 Like the existing `http` (download) method, both the URL-mint tool on the receiver side and the POST-perform tool on the sender side are wire-optional from the spec's perspective. Any HTTP client that can issue a `POST` is a valid sender, just as any HTTP client that can `GET` is a valid consumer of the existing `http` method. The tool definitions exist to standardize MCP-mediated transfer between MCP servers; they are not the only valid implementation of either side.
 
-In a capability declaration (receiver):
+In a capability declaration, the `http_upload` method uses `source` / `sink` role sub-objects (see §"Transfer Methods" → "Capability-declaration shape"). The `sink` role is the receiver (mints the upload URL via `create_upload_link`, accepts the bytes); the `source` role is the sender (POSTs the bytes via `upload`). Note the asymmetry with `http`: for `http` the `source` mints the URL, for `http_upload` the `sink` mints it — the role names track data direction; the mint mechanics are defined per method.
+
+A receiver-only server:
 
 ```json
 "http_upload": {
-  "tool": "create_upload_link",
-  "accepts": ["application/pdf", "text/markdown"],
-  "max_bytes": 10485760,
-  "max_ttl_seconds": 3600
+  "sink": {
+    "tool": "create_upload_link",
+    "accepts": ["application/pdf", "text/markdown"],
+    "max_bytes": 10485760,
+    "max_ttl_seconds": 3600
+  }
 }
 ```
 
-In a capability declaration (sender, optional):
+A sender-only server (the sender side is optional):
 
 ```json
 "http_upload": {
-  "tool": "upload",
-  "source_variants": ["path", "exchange_uri", "http_url", "inline_b64"]
+  "source": {
+    "tool": "upload",
+    "source_variants": ["path", "exchange_uri", "http_url", "inline_b64"]
+  }
 }
 ```
 
-- `tool` (MUST) — name of the POST-perform tool.
-- `source_variants` (SHOULD) — array of the `source` tagged-union variants the sender's tool implements. Allows callers to pre-filter and avoid round-trips on unsupported variants. If omitted, callers MUST assume only `path` is supported (the lowest-common-denominator variant per the `source` table below).
+A server that implements both roles populates both sub-keys:
 
-Both sides advertise the same key (`http_upload`) with the same `{tool: <name>, ...}` shape. The role is identified by **field presence**, not by the tool name (which is implementation-defined): receiver-side blocks carry `accepts` / `max_bytes` / `max_ttl_seconds`; sender-side blocks carry `source_variants`. A client classifying a peer's capability MUST look at these field presences, not at the string value of `tool`.
+```json
+"http_upload": {
+  "source": {"tool": "upload", "source_variants": ["path"]},
+  "sink": {
+    "tool": "create_upload_link",
+    "accepts": ["*/*"],
+    "max_bytes": 10485760,
+    "max_ttl_seconds": 3600
+  }
+}
+```
 
-A single server that implements both roles cannot express both in a single `http_upload` capability block — the JSON object has one value per key, and the receiver/sender shapes are not isomorphic. Such a server advertises only the side relevant to its peer's use case in any given handshake (receiver-side when the peer will push bytes to it; sender-side when it acts as the pusher). A future spec version MAY introduce explicit sub-keying (`http_upload.receiver` / `http_upload.sender`) if simultaneous dual-role advertisement becomes a common need.
+Fields within each role sub-object:
+
+- `tool` (MUST, both roles) — name of the MCP tool for that role (`create_upload_link` on the `sink` side, `upload` on the `source` side; the names are implementation-defined).
+- `accepts` / `max_bytes` / `max_ttl_seconds` (`sink` only) — the receiver's admission policy: accepted `Content-Type` filter, body-size ceiling, TTL ceiling.
+- `source_variants` (SHOULD, `source` only) — array of the `source` tagged-union variants the sender's tool implements. Allows callers to pre-filter and avoid round-trips on unsupported variants. If omitted, callers MUST assume only `path` is supported (the lowest-common-denominator variant per the `source` table below).
+
+The role is identified by **sub-key presence** (`source` vs `sink`), not by the tool-name string (which is implementation-defined). A server that implements both roles advertises both sub-keys — the `source`/`sink` structure expresses dual-role servers without ambiguity.
+
+The `source` role sub-key here is a capability-declaration construct. It is distinct from the `source` *parameter* on the `upload` tool (the tagged-union payload variant, defined below): same word, different protocol levels — one names a server-wide role, the other a per-invocation argument.
 
 **Receiver-side tool: `create_upload_link`**
 
@@ -535,7 +573,7 @@ During the MCP `initialize` handshake, a participating server declares exchange 
         "transfer_methods": {
           "exchange": {},
           "http": {
-            "tool": "create_download_link"
+            "source": {"tool": "create_download_link"}
           }
         }
       }
@@ -559,13 +597,15 @@ During the MCP `initialize` handshake, a participating server declares exchange 
         "transfer_methods": {
           "exchange": {},
           "http": {
-            "tool": "fetch"
+            "sink": {"tool": "fetch"}
           },
           "http_upload": {
-            "tool": "create_upload_link",
-            "accepts": ["application/pdf", "text/markdown"],
-            "max_bytes": 10485760,
-            "max_ttl_seconds": 3600
+            "sink": {
+              "tool": "create_upload_link",
+              "accepts": ["application/pdf", "text/markdown"],
+              "max_bytes": 10485760,
+              "max_ttl_seconds": 3600
+            }
           }
         }
       }
@@ -580,14 +620,14 @@ During the MCP `initialize` handshake, a participating server declares exchange 
 | `namespace` | MUST | The server's exchange namespace. |
 | `exchange_id` | SHOULD | The exchange group ID. Present when the server participates in an exchange group. |
 | `produces` | SHOULD | MIME types this server can produce as file references. |
-| `consumes` | SHOULD | MIME types this server can accept via file references (the pull-flow / `fetch` path). The push-flow `http_upload` method has its own independent `accepts` filter inside `transfer_methods.http_upload`; the two lists are not required to match. |
-| `transfer_methods` | MUST | Object whose keys are supported transfer method names. Values contain method-specific configuration (e.g. tool names). |
+| `consumes` | SHOULD | MIME types this server can accept via file references (the pull-flow / `fetch` path). The push-flow `http_upload` method has its own independent `accepts` filter inside `transfer_methods.http_upload.sink`; the two lists are not required to match. |
+| `transfer_methods` | MUST | Object whose keys are supported transfer method names. For tool-based methods (`http`, `http_upload`) the value carries `source` / `sink` role sub-objects, each with a `tool` field plus method-specific metadata; a server populates whichever role(s) it fills. `exchange` carries `{}`. See §"Transfer Methods". |
 
 A capability-aware client can determine before any tool calls:
 
 - Which servers produce or consume file references.
 - Which pairs share an exchange group (matching `exchange_id`).
-- Which transfer methods are available between any two servers (intersection of their `transfer_methods` keys).
+- Which transfer methods are available between any two servers, and in which direction — by matching one server's `source` role for a method against the other server's `sink` role.
 - Which tools to call on each side.
 
 #### Implicit discovery
@@ -651,7 +691,7 @@ When a client receives a file reference and needs to deliver it to a consuming s
 
 ### Step 1: Method selection
 
-**Capability-aware client:** intersect the file reference's `transfer` keys with the consumer's `transfer_methods` keys, restricted to pull-direction methods (those that appear in a file reference's `transfer` object — currently `exchange` and `http`). Pick the highest-priority method that both sides support. Push-direction methods like `http_upload` are NOT part of this intersection because they don't appear in file references; they are selected separately by looking for the receiver-side shape (field-presence test: `accepts` / `max_bytes` / `max_ttl_seconds`) in the destination server's capability declaration.
+**Capability-aware client:** the file reference's `transfer` object lists the methods the *producer* (the `source`) supports for this file. For each, check whether the destination server advertises the matching `sink` role for that method in its `transfer_methods` — for `http`, the consumer needs `transfer_methods.http.sink`; for `exchange`, a matching `exchange_id`. Pick the highest-priority method where the producer's `source` side and the consumer's `sink` side both line up. `http_upload` does not appear in file references (it is push-direction); a client pushing bytes *into* a server instead looks for `transfer_methods.http_upload.sink` in that server's capability declaration.
 
 **Implicit client:** pass the file reference to the consumer and let it attempt the highest-priority method it recognises.
 
@@ -686,7 +726,7 @@ The client orchestrates a two-step handoff:
 
 1. Call the producer's tool (from `transfer.http.tool` or `remaining_transfer.http.tool`) with `origin_id` set to the file's `origin_id`.
 2. The tool returns `{"url": "https://...", "ttl_seconds": 3600}`.
-3. Call the consumer's tool (from `transfer_methods.http.tool` in the consumer's capabilities, or known by configuration) with `url` and optionally `path`. If the LLM cannot determine a sensible path, it should omit the parameter and let the consumer auto-generate one.
+3. Call the consumer's tool (from `transfer_methods.http.sink.tool` in the consumer's capabilities, or known by configuration) with `url` and optionally `path`. If the LLM cannot determine a sensible path, it should omit the parameter and let the consumer auto-generate one.
 
 ### Step 3: Exhaustion
 
@@ -716,7 +756,7 @@ This signals definitively to the client that retrying is pointless. The client S
 - **MUST** own the complete lifecycle of exchange files it produces. Only the producer deletes its own files. Implementation-specific (SQLite TTL, cron, stat-based, etc.).
 - **SHOULD** implement a storage ceiling or LRU eviction policy alongside time-based TTL to prevent shared volume exhaustion during high-throughput operation (e.g. generating thousands of images). TTL alone is insufficient if the production rate exceeds the expiry rate.
 - **MUST** validate `origin_id` against the path segment rules before writing. This validation applies to the raw JSON string; producers MUST NOT apply URI decoding to the `origin_id` parameter.
-- **MUST**, for tools declared in `transfer_methods.http`, accept a parameter named `origin_id` and return a JSON object with at minimum a `url` field.
+- **MUST**, for tools declared in `transfer_methods.http.source`, accept a parameter named `origin_id` and return a JSON object with at minimum a `url` field.
 - **SHOULD** support the `exchange` method when `MCP_EXCHANGE_DIR` is configured.
 - **SHOULD** support the `http` method to enable cross-host transfers.
 
@@ -728,7 +768,7 @@ This signals definitively to the client that retrying is pointless. The client S
 - **MUST** ignore dotfiles in namespace directories.
 - **MUST** validate all path segments from exchange URIs after a single pass of URI decoding. JSON-RPC parameters (such as `origin_id`) MUST be validated as raw strings without URI decoding.
 - **MUST** include `remaining_transfer` in the `transfer_failed` error, containing the file reference's `transfer` with the failed method removed.
-- **SHOULD**, for tools declared in `transfer_methods.http`, accept a parameter named `url` and an optional parameter named `path`. If `path` is omitted, the tool MUST auto-generate a safe local path.
+- **SHOULD**, for tools declared in `transfer_methods.http.sink`, accept a parameter named `url` and an optional parameter named `path`. If `path` is omitted, the tool MUST auto-generate a safe local path.
 
 ### Receiver server (`http_upload`)
 
@@ -837,11 +877,15 @@ Transfer methods provide additional agility: because methods are identified by s
 
 The general rule above ("Across minor versions: may introduce new required fields or change semantics") manifests in practice as the **bump-trigger checklist** for new methods. A new method warrants a minor version bump when it introduces wire-level constructs that other implementations need to know about beyond the method key itself — specifically, any of: a new transfer *direction* (push vs pull), a new validation regime with carve-outs in the spec's security rules, a new error class or envelope field, or a new tool-contract shape that requires explicit advertisement. The `http_upload` method introduced in v0.3 met all four of these criteria and warranted the 0.2 → 0.3 bump; a hypothetical `gdrive` method that just adds a new pull-direction method key with the existing `http`-style contract would not. The rule of thumb: if a v0.x implementation that doesn't know about the new method would behave correctly when ignoring it AND the method introduces no new validation rules or error vocabulary, ship without a bump. Otherwise bump minor and document the new constructs. §"Adding future methods" defines the structural recipe for declaring a method; this section governs whether the declaration also requires a spec-version bump.
 
+**Reading a pre-`source`/`sink` capability declaration.** A server emitting a v0.2.x-era capability declares `transfer_methods.http` as a flat `{tool: <name>}` with no `source` / `sink` sub-objects. A reader encountering a flat `http` block treats it as a single-role declaration. When the peer's `produces` is non-empty and `consumes` is empty, the flat tool is the `source`-side tool; when `consumes` is non-empty and `produces` is empty, it is the `sink`-side tool. When the lists do not single out one role — both non-empty, or both empty — the declaration does not pin down which `http` role the flat block fills (a v0.2.x server expresses at most one `http` role regardless of how many MIME-type lists it populates, and may populate none), so the reader attempts the role its transfer needs and falls back through the normal negotiation rules (§"Transfer Negotiation") if the call does not fit. The role is never inferred from the tool-name string; tool names are implementation-defined. A v0.2.x server's inability to advertise both `http` roles at once is exactly what the `source` / `sink` shape resolves.
+
+**Version `0.4` is permanently skipped.** The `0.4` label was used by an earlier set of inline amendments that were later reverted, and by a stale implementation-side version constant; reusing the number would be ambiguous about which `0.4` is meant. The minor release after `0.3` is `0.5`.
+
 ### Mixed-OS exchange groups
 
 The spec assumes POSIX filesystem semantics. Mixed-OS exchange groups would require standardising path handling. Out of scope since Docker containers are Linux regardless of host OS.
 
 ## Reference Implementations
 
-- **markdown-vault-mcp** ([pvliesdonk/markdown-vault-mcp](https://github.com/pvliesdonk/markdown-vault-mcp)): Consumer. Has `fetch` tool (accepts URL + path). Would add exchange resolution and declare `transfer_methods: {exchange: {}, http: {tool: "fetch"}}`.
-- **image-mcp**: Producer. Has `create_download_link` tool with TTL. Would add exchange writes, file references in tool responses, and declare `transfer_methods: {exchange: {}, http: {tool: "create_download_link"}}`. The `create_download_link` tool would need to accept `origin_id` as a parameter.
+- **markdown-vault-mcp** ([pvliesdonk/markdown-vault-mcp](https://github.com/pvliesdonk/markdown-vault-mcp)): Consumer. Has `fetch` tool (accepts URL + path). Would add exchange resolution and declare `transfer_methods: {exchange: {}, http: {sink: {tool: "fetch"}}}`.
+- **image-mcp**: Producer. Has `create_download_link` tool with TTL. Would add exchange writes, file references in tool responses, and declare `transfer_methods: {exchange: {}, http: {source: {tool: "create_download_link"}}}`. The `create_download_link` tool would need to accept `origin_id` as a parameter.
