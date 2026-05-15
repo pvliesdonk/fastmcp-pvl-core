@@ -355,12 +355,13 @@ The tool MUST return:
 
 On 4xx with a structured `transfer_failed` envelope, the sender tool SHOULD unwrap and re-raise as a tool error, mirroring how the existing `http` method's `fetch` tool propagates `transfer_failed`.
 
-When called with a `source` variant the sender tool does not implement, the tool MUST return an in-band `transfer_failed` envelope with `error: "unsupported_source_variant"` (a defined error code distinct from the generic `transfer_failed`-with-message form). The envelope SHOULD include a `requested_variant` field naming the variant the caller asked for, and a `supported_variants` field listing the variants the tool *does* implement — equivalent in content to the `source_variants` capability field if advertised:
+When called with a `source` variant the sender tool does not implement, the tool MUST return an in-band failure envelope with `error: "unsupported_source_variant"` (a defined error code distinct from the generic `transfer_failed`-with-message form). The envelope MUST include the `url` parameter the caller passed (so a unified handler can correlate the error to the in-flight upload), SHOULD include a `requested_variant` field naming the variant the caller asked for, and SHOULD include a `supported_variants` field listing the variants the tool *does* implement — equivalent in content to the `source_variants` capability field if advertised:
 
 ```json
 {
   "error": "unsupported_source_variant",
   "method": "http_upload",
+  "url": "https://receiver.example/uploads/<token>",
   "requested_variant": "exchange_uri",
   "supported_variants": ["path"],
   "message": "this sender only implements 'path'; caller requested 'exchange_uri'"
@@ -727,17 +728,13 @@ This signals definitively to the client that retrying is pointless. The client S
 
 ### Receiver server (`http_upload`)
 
-Servers that advertise `http_upload` on the receiver side (i.e. that register a `create_upload_link` tool to accept pushed bytes) MUST meet the following obligations:
+Servers that advertise `http_upload` on the receiver side (i.e. that register a `create_upload_link` tool to accept pushed bytes) MUST meet the obligations listed below. The wire-format details are defined normatively in §"Transfer Methods / `http_upload`"; this section is a conformance checklist that points back to the canonical text.
 
-- **MUST** atomically consume the URL token on the first POST attempt — success OR failure. A retry against the same URL MUST return `404 Not Found`, not the original error. Senders that need to retry call `create_upload_link` again.
-- **MUST** reject expired tokens with `404 Not Found`. The `404` response MUST NOT distinguish between "token never existed," "token expired," and "token already consumed" — these three conditions collapse to the same status to avoid leaking token-existence information to a probing caller.
-- **MUST** validate the `destination` parameter per the server's own domain rules **before** any filesystem interaction. Spec-level rules forbid only null bytes, control characters, and leading/trailing whitespace; the receiver decides everything else (per §"Security and Path Resolution").
-- **MUST** enforce the body-size ceiling (`max_bytes`, returned in the `create_upload_link` response). Bodies exceeding the ceiling — declared via `Content-Length` or detected mid-stream — MUST yield `413 Payload Too Large`.
-- **MUST** generate URL tokens with at least 128 bits of cryptographically unguessable entropy in the URL path or query.
-- **MAY** filter incoming `Content-Type` against the `accepts` list advertised in the capability declaration; mismatch MUST yield `415 Unsupported Media Type`.
-- **MUST NOT** echo internal error details (tracebacks, library exception strings) in `5xx` response bodies. The full traceback is logged server-side; the response body MAY be generic.
+- **MUST** validate the `destination` parameter per the server's own domain rules **before** any filesystem interaction (spec-level rules in §"Security and Path Resolution"; receiver-specific rules are domain-defined).
+- **MUST** honour the URL token requirements — cryptographically unguessable entropy, one-time atomic consumption on first POST, TTL-bounded expiry, indistinguishable `404` for the three "token unusable" conditions (never existed / expired / already consumed). See §"Transfer Methods / `http_upload` / POST contract / URL token".
+- **MUST** honour the status-code class table in §"Transfer Methods / `http_upload` / POST contract": `2xx` on success, `404` on token issues, `413` on body-size overflow, `415` on `Content-Type` mismatch with `accepts`, other `4xx` for receiver-domain rejection with `transfer_failed` envelope, `5xx` for server errors with the no-internal-detail-echo rule.
 
-These obligations parallel the pull-flow obligations in §"Consuming server" above; readers writing a `http_upload` receiver should treat both sections as the applicable conformance checklist.
+Implementors writing a `http_upload` receiver should treat this checklist plus the wire-format section as a unit; the two are kept separate to surface the receiver-side obligations alongside §"Producing server" and §"Consuming server" without duplicating normative content.
 
 ### Defaults
 
