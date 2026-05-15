@@ -204,6 +204,8 @@ The producer exposes a tool that generates a download URL. The consumer exposes 
 
 The `http` method serves double duty: the generated URL can be used for server-to-server transfer (consumer calls its fetch tool with the URL) or for **direct human download** (the LLM includes the URL in its response for the user to click). This means the `http` method is useful even without a consuming server: a producer can generate a download link that the LLM presents to the user as a clickable link in the conversation.
 
+**HTTP-server capability.** The `http` method requires the *producer* to be reachable as an HTTP server — it mints and serves the download URL. The consumer needs only the ability to make an *outbound* HTTP request; it does not accept inbound connections and need not itself be an HTTP-transport MCP server. A stdio MCP server can therefore be the consumer for `http` (it issues an outbound `GET`), but cannot be the producer. The spec cares about the *capability* — can a side serve a URL, can it make outbound requests — not how the server obtains HTTP access.
+
 In a file reference:
 
 ```json
@@ -247,7 +249,9 @@ A server that is both producer and consumer populates both sub-keys:
 
 #### `http_upload` (push to receiver-issued URL)
 
-The reverse of the `http` method: the *receiver* mints a one-time POST URL; any party with the URL pushes bytes. The sender can be an LLM/agent, another MCP server, or a human with an HTTP client (`curl`, browser, custom script) — the spec does not constrain who pushes. The motivating use case is when the *sender* cannot serve an HTTP endpoint: with the `http` (download) method the consumer must pull bytes from a producer-served URL, which fails if the sender is a local agent, a `curl` invocation, or any client that can make outbound requests but cannot receive inbound connections. `http_upload` inverts the direction — the receiver issues the URL, the sender only needs outbound HTTP access to reach it.
+The reverse of the `http` method: the *receiver* mints a one-time POST URL; any party with the URL pushes bytes. The sender can be an LLM/agent, another MCP server, or a human with an HTTP client (`curl`, browser, custom script) — the spec does not constrain who pushes.
+
+**HTTP-server capability.** `http_upload` mirrors `http` with the roles inverted: the method requires the *receiver* to be reachable as an HTTP server — it mints and serves the upload URL. The sender needs only the ability to make an *outbound* HTTP request; it does not accept inbound connections and need not itself be an HTTP-transport MCP server. A stdio MCP server can therefore be the sender for `http_upload` (it issues an outbound `POST`), but cannot be the receiver. This is the method's reason to exist: the `http` (download) method requires the *producer* to serve the URL, so it cannot move bytes out of a producer that has no HTTP server; `http_upload` puts the URL-serving on the receiver instead. Between the two methods, whichever side can serve HTTP, one method places the URL-serving there; `exchange` (shared volume) covers the case where neither side can.
 
 Like the existing `http` (download) method, both the URL-mint tool on the receiver side and the POST-perform tool on the sender side are wire-optional from the spec's perspective. Any HTTP client that can issue a `POST` is a valid sender, just as any HTTP client that can `GET` is a valid consumer of the existing `http` method. The tool definitions exist to standardize MCP-mediated transfer between MCP servers; they are not the only valid implementation of either side.
 
