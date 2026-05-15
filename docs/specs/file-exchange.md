@@ -270,10 +270,7 @@ A sender-only server (the sender side is optional):
 
 ```json
 "http_upload": {
-  "source": {
-    "tool": "upload",
-    "source_variants": ["path", "exchange_uri", "http_url", "inline_b64"]
-  }
+  "source": {"tool": "upload"}
 }
 ```
 
@@ -281,7 +278,7 @@ A server that implements both roles populates both sub-keys:
 
 ```json
 "http_upload": {
-  "source": {"tool": "upload", "source_variants": ["path"]},
+  "source": {"tool": "upload"},
   "sink": {
     "tool": "create_upload_link",
     "accepts": ["*/*"],
@@ -295,11 +292,8 @@ Fields within each role sub-object:
 
 - `tool` (MUST, both roles) — name of the MCP tool for that role (`create_upload_link` on the `sink` side, `upload` on the `source` side; the names are implementation-defined).
 - `accepts` / `max_bytes` / `max_ttl_seconds` (`sink` only) — the receiver's admission policy: accepted `Content-Type` filter, body-size ceiling, TTL ceiling.
-- `source_variants` (SHOULD, `source` only) — array of the `source` tagged-union variants the sender's tool implements. Allows callers to pre-filter and avoid round-trips on unsupported variants. If omitted, callers MUST assume only `path` is supported (the lowest-common-denominator variant per the `source` table below).
 
 The role is identified by **sub-key presence** (`source` vs `sink`), not by the tool-name string (which is implementation-defined). A server that implements both roles advertises both sub-keys — the `source`/`sink` structure expresses dual-role servers without ambiguity.
-
-The `source` role sub-key here is a capability-declaration construct. It is distinct from the `source` *parameter* on the `upload` tool (the tagged-union payload variant, defined below): same word, different protocol levels — one names a server-wide role, the other a per-invocation argument.
 
 **Receiver-side tool: `create_upload_link`**
 
