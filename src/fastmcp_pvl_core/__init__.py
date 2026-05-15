@@ -67,13 +67,17 @@ from fastmcp_pvl_core._token_store import (
     set_upload_store,
 )
 from fastmcp_pvl_core.file_exchange import (
+    ByteSourceResolver,
     ConsumerSink,
     FetchContext,
     FetchResult,
     FileExchangeHandle,
+    ResolvedSource,
     UploadHandle,
+    UploadSenderHandle,
     register_file_exchange,
     register_file_exchange_upload,
+    register_file_exchange_upload_sender,
 )
 
 __version__ = "2.1.0"  # PSR overrides at build time
@@ -84,6 +88,7 @@ __all__ = [
     "AuthorizationMiddleware",
     "Authorizer",
     "AuthzDenied",
+    "ByteSourceResolver",
     "ConfigurationError",
     "ConsumerSink",
     "ExchangeGroupMismatch",
@@ -103,8 +108,10 @@ __all__ = [
     "ServerConfig",
     "TokenRecord",
     "Transport",
+    "ResolvedSource",
     "UploadHandle",
     "UploadRecord",
+    "UploadSenderHandle",
     "UploadStore",
     "UpstreamProvider",
     "UpstreamResult",
@@ -133,6 +140,7 @@ __all__ = [
     "register_file_exchange",
     "register_file_exchange_capability",
     "register_file_exchange_upload",
+    "register_file_exchange_upload_sender",
     "register_server_info_tool",
     "register_tool_icons",
     "resolve_auth_mode",
