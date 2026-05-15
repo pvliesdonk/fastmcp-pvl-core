@@ -689,7 +689,7 @@ When a client receives a file reference and needs to deliver it to a consuming s
 
 ### Step 1: Method selection
 
-**Capability-aware client:** intersect the file reference's `transfer` keys with the consumer's `transfer_methods` keys, restricted to pull-direction methods (those that appear in a file reference's `transfer` object — currently `exchange` and `http`). Pick the highest-priority method that both sides support. Push-direction methods like `http_upload` are NOT part of this intersection because they don't appear in file references; they are selected separately by looking for the receiver-side shape (field-presence test: `accepts` / `max_bytes` / `max_ttl_seconds`) in the destination server's capability declaration.
+**Capability-aware client:** the file reference's `transfer` object lists the methods the *producer* (the `source`) supports for this file. For each, check whether the destination server advertises the matching `sink` role for that method in its `transfer_methods` — for `http`, the consumer needs `transfer_methods.http.sink`; for `exchange`, a matching `exchange_id`. Pick the highest-priority method where the producer's `source` side and the consumer's `sink` side both line up. `http_upload` does not appear in file references (it is push-direction); a client pushing bytes *into* a server instead looks for `transfer_methods.http_upload.sink` in that server's capability declaration.
 
 **Implicit client:** pass the file reference to the consumer and let it attempt the highest-priority method it recognises.
 
