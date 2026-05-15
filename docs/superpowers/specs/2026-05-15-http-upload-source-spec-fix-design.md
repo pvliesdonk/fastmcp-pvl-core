@@ -104,6 +104,44 @@ table's `origin_id` row references those rules, exactly as the
 `origin_id` in the `http` method's `create_download_link`"). No change to
 §"Security and Path Resolution" itself is required.
 
+### 6. Clarify the HTTP-server-capability asymmetry
+
+A second, independent protocol clarification, folded into this issue by
+maintainer decision (both edits are small and land in the same §`http` /
+§`http_upload` section family).
+
+The spec does not state crisply which side of an `http`-family transfer
+must be an HTTP *server*. The principle: the `http` and `http_upload`
+methods each require an HTTP server on exactly **one** side — the side
+that mints and serves the URL. The other side needs only the ability to
+issue *outbound* HTTP requests; it does not accept inbound connections and
+need not run an HTTP-transport MCP server (a stdio MCP server can still
+make outbound requests).
+
+- `http` (download): the producer (`source`) serves the download URL, so
+  the producer must be HTTP-server-capable; the consumer (`sink`) only
+  issues an outbound GET. Usable producer-HTTP-server → consumer-stdio.
+- `http_upload`: the receiver (`sink`) serves the upload URL, so the
+  receiver must be HTTP-server-capable; the sender (`source`) only issues
+  an outbound POST. Usable sender-stdio → receiver-HTTP-server.
+- The two methods are complementary by design: between them they cover
+  both transport-asymmetry directions — whichever side can serve HTTP,
+  one of the two methods puts the URL-serving on that side. `exchange`
+  (shared volume) covers the case where neither side can serve HTTP.
+- The spec speaks of the *capability* — can a side serve a URL, can it
+  make outbound requests — not the MCP transport. How a server obtains
+  HTTP access is out of the spec's concern.
+
+Spec edits: §`http` gains an explicit statement of the
+producer-serves / consumer-outbound-only rule. The §`http_upload`
+"motivating use case" paragraph — which already states the
+sender-outbound-only half informally — is tightened into the crisp
+symmetric form. A unifying sentence framing the pair as complementary may
+go in §"Transfer Methods". Exact wording is the implementation plan's job.
+
+This is explanatory/clarifying text: it changes no behaviour and no wire
+construct, it makes existing protocol intent precise.
+
 ### What does NOT change
 
 - The `http_upload` **wire contract** — the sender POSTs raw bytes plus a
@@ -112,7 +150,9 @@ table's `origin_id` row references those rules, exactly as the
   always correct.
 - The receiver side (`create_upload_link`, the POST contract,
   `http_upload.sink`) — entirely untouched.
-- The `http` and `exchange` methods.
+- The `exchange` method.
+- The *behaviour and wire contract* of the `http` method — `http` gains
+  only clarifying prose (§6); no behavioural or wire change.
 
 ## Version framing — fix in place, stays 0.3.0
 
@@ -145,7 +185,9 @@ implementation. The change is to un-implemented draft spec text.
   resource is a file, a database blob, or an in-memory image), then POSTs
   it — mirroring how the download-producer side already treats
   `origin_id` → bytes resolution as the server's own concern.
-- Any change to the receiver side, the `http` method, or `exchange`.
+- Any *behavioural* change to the receiver side, the `http` method, or
+  `exchange`. (§6 adds clarifying prose to §`http` / §`http_upload` but
+  changes no behaviour or wire construct.)
 
 ## Acceptance (from #93)
 
@@ -157,5 +199,8 @@ implementation. The change is to un-implemented draft spec text.
 - [ ] The `source` role-key vs `source` parameter disambiguation paragraph
   is removed.
 - [ ] The "MCP-mediated push" worked example uses `origin_id`.
+- [ ] §`http` and §`http_upload` state crisply that exactly the
+  URL-minting side must be HTTP-server-capable and the other side needs
+  only outbound HTTP (§6).
 - [ ] The spec version stays `0.3.0`.
 - [ ] The `http_upload` wire contract and the receiver side are unchanged.
