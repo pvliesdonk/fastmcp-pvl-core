@@ -571,7 +571,7 @@ During the MCP `initialize` handshake, a participating server declares exchange 
         "transfer_methods": {
           "exchange": {},
           "http": {
-            "tool": "create_download_link"
+            "source": {"tool": "create_download_link"}
           }
         }
       }
@@ -595,13 +595,15 @@ During the MCP `initialize` handshake, a participating server declares exchange 
         "transfer_methods": {
           "exchange": {},
           "http": {
-            "tool": "fetch"
+            "sink": {"tool": "fetch"}
           },
           "http_upload": {
-            "tool": "create_upload_link",
-            "accepts": ["application/pdf", "text/markdown"],
-            "max_bytes": 10485760,
-            "max_ttl_seconds": 3600
+            "sink": {
+              "tool": "create_upload_link",
+              "accepts": ["application/pdf", "text/markdown"],
+              "max_bytes": 10485760,
+              "max_ttl_seconds": 3600
+            }
           }
         }
       }
@@ -617,13 +619,13 @@ During the MCP `initialize` handshake, a participating server declares exchange 
 | `exchange_id` | SHOULD | The exchange group ID. Present when the server participates in an exchange group. |
 | `produces` | SHOULD | MIME types this server can produce as file references. |
 | `consumes` | SHOULD | MIME types this server can accept via file references (the pull-flow / `fetch` path). The push-flow `http_upload` method has its own independent `accepts` filter inside `transfer_methods.http_upload`; the two lists are not required to match. |
-| `transfer_methods` | MUST | Object whose keys are supported transfer method names. Values contain method-specific configuration (e.g. tool names). |
+| `transfer_methods` | MUST | Object whose keys are supported transfer method names. For tool-based methods (`http`, `http_upload`) the value carries `source` / `sink` role sub-objects, each with a `tool` field plus method-specific metadata; a server populates whichever role(s) it fills. `exchange` carries `{}`. See §"Transfer Methods". |
 
 A capability-aware client can determine before any tool calls:
 
 - Which servers produce or consume file references.
 - Which pairs share an exchange group (matching `exchange_id`).
-- Which transfer methods are available between any two servers (intersection of their `transfer_methods` keys).
+- Which transfer methods are available between any two servers, and in which direction — by matching one server's `source` role for a method against the other server's `sink` role.
 - Which tools to call on each side.
 
 #### Implicit discovery
