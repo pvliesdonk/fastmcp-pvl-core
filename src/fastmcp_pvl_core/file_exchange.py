@@ -44,11 +44,17 @@ import logging
 import mimetypes
 import time
 import uuid
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import (
+    AsyncIterator,
+    Awaitable,
+    Callable,
+    Mapping,
+    Sequence,
+)
 from dataclasses import dataclass, field
 from email.message import Message
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Final, Literal, NamedTuple
+from typing import TYPE_CHECKING, Any, BinaryIO, Final, Literal, NamedTuple
 from urllib.parse import urlsplit
 
 import httpx
@@ -1395,11 +1401,73 @@ _DEFAULT_UPLOAD_TOOL = "create_upload_link"
 _DEFAULT_UPLOAD_TTL_SECONDS = 300.0
 _DEFAULT_UPLOAD_TTL_MAX_SECONDS = 3600.0
 _DEFAULT_UPLOAD_MAX_BYTES = 10 * 1024 * 1024
+_DEFAULT_UPLOAD_SENDER_TOOL = "upload"
+_DEFAULT_UPLOAD_SEND_TIMEOUT_SECONDS = 300.0
+_UPLOAD_CHUNK_BYTES = 65536
+
+# Test seam: when set, the upload sender routes POSTs through this
+# httpx transport instead of the real network. Production leaves it None.
+# httpx.AsyncBaseTransport is what httpx.AsyncClient(transport=...) expects;
+# httpx.MockTransport subclasses it, so tests can inject one. Tests set it
+# via monkeypatch.setattr, which auto-restores the None default on teardown.
+_upload_sender_transport: httpx.AsyncBaseTransport | None = None
 
 PreLinkValidator = Callable[
     [str, "str | None"],
     "None | Awaitable[None]",
 ]
+
+
+@dataclass(frozen=True)
+class ResolvedSource:
+    """The bytes a sender's ``upload`` tool will POST.
+
+    Returned by a :data:`ByteSourceResolver`. ``stream`` is a file-like
+    binary object pvl-core reads in chunks and streams into the POST
+    body, then closes. ``content_type`` is the resource's MIME type if
+    the downstream knows it (used unless the ``upload`` caller passes an
+    explicit ``content_type``). ``size_bytes``, when known, lets pvl-core
+    set a ``Content-Length`` header; when provided it MUST be the exact
+    byte length of the stream — pvl-core sends it verbatim as
+    ``Content-Length``, and an inaccurate value produces a malformed
+    request.
+    """
+
+    stream: BinaryIO
+    content_type: str | None = None
+    size_bytes: int | None = None
+
+    def __post_init__(self) -> None:
+        """Validate field invariants at construction time."""
+        if self.size_bytes is not None and self.size_bytes < 0:
+            raise ValueError(
+                f"ResolvedSource.size_bytes must be non-negative; got {self.size_bytes}"
+            )
+
+
+ByteSourceResolver = Callable[
+    [str],
+    "ResolvedSource | Awaitable[ResolvedSource]",
+]
+
+
+@dataclass(frozen=True)
+class UploadSenderHandle:
+    """Handle returned by :func:`register_file_exchange_upload_sender`.
+
+    Attributes:
+        namespace: The server's logical name.
+        tool_name: The name the sender tool was registered under —
+            always ``"upload"``; pvl-core owns this shape.
+    """
+
+    namespace: str
+    # pvl-core owns the sender tool name as part of the shared shape (see
+    # framing principle in CLAUDE.md). ``init=False`` keeps it out of the
+    # constructor so a directly-constructed handle cannot advertise a tool
+    # name that doesn't match what pvl-core actually registered — silently
+    # breaking the ``http_upload.source.tool`` capability contract.
+    tool_name: str = field(default=_DEFAULT_UPLOAD_SENDER_TOOL, init=False)
 
 
 @dataclass(frozen=True)
@@ -1861,13 +1929,222 @@ def register_file_exchange_upload(
     return handle
 
 
+def register_file_exchange_upload_sender(
+    mcp: FastMCP,
+    *,
+    namespace: str,
+    env_prefix: str,
+    byte_source: ByteSourceResolver,
+) -> UploadSenderHandle:
+    """Wire the MCP File Exchange ``http_upload`` *sender* side onto ``mcp``.
+
+    Registers an ``upload`` MCP tool that resolves an opaque ``origin_id``
+    to a file-like byte source (via ``byte_source``) and POSTs the bytes
+    to a receiver-issued upload URL. Counterpart to
+    :func:`register_file_exchange_upload` (the receiver side).
+
+    Unlike the receiver, the sender is **not** gated on transport or a
+    base URL — POSTing needs only outbound HTTP, which a stdio MCP
+    server has. The ``upload`` tool is always registered.
+
+    Args:
+        mcp: The :class:`fastmcp.FastMCP` server instance.
+        namespace: **Domain hook.** This server's logical name.
+        env_prefix: **Domain hook.** Per-server env-var prefix (e.g.
+            ``"MARKDOWN_VAULT_MCP"``). The sender reads
+            ``{PREFIX}_UPLOAD_SEND_TIMEOUT`` (seconds, float; default
+            300) for the outbound-POST timeout.
+        byte_source: **Domain hook.** ``(origin_id) -> ResolvedSource``
+            (sync or async). Resolves the sender's opaque ``origin_id``
+            to the bytes to push. Raise ``ValueError`` for a
+            caller-facing rejection (unknown / not-permitted
+            ``origin_id``); it is surfaced as a ``transfer_failed``
+            envelope. Any other exception is logged at ERROR
+            (``logger.exception``) and re-raised unchanged — it surfaces
+            as a tool error, not a ``transfer_failed`` envelope.
+
+    Returns:
+        An :class:`UploadSenderHandle`.
+    """
+    send_timeout = _DEFAULT_UPLOAD_SEND_TIMEOUT_SECONDS
+    timeout_raw = env(env_prefix, "UPLOAD_SEND_TIMEOUT")
+    if timeout_raw:
+        try:
+            send_timeout = float(timeout_raw)
+        except ValueError as exc:
+            raise ConfigurationError(
+                f"{env_prefix}_UPLOAD_SEND_TIMEOUT must be a positive "
+                f"number (seconds); got {timeout_raw!r}"
+            ) from exc
+        if send_timeout <= 0:
+            raise ConfigurationError(
+                f"{env_prefix}_UPLOAD_SEND_TIMEOUT must be positive; got {send_timeout}"
+            )
+
+    builder = _get_or_create_builder(mcp, namespace=namespace)
+    builder.set_http_upload_source(tool_name=_DEFAULT_UPLOAD_SENDER_TOOL)
+    _emit_capability(mcp)
+
+    @mcp.tool(name=_DEFAULT_UPLOAD_SENDER_TOOL, tags={"write"})
+    async def upload(
+        url: str,
+        origin_id: str,
+        content_type: str | None = None,
+    ) -> dict[str, Any]:
+        r"""POST the bytes identified by ``origin_id`` to a receiver-issued URL.
+
+        Args:
+            url: The receiver-issued POST endpoint, from a prior
+                ``create_upload_link`` call.
+            origin_id: The sender's opaque stable handle for the bytes to
+                push. Validated against the spec's segment rules (no
+                ``/``, ``\``, ``.``, ``..``, control bytes,
+                leading/trailing whitespace); resolved to bytes by the
+                server's ``byte_source`` hook. This ``origin_id`` is the
+                *sender's own* handle, independent of any ``origin_id``
+                the caller earlier passed to the receiver's
+                ``create_upload_link`` — the two are unrelated opaque
+                identifiers and pvl-core's ``upload`` tool never sees
+                the ``create_upload_link`` ``origin_id``.
+            content_type: Optional MIME type for the POST ``Content-Type``
+                header. If omitted, the resolver's reported type is used,
+                else ``application/octet-stream``.
+
+        Returns:
+            On success, ``{"status": <int>, "body": <receiver response>}``.
+            On failure, a ``transfer_failed`` envelope.
+        """
+        # Every _upload_transfer_failed below uses receiver_server="": the
+        # sender knows only the POST URL, never the receiver's server
+        # namespace — whether the failure is a pre-POST rejection (the
+        # receiver was never contacted) or a transport error. A receiver-
+        # issued transfer_failed body is passed through verbatim instead
+        # (see the non-2xx branch), so it keeps the receiver's real value.
+        try:
+            ExchangeURI.validate_segment(origin_id, role="json_param")
+        except ExchangeURIError as exc:
+            return _upload_transfer_failed(
+                receiver_server="", origin_id=origin_id, message=str(exc)
+            )
+        try:
+            _ssrf_guard(url)
+        except FetchTransportError as exc:
+            return _upload_transfer_failed(
+                receiver_server="", origin_id=origin_id, message=str(exc)
+            )
+        try:
+            if inspect.iscoroutinefunction(byte_source):
+                resolved = await byte_source(origin_id)
+            else:
+                resolved = await asyncio.to_thread(byte_source, origin_id)
+                if inspect.isawaitable(resolved):
+                    resolved = await resolved
+        except ValueError as exc:
+            return _upload_transfer_failed(
+                receiver_server="", origin_id=origin_id, message=str(exc)
+            )
+        except Exception:
+            logger.exception(
+                "byte_source resolver raised non-ValueError (origin_id=%r) "
+                "— server-side bug, not a caller error",
+                origin_id,
+            )
+            raise
+
+        # Stream is closed in the finally below on every path after
+        # resolution — connection failure, mid-stream failure, and
+        # success all converge here. The _chunks() generator only reads;
+        # it no longer owns the close so a connection error before the
+        # body is read doesn't leak the file descriptor.
+        try:
+            effective_ct = (
+                content_type or resolved.content_type or "application/octet-stream"
+            )
+            headers = {"Content-Type": effective_ct}
+            if resolved.size_bytes is not None:
+                headers["Content-Length"] = str(resolved.size_bytes)
+
+            async def _chunks() -> AsyncIterator[bytes]:
+                while True:
+                    chunk = await asyncio.to_thread(
+                        resolved.stream.read, _UPLOAD_CHUNK_BYTES
+                    )
+                    if not chunk:
+                        break
+                    yield chunk
+
+            # One POST attempt only — the receiver consumes its URL token on
+            # the first attempt (success or failure); a retry returns 404.
+            client_kwargs: dict[str, Any] = {
+                "timeout": send_timeout,
+                "follow_redirects": False,
+            }
+            if _upload_sender_transport is not None:
+                client_kwargs["transport"] = _upload_sender_transport
+            try:
+                async with httpx.AsyncClient(**client_kwargs) as client:
+                    resp = await client.post(url, content=_chunks(), headers=headers)
+            except httpx.HTTPError as exc:
+                return _upload_transfer_failed(
+                    receiver_server="",
+                    origin_id=origin_id,
+                    message=f"upload POST failed: {exc}",
+                )
+            except OSError as exc:
+                # OSError here is almost always the downstream-controlled
+                # byte_source stream failing mid-read, but socket/teardown
+                # OSErrors not normalised into httpx.HTTPError can land here
+                # too — caller-facing either way, so the message stays
+                # source-neutral rather than asserting an unproven cause.
+                return _upload_transfer_failed(
+                    receiver_server="",
+                    origin_id=origin_id,
+                    message=f"upload failed reading or sending body: {exc}",
+                )
+
+            status = resp.status_code
+            ct = resp.headers.get("content-type", "")
+            if "json" in ct.lower():
+                try:
+                    body: Any = resp.json()
+                except ValueError:
+                    body = resp.text
+            else:
+                body = resp.text
+
+            if 200 <= status < 300:
+                return {"status": status, "body": body}
+            if isinstance(body, dict) and body.get("error") == "transfer_failed":
+                return body
+            return _upload_transfer_failed(
+                receiver_server="",
+                origin_id=origin_id,
+                message=f"upload POST returned HTTP {status}",
+            )
+        finally:
+            try:
+                resolved.stream.close()
+            except Exception:
+                logger.warning(
+                    "failed to close byte_source stream (origin_id=%r)",
+                    origin_id,
+                    exc_info=True,
+                )
+
+    return UploadSenderHandle(namespace=namespace)
+
+
 __all__ = [
+    "ByteSourceResolver",
     "ConsumerSink",
     "FetchContext",
     "FetchResult",
     "FileExchangeHandle",
     "PreLinkValidator",
+    "ResolvedSource",
     "UploadHandle",
+    "UploadSenderHandle",
     "register_file_exchange",
     "register_file_exchange_upload",
+    "register_file_exchange_upload_sender",
 ]

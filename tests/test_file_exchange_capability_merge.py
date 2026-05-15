@@ -137,3 +137,27 @@ def test_builder_is_attached_per_instance_not_module_level() -> None:
 
     mcp_b = FastMCP(name="probe-b")
     assert getattr(mcp_b, _BUILDER_ATTR, None) is None
+
+
+def test_builder_http_upload_source_only() -> None:
+    b = _FileExchangeCapabilityBuilder(namespace="ns")
+    b.set_http_upload_source(tool_name="upload")
+    cap = b.build()
+    assert cap is not None
+    assert cap.to_capability_dict()["transfer_methods"]["http_upload"] == {
+        "source": {"tool": "upload"},
+    }
+
+
+def test_builder_http_upload_both_roles() -> None:
+    """A server that both sends and receives advertises both sub-keys."""
+    b = _FileExchangeCapabilityBuilder(namespace="ns")
+    b.set_http_upload_source(tool_name="upload")
+    b.set_http_upload_sink(
+        tool_name="create_upload_link", max_bytes=10, max_ttl_seconds=60
+    )
+    cap = b.build()
+    assert cap is not None
+    block = cap.to_capability_dict()["transfer_methods"]["http_upload"]
+    assert block["source"] == {"tool": "upload"}
+    assert block["sink"]["tool"] == "create_upload_link"
