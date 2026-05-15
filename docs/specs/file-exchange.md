@@ -618,7 +618,7 @@ During the MCP `initialize` handshake, a participating server declares exchange 
 | `namespace` | MUST | The server's exchange namespace. |
 | `exchange_id` | SHOULD | The exchange group ID. Present when the server participates in an exchange group. |
 | `produces` | SHOULD | MIME types this server can produce as file references. |
-| `consumes` | SHOULD | MIME types this server can accept via file references (the pull-flow / `fetch` path). The push-flow `http_upload` method has its own independent `accepts` filter inside `transfer_methods.http_upload`; the two lists are not required to match. |
+| `consumes` | SHOULD | MIME types this server can accept via file references (the pull-flow / `fetch` path). The push-flow `http_upload` method has its own independent `accepts` filter inside `transfer_methods.http_upload.sink`; the two lists are not required to match. |
 | `transfer_methods` | MUST | Object whose keys are supported transfer method names. For tool-based methods (`http`, `http_upload`) the value carries `source` / `sink` role sub-objects, each with a `tool` field plus method-specific metadata; a server populates whichever role(s) it fills. `exchange` carries `{}`. See §"Transfer Methods". |
 
 A capability-aware client can determine before any tool calls:
@@ -724,7 +724,7 @@ The client orchestrates a two-step handoff:
 
 1. Call the producer's tool (from `transfer.http.tool` or `remaining_transfer.http.tool`) with `origin_id` set to the file's `origin_id`.
 2. The tool returns `{"url": "https://...", "ttl_seconds": 3600}`.
-3. Call the consumer's tool (from `transfer_methods.http.tool` in the consumer's capabilities, or known by configuration) with `url` and optionally `path`. If the LLM cannot determine a sensible path, it should omit the parameter and let the consumer auto-generate one.
+3. Call the consumer's tool (from `transfer_methods.http.sink.tool` in the consumer's capabilities, or known by configuration) with `url` and optionally `path`. If the LLM cannot determine a sensible path, it should omit the parameter and let the consumer auto-generate one.
 
 ### Step 3: Exhaustion
 
@@ -754,7 +754,7 @@ This signals definitively to the client that retrying is pointless. The client S
 - **MUST** own the complete lifecycle of exchange files it produces. Only the producer deletes its own files. Implementation-specific (SQLite TTL, cron, stat-based, etc.).
 - **SHOULD** implement a storage ceiling or LRU eviction policy alongside time-based TTL to prevent shared volume exhaustion during high-throughput operation (e.g. generating thousands of images). TTL alone is insufficient if the production rate exceeds the expiry rate.
 - **MUST** validate `origin_id` against the path segment rules before writing. This validation applies to the raw JSON string; producers MUST NOT apply URI decoding to the `origin_id` parameter.
-- **MUST**, for tools declared in `transfer_methods.http`, accept a parameter named `origin_id` and return a JSON object with at minimum a `url` field.
+- **MUST**, for tools declared in `transfer_methods.http.source`, accept a parameter named `origin_id` and return a JSON object with at minimum a `url` field.
 - **SHOULD** support the `exchange` method when `MCP_EXCHANGE_DIR` is configured.
 - **SHOULD** support the `http` method to enable cross-host transfers.
 
@@ -766,7 +766,7 @@ This signals definitively to the client that retrying is pointless. The client S
 - **MUST** ignore dotfiles in namespace directories.
 - **MUST** validate all path segments from exchange URIs after a single pass of URI decoding. JSON-RPC parameters (such as `origin_id`) MUST be validated as raw strings without URI decoding.
 - **MUST** include `remaining_transfer` in the `transfer_failed` error, containing the file reference's `transfer` with the failed method removed.
-- **SHOULD**, for tools declared in `transfer_methods.http`, accept a parameter named `url` and an optional parameter named `path`. If `path` is omitted, the tool MUST auto-generate a safe local path.
+- **SHOULD**, for tools declared in `transfer_methods.http.sink`, accept a parameter named `url` and an optional parameter named `path`. If `path` is omitted, the tool MUST auto-generate a safe local path.
 
 ### Receiver server (`http_upload`)
 
@@ -885,5 +885,5 @@ The spec assumes POSIX filesystem semantics. Mixed-OS exchange groups would requ
 
 ## Reference Implementations
 
-- **markdown-vault-mcp** ([pvliesdonk/markdown-vault-mcp](https://github.com/pvliesdonk/markdown-vault-mcp)): Consumer. Has `fetch` tool (accepts URL + path). Would add exchange resolution and declare `transfer_methods: {exchange: {}, http: {tool: "fetch"}}`.
-- **image-mcp**: Producer. Has `create_download_link` tool with TTL. Would add exchange writes, file references in tool responses, and declare `transfer_methods: {exchange: {}, http: {tool: "create_download_link"}}`. The `create_download_link` tool would need to accept `origin_id` as a parameter.
+- **markdown-vault-mcp** ([pvliesdonk/markdown-vault-mcp](https://github.com/pvliesdonk/markdown-vault-mcp)): Consumer. Has `fetch` tool (accepts URL + path). Would add exchange resolution and declare `transfer_methods: {exchange: {}, http: {sink: {tool: "fetch"}}}`.
+- **image-mcp**: Producer. Has `create_download_link` tool with TTL. Would add exchange writes, file references in tool responses, and declare `transfer_methods: {exchange: {}, http: {source: {tool: "create_download_link"}}}`. The `create_download_link` tool would need to accept `origin_id` as a parameter.
