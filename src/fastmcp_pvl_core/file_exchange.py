@@ -1436,6 +1436,13 @@ class ResolvedSource:
     content_type: str | None = None
     size_bytes: int | None = None
 
+    def __post_init__(self) -> None:
+        """Validate field invariants at construction time."""
+        if self.size_bytes is not None and self.size_bytes < 0:
+            raise ValueError(
+                f"ResolvedSource.size_bytes must be non-negative; got {self.size_bytes}"
+            )
+
 
 ByteSourceResolver = Callable[
     [str],
@@ -1454,7 +1461,12 @@ class UploadSenderHandle:
     """
 
     namespace: str
-    tool_name: str
+    # pvl-core owns the sender tool name as part of the shared shape (see
+    # framing principle in CLAUDE.md). ``init=False`` keeps it out of the
+    # constructor so a directly-constructed handle cannot advertise a tool
+    # name that doesn't match what pvl-core actually registered — silently
+    # breaking the ``http_upload.source.tool`` capability contract.
+    tool_name: str = field(default=_DEFAULT_UPLOAD_SENDER_TOOL, init=False)
 
 
 @dataclass(frozen=True)
@@ -1936,16 +1948,19 @@ def register_file_exchange_upload_sender(
 
     Args:
         mcp: The :class:`fastmcp.FastMCP` server instance.
-        namespace: Logical server name.
-        env_prefix: Per-server env var prefix. The sender reads
+        namespace: **Domain hook.** This server's logical name.
+        env_prefix: **Domain hook.** Per-server env-var prefix (e.g.
+            ``"MARKDOWN_VAULT_MCP"``). The sender reads
             ``{PREFIX}_UPLOAD_SEND_TIMEOUT`` (seconds, float; default
             300) for the outbound-POST timeout.
-        byte_source: Domain hook — ``(origin_id) -> ResolvedSource`` (sync
-            or async). Resolves the sender's opaque ``origin_id`` to the
-            bytes to push. Raise ``ValueError`` for a caller-facing
-            rejection (unknown / not-permitted ``origin_id``); it is
-            surfaced as a ``transfer_failed`` envelope. Any other
-            exception is logged at ERROR and propagates as a server bug.
+        byte_source: **Domain hook.** ``(origin_id) -> ResolvedSource``
+            (sync or async). Resolves the sender's opaque ``origin_id``
+            to the bytes to push. Raise ``ValueError`` for a
+            caller-facing rejection (unknown / not-permitted
+            ``origin_id``); it is surfaced as a ``transfer_failed``
+            envelope. Any other exception is logged at ERROR
+            (``logger.exception``) and re-raised unchanged — it surfaces
+            as a tool error, not a ``transfer_failed`` envelope.
 
     Returns:
         An :class:`UploadSenderHandle`.
@@ -1984,7 +1999,12 @@ def register_file_exchange_upload_sender(
                 push. Validated against the spec's segment rules (no
                 ``/``, ``\``, ``.``, ``..``, control bytes,
                 leading/trailing whitespace); resolved to bytes by the
-                server's ``byte_source`` hook.
+                server's ``byte_source`` hook. This ``origin_id`` is the
+                *sender's own* handle, independent of any ``origin_id``
+                the caller earlier passed to the receiver's
+                ``create_upload_link`` — the two are unrelated opaque
+                identifiers and pvl-core's ``upload`` tool never sees
+                the ``create_upload_link`` ``origin_id``.
             content_type: Optional MIME type for the POST ``Content-Type``
                 header. If omitted, the resolver's reported type is used,
                 else ``application/octet-stream``.
@@ -2066,6 +2086,14 @@ def register_file_exchange_upload_sender(
                     origin_id=origin_id,
                     message=f"upload POST failed: {exc}",
                 )
+            except OSError as exc:
+                # The stream is downstream-controlled; a read failure during
+                # the POST body is caller-facing, not a pvl-core bug.
+                return _upload_transfer_failed(
+                    receiver_server="",
+                    origin_id=origin_id,
+                    message=f"upload body read failed: {exc}",
+                )
 
             status = resp.status_code
             ct = resp.headers.get("content-type", "")
@@ -2087,11 +2115,16 @@ def register_file_exchange_upload_sender(
                 message=f"upload POST returned HTTP {status}",
             )
         finally:
-            resolved.stream.close()
+            try:
+                resolved.stream.close()
+            except Exception:
+                logger.warning(
+                    "failed to close byte_source stream (origin_id=%r)",
+                    origin_id,
+                    exc_info=True,
+                )
 
-    return UploadSenderHandle(
-        namespace=namespace, tool_name=_DEFAULT_UPLOAD_SENDER_TOOL
-    )
+    return UploadSenderHandle(namespace=namespace)
 
 
 __all__ = [

@@ -42,7 +42,7 @@ environment variables, not kwargs — matching #74's discipline. The
 kwarg surface is purely domain hooks (#72/#73 framing principle).
 
 The helper returns a frozen `UploadSenderHandle` (`namespace`,
-`tool_name`, `enabled`).
+`tool_name`).
 
 **Transport gating.** Per #93's HTTP-server-capability clarification, the
 sender side needs only *outbound* HTTP — which a stdio MCP server has.
@@ -122,12 +122,13 @@ bytes.
 
 ### 4. POST mechanics, SSRF, error handling
 
-**The POST.** pvl-core reuses the existing shared lazy `httpx.AsyncClient`
-(the one `fetch_file` uses — `follow_redirects=False`, 30 s timeout). The
-`upload` tool resolves `origin_id` → `ResolvedSource`, then issues one
-`POST url` with the file-like `stream` as a chunked body, the effective
-`Content-Type`, and `Content-Length` when known. The body is streamed —
-pvl-core does not buffer the whole resource in memory.
+**The POST.** pvl-core constructs a fresh per-call `httpx.AsyncClient`
+(`follow_redirects=False`, timeout from `{PREFIX}_UPLOAD_SEND_TIMEOUT` —
+default 300 s, configurable by the operator). The `upload` tool resolves
+`origin_id` → `ResolvedSource`, then issues one `POST url` with the
+file-like `stream` as a chunked body, the effective `Content-Type`, and
+`Content-Length` when known. The body is streamed — pvl-core does not
+buffer the whole resource in memory.
 
 **SSRF guard.** `url` is LLM-supplied (the `upload` tool is LLM-callable),
 so it is an exfiltration vector — an LLM steered to
