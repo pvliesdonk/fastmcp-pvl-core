@@ -212,19 +212,30 @@ In a file reference:
 }
 ```
 
-In a capability declaration (producer):
+In a capability declaration, the `http` method uses `source` / `sink` role sub-objects (see §"Transfer Methods" → "Capability-declaration shape"). The `source` role is the producer (mints the download URL via `create_download_link`); the `sink` role is the consumer (fetches from the URL).
+
+A producer-only server:
 
 ```json
 "http": {
-  "tool": "create_download_link"
+  "source": {"tool": "create_download_link"}
 }
 ```
 
-In a capability declaration (consumer):
+A consumer-only server:
 
 ```json
 "http": {
-  "tool": "fetch"
+  "sink": {"tool": "fetch"}
+}
+```
+
+A server that is both producer and consumer populates both sub-keys:
+
+```json
+"http": {
+  "source": {"tool": "create_download_link"},
+  "sink": {"tool": "fetch"}
 }
 ```
 
