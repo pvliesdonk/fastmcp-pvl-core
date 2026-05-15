@@ -204,6 +204,8 @@ The producer exposes a tool that generates a download URL. The consumer exposes 
 
 The `http` method serves double duty: the generated URL can be used for server-to-server transfer (consumer calls its fetch tool with the URL) or for **direct human download** (the LLM includes the URL in its response for the user to click). This means the `http` method is useful even without a consuming server: a producer can generate a download link that the LLM presents to the user as a clickable link in the conversation.
 
+**HTTP-server capability.** The `http` method requires the *producer* to be reachable as an HTTP server — it mints and serves the download URL. The consumer needs only the ability to make an *outbound* HTTP request; it does not accept inbound connections and need not itself be an HTTP-transport MCP server. A stdio MCP server can therefore be the consumer for `http` (it issues an outbound `GET`), but cannot be the producer. The spec cares about the *capability* — can a side serve a URL, can it make outbound requests — not how the server obtains HTTP access.
+
 In a file reference:
 
 ```json
@@ -247,7 +249,9 @@ A server that is both producer and consumer populates both sub-keys:
 
 #### `http_upload` (push to receiver-issued URL)
 
-The reverse of the `http` method: the *receiver* mints a one-time POST URL; any party with the URL pushes bytes. The sender can be an LLM/agent, another MCP server, or a human with an HTTP client (`curl`, browser, custom script) — the spec does not constrain who pushes. The motivating use case is when the *sender* cannot serve an HTTP endpoint: with the `http` (download) method the consumer must pull bytes from a producer-served URL, which fails if the sender is a local agent, a `curl` invocation, or any client that can make outbound requests but cannot receive inbound connections. `http_upload` inverts the direction — the receiver issues the URL, the sender only needs outbound HTTP access to reach it.
+The reverse of the `http` method: the *receiver* mints a one-time POST URL; any party with the URL pushes bytes. The sender can be an LLM/agent, another MCP server, or a human with an HTTP client (`curl`, browser, custom script) — the spec does not constrain who pushes.
+
+**HTTP-server capability.** `http_upload` mirrors `http` with the roles inverted: the method requires the *receiver* to be reachable as an HTTP server — it mints and serves the upload URL. The sender needs only the ability to make an *outbound* HTTP request; it does not accept inbound connections and need not itself be an HTTP-transport MCP server. A stdio MCP server can therefore be the sender for `http_upload` (it issues an outbound `POST`), but cannot be the receiver. This is the method's reason to exist: the `http` (download) method requires the *producer* to serve the URL, so it cannot move bytes out of a producer that has no HTTP server; `http_upload` puts the URL-serving on the receiver instead. Between the two methods, whichever side can serve HTTP, one method places the URL-serving there; `exchange` (shared volume) covers the case where neither side can.
 
 Like the existing `http` (download) method, both the URL-mint tool on the receiver side and the POST-perform tool on the sender side are wire-optional from the spec's perspective. Any HTTP client that can issue a `POST` is a valid sender, just as any HTTP client that can `GET` is a valid consumer of the existing `http` method. The tool definitions exist to standardize MCP-mediated transfer between MCP servers; they are not the only valid implementation of either side.
 
@@ -270,10 +274,7 @@ A sender-only server (the sender side is optional):
 
 ```json
 "http_upload": {
-  "source": {
-    "tool": "upload",
-    "source_variants": ["path", "exchange_uri", "http_url", "inline_b64"]
-  }
+  "source": {"tool": "upload"}
 }
 ```
 
@@ -281,7 +282,7 @@ A server that implements both roles populates both sub-keys:
 
 ```json
 "http_upload": {
-  "source": {"tool": "upload", "source_variants": ["path"]},
+  "source": {"tool": "upload"},
   "sink": {
     "tool": "create_upload_link",
     "accepts": ["*/*"],
@@ -295,11 +296,8 @@ Fields within each role sub-object:
 
 - `tool` (MUST, both roles) — name of the MCP tool for that role (`create_upload_link` on the `sink` side, `upload` on the `source` side; the names are implementation-defined).
 - `accepts` / `max_bytes` / `max_ttl_seconds` (`sink` only) — the receiver's admission policy: accepted `Content-Type` filter, body-size ceiling, TTL ceiling.
-- `source_variants` (SHOULD, `source` only) — array of the `source` tagged-union variants the sender's tool implements. Allows callers to pre-filter and avoid round-trips on unsupported variants. If omitted, callers MUST assume only `path` is supported (the lowest-common-denominator variant per the `source` table below).
 
 The role is identified by **sub-key presence** (`source` vs `sink`), not by the tool-name string (which is implementation-defined). A server that implements both roles advertises both sub-keys — the `source`/`sink` structure expresses dual-role servers without ambiguity.
-
-The `source` role sub-key here is a capability-declaration construct. It is distinct from the `source` *parameter* on the `upload` tool (the tagged-union payload variant, defined below): same word, different protocol levels — one names a server-wide role, the other a per-invocation argument.
 
 **Receiver-side tool: `create_upload_link`**
 
@@ -378,7 +376,7 @@ A server that wants to act as an MCP-mediated *pusher* of bytes (e.g., a mover-s
 | Param | Cardinality | Description |
 |---|---|---|
 | `url` | MUST | The receiver-issued POST endpoint (returned from `create_upload_link`). |
-| `source` | MUST | Tagged union: exactly one of `{ "path": "<local path>" }`, `{ "exchange_uri": "exchange://..." }`, `{ "http_url": "https://..." }`, or `{ "inline_b64": "<base64 content>" }`. Implementations MAY support a subset; `path` is the lowest-common-denominator. |
+| `origin_id` | MUST | The sender's opaque stable handle for the bytes to push. Same rules as `origin_id` in the `http` method's `create_download_link` (raw-JSON validation; no path separators `/` or `\`; not equal to `.` or `..`; no null bytes / control characters; no leading or trailing whitespace). The sender resolves it to bytes by its own domain logic — a file, a database row, an in-memory object, anything; callers treat it as opaque. |
 | `content_type` | SHOULD | The MIME type the sender will declare in the POST `Content-Type` header. If omitted, the sender SHOULD sniff or default. |
 
 The tool MUST return:
@@ -394,21 +392,6 @@ The tool MUST return:
 - `body` (MAY) — the receiver's response body, passed through to the caller (opaque to the sender tool itself).
 
 On 4xx with a structured `transfer_failed` envelope, the sender tool SHOULD unwrap and re-raise as a tool error, mirroring how the existing `http` method's `fetch` tool propagates `transfer_failed`.
-
-When called with a `source` variant the sender tool does not implement, the tool MUST return an in-band failure envelope with `error: "unsupported_source_variant"` (a defined error code distinct from the generic `transfer_failed`-with-message form). The envelope MUST include the `url` parameter the caller passed (so a unified handler can correlate the error to the in-flight upload), SHOULD include a `requested_variant` field naming the variant the caller asked for, and SHOULD include a `supported_variants` field listing the variants the tool *does* implement — equivalent in content to the `source_variants` capability field if advertised:
-
-```json
-{
-  "error": "unsupported_source_variant",
-  "method": "http_upload",
-  "url": "https://receiver.example/uploads/<token>",
-  "requested_variant": "exchange_uri",
-  "supported_variants": ["path"],
-  "message": "this sender only implements 'path'; caller requested 'exchange_uri'"
-}
-```
-
-Callers that pre-checked against `source_variants` in the capability declaration will normally avoid this error; the envelope exists for the case where the capability was unavailable or stale.
 
 **Worked example — agent push:**
 
@@ -455,7 +438,7 @@ A mover-server is asked to copy bytes from an internal `exchange://` URI into an
 // step 2: mover.upload
 {
   "url": "https://vault-mcp.example/uploads/<token>",
-  "source": {"exchange_uri": "exchange://hades-01/mover-mcp/moved-from-vault.bin"},
+  "origin_id": "moved-from-vault",
   "content_type": "application/octet-stream"
 }
 // -> {"status": 201, "body": {"saved_path": "incoming/2026-05-15/movement.bin"}}
