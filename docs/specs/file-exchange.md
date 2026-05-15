@@ -259,7 +259,9 @@ In a capability declaration (sender, optional):
 - `tool` (MUST) — name of the POST-perform tool.
 - `source_variants` (SHOULD) — array of the `source` tagged-union variants the sender's tool implements. Allows callers to pre-filter and avoid round-trips on unsupported variants. If omitted, callers MUST assume only `path` is supported (the lowest-common-denominator variant per the `source` table below).
 
-Both sides advertise the same key (`http_upload`) with the same `{tool: <name>, ...}` shape; the role is implicit based on which tool name the server registers. A single server MAY advertise both sides if it implements both roles.
+Both sides advertise the same key (`http_upload`) with the same `{tool: <name>, ...}` shape. The role is identified by **field presence**, not by the tool name (which is implementation-defined): receiver-side blocks carry `accepts` / `max_bytes` / `max_ttl_seconds`; sender-side blocks carry `source_variants`. A client classifying a peer's capability MUST look at these field presences, not at the string value of `tool`.
+
+A single server that implements both roles cannot express both in a single `http_upload` capability block — the JSON object has one value per key, and the receiver/sender shapes are not isomorphic. Such a server advertises only the side relevant to its peer's use case in any given handshake (receiver-side when the peer will push bytes to it; sender-side when it acts as the pusher). A future spec version MAY introduce explicit sub-keying (`http_upload.receiver` / `http_upload.sender`) if simultaneous dual-role advertisement becomes a common need.
 
 **Receiver-side tool: `create_upload_link`**
 
