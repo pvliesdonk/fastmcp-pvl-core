@@ -211,10 +211,12 @@ def test_register_file_exchange_dual_role_advertises_http_source_and_sink(
 ) -> None:
     """A produce-and-consume server advertises BOTH http roles.
 
-    Regression guard for #86: ``register_file_exchange`` used
-    ``if produce / elif consume``, which hid the consumer (``sink``) tool
-    on a server that did both. #86 changed it to two independent ``if``s.
-    #86's own guard is at the builder-unit level
+    Regression guard for #86: ``register_file_exchange`` chained the
+    consumer (``sink``) role assignment onto the producer branch as an
+    ``elif``, so whenever the producer branch was taken a server doing
+    both advertised only the producer (``source``) tool. #86 made the
+    ``set_http_sink`` call an independent ``if consume:``. #86's own
+    guard is at the builder-unit level
     (``test_builder_http_both_roles_emits_source_and_sink``); this is the
     integration-level twin, exercising the ``register_file_exchange``
     public call site where the fix actually lives.
