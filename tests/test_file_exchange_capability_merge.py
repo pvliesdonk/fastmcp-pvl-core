@@ -6,8 +6,16 @@ Capability declarations use the v0.3.0 ``source``/``sink`` role-keyed
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+
+import pytest
 from fastmcp import FastMCP
 
+from fastmcp_pvl_core import (
+    FetchContext,
+    FetchResult,
+    register_file_exchange,
+)
 from fastmcp_pvl_core._file_exchange_protocol import (
     _FileExchangeCapabilityBuilder,
 )
@@ -161,3 +169,69 @@ def test_builder_http_upload_both_roles() -> None:
     block = cap.to_capability_dict()["transfer_methods"]["http_upload"]
     assert block["source"] == {"tool": "upload"}
     assert block["sink"]["tool"] == "create_upload_link"
+
+
+# ---------------------------------------------------------------------------
+# Public-call-site e2e tests (register_file_exchange* → capability shape)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _clean_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Each test runs with no file-exchange env vars set.
+
+    The builder-unit tests above do not read env; the public-call-site
+    tests below do. Clearing keeps both kinds hermetic and order-independent.
+    """
+    for var in (
+        "MCP_EXCHANGE_DIR",
+        "MCP_EXCHANGE_ID",
+        "MCP_EXCHANGE_NAMESPACE",
+        "FASTMCP_TRANSPORT",
+        "TEST_FE_TRANSPORT",
+        "TEST_FE_BASE_URL",
+        "TEST_FE_FILE_EXCHANGE_ENABLED",
+        "TEST_FE_FILE_EXCHANGE_PRODUCE",
+        "TEST_FE_FILE_EXCHANGE_CONSUME",
+        "TEST_UP_TRANSPORT",
+        "TEST_UP_BASE_URL",
+        "TEST_UP_UPLOAD_ENABLED",
+    ):
+        monkeypatch.delenv(var, raising=False)
+    yield
+
+
+def test_register_file_exchange_dual_role_advertises_http_source_and_sink(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A produce-and-consume server advertises BOTH http roles.
+
+    Regression guard for #86: ``register_file_exchange`` used
+    ``if produce / elif consume``, which hid the consumer (``sink``) tool
+    on a server that did both. #86 changed it to two independent ``if``s.
+    #86's own guard is at the builder-unit level
+    (``test_builder_http_both_roles_emits_source_and_sink``); this is the
+    integration-level twin, exercising the ``register_file_exchange``
+    public call site where the fix actually lives.
+    """
+    monkeypatch.setenv("TEST_FE_TRANSPORT", "http")
+    monkeypatch.setenv("TEST_FE_BASE_URL", "http://test.example")
+
+    async def _sink(data: bytes, ctx: FetchContext) -> FetchResult:
+        raise AssertionError("consumer_sink must not be invoked by this test")
+
+    mcp = FastMCP(name="dual-role-probe")
+    handle = register_file_exchange(
+        mcp,
+        namespace="image-mcp",
+        env_prefix="TEST_FE",
+        produces=("image/png",),
+        consumer_sink=_sink,
+    )
+
+    assert handle.capability is not None
+    http = handle.capability.to_capability_dict()["transfer_methods"]["http"]
+    assert http == {
+        "source": {"tool": "create_download_link"},
+        "sink": {"tool": "fetch_file"},
+    }
