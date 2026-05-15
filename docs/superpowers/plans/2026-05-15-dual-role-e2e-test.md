@@ -23,7 +23,7 @@
 **Files:**
 - Modify: `tests/test_file_exchange_capability_merge.py` (imports block at lines 7-13; append fixture + test at end of file)
 
-- [ ] **Step 1: Extend the imports block**
+- [x] **Step 1: Extend the imports block**
 
 The file currently starts (lines 1-13):
 
@@ -65,7 +65,7 @@ from fastmcp_pvl_core._file_exchange_protocol import (
 )
 ```
 
-- [ ] **Step 2: Append the autouse env-isolation fixture**
+- [x] **Step 2: Append the autouse env-isolation fixture**
 
 Add at the end of `tests/test_file_exchange_capability_merge.py`:
 
@@ -100,7 +100,7 @@ def _clean_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     yield
 ```
 
-- [ ] **Step 3: Append the dual-role e2e test**
+- [x] **Step 3: Append the dual-role e2e test**
 
 Add immediately after the fixture:
 
@@ -141,12 +141,12 @@ def test_register_file_exchange_dual_role_advertises_http_source_and_sink(
     }
 ```
 
-- [ ] **Step 4: Run the new test — expect PASS**
+- [x] **Step 4: Run the new test — expect PASS**
 
 Run: `uv run pytest tests/test_file_exchange_capability_merge.py::test_register_file_exchange_dual_role_advertises_http_source_and_sink -v`
 Expected: PASS (the #86 fix is already in `main`).
 
-- [ ] **Step 5: Optional local-only regression-guard verification — DO NOT COMMIT**
+- [x] **Step 5: Optional local-only regression-guard verification — DO NOT COMMIT**
 
 To confirm the test genuinely catches the #86 bug, temporarily reintroduce it.
 In `src/fastmcp_pvl_core/file_exchange.py`, find the two independent role
@@ -166,7 +166,7 @@ Re-run the test to confirm it PASSES again. This step proves the guard works
 and leaves no production change behind. If you skip this step, that is
 acceptable — but do not commit any production-file modification.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add tests/test_file_exchange_capability_merge.py
@@ -180,7 +180,7 @@ git commit -m "test(file-exchange): e2e dual-role http capability guard (refs #8
 **Files:**
 - Modify: `tests/test_file_exchange_capability_merge.py` (append one test at end of file)
 
-- [ ] **Step 1: Append the default-accepts test**
+- [x] **Step 1: Append the default-accepts test**
 
 Add at the end of `tests/test_file_exchange_capability_merge.py`, after the
 dual-role test from Task 1:
@@ -223,18 +223,18 @@ The local `from ... import _BUILDER_ATTR` mirrors the existing
 helper pushes its `set_http_upload_sink` contribution there and the `accepts`
 argument (default `("*/*",)`) is passed verbatim.
 
-- [ ] **Step 2: Run the new test — expect PASS**
+- [x] **Step 2: Run the new test — expect PASS**
 
 Run: `uv run pytest tests/test_file_exchange_capability_merge.py::test_register_file_exchange_upload_default_accepts_wildcard_on_wire -v`
 Expected: PASS.
 
-- [ ] **Step 3: Run the whole test file**
+- [x] **Step 3: Run the whole test file**
 
 Run: `uv run pytest tests/test_file_exchange_capability_merge.py -v`
 Expected: every test PASSES — the pre-existing builder-unit tests plus the two
 new public-call-site tests.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add tests/test_file_exchange_capability_merge.py
@@ -247,17 +247,17 @@ git commit -m "test(file-exchange): e2e guard for default upload accepts wildcar
 
 **Files:** none (verification only).
 
-- [ ] **Step 1: Sync dependencies to match CI**
+- [x] **Step 1: Sync dependencies to match CI**
 
 Run: `uv sync --all-extras`
 Expected: completes without error.
 
-- [ ] **Step 2: Run the full test suite**
+- [x] **Step 2: Run the full test suite**
 
 Run: `uv run pytest -q`
 Expected: all tests pass (the prior baseline plus the 2 new tests).
 
-- [ ] **Step 3: Formatting and lint**
+- [x] **Step 3: Formatting and lint**
 
 Run: `uv run ruff format --check .`
 Expected: all files already formatted.
@@ -265,13 +265,13 @@ Expected: all files already formatted.
 Run: `uv run ruff check .`
 Expected: `All checks passed!`
 
-- [ ] **Step 4: Type check**
+- [x] **Step 4: Type check**
 
 Run: `uv run mypy src`
 Expected: `Success: no issues found` — unchanged from baseline, since no
 `src/` file was modified.
 
-- [ ] **Step 5: No production changes — verify**
+- [x] **Step 5: No production changes — verify**
 
 Run: `git diff origin/main --stat`
 Expected: only `tests/test_file_exchange_capability_merge.py` and the two

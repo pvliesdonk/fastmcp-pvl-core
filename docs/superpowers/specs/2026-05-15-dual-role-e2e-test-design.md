@@ -123,12 +123,12 @@ to need a running event loop.
 
 ## Acceptance (from #88)
 
-- [ ] A test in `tests/test_file_exchange_capability_merge.py` registers
+- [x] A test in `tests/test_file_exchange_capability_merge.py` registers
   `register_file_exchange(produces=..., consumer_sink=...)` on one
   `FastMCP` with the http transport + base URL, and asserts
   `transfer_methods["http"]` advertises both `source`
   (`create_download_link`) and `sink` (`fetch_file`).
-- [ ] A test asserts the default `("*/*",)` `accepts` wildcard reaches
+- [x] A test asserts the default `("*/*",)` `accepts` wildcard reaches
   the wire via `register_file_exchange_upload`.
-- [ ] No production code is modified; the full suite, `ruff`, and `mypy`
+- [x] No production code is modified; the full suite, `ruff`, and `mypy`
   stay clean.

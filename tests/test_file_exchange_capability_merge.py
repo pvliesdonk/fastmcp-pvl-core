@@ -223,6 +223,9 @@ def test_register_file_exchange_dual_role_advertises_http_source_and_sink(
     """
     monkeypatch.setenv("TEST_FE_TRANSPORT", "http")
     monkeypatch.setenv("TEST_FE_BASE_URL", "http://test.example")
+    # FILE_EXCHANGE_PRODUCE / _CONSUME both default to "true", so the
+    # producer side and — with consumer_sink supplied — the consumer side
+    # both activate without setting those env vars explicitly.
 
     async def _sink(data: bytes, ctx: FetchContext) -> FetchResult:
         raise AssertionError("consumer_sink must not be invoked by this test")
