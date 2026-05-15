@@ -251,32 +251,53 @@ The reverse of the `http` method: the *receiver* mints a one-time POST URL; any 
 
 Like the existing `http` (download) method, both the URL-mint tool on the receiver side and the POST-perform tool on the sender side are wire-optional from the spec's perspective. Any HTTP client that can issue a `POST` is a valid sender, just as any HTTP client that can `GET` is a valid consumer of the existing `http` method. The tool definitions exist to standardize MCP-mediated transfer between MCP servers; they are not the only valid implementation of either side.
 
-In a capability declaration (receiver):
+In a capability declaration, the `http_upload` method uses `source` / `sink` role sub-objects (see §"Transfer Methods" → "Capability-declaration shape"). The `sink` role is the receiver (mints the upload URL via `create_upload_link`, accepts the bytes); the `source` role is the sender (POSTs the bytes via `upload`). Note the asymmetry with `http`: for `http` the `source` mints the URL, for `http_upload` the `sink` mints it — the role names track data direction; the mint mechanics are defined per method.
+
+A receiver-only server:
 
 ```json
 "http_upload": {
-  "tool": "create_upload_link",
-  "accepts": ["application/pdf", "text/markdown"],
-  "max_bytes": 10485760,
-  "max_ttl_seconds": 3600
+  "sink": {
+    "tool": "create_upload_link",
+    "accepts": ["application/pdf", "text/markdown"],
+    "max_bytes": 10485760,
+    "max_ttl_seconds": 3600
+  }
 }
 ```
 
-In a capability declaration (sender, optional):
+A sender-only server (the sender side is optional):
 
 ```json
 "http_upload": {
-  "tool": "upload",
-  "source_variants": ["path", "exchange_uri", "http_url", "inline_b64"]
+  "source": {
+    "tool": "upload",
+    "source_variants": ["path", "exchange_uri", "http_url", "inline_b64"]
+  }
 }
 ```
 
-- `tool` (MUST) — name of the POST-perform tool.
-- `source_variants` (SHOULD) — array of the `source` tagged-union variants the sender's tool implements. Allows callers to pre-filter and avoid round-trips on unsupported variants. If omitted, callers MUST assume only `path` is supported (the lowest-common-denominator variant per the `source` table below).
+A server that implements both roles populates both sub-keys:
 
-Both sides advertise the same key (`http_upload`) with the same `{tool: <name>, ...}` shape. The role is identified by **field presence**, not by the tool name (which is implementation-defined): receiver-side blocks carry `accepts` / `max_bytes` / `max_ttl_seconds`; sender-side blocks carry `source_variants`. A client classifying a peer's capability MUST look at these field presences, not at the string value of `tool`.
+```json
+"http_upload": {
+  "source": {"tool": "upload", "source_variants": ["path"]},
+  "sink": {
+    "tool": "create_upload_link",
+    "accepts": ["*/*"],
+    "max_bytes": 10485760,
+    "max_ttl_seconds": 3600
+  }
+}
+```
 
-A single server that implements both roles cannot express both in a single `http_upload` capability block — the JSON object has one value per key, and the receiver/sender shapes are not isomorphic. Such a server advertises only the side relevant to its peer's use case in any given handshake (receiver-side when the peer will push bytes to it; sender-side when it acts as the pusher). A future spec version MAY introduce explicit sub-keying (`http_upload.receiver` / `http_upload.sender`) if simultaneous dual-role advertisement becomes a common need.
+Fields within each role sub-object:
+
+- `tool` (MUST, both roles) — name of the MCP tool for that role (`create_upload_link` on the `sink` side, `upload` on the `source` side; the names are implementation-defined).
+- `accepts` / `max_bytes` / `max_ttl_seconds` (`sink` only) — the receiver's admission policy: accepted `Content-Type` filter, body-size ceiling, TTL ceiling.
+- `source_variants` (SHOULD, `source` only) — array of the `source` tagged-union variants the sender's tool implements. Allows callers to pre-filter and avoid round-trips on unsupported variants. If omitted, callers MUST assume only `path` is supported (the lowest-common-denominator variant per the `source` table below).
+
+The role is identified by **sub-key presence** (`source` vs `sink`), not by the tool-name string (which is implementation-defined). A server that implements both roles advertises both sub-keys — the `source`/`sink` structure expresses dual-role servers without ambiguity.
 
 **Receiver-side tool: `create_upload_link`**
 
