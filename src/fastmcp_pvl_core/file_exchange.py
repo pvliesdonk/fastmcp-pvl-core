@@ -1409,18 +1409,24 @@ class UploadHandle:
     Attributes:
         namespace: The server's logical name (also the URL prefix for
             the upload route).
-        tool_name: The name under which ``create_upload_link`` was
-            registered (overridable; default ``"create_upload_link"``).
+        tool_name: The name under which the upload tool was registered.
+            Always ``"create_upload_link"`` — pvl-core owns this shape.
         enabled: ``True`` iff upload is wired (transport != stdio AND
             ``{PREFIX}_BASE_URL`` is set AND opt-in env not disabled).
         upload_store: The :class:`UploadStore` instance, or ``None``
             when upload is disabled.
         ttl_default: Default TTL applied when ``ttl_seconds`` is omitted
-            on ``create_upload_link``.
+            on ``create_upload_link``. Resolved from
+            ``{PREFIX}_UPLOAD_TTL`` env var or the module default; not
+            a constructor kwarg.
         ttl_max: Operator ceiling — requested TTL is clamped to this
             value, with the effective TTL returned to the caller.
+            Resolved from ``{PREFIX}_TTL_MAX`` env var or the module
+            default; not a constructor kwarg.
         max_bytes_default: Default ``max_bytes`` applied when caller
-            omits the field.
+            omits the field. Resolved from
+            ``{PREFIX}_UPLOAD_MAX_BYTES`` env var or the module
+            default; not a constructor kwarg.
     """
 
     namespace: str
@@ -1779,7 +1785,14 @@ def register_file_exchange_upload(
             envelope.
         """
         # origin_id: strict spec segment grammar (the WHAT identifier).
-        ExchangeURI.validate_segment(origin_id, role="json_param")
+        try:
+            ExchangeURI.validate_segment(origin_id, role="json_param")
+        except ExchangeURIError as exc:
+            return _upload_transfer_failed(
+                receiver_server=namespace,
+                origin_id=origin_id,
+                message=str(exc),
+            )
         # destination: relaxed validation (the WHERE) — reject only null
         # bytes, control chars, and leading/trailing whitespace; the
         # receiver validates the rest.
@@ -1799,9 +1812,7 @@ def register_file_exchange_upload(
         # content_type hint: pre-filter against the receiver's accepts
         # list so a mismatched hint is rejected in-band, before a wasted
         # POST round-trip (the route still enforces 415 on the actual
-        # POST Content-Type header). _accepts_match is imported from
-        # _file_exchange_runtime — add it to that module's imports in
-        # file_exchange.py.
+        # POST Content-Type header).
         if content_type is not None and not _accepts_match(content_type, accepts):
             return _upload_transfer_failed(
                 receiver_server=namespace,

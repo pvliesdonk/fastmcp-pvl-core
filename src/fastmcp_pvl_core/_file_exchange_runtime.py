@@ -704,7 +704,7 @@ def register_upload_route(
     @mcp.custom_route(path, methods=["POST"])
     async def _upload_handler(request: Request) -> Response:
         # Note: the request body is intentionally not consumed on
-        # early-return error paths (404/410/413/415). ASGI servers
+        # early-return error paths (404/413/415). ASGI servers
         # (uvicorn, hypercorn) handle the connection-state reset; we
         # do NOT need to call await request.body() to drain.
         token = request.path_params.get("token", "")
@@ -714,7 +714,7 @@ def register_upload_route(
             # expired, already-consumed — indistinguishably (spec
             # §"http_upload / POST contract": anti-leak, no 410).
             logger.debug("upload_handler_miss token_prefix=%s", (token or "")[:8])
-            return Response(content="Not Found", status_code=404)
+            return Response(status_code=404)
 
         # Reject unsupported media types BEFORE any size check or body
         # read. ``"*/*"`` in ``accepts`` (the default) disables this gate.

@@ -407,8 +407,9 @@ async def test_create_upload_link_rejects_path_traversal_origin_id(
     The spec requires ``origin_id`` to follow the same character rules as
     ``exchange://`` segments. The ``create_upload_link`` tool calls
     ``ExchangeURI.validate_segment(..., role="json_param")`` BEFORE running
-    ``pre_link_validator``, so a traversal attempt is rejected even when
-    no validator is configured.
+    ``pre_link_validator``, so a traversal attempt is rejected in-band even
+    when no validator is configured — consistent with all other in-band
+    rejections in this tool.
     """
     monkeypatch.setenv("TEST_UPLOAD_TRANSPORT", "http")
     monkeypatch.setenv("TEST_UPLOAD_BASE_URL", "http://srv.test")
@@ -422,10 +423,15 @@ async def test_create_upload_link_rejects_path_traversal_origin_id(
     )
     tool = await mcp.get_tool("create_upload_link")
     assert tool is not None
-    # ExchangeURIError is a ValueError subclass; FastMCP surfaces it
-    # in-band as a tool error.
-    with pytest.raises(Exception, match="forbidden|traversal|segment"):
-        await tool.run({"origin_id": "../etc/passwd"})
+    # ExchangeURIError is wrapped and returned as a transfer_failed
+    # envelope — consistent with destination/content_type/pre_link_validator
+    # rejections — rather than surfacing as a raw tool error.
+    result = await tool.run({"origin_id": "../etc/passwd"})
+    payload = result.structured_content or {}
+    assert payload["error"] == "transfer_failed"
+    assert payload["method"] == "http_upload"
+    assert payload["receiver_server"] == "ns"
+    assert payload["origin_id"] == "../etc/passwd"
 
 
 def test_malformed_upload_max_bytes_raises_configuration_error(
