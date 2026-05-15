@@ -213,7 +213,7 @@ method and field. No existing helper, tool, or capability shape changes.
 - [ ] `register_file_exchange_upload_sender(mcp, *, namespace, env_prefix, byte_source)` — three domain-hook kwargs; operator config on env vars.
 - [ ] The `upload` tool: `url` / `origin_id` / `content_type` parameters; `{status, body}` return; `transfer_failed` unwrap on 4xx.
 - [ ] `ByteSourceResolver` / `ResolvedSource` hook; sync and async; resolver `ValueError` → `transfer_failed`-form error.
-- [ ] The outbound POST reuses the shared `httpx` client, streams the body, SSRF-guards `url`, makes exactly one attempt.
+- [ ] The outbound POST uses a per-call `httpx` client, streams the body, SSRF-guards `url`, makes exactly one attempt.
 - [ ] `set_http_upload_source` on the capability builder; `http_upload.source = {tool: "upload"}` advertised; dual-role case works.
 - [ ] The helper is not gated on HTTP-server capability (a stdio server can register it).
 - [ ] Tests pass; `ruff` + `mypy` clean.

@@ -2087,12 +2087,15 @@ def register_file_exchange_upload_sender(
                     message=f"upload POST failed: {exc}",
                 )
             except OSError as exc:
-                # The stream is downstream-controlled; a read failure during
-                # the POST body is caller-facing, not a pvl-core bug.
+                # OSError here is almost always the downstream-controlled
+                # byte_source stream failing mid-read, but socket/teardown
+                # OSErrors not normalised into httpx.HTTPError can land here
+                # too — caller-facing either way, so the message stays
+                # source-neutral rather than asserting an unproven cause.
                 return _upload_transfer_failed(
                     receiver_server="",
                     origin_id=origin_id,
-                    message=f"upload body read failed: {exc}",
+                    message=f"upload failed reading or sending body: {exc}",
                 )
 
             status = resp.status_code
