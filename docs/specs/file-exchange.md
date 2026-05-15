@@ -372,7 +372,7 @@ A server that wants to act as an MCP-mediated *pusher* of bytes (e.g., a mover-s
 | Param | Cardinality | Description |
 |---|---|---|
 | `url` | MUST | The receiver-issued POST endpoint (returned from `create_upload_link`). |
-| `source` | MUST | Tagged union: exactly one of `{ "path": "<local path>" }`, `{ "exchange_uri": "exchange://..." }`, `{ "http_url": "https://..." }`, or `{ "inline_b64": "<base64 content>" }`. Implementations MAY support a subset; `path` is the lowest-common-denominator. |
+| `origin_id` | MUST | The sender's opaque stable handle for the bytes to push. Same raw-JSON validation rules as `origin_id` in the `http` method's `create_download_link` (no path separators `/` or `\`; not `.` or `..`; no null bytes / control characters; no leading or trailing whitespace). The sender resolves it to bytes by its own domain logic — a file, a database row, an in-memory object, anything; callers treat it as opaque. |
 | `content_type` | SHOULD | The MIME type the sender will declare in the POST `Content-Type` header. If omitted, the sender SHOULD sniff or default. |
 
 The tool MUST return:
@@ -388,21 +388,6 @@ The tool MUST return:
 - `body` (MAY) — the receiver's response body, passed through to the caller (opaque to the sender tool itself).
 
 On 4xx with a structured `transfer_failed` envelope, the sender tool SHOULD unwrap and re-raise as a tool error, mirroring how the existing `http` method's `fetch` tool propagates `transfer_failed`.
-
-When called with a `source` variant the sender tool does not implement, the tool MUST return an in-band failure envelope with `error: "unsupported_source_variant"` (a defined error code distinct from the generic `transfer_failed`-with-message form). The envelope MUST include the `url` parameter the caller passed (so a unified handler can correlate the error to the in-flight upload), SHOULD include a `requested_variant` field naming the variant the caller asked for, and SHOULD include a `supported_variants` field listing the variants the tool *does* implement — equivalent in content to the `source_variants` capability field if advertised:
-
-```json
-{
-  "error": "unsupported_source_variant",
-  "method": "http_upload",
-  "url": "https://receiver.example/uploads/<token>",
-  "requested_variant": "exchange_uri",
-  "supported_variants": ["path"],
-  "message": "this sender only implements 'path'; caller requested 'exchange_uri'"
-}
-```
-
-Callers that pre-checked against `source_variants` in the capability declaration will normally avoid this error; the envelope exists for the case where the capability was unavailable or stale.
 
 **Worked example — agent push:**
 
@@ -449,7 +434,7 @@ A mover-server is asked to copy bytes from an internal `exchange://` URI into an
 // step 2: mover.upload
 {
   "url": "https://vault-mcp.example/uploads/<token>",
-  "source": {"exchange_uri": "exchange://hades-01/mover-mcp/moved-from-vault.bin"},
+  "origin_id": "moved-from-vault",
   "content_type": "application/octet-stream"
 }
 // -> {"status": 201, "body": {"saved_path": "incoming/2026-05-15/movement.bin"}}
