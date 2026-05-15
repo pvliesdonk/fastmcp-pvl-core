@@ -34,12 +34,12 @@ async def test_post_happy_path_returns_receiver_dict() -> None:
     captured: dict[str, Any] = {}
 
     def recv(record: UploadRecord, body: bytes) -> dict[str, Any]:
-        captured["target_id"] = record.target_id
+        captured["origin_id"] = record.origin_id
         captured["body"] = body
-        return {"path": record.target_id, "size_bytes": len(body)}
+        return {"path": record.origin_id, "size_bytes": len(body)}
 
     mcp, store = _build_app(recv)
-    token = store.reserve(target_id="hello.txt", max_bytes=1024)
+    token = store.reserve(origin_id="hello.txt", max_bytes=1024)
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=mcp.http_app()),
@@ -53,7 +53,7 @@ async def test_post_happy_path_returns_receiver_dict() -> None:
 
     assert resp.status_code == 200
     assert resp.json() == {"path": "hello.txt", "size_bytes": 11}
-    assert captured["target_id"] == "hello.txt"
+    assert captured["origin_id"] == "hello.txt"
     assert captured["body"] == b"hello world"
 
 
@@ -96,7 +96,7 @@ async def test_post_unknown_token_returns_404() -> None:
 @pytest.mark.asyncio
 async def test_post_already_consumed_token_returns_404() -> None:
     mcp, store = _build_app(lambda rec, body: {"ok": True})
-    token = store.reserve(target_id="x", max_bytes=10)
+    token = store.reserve(origin_id="x", max_bytes=10)
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=mcp.http_app()),
         base_url="http://test",
@@ -108,9 +108,14 @@ async def test_post_already_consumed_token_returns_404() -> None:
 
 
 @pytest.mark.asyncio
-async def test_post_expired_token_returns_410() -> None:
+async def test_upload_route_expired_token_returns_404_not_410() -> None:
+    """Expired tokens return 404, not 410 (spec §http_upload anti-leak rule).
+
+    The v0.3.0 spec mandates that unknown, expired, and already-consumed
+    tokens are all indistinguishable to the caller — all return 404.
+    """
     mcp, store = _build_app(lambda rec, body: {})
-    token = store.reserve(target_id="x", max_bytes=10, ttl_seconds=-1)
+    token = store.reserve(origin_id="x", max_bytes=10, ttl_seconds=-1)
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=mcp.http_app()),
         base_url="http://test",
@@ -120,13 +125,72 @@ async def test_post_expired_token_returns_410() -> None:
             content=b"x",
             headers={"Content-Type": "application/octet-stream"},
         )
-    assert resp.status_code == 410
+    assert resp.status_code == 404
+    assert resp.status_code != 410
+
+
+@pytest.mark.asyncio
+async def test_upload_route_unknown_and_consumed_and_expired_all_404() -> None:
+    """Unknown, consumed, and expired tokens all return identical 404 responses.
+
+    The spec anti-leak rule: callers cannot distinguish why a token is
+    unusable — it may have never existed, already been consumed, or expired.
+    All three conditions produce the same status code and body.
+    """
+    mcp, store = _build_app(lambda rec, body: {"ok": True})
+
+    # Three tokens representing each unusable-token condition.
+    never_minted = "a" * 32  # unknown: never minted
+
+    # Consumed: mint, consume successfully (POST once), then POST again.
+    consumed_token = store.reserve(origin_id="c", max_bytes=1024)
+
+    # Expired: mint with negative TTL.
+    expired_token = store.reserve(origin_id="e", max_bytes=10, ttl_seconds=-1)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=mcp.http_app()),
+        base_url="http://test",
+    ) as client:
+        # First POST to consumed_token succeeds (token is consumed).
+        first = await client.post(
+            f"/ns/uploads/{consumed_token}",
+            content=b"data",
+            headers={"Content-Type": "application/octet-stream"},
+        )
+        assert first.status_code == 200
+
+        # Now collect the three 404 responses.
+        r_unknown = await client.post(
+            f"/ns/uploads/{never_minted}",
+            content=b"x",
+            headers={"Content-Type": "application/octet-stream"},
+        )
+        r_consumed = await client.post(
+            f"/ns/uploads/{consumed_token}",
+            content=b"x",
+            headers={"Content-Type": "application/octet-stream"},
+        )
+        r_expired = await client.post(
+            f"/ns/uploads/{expired_token}",
+            content=b"x",
+            headers={"Content-Type": "application/octet-stream"},
+        )
+
+    # All three are 404 — indistinguishable.
+    assert r_unknown.status_code == 404
+    assert r_consumed.status_code == 404
+    assert r_expired.status_code == 404
+
+    # Bodies are byte-identical and empty (spec §http_upload anti-leak rule).
+    assert r_unknown.content == r_consumed.content == r_expired.content
+    assert r_unknown.content == b""
 
 
 @pytest.mark.asyncio
 async def test_post_oversize_by_content_length_returns_413() -> None:
     mcp, store = _build_app(lambda rec, body: {"ok": True})
-    token = store.reserve(target_id="x", max_bytes=10)
+    token = store.reserve(origin_id="x", max_bytes=10)
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=mcp.http_app()),
         base_url="http://test",
@@ -152,7 +216,7 @@ async def test_post_oversize_by_content_length_burns_token() -> None:
     succeed) returns 404 rather than the original 413.
     """
     mcp, store = _build_app(lambda rec, body: {"ok": True})
-    token = store.reserve(target_id="x", max_bytes=10)
+    token = store.reserve(origin_id="x", max_bytes=10)
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=mcp.http_app()),
         base_url="http://test",
@@ -186,7 +250,7 @@ async def test_post_unaccepted_content_type_burns_token() -> None:
         lambda rec, body: {"ok": True},
         accepts=("application/octet-stream",),
     )
-    token = store.reserve(target_id="x", max_bytes=10)
+    token = store.reserve(origin_id="x", max_bytes=10)
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=mcp.http_app()),
         base_url="http://test",
@@ -215,7 +279,7 @@ async def test_post_oversize_via_chunk_overrun_returns_413() -> None:
         return {"ok": True}
 
     mcp, store = _build_app(recv)
-    token = store.reserve(target_id="x", max_bytes=10)
+    token = store.reserve(origin_id="x", max_bytes=10)
 
     async def chunk_iter() -> AsyncIterator[bytes]:
         yield b"x" * 8
@@ -244,7 +308,7 @@ async def test_post_malformed_content_length_falls_through_to_chunk_reader() -> 
         return {"size_bytes": len(body), "ok": True}
 
     mcp, store = _build_app(recv)
-    token = store.reserve(target_id="x", max_bytes=100)
+    token = store.reserve(origin_id="x", max_bytes=100)
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=mcp.http_app()),
@@ -271,7 +335,7 @@ async def test_post_unaccepted_content_type_returns_415() -> None:
         lambda rec, body: {"ok": True},
         accepts=("application/octet-stream", "image/png"),
     )
-    token = store.reserve(target_id="x", max_bytes=1024)
+    token = store.reserve(origin_id="x", max_bytes=1024)
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=mcp.http_app()),
@@ -288,7 +352,7 @@ async def test_post_unaccepted_content_type_returns_415() -> None:
 @pytest.mark.asyncio
 async def test_post_wildcard_accepts_disables_check() -> None:
     mcp, store = _build_app(lambda rec, body: {"ok": True}, accepts=("*/*",))
-    token = store.reserve(target_id="x", max_bytes=1024)
+    token = store.reserve(origin_id="x", max_bytes=1024)
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=mcp.http_app()),
         base_url="http://test",
@@ -304,7 +368,7 @@ async def test_post_wildcard_accepts_disables_check() -> None:
 @pytest.mark.asyncio
 async def test_post_glob_accepts_matches_subtype() -> None:
     mcp, store = _build_app(lambda rec, body: {"ok": True}, accepts=("image/*",))
-    token = store.reserve(target_id="x", max_bytes=1024)
+    token = store.reserve(origin_id="x", max_bytes=1024)
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=mcp.http_app()),
         base_url="http://test",
@@ -324,7 +388,7 @@ async def test_post_missing_content_type_with_explicit_accepts_returns_415() -> 
         lambda rec, body: {"ok": True},
         accepts=("application/octet-stream",),
     )
-    token = store.reserve(target_id="x", max_bytes=1024)
+    token = store.reserve(origin_id="x", max_bytes=1024)
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=mcp.http_app()),
@@ -340,7 +404,7 @@ async def test_post_missing_content_type_with_explicit_accepts_returns_415() -> 
 async def test_post_content_type_with_parameters_matches() -> None:
     """``image/png; charset=binary`` matches ``image/png`` (parameters stripped)."""
     mcp, store = _build_app(lambda rec, body: {"ok": True}, accepts=("image/png",))
-    token = store.reserve(target_id="x", max_bytes=1024)
+    token = store.reserve(origin_id="x", max_bytes=1024)
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=mcp.http_app()),
         base_url="http://test",
@@ -357,7 +421,7 @@ async def test_post_content_type_with_parameters_matches() -> None:
 async def test_post_content_type_match_is_case_insensitive() -> None:
     """``Image/PNG`` against accepts ``image/*`` should match (case folded)."""
     mcp, store = _build_app(lambda rec, body: {"ok": True}, accepts=("image/*",))
-    token = store.reserve(target_id="x", max_bytes=1024)
+    token = store.reserve(origin_id="x", max_bytes=1024)
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=mcp.http_app()),
         base_url="http://test",
@@ -376,7 +440,7 @@ async def test_post_receiver_value_error_returns_400() -> None:
         raise ValueError("bad path")
 
     mcp, store = _build_app(recv)
-    token = store.reserve(target_id="x", max_bytes=10)
+    token = store.reserve(origin_id="x", max_bytes=10)
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=mcp.http_app()),
         base_url="http://test",
@@ -396,7 +460,7 @@ async def test_post_receiver_file_exists_returns_409() -> None:
         raise FileExistsError("already there")
 
     mcp, store = _build_app(recv)
-    token = store.reserve(target_id="x", max_bytes=10)
+    token = store.reserve(origin_id="x", max_bytes=10)
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=mcp.http_app()),
         base_url="http://test",
@@ -417,7 +481,7 @@ async def test_post_receiver_other_exception_returns_500(
         raise RuntimeError("kaboom")
 
     mcp, store = _build_app(recv)
-    token = store.reserve(target_id="x", max_bytes=10)
+    token = store.reserve(origin_id="x", max_bytes=10)
     with caplog.at_level(logging.ERROR):
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=mcp.http_app()),
@@ -449,7 +513,7 @@ async def test_post_receiver_returning_non_dict_returns_500(
         return "not-a-dict"  # type: ignore[return-value]
 
     mcp, store = _build_app(recv)
-    token = store.reserve(target_id="x", max_bytes=10)
+    token = store.reserve(origin_id="x", max_bytes=10)
     with caplog.at_level(logging.ERROR):
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=mcp.http_app()),
@@ -473,12 +537,12 @@ async def test_post_async_buffered_receiver_runs_to_completion() -> None:
     captured: dict[str, Any] = {}
 
     async def recv(record: UploadRecord, body: bytes) -> dict[str, Any]:
-        captured["target_id"] = record.target_id
+        captured["origin_id"] = record.origin_id
         captured["body"] = body
         return {"size": len(body), "ok": True}
 
     mcp, store = _build_app(recv)
-    token = store.reserve(target_id="x", max_bytes=100)
+    token = store.reserve(origin_id="x", max_bytes=100)
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=mcp.http_app()),
@@ -512,7 +576,7 @@ async def test_post_stream_receiver_sees_chunks_live() -> None:
         namespace="ns",
         stream_receiver=recv,
     )
-    token = store.reserve(target_id="x", max_bytes=1024)
+    token = store.reserve(origin_id="x", max_bytes=1024)
 
     async def chunk_iter() -> AsyncIterator[bytes]:
         yield b"abc"
@@ -553,7 +617,7 @@ async def test_post_stream_receiver_oversize_aborts_before_completion() -> None:
         namespace="ns",
         stream_receiver=recv,
     )
-    token = store.reserve(target_id="x", max_bytes=5)
+    token = store.reserve(origin_id="x", max_bytes=5)
 
     async def chunk_iter() -> AsyncIterator[bytes]:
         yield b"abcd"
@@ -582,12 +646,12 @@ async def test_post_sync_stream_receiver_returning_plain_dict() -> None:
 
     def sync_recv(record: UploadRecord, body: AsyncIterator[bytes]) -> dict[str, Any]:
         # Sync receiver — ignores the body iterator and returns a plain dict.
-        return {"ok": True, "target_id": record.target_id}
+        return {"ok": True, "origin_id": record.origin_id}
 
     mcp = FastMCP(name="test-upload")
     store = UploadStore(base_url="http://test.invalid")
     register_upload_route(mcp, store=store, namespace="ns", stream_receiver=sync_recv)
-    token = store.reserve(target_id="x.md", max_bytes=100)
+    token = store.reserve(origin_id="x.md", max_bytes=100)
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=mcp.http_app()),
@@ -600,7 +664,7 @@ async def test_post_sync_stream_receiver_returning_plain_dict() -> None:
         )
 
     assert resp.status_code == 200
-    assert resp.json() == {"ok": True, "target_id": "x.md"}
+    assert resp.json() == {"ok": True, "origin_id": "x.md"}
 
 
 @pytest.mark.asyncio
@@ -623,7 +687,7 @@ async def test_post_sync_receiver_runs_in_threadpool() -> None:
         return {"ok": True}
 
     mcp, store = _build_app(sync_recv)
-    token = store.reserve(target_id="x.md", max_bytes=100)
+    token = store.reserve(origin_id="x.md", max_bytes=100)
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=mcp.http_app()),
@@ -662,7 +726,7 @@ async def test_post_sync_stream_receiver_runs_in_threadpool() -> None:
     mcp = FastMCP(name="test-upload")
     store = UploadStore(base_url="http://test.invalid")
     register_upload_route(mcp, store=store, namespace="ns", stream_receiver=sync_recv)
-    token = store.reserve(target_id="x.md", max_bytes=100)
+    token = store.reserve(origin_id="x.md", max_bytes=100)
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=mcp.http_app()),

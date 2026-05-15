@@ -21,7 +21,7 @@ import logging
 import time
 import uuid
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Generic, Literal, Protocol, TypeVar
+from typing import TYPE_CHECKING, Generic, Protocol, TypeVar
 
 from starlette.responses import Response
 
@@ -408,36 +408,32 @@ def get_artifact_store() -> ArtifactStore:
 class UploadRecord:
     """A reservation slot for an in-flight upload (intake direction).
 
-    Unlike :class:`TokenRecord`, an ``UploadRecord`` does **not** carry
-    bytes — bytes arrive over the wire when the agent ``POST``s to
-    ``/<ns>/uploads/{token}``. The record carries only the metadata the
-    receiver needs to commit the bytes to its domain (``target_id``,
-    ``extra``) plus the runtime guards (``max_bytes``, ``expires_at``).
+    An ``UploadRecord`` does not carry bytes — bytes arrive over the wire
+    when a client ``POST``s to ``/<ns>/uploads/{token}``. The record
+    carries the metadata the receiver needs to commit the bytes, modelling
+    the v0.3.0 spec's WHAT/WHERE split, plus the runtime guards.
 
     Attributes:
-        target_id: Opaque identifier for the upload destination, chosen
-            by the tool caller. The receiver decides what it means
-            (path, document id, etc.).
-            Same character rules as ``origin_id`` and ``exchange://``
-            segments — see ``docs/specs/file-exchange.md`` §"Security
-            and Path Resolution" for the precise grammar.
-        max_bytes: Hard size cap for the POST body, enforced at the
-            HTTP route before dispatch.
-        extra: Caller-supplied dict passed verbatim to the receiver.
-            By convention, callers reserve through ``UploadStore.reserve``
-            (Task 4 onward), which snapshots the dict before storing it
-            here, so consumers can rely on the receiver seeing what the
-            tool caller said at link-creation time. Direct construction
-            of ``UploadRecord`` does not snapshot — the field holds the
-            caller's dict by reference.
+        origin_id: The sender's opaque stable handle for the bytes (the
+            *what*). Validated against the spec's segment grammar — see
+            ``docs/specs/file-exchange.md`` §"Security and Path
+            Resolution".
+        destination: The sender's destination instruction (the *where*),
+            or ``None`` if the sender gave none. The receiver validates
+            and interprets it per its own domain rules.
+        content_type: The sender's hint of the ``Content-Type`` the POST
+            will declare, or ``None``.
+        max_bytes: Hard size cap for the POST body, enforced at the HTTP
+            route before dispatch.
         expires_at: Unix timestamp after which the reservation is
             invalid; consumed reservations are removed atomically by
             ``UploadStore.consume``.
     """
 
-    target_id: str
+    origin_id: str
+    destination: str | None
+    content_type: str | None
     max_bytes: int
-    extra: dict[str, Any]
     expires_at: float
 
 
@@ -469,80 +465,46 @@ class UploadStore(_BaseTokenStore[UploadRecord]):
     def reserve(
         self,
         *,
-        target_id: str,
+        origin_id: str,
         max_bytes: int,
         ttl_seconds: float | None = None,
-        extra: dict[str, Any] | None = None,
+        destination: str | None = None,
+        content_type: str | None = None,
     ) -> str:
         """Mint a token reserving a one-shot upload slot.
 
-        ``extra`` is snapshotted (``dict(extra)``) at reservation time so
-        post-construction caller mutations are not visible to the
-        receiver. Pairs with the by-reference semantic documented on
-        :class:`UploadRecord`.
-
-        Validation note: ``max_bytes`` and ``target_id`` are stored verbatim;
-        no validation runs at this layer. Values of ``max_bytes <= 0`` will
-        cause every upload body to be rejected as oversize at the route layer.
-        Higher-level callers (``register_file_exchange_upload``'s
-        ``pre_link_validator``) are expected to validate before reserving.
+        Validation note: ``max_bytes`` / ``origin_id`` / ``destination``
+        are stored verbatim; no validation runs at this layer. Higher-level
+        callers (``register_file_exchange_upload`` and its
+        ``pre_link_validator``) validate before reserving.
         """
         self._purge_expired()
         token = self._mint_token()
         ttl = self._ttl if ttl_seconds is None else float(ttl_seconds)
         self._records[token] = UploadRecord(
-            target_id=target_id,
+            origin_id=origin_id,
+            destination=destination,
+            content_type=content_type,
             max_bytes=int(max_bytes),
-            extra=dict(extra or {}),
             expires_at=time.time() + ttl,
         )
         logger.debug(
-            "upload_reserve token_prefix=%s target_id=%s max_bytes=%d ttl=%.1fs",
+            "upload_reserve token_prefix=%s origin_id=%s max_bytes=%d ttl=%.1fs",
             token[:8],
-            target_id,
+            origin_id,
             max_bytes,
             ttl,
         )
         return token
 
     def consume(self, token: str) -> UploadRecord | None:
-        """Atomic consume; returns the record or ``None`` for missing/expired/consumed.
+        """Atomic consume; return the record, or ``None`` if unusable.
 
-        Use this when callers do not need to distinguish "expired" from
-        "missing/consumed". For HTTP routes that map the three states to
-        distinct status codes (200 / 410 / 404), see
-        :meth:`consume_or_status`.
+        Unknown, expired, and already-consumed tokens are
+        indistinguishable (all yield ``None``), per the spec's
+        anti-leak rule for the ``http_upload`` POST route.
         """
         return self._atomic_consume(token)
-
-    def consume_or_status(
-        self, token: str
-    ) -> tuple[UploadRecord | None, Literal["ok", "expired", "missing"]]:
-        """Atomic consume that distinguishes expired from missing/consumed.
-
-        Returns one of:
-            (record, "ok")       — token was valid; record consumed.
-            (None,   "expired")  — token existed but had passed expires_at; removed.
-            (None,   "missing")  — token unknown (never existed, or already consumed).
-
-        Use this in HTTP route handlers that need to map the three
-        states to distinct status codes (200, 410, 404). Plain
-        :meth:`consume` collapses expired and missing into ``None``.
-        """
-        # Pop the requested token BEFORE purging so we can still observe
-        # the "expired" branch — :meth:`_purge_expired` would otherwise
-        # remove the record and we'd report it as "missing", losing the
-        # 410-vs-404 distinction this method exists to provide.
-        record = self._records.pop(token, None)
-        # Sweep the rest of the table after we have our answer; no
-        # functional dependency, just keeping the table tidy on each
-        # access path the way :meth:`_atomic_consume` does.
-        self._purge_expired()
-        if record is None:
-            return None, "missing"
-        if time.time() > record.expires_at:
-            return None, "expired"
-        return record, "ok"
 
     def _peek_for_tests(self, token: str) -> UploadRecord | None:
         """Test-only inspection — do not use in production.

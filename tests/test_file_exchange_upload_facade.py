@@ -19,7 +19,7 @@ async def test_registration_adds_create_upload_link_tool(
     monkeypatch.setenv("TEST_UPLOAD_BASE_URL", "http://srv.test")
 
     def recv(record: UploadRecord, body: bytes) -> dict[str, Any]:
-        return {"target_id": record.target_id}
+        return {"origin_id": record.origin_id}
 
     mcp = FastMCP(name="test")
     handle = register_file_exchange_upload(
@@ -37,14 +37,14 @@ async def test_registration_adds_create_upload_link_tool(
 
 
 @pytest.mark.asyncio
-async def test_create_upload_link_returns_url_and_ttl(
+async def test_create_upload_link_success_returns_url_ttl_maxbytes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("TEST_UPLOAD_TRANSPORT", "http")
     monkeypatch.setenv("TEST_UPLOAD_BASE_URL", "http://srv.test")
 
     mcp = FastMCP(name="test")
-    register_file_exchange_upload(
+    handle = register_file_exchange_upload(
         mcp,
         namespace="ns",
         env_prefix="TEST_UPLOAD",
@@ -52,11 +52,12 @@ async def test_create_upload_link_returns_url_and_ttl(
     )
     tool = await mcp.get_tool("create_upload_link")
     assert tool is not None
-    result = await tool.run({"target_id": "foo.md"})
+    result = await tool.run({"origin_id": "x"})
     payload = result.structured_content or {}
-    assert payload["target_id"] == "foo.md"
-    assert payload["upload_url"].startswith("http://srv.test/ns/uploads/")
-    assert payload["expires_in_seconds"] > 0
+    assert set(payload) == {"url", "ttl_seconds", "max_bytes"}
+    assert payload["url"].startswith("http://srv.test/ns/uploads/")
+    assert payload["ttl_seconds"] > 0
+    assert payload["max_bytes"] == handle.max_bytes_default
 
 
 @pytest.mark.asyncio
@@ -94,18 +95,15 @@ async def test_missing_base_url_returns_disabled_handle(
 
 
 @pytest.mark.asyncio
-async def test_pre_link_validator_blocks_invalid_target(
+async def test_create_upload_link_rejection_returns_transfer_failed_envelope(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """pre_link_validator raising ValueError returns a transfer_failed envelope."""
     monkeypatch.setenv("TEST_UPLOAD_TRANSPORT", "http")
     monkeypatch.setenv("TEST_UPLOAD_BASE_URL", "http://srv.test")
 
-    def reject(target_id: str, extra: dict[str, Any] | None) -> None:
-        # ``target_id`` shape passes the baseline segment rules
-        # (Amendment 11); the validator rejects on a domain-specific
-        # rule (allow-list of extensions).
-        if not target_id.endswith(".md"):
-            raise ValueError(f"only .md uploads accepted: {target_id}")
+    def reject(origin_id: str, destination: str | None) -> None:
+        raise ValueError("bad destination")
 
     mcp = FastMCP(name="test")
     register_file_exchange_upload(
@@ -117,8 +115,98 @@ async def test_pre_link_validator_blocks_invalid_target(
     )
     tool = await mcp.get_tool("create_upload_link")
     assert tool is not None
-    with pytest.raises(Exception, match="only .md uploads accepted"):
-        await tool.run({"target_id": "passwd.txt"})
+    result = await tool.run({"origin_id": "x", "destination": "../etc"})
+    payload = result.structured_content or {}
+    assert payload == {
+        "error": "transfer_failed",
+        "method": "http_upload",
+        "receiver_server": "ns",
+        "origin_id": "x",
+        "message": "bad destination",
+    }
+
+
+@pytest.mark.asyncio
+async def test_create_upload_link_content_type_mismatch_returns_transfer_failed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Content-type hint mismatching accepts list returns a transfer_failed envelope."""
+    monkeypatch.setenv("TEST_UPLOAD_TRANSPORT", "http")
+    monkeypatch.setenv("TEST_UPLOAD_BASE_URL", "http://srv.test")
+
+    mcp = FastMCP(name="test")
+    register_file_exchange_upload(
+        mcp,
+        namespace="ns",
+        env_prefix="TEST_UPLOAD",
+        receiver=lambda rec, body: {"ok": True},
+        accepts=("text/markdown",),
+    )
+    tool = await mcp.get_tool("create_upload_link")
+    assert tool is not None
+    result = await tool.run({"origin_id": "x", "content_type": "image/png"})
+    payload = result.structured_content or {}
+    assert payload["error"] == "transfer_failed"
+    assert payload["method"] == "http_upload"
+    assert payload["receiver_server"] == "ns"
+    assert payload["origin_id"] == "x"
+
+
+@pytest.mark.asyncio
+async def test_create_upload_link_clamps_ttl_and_max_bytes_to_ceilings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ttl_seconds and max_bytes in the response are clamped to operator ceilings."""
+    monkeypatch.setenv("TEST_UPLOAD_TRANSPORT", "http")
+    monkeypatch.setenv("TEST_UPLOAD_BASE_URL", "http://srv.test")
+    monkeypatch.setenv("TEST_UPLOAD_UPLOAD_TTL_MAX", "600")
+    monkeypatch.setenv("TEST_UPLOAD_UPLOAD_MAX_BYTES", "1000000")
+
+    mcp = FastMCP(name="test")
+    register_file_exchange_upload(
+        mcp,
+        namespace="ns",
+        env_prefix="TEST_UPLOAD",
+        receiver=lambda rec, body: {"ok": True},
+    )
+    tool = await mcp.get_tool("create_upload_link")
+    assert tool is not None
+    result = await tool.run(
+        {"origin_id": "x", "ttl_seconds": 99999, "max_bytes": 99999999}
+    )
+    payload = result.structured_content or {}
+    assert payload["ttl_seconds"] == 600
+    assert payload["max_bytes"] == 1_000_000
+
+
+@pytest.mark.asyncio
+async def test_pre_link_validator_blocks_invalid_origin_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("TEST_UPLOAD_TRANSPORT", "http")
+    monkeypatch.setenv("TEST_UPLOAD_BASE_URL", "http://srv.test")
+
+    def reject(origin_id: str, destination: str | None) -> None:
+        # ``origin_id`` shape passes the baseline segment rules;
+        # the validator rejects on a domain-specific rule.
+        if not origin_id.endswith(".md"):
+            raise ValueError(f"only .md uploads accepted: {origin_id}")
+
+    mcp = FastMCP(name="test")
+    register_file_exchange_upload(
+        mcp,
+        namespace="ns",
+        env_prefix="TEST_UPLOAD",
+        receiver=lambda rec, body: {"ok": True},
+        pre_link_validator=reject,
+    )
+    tool = await mcp.get_tool("create_upload_link")
+    assert tool is not None
+    # ValueError from pre_link_validator surfaces as transfer_failed envelope.
+    result = await tool.run({"origin_id": "passwd.txt"})
+    payload = result.structured_content or {}
+    assert payload["error"] == "transfer_failed"
+    assert "only .md uploads accepted" in payload["message"]
 
 
 @pytest.mark.asyncio
@@ -138,7 +226,7 @@ async def test_pre_link_validator_other_exception_logs_as_bug(
     monkeypatch.setenv("TEST_UPLOAD_TRANSPORT", "http")
     monkeypatch.setenv("TEST_UPLOAD_BASE_URL", "http://srv.test")
 
-    def buggy(target_id: str, extra: dict[str, Any] | None) -> None:
+    def buggy(origin_id: str, destination: str | None) -> None:
         raise RuntimeError("kaboom")
 
     mcp = FastMCP(name="test")
@@ -153,34 +241,8 @@ async def test_pre_link_validator_other_exception_logs_as_bug(
     assert tool is not None
     with caplog.at_level(logging.ERROR):
         with pytest.raises(Exception, match="kaboom"):
-            await tool.run({"target_id": "x.md"})
+            await tool.run({"origin_id": "x.md"})
     assert any("non-ValueError" in r.getMessage() for r in caplog.records)
-
-
-@pytest.mark.asyncio
-async def test_pre_link_validator_passes_extra_through(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("TEST_UPLOAD_TRANSPORT", "http")
-    monkeypatch.setenv("TEST_UPLOAD_BASE_URL", "http://srv.test")
-    seen: dict[str, Any] = {}
-
-    def vlog(target_id: str, extra: dict[str, Any] | None) -> None:
-        seen["target_id"] = target_id
-        seen["extra"] = extra
-
-    mcp = FastMCP(name="test")
-    register_file_exchange_upload(
-        mcp,
-        namespace="ns",
-        env_prefix="TEST_UPLOAD",
-        receiver=lambda rec, body: {"ok": True},
-        pre_link_validator=vlog,
-    )
-    tool = await mcp.get_tool("create_upload_link")
-    assert tool is not None
-    await tool.run({"target_id": "x.md", "extra": {"k": 1}})
-    assert seen == {"target_id": "x.md", "extra": {"k": 1}}
 
 
 @pytest.mark.asyncio
@@ -197,8 +259,8 @@ async def test_pre_link_validator_async_is_awaited(
     monkeypatch.setenv("TEST_UPLOAD_BASE_URL", "http://srv.test")
     seen: dict[str, Any] = {}
 
-    async def vlog(target_id: str, extra: dict[str, Any] | None) -> None:
-        seen["target_id"] = target_id
+    async def vlog(origin_id: str, destination: str | None) -> None:
+        seen["origin_id"] = origin_id
         seen["called"] = True
 
     mcp = FastMCP(name="test")
@@ -211,29 +273,8 @@ async def test_pre_link_validator_async_is_awaited(
     )
     tool = await mcp.get_tool("create_upload_link")
     assert tool is not None
-    await tool.run({"target_id": "x.md"})
-    assert seen == {"target_id": "x.md", "called": True}
-
-
-@pytest.mark.asyncio
-async def test_ttl_clamped_to_ttl_max(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("TEST_UPLOAD_TRANSPORT", "http")
-    monkeypatch.setenv("TEST_UPLOAD_BASE_URL", "http://srv.test")
-
-    mcp = FastMCP(name="test")
-    register_file_exchange_upload(
-        mcp,
-        namespace="ns",
-        env_prefix="TEST_UPLOAD",
-        receiver=lambda rec, body: {"ok": True},
-        ttl_default=300.0,
-        ttl_max=600.0,
-    )
-    tool = await mcp.get_tool("create_upload_link")
-    assert tool is not None
-    result = await tool.run({"target_id": "x", "ttl_seconds": 99999})
-    payload = result.structured_content or {}
-    assert payload["expires_in_seconds"] == 600  # clamped
+    await tool.run({"origin_id": "x.md"})
+    assert seen == {"origin_id": "x.md", "called": True}
 
 
 @pytest.mark.asyncio
@@ -332,7 +373,7 @@ def test_create_link_raises_when_upload_disabled() -> None:
         max_bytes_default=10 * 1024 * 1024,
     )
     with pytest.raises(RuntimeError, match="upload not enabled"):
-        handle.create_link(target_id="x")
+        handle.create_link(origin_id="x")
 
 
 def test_create_link_floors_non_positive_ttl_to_default(
@@ -347,28 +388,28 @@ def test_create_link_floors_non_positive_ttl_to_default(
         namespace="ns",
         env_prefix="TEST_UPLOAD_FLOOR",
         receiver=lambda rec, body: {"ok": True},
-        ttl_default=222.0,
-        ttl_max=3600.0,
     )
-    _, eff_zero = handle.create_link(target_id="x", ttl_seconds=0)
-    assert eff_zero == 222.0
-    _, eff_neg = handle.create_link(target_id="y", ttl_seconds=-5)
-    assert eff_neg == 222.0
-    _, eff_none = handle.create_link(target_id="z", ttl_seconds=None)
-    assert eff_none == 222.0
+    # Set ttl_default via env for test isolation.
+    _, eff_zero, _ = handle.create_link(origin_id="x", ttl_seconds=0)
+    assert eff_zero == handle.ttl_default
+    _, eff_neg, _ = handle.create_link(origin_id="y", ttl_seconds=-5)
+    assert eff_neg == handle.ttl_default
+    _, eff_none, _ = handle.create_link(origin_id="z", ttl_seconds=None)
+    assert eff_none == handle.ttl_default
 
 
 @pytest.mark.asyncio
-async def test_create_upload_link_rejects_path_traversal_target_id(
+async def test_create_upload_link_rejects_path_traversal_origin_id(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Baseline ExchangeURI.validate_segment fires before pre_link_validator.
 
-    Spec Amendment 11 requires `target_id` to follow the same character
-    rules as `origin_id` and `exchange://` segments. The
-    ``create_upload_link`` tool calls ``ExchangeURI.validate_segment(...,
-    role="json_param")`` BEFORE running ``pre_link_validator``, so a
-    traversal attempt is rejected even when no validator is configured.
+    The spec requires ``origin_id`` to follow the same character rules as
+    ``exchange://`` segments. The ``create_upload_link`` tool calls
+    ``ExchangeURI.validate_segment(..., role="json_param")`` BEFORE running
+    ``pre_link_validator``, so a traversal attempt is rejected in-band even
+    when no validator is configured — consistent with all other in-band
+    rejections in this tool.
     """
     monkeypatch.setenv("TEST_UPLOAD_TRANSPORT", "http")
     monkeypatch.setenv("TEST_UPLOAD_BASE_URL", "http://srv.test")
@@ -382,10 +423,73 @@ async def test_create_upload_link_rejects_path_traversal_target_id(
     )
     tool = await mcp.get_tool("create_upload_link")
     assert tool is not None
-    # ExchangeURIError is a ValueError subclass; FastMCP surfaces it
-    # in-band as a tool error.
-    with pytest.raises(Exception, match="forbidden|traversal|segment"):
-        await tool.run({"target_id": "../etc/passwd"})
+    # ExchangeURIError is wrapped and returned as a transfer_failed
+    # envelope — consistent with destination/content_type/pre_link_validator
+    # rejections — rather than surfacing as a raw tool error.
+    result = await tool.run({"origin_id": "../etc/passwd"})
+    payload = result.structured_content or {}
+    assert payload["error"] == "transfer_failed"
+    assert payload["method"] == "http_upload"
+    assert payload["receiver_server"] == "ns"
+    assert payload["origin_id"] == "../etc/passwd"
+
+
+@pytest.mark.asyncio
+async def test_create_upload_link_rejects_destination_with_leading_whitespace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Built-in destination guard rejects leading/trailing whitespace.
+
+    This validation runs BEFORE any pre_link_validator, so no validator
+    is registered here — the tool's own guard is under test.
+    """
+    monkeypatch.setenv("TEST_UPLOAD_TRANSPORT", "http")
+    monkeypatch.setenv("TEST_UPLOAD_BASE_URL", "http://srv.test")
+
+    mcp = FastMCP(name="test")
+    register_file_exchange_upload(
+        mcp,
+        namespace="ns",
+        env_prefix="TEST_UPLOAD",
+        receiver=lambda rec, body: {"ok": True},
+    )
+    tool = await mcp.get_tool("create_upload_link")
+    assert tool is not None
+    result = await tool.run({"origin_id": "x", "destination": " foo"})
+    payload = result.structured_content or {}
+    assert payload["error"] == "transfer_failed"
+    assert payload["method"] == "http_upload"
+    assert payload["receiver_server"] == "ns"
+    assert payload["origin_id"] == "x"
+
+
+@pytest.mark.asyncio
+async def test_create_upload_link_rejects_destination_with_control_char(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Built-in destination guard rejects control characters (ord < 0x20).
+
+    This validation runs BEFORE any pre_link_validator, so no validator
+    is registered here — the tool's own guard is under test.
+    """
+    monkeypatch.setenv("TEST_UPLOAD_TRANSPORT", "http")
+    monkeypatch.setenv("TEST_UPLOAD_BASE_URL", "http://srv.test")
+
+    mcp = FastMCP(name="test")
+    register_file_exchange_upload(
+        mcp,
+        namespace="ns",
+        env_prefix="TEST_UPLOAD",
+        receiver=lambda rec, body: {"ok": True},
+    )
+    tool = await mcp.get_tool("create_upload_link")
+    assert tool is not None
+    result = await tool.run({"origin_id": "x", "destination": "foo\x01bar"})
+    payload = result.structured_content or {}
+    assert payload["error"] == "transfer_failed"
+    assert payload["method"] == "http_upload"
+    assert payload["receiver_server"] == "ns"
+    assert payload["origin_id"] == "x"
 
 
 def test_malformed_upload_max_bytes_raises_configuration_error(
@@ -531,7 +635,7 @@ async def test_sync_pre_link_validator_runs_in_threadpool(
 
     captured: dict[str, Any] = {}
 
-    def sync_vld(target_id: str, extra: dict[str, Any] | None) -> None:
+    def sync_vld(origin_id: str, destination: str | None) -> None:
         captured["thread"] = threading.current_thread().name
         captured["is_main"] = threading.current_thread() is threading.main_thread()
 
@@ -545,5 +649,5 @@ async def test_sync_pre_link_validator_runs_in_threadpool(
     )
     tool = await mcp.get_tool("create_upload_link")
     assert tool is not None
-    await tool.run({"target_id": "x.md"})
+    await tool.run({"origin_id": "x.md"})
     assert captured["is_main"] is False

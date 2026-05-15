@@ -115,7 +115,7 @@ def test_upload_store_has_base_url_property() -> None:
 def test_upload_store_peek_for_tests_returns_none_for_expired() -> None:
     """The test-only peek treats expired the same as missing."""
     store = UploadStore()
-    token = store.reserve(target_id="x", max_bytes=10, ttl_seconds=-1)
+    token = store.reserve(origin_id="x", max_bytes=10, ttl_seconds=-1)
     # Record sat in the table after reserve (the negative TTL only affects
     # subsequent purge); peek must observe expires_at and report None.
     assert store._peek_for_tests(token) is None
