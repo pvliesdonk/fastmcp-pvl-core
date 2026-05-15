@@ -509,8 +509,10 @@ class _FileExchangeCapabilityBuilder:
         self._http_upload_accepts = accepts
 
     def set_http_upload_source(self, *, tool_name: str) -> None:
-        """Record the ``http_upload`` sender (``source``) tool — POSTs bytes
-        to a receiver-issued upload URL."""
+        """Record the ``http_upload`` sender (``source``) tool.
+
+        POSTs bytes to a receiver-issued upload URL.
+        """
         self._http_upload_source_tool = tool_name
 
     def build(self) -> FileExchangeCapability | None:

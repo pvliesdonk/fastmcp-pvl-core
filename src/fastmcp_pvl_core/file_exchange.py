@@ -1403,6 +1403,7 @@ _DEFAULT_UPLOAD_TTL_MAX_SECONDS = 3600.0
 _DEFAULT_UPLOAD_MAX_BYTES = 10 * 1024 * 1024
 _DEFAULT_UPLOAD_SENDER_TOOL = "upload"
 _DEFAULT_UPLOAD_SEND_TIMEOUT_SECONDS = 300.0
+_UPLOAD_CHUNK_BYTES = 65536
 
 # Test seam: when set, the upload sender routes POSTs through this
 # httpx transport instead of the real network. Production leaves it None.
@@ -1425,7 +1426,10 @@ class ResolvedSource:
     body, then closes. ``content_type`` is the resource's MIME type if
     the downstream knows it (used unless the ``upload`` caller passes an
     explicit ``content_type``). ``size_bytes``, when known, lets pvl-core
-    set a ``Content-Length`` header.
+    set a ``Content-Length`` header; when provided it MUST be the exact
+    byte length of the stream — pvl-core sends it verbatim as
+    ``Content-Length``, and an inaccurate value produces a malformed
+    request.
     """
 
     stream: BinaryIO
@@ -1958,8 +1962,7 @@ def register_file_exchange_upload_sender(
             ) from exc
         if send_timeout <= 0:
             raise ConfigurationError(
-                f"{env_prefix}_UPLOAD_SEND_TIMEOUT must be positive; "
-                f"got {send_timeout}"
+                f"{env_prefix}_UPLOAD_SEND_TIMEOUT must be positive; got {send_timeout}"
             )
 
     builder = _get_or_create_builder(mcp, namespace=namespace)
@@ -2021,60 +2024,70 @@ def register_file_exchange_upload_sender(
             )
             raise
 
-        effective_ct = (
-            content_type or resolved.content_type or "application/octet-stream"
-        )
-        headers = {"Content-Type": effective_ct}
-        if resolved.size_bytes is not None:
-            headers["Content-Length"] = str(resolved.size_bytes)
+        # Stream is closed in the finally below on every path after
+        # resolution — connection failure, mid-stream failure, and
+        # success all converge here. The _chunks() generator only reads;
+        # it no longer owns the close so a connection error before the
+        # body is read doesn't leak the file descriptor.
+        try:
+            effective_ct = (
+                content_type or resolved.content_type or "application/octet-stream"
+            )
+            headers = {"Content-Type": effective_ct}
+            if resolved.size_bytes is not None:
+                headers["Content-Length"] = str(resolved.size_bytes)
 
-        async def _chunks() -> AsyncIterator[bytes]:
-            try:
+            async def _chunks() -> AsyncIterator[bytes]:
                 while True:
-                    chunk = await asyncio.to_thread(resolved.stream.read, 65536)
+                    chunk = await asyncio.to_thread(
+                        resolved.stream.read, _UPLOAD_CHUNK_BYTES
+                    )
                     if not chunk:
                         break
                     yield chunk
-            finally:
-                resolved.stream.close()
 
-        # One POST attempt only — the receiver consumes its URL token on
-        # the first attempt (success or failure); a retry returns 404.
-        client_kwargs: dict[str, Any] = {
-            "timeout": send_timeout,
-            "follow_redirects": False,
-        }
-        if _upload_sender_transport is not None:
-            client_kwargs["transport"] = _upload_sender_transport
-        try:
-            async with httpx.AsyncClient(**client_kwargs) as client:
-                resp = await client.post(url, content=_chunks(), headers=headers)
-        except httpx.HTTPError as exc:
+            # One POST attempt only — the receiver consumes its URL token on
+            # the first attempt (success or failure); a retry returns 404.
+            client_kwargs: dict[str, Any] = {
+                "timeout": send_timeout,
+                "follow_redirects": False,
+            }
+            if _upload_sender_transport is not None:
+                client_kwargs["transport"] = _upload_sender_transport
+            try:
+                async with httpx.AsyncClient(**client_kwargs) as client:
+                    resp = await client.post(url, content=_chunks(), headers=headers)
+            except httpx.HTTPError as exc:
+                # receiver_server="" because the sender knows only the URL,
+                # not the receiver's namespace; a receiver-issued
+                # transfer_failed passed through verbatim carries the real value.
+                return _upload_transfer_failed(
+                    receiver_server="",
+                    origin_id=origin_id,
+                    message=f"upload POST failed: {exc}",
+                )
+
+            status = resp.status_code
+            ct = resp.headers.get("content-type", "")
+            if "json" in ct.lower():
+                try:
+                    body: Any = resp.json()
+                except ValueError:
+                    body = resp.text
+            else:
+                body = resp.text
+
+            if 200 <= status < 300:
+                return {"status": status, "body": body}
+            if isinstance(body, dict) and body.get("error") == "transfer_failed":
+                return body
             return _upload_transfer_failed(
                 receiver_server="",
                 origin_id=origin_id,
-                message=f"upload POST failed: {exc}",
+                message=f"upload POST returned HTTP {status}",
             )
-
-        status = resp.status_code
-        ct = resp.headers.get("content-type", "")
-        if "json" in ct.lower():
-            try:
-                body: Any = resp.json()
-            except ValueError:
-                body = resp.text
-        else:
-            body = resp.text
-
-        if 200 <= status < 300:
-            return {"status": status, "body": body}
-        if isinstance(body, dict) and body.get("error") == "transfer_failed":
-            return body
-        return _upload_transfer_failed(
-            receiver_server="",
-            origin_id=origin_id,
-            message=f"upload POST returned HTTP {status}",
-        )
+        finally:
+            resolved.stream.close()
 
     return UploadSenderHandle(
         namespace=namespace, tool_name=_DEFAULT_UPLOAD_SENDER_TOOL

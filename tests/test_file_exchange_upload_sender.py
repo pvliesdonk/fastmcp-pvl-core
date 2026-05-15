@@ -71,7 +71,9 @@ async def test_upload_success_returns_status_and_body(
     )
     mcp = FastMCP(name="t")
     register_file_exchange_upload_sender(
-        mcp, namespace="ns", env_prefix="TEST_SEND",
+        mcp,
+        namespace="ns",
+        env_prefix="TEST_SEND",
         byte_source=_resolver(b"PAYLOAD", content_type="application/pdf"),
     )
     tool = await mcp.get_tool("upload")
@@ -101,7 +103,9 @@ async def test_upload_content_type_param_overrides_resolver(
     )
     mcp = FastMCP(name="t")
     register_file_exchange_upload_sender(
-        mcp, namespace="ns", env_prefix="TEST_SEND",
+        mcp,
+        namespace="ns",
+        env_prefix="TEST_SEND",
         byte_source=_resolver(b"x", content_type="application/pdf"),
     )
     tool = await mcp.get_tool("upload")
@@ -122,9 +126,7 @@ async def test_upload_ssrf_guard_rejects_loopback_url() -> None:
         mcp, namespace="ns", env_prefix="TEST_SEND", byte_source=_resolver(b"x")
     )
     tool = await mcp.get_tool("upload")
-    result = await tool.run(
-        {"url": "http://169.254.169.254/u/t", "origin_id": "d"}
-    )
+    result = await tool.run({"url": "http://169.254.169.254/u/t", "origin_id": "d"})
     payload = result.structured_content or {}
     assert payload["error"] == "transfer_failed"
     assert payload["method"] == "http_upload"
@@ -141,9 +143,7 @@ async def test_upload_resolver_value_error_returns_transfer_failed() -> None:
         mcp, namespace="ns", env_prefix="TEST_SEND", byte_source=bad_resolver
     )
     tool = await mcp.get_tool("upload")
-    result = await tool.run(
-        {"url": "https://recv.test/u/t", "origin_id": "d"}
-    )
+    result = await tool.run({"url": "https://recv.test/u/t", "origin_id": "d"})
     payload = result.structured_content or {}
     assert payload["error"] == "transfer_failed"
     assert "unknown origin_id" in payload["message"]
@@ -174,9 +174,7 @@ async def test_upload_4xx_transfer_failed_body_passed_through(
         mcp, namespace="ns", env_prefix="TEST_SEND", byte_source=_resolver(b"x")
     )
     tool = await mcp.get_tool("upload")
-    result = await tool.run(
-        {"url": "https://recv.test/u/t", "origin_id": "d"}
-    )
+    result = await tool.run({"url": "https://recv.test/u/t", "origin_id": "d"})
     assert (result.structured_content or {}) == envelope
 
 
@@ -201,7 +199,146 @@ async def test_upload_async_resolver_supported(
         mcp, namespace="ns", env_prefix="TEST_SEND", byte_source=aresolve
     )
     tool = await mcp.get_tool("upload")
-    result = await tool.run(
-        {"url": "https://recv.test/u/t", "origin_id": "d"}
-    )
+    result = await tool.run({"url": "https://recv.test/u/t", "origin_id": "d"})
     assert (result.structured_content or {})["status"] == 200
+
+
+@pytest.mark.asyncio
+async def test_upload_transport_error_returns_transfer_failed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("boom")
+
+    monkeypatch.setattr(
+        "fastmcp_pvl_core.file_exchange._upload_sender_transport",
+        httpx.MockTransport(handler),
+        raising=False,
+    )
+    mcp = FastMCP(name="t")
+    register_file_exchange_upload_sender(
+        mcp, namespace="ns", env_prefix="TEST_SEND", byte_source=_resolver(b"data")
+    )
+    tool = await mcp.get_tool("upload")
+    result = await tool.run({"url": "https://recv.test/u/t", "origin_id": "d"})
+    payload = result.structured_content or {}
+    assert payload["error"] == "transfer_failed"
+    assert payload["method"] == "http_upload"
+    assert "upload POST failed" in payload["message"]
+
+
+@pytest.mark.asyncio
+async def test_upload_closes_stream_on_transport_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _ClosingBytesIO(io.BytesIO):
+        def __init__(self, data: bytes) -> None:
+            super().__init__(data)
+            self.closed_flag = False
+
+        def close(self) -> None:
+            self.closed_flag = True
+            super().close()
+
+    tracking_stream = _ClosingBytesIO(b"data")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("boom")
+
+    monkeypatch.setattr(
+        "fastmcp_pvl_core.file_exchange._upload_sender_transport",
+        httpx.MockTransport(handler),
+        raising=False,
+    )
+
+    def source_with_tracking(origin_id: str) -> ResolvedSource:
+        return ResolvedSource(stream=tracking_stream, content_type=None, size_bytes=4)
+
+    mcp = FastMCP(name="t")
+    register_file_exchange_upload_sender(
+        mcp, namespace="ns", env_prefix="TEST_SEND", byte_source=source_with_tracking
+    )
+    tool = await mcp.get_tool("upload")
+    await tool.run({"url": "https://recv.test/u/t", "origin_id": "d"})
+    assert tracking_stream.closed_flag is True
+
+
+@pytest.mark.asyncio
+async def test_upload_sets_content_length_from_size_bytes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+    payload = b"hello world"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["content_length"] = request.headers.get("content-length")
+        return httpx.Response(200, json={"ok": True})
+
+    monkeypatch.setattr(
+        "fastmcp_pvl_core.file_exchange._upload_sender_transport",
+        httpx.MockTransport(handler),
+        raising=False,
+    )
+    mcp = FastMCP(name="t")
+    register_file_exchange_upload_sender(
+        mcp,
+        namespace="ns",
+        env_prefix="TEST_SEND",
+        byte_source=_resolver(payload),
+    )
+    tool = await mcp.get_tool("upload")
+    await tool.run({"url": "https://recv.test/u/t", "origin_id": "d"})
+    assert captured["content_length"] == str(len(payload))
+
+
+@pytest.mark.asyncio
+async def test_upload_omits_content_length_when_size_unknown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["has_cl"] = "content-length" in request.headers
+        return httpx.Response(200, json={"ok": True})
+
+    monkeypatch.setattr(
+        "fastmcp_pvl_core.file_exchange._upload_sender_transport",
+        httpx.MockTransport(handler),
+        raising=False,
+    )
+
+    def no_size_resolver(origin_id: str) -> ResolvedSource:
+        return ResolvedSource(
+            stream=io.BytesIO(b"abc"), content_type=None, size_bytes=None
+        )
+
+    mcp = FastMCP(name="t")
+    register_file_exchange_upload_sender(
+        mcp, namespace="ns", env_prefix="TEST_SEND", byte_source=no_size_resolver
+    )
+    tool = await mcp.get_tool("upload")
+    await tool.run({"url": "https://recv.test/u/t", "origin_id": "d"})
+    assert captured["has_cl"] is False
+
+
+@pytest.mark.asyncio
+async def test_upload_non_json_body_passed_through_as_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, text="plain ack", headers={"content-type": "text/plain"}
+        )
+
+    monkeypatch.setattr(
+        "fastmcp_pvl_core.file_exchange._upload_sender_transport",
+        httpx.MockTransport(handler),
+        raising=False,
+    )
+    mcp = FastMCP(name="t")
+    register_file_exchange_upload_sender(
+        mcp, namespace="ns", env_prefix="TEST_SEND", byte_source=_resolver(b"x")
+    )
+    tool = await mcp.get_tool("upload")
+    result = await tool.run({"url": "https://recv.test/u/t", "origin_id": "d"})
+    assert (result.structured_content or {}) == {"status": 200, "body": "plain ack"}
