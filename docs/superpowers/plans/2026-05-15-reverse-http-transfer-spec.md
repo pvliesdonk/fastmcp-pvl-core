@@ -84,7 +84,7 @@ Insert the following block immediately before the line that contains `#### Metho
 ````markdown
 #### `http_upload` (push to receiver-issued URL)
 
-The reverse of the `http` method: the *receiver* mints a one-time POST URL; any party with the URL pushes bytes. The sender can be an LLM/agent, another MCP server, or a human with an HTTP client (`curl`, browser, custom script) — the spec does not constrain who pushes. The motivating use case is uploading to a receiver that is not publicly reachable: with download-only methods, the receiver cannot mint a URL the sender can `GET` from, and the sender has no way to push without the receiver first issuing a reachable endpoint.
+The reverse of the `http` method: the *receiver* mints a one-time POST URL; any party with the URL pushes bytes. The sender can be an LLM/agent, another MCP server, or a human with an HTTP client (`curl`, browser, custom script) — the spec does not constrain who pushes. The motivating use case is when the *sender* cannot serve an HTTP endpoint: with the `http` (download) method the consumer must pull bytes from a producer-served URL, which fails if the sender is a local agent, a `curl` invocation, or any client that can make outbound requests but cannot receive inbound connections. `http_upload` inverts the direction — the receiver issues the URL, the sender only needs outbound HTTP access to reach it.
 
 Like the existing `http` (download) method, both the URL-mint tool on the receiver side and the POST-perform tool on the sender side are wire-optional from the spec's perspective. Any HTTP client that can issue a `POST` is a valid sender, just as any HTTP client that can `GET` is a valid consumer of the existing `http` method. The tool definitions exist to standardize MCP-mediated transfer between MCP servers; they are not the only valid implementation of either side.
 
@@ -124,13 +124,13 @@ The tool MUST return:
 ```json
 {
   "url": "https://receiver.example/uploads/<token>",
-  "expires_in_seconds": 3600,
+  "ttl_seconds": 3600,
   "max_bytes": 10485760
 }
 ```
 
 - `url` (MUST) — the POST endpoint.
-- `expires_in_seconds` (MUST) — effective TTL after clamping.
+- `ttl_seconds` (MUST) — effective TTL after clamping.
 - `max_bytes` (SHOULD) — effective body-size ceiling after clamping.
 
 On in-band failure (invalid `destination`, `content_type` not in `accepts`, quota exhausted, dedup conflict, etc.), the receiver returns a `transfer_failed` envelope:
@@ -139,7 +139,7 @@ On in-band failure (invalid `destination`, `content_type` not in `accepts`, quot
 {
   "error": "transfer_failed",
   "method": "http_upload",
-  "origin_server": "<receiver namespace>",
+  "receiver_server": "<receiver namespace>",
   "origin_id": "<the origin_id passed in>",
   "message": "destination validation failed: ..."
 }
@@ -214,7 +214,7 @@ An LLM agent has a local PDF at `/tmp/draft.pdf` and wants to upload it to a vau
 // response
 {
   "url": "https://vault-mcp.example/uploads/8f3a9e2b...",
-  "expires_in_seconds": 3600,
+  "ttl_seconds": 3600,
   "max_bytes": 10485760
 }
 ```
@@ -239,7 +239,7 @@ A mover-server is asked to copy bytes from an internal `exchange://` URI into an
   "origin_id": "moved-from-vault",
   "destination": "incoming/2026-05-15/movement.bin"
 }
-// -> {"url": "https://vault-mcp.example/uploads/<token>", "expires_in_seconds": 3600, "max_bytes": 10485760}
+// -> {"url": "https://vault-mcp.example/uploads/<token>", "ttl_seconds": 3600, "max_bytes": 10485760}
 
 // step 2: mover.upload
 {
@@ -288,7 +288,7 @@ or human with curl) pushes bytes.  Wire shape:
 - Receiver tool \`create_upload_link\` takes \`origin_id\` (WHAT,
   strict origin_id-style rules) + \`destination\` (WHERE,
   receiver-validated, relaxed character rules) + optional ttl /
-  max_bytes / content_type hints; returns \`{url, expires_in_seconds,
+  max_bytes / content_type hints; returns \`{url, ttl_seconds,
   max_bytes}\`.
 - Sender tool \`upload\` (optional) takes \`url\` + \`source\`
   (tagged union: path / exchange_uri / http_url / inline_b64) +
@@ -659,7 +659,7 @@ Spec-only PR.  No Python code, no tests.  Implementation tracked in #74.
 ## What's in the spec
 
 - New \`#### http_upload\` subsection under \`### Transfer Methods\`, peer of the existing \`#### http\`.
-- Receiver-side tool \`create_upload_link(origin_id, destination?, ttl_seconds?, max_bytes?, content_type?)\` returning \`{url, expires_in_seconds, max_bytes}\`.
+- Receiver-side tool \`create_upload_link(origin_id, destination?, ttl_seconds?, max_bytes?, content_type?)\` returning \`{url, ttl_seconds, max_bytes}\`.
 - Sender-side tool \`upload(url, source, content_type?)\` (optional) returning \`{status, body}\`.
 - POST contract: one-time URL with ≥128-bit token, status-code classes (2xx success, 404 token, 413 size, 415 type, 4xx domain, 5xx server), \`transfer_failed\` envelope on structured 4xx.
 - Two worked examples: agent-push (curl) and MCP-mediated push (mover-server pattern).

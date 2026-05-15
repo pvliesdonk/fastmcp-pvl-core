@@ -270,7 +270,7 @@ The receiver registers a tool that mints upload URLs given a sender's identifier
 | `origin_id` | MUST | Same rules as `origin_id` in the `http` method's `create_download_link` (raw-JSON validation; no path separators `/` or `\`; not equal to `.` or `..`; no null bytes / control characters; no leading or trailing whitespace). | The sender's opaque stable handle for the bytes (the *what*). The receiver MAY treat it as a filename, document id, content hash, or any internally-meaningful key, but MUST NOT interpret it as a path component. |
 | `destination` | MAY | Forbids only null bytes, control characters (U+0000 through U+001F), and leading/trailing whitespace. Path separators, dots, and traversal-shaped strings are **NOT** spec-rejected. The receiver MUST validate per its own domain rules before any filesystem interaction. | The sender's destination instruction (the *where*). The receiver decides semantics — path, slot, parent document key, anything. The relaxed character rules vs. `origin_id` reflect the asymmetric role: `destination` is consumed only by the receiver's own domain logic and never embedded in a URI by anyone else. |
 | `ttl_seconds` | MAY | Positive number of seconds. | Sender's TTL hint for the minted URL. The receiver MAY clamp to its own ceiling (`max_ttl_seconds`); the effective TTL is returned. |
-| `max_bytes` | MAY | Positive integer. | Sender's intended upper bound on the upload size. Doubles as a request to reserve room: the receiver MAY clamp to its own ceiling (`max_bytes` in its capability declaration); the *effective* ceiling — the value the receiver will enforce at POST time — is returned in the response's `max_bytes` field. |
+| `max_bytes` | MAY | Positive integer. | Sender's intended upper bound on the upload size, used as a hint to the receiver. The receiver MAY clamp to its own ceiling (`max_bytes` in its capability declaration); the *effective* ceiling — the value the receiver will enforce at POST time — is returned in the response's `max_bytes` field. The receiver MAY use this hint to reject the link request early (via `transfer_failed`) if the requested size already exceeds policy, sparing a POST round-trip; no resource is pre-allocated. |
 | `content_type` | MAY | Standard MIME type string. | Sender's hint about what `Content-Type` the upload will declare. The receiver MAY pre-filter against its `accepts` list at link-mint time and surface a `transfer_failed` envelope in-band, sparing the sender a 415 round-trip. |
 
 The tool MUST return:
@@ -285,7 +285,7 @@ The tool MUST return:
 
 - `url` (MUST) — the POST endpoint.
 - `ttl_seconds` (MUST) — effective TTL after clamping. Same field name as the `http` method's `create_download_link` response.
-- `max_bytes` (MUST) — effective body-size ceiling after clamping. Receivers MUST return this field when they enforce a size limit; if no limit applies, receivers SHOULD still return the value from their capability declaration so senders can plan body size accordingly and avoid unnecessary `413` round-trips.
+- `max_bytes` (MUST) — effective body-size ceiling the receiver will enforce at POST time. Receivers MUST always return this field, so senders can pre-validate body size and avoid unnecessary `413` round-trips. (Receivers MUST enforce a ceiling per the §"Receiver server (`http_upload`)" conformance checklist, so a "no ceiling" case does not arise; if the receiver chose not to clamp the sender's `max_bytes` hint, it returns the sender's value verbatim.)
 
 On in-band failure (invalid `destination`, `content_type` not in `accepts`, quota exhausted, dedup conflict, etc.), the receiver returns a `transfer_failed` envelope:
 
@@ -299,7 +299,7 @@ On in-band failure (invalid `destination`, `content_type` not in `accepts`, quot
 }
 ```
 
-Note the field-name asymmetry vs the download direction's `transfer_failed` envelope: the download `transfer_failed` carries `origin_server` (the file's provenance — the producer server), because the failure is in retrieving an already-produced file. The `http_upload` `transfer_failed` carries `receiver_server` instead, because no file has been produced yet — the responding server is the *receiver* of an attempted upload, not the origin of any file. The two field names reflect the role split: a client building a unified error handler MUST branch on `method` before reading the server-identifying field.
+**Clients that handle `transfer_failed` from both directions MUST branch on `method` before reading the server-identifying field.** The download direction's `transfer_failed` carries `origin_server` (the file's provenance — the producer server), because the failure is in retrieving an already-produced file. The `http_upload` `transfer_failed` carries `receiver_server` instead, because no file has been produced yet — the responding server is the *receiver* of an attempted upload, not the origin of any file. The two field names reflect the role split; the per-direction shapes are intentional.
 
 **POST contract (at the minted URL):**
 
@@ -321,7 +321,7 @@ Status code classes (the receiver picks specific codes within each class; sender
 | Class | When | Spec rule |
 |---|---|---|
 | `2xx` | bytes accepted | MUST emit one of these on success. |
-| `404 Not Found` | token unknown, expired, OR already consumed | MUST NOT distinguish between these three conditions (anti-leak: avoid revealing token-existence to a probing caller). |
+| `404 Not Found` | token unknown, expired, OR already consumed | MUST NOT distinguish between these three conditions (anti-leak: avoid revealing token-existence to a probing caller). MUST emit with an empty body — no `transfer_failed` envelope, no framework-default HTML — for the same reason. |
 | `413 Payload Too Large` | body exceeds the receiver's enforced `max_bytes` (either `Content-Length` declares too much, or the running body total exceeds the cap mid-stream) | MUST emit when the cap is breached. |
 | `415 Unsupported Media Type` | `Content-Type` does not match the receiver's `accepts` filter | MUST emit when the filter rejects. |
 | Other `4xx` | receiver-domain rejection (invalid destination, quota, dedup conflict, etc.) | The receiver picks the code; the response body MUST carry a `transfer_failed` envelope. |
@@ -443,6 +443,8 @@ A new transfer method (e.g. `s3`, `scp`, `gdrive`) is defined by:
 
 Servers that do not recognise a method ignore it. Clients that do not recognise a method skip it and try the next one. This makes the protocol forward-compatible: old clients degrade gracefully when new methods appear. The same skip-unknown-keys rule applies inside the `transfer_methods` object of a server's **capability declaration**: implementations MUST silently ignore any `transfer_methods` key they do not recognise rather than rejecting the handshake.
 
+Note that whether a new method's introduction *also* requires a spec-version bump is governed separately by §"Versioning and compatibility" (the bump-trigger checklist). The structural recipe above is necessary but not always sufficient — methods that introduce a new direction, validation regime, error class, or tool-contract shape additionally warrant a minor-version bump.
+
 ### Exchange Group
 
 An exchange group is a set of MCP servers that share a filesystem directory and can use the `exchange` transfer method. Membership is opt-in via environment variables:
@@ -481,7 +483,7 @@ After decoding (for URIs) or direct extraction (for JSON parameters), segments:
 - MUST NOT contain null bytes (`\0`) or control characters (U+0000 through U+001F).
 - MUST NOT contain leading or trailing whitespace.
 
-The `destination` parameter passed to a receiver's `create_upload_link` tool (new in v0.3, used by the `http_upload` method) is **not** subject to the segment-validation rules above. It is opaque to anyone but the receiver — the spec mandates only minimum safety constraints (no null bytes, no control characters U+0000 through U+001F, no leading or trailing whitespace). Path separators, dots, and traversal-shaped strings are NOT spec-rejected; the receiver MUST validate per its own domain rules before any filesystem interaction. The asymmetric rules vs. `origin_id` reflect the role split: `origin_id` MAY be echoed by the receiver into URIs or filenames (so it must be URI-safe), but `destination` is consumed only by the receiver's own domain logic and never embedded in a URI by anyone else.
+The `destination` parameter passed to a receiver's `create_upload_link` tool (new in v0.3, used by the `http_upload` method) is **not** subject to the segment-validation rules above. It is opaque to anyone but the receiver — the spec mandates only minimum safety constraints (no null bytes, no control characters U+0000 through U+001F, no leading or trailing whitespace). Path separators, dots, and traversal-shaped strings are NOT spec-rejected; the receiver MUST validate per its own domain rules before any filesystem interaction. The asymmetric rules vs. `origin_id` reflect the role split: `origin_id` MAY be echoed by the receiver into URIs or filenames (so it MUST be URI-safe), but `destination` is consumed only by the receiver's own domain logic and never embedded in a URI by anyone else.
 
 In addition, `exchange://` URIs themselves MUST NOT contain a query component (`?...`) or fragment (`#...`). A URI with either is rejected as `exchange_uri_invalid`. This closes a parser-bypass class where a query string or fragment could slip past naive parsing and be misinterpreted as part of a path segment or file extension.
 
@@ -830,7 +832,7 @@ The spec uses semantic versioning (`major.minor`). The `version` field in capabi
 
 Transfer methods provide additional agility: because methods are identified by string keys and unknown methods are silently skipped, new methods can usually be introduced without a spec version bump. A server advertising version `0.3` can include a `gdrive` transfer method that older clients simply ignore.
 
-A new method warrants a **minor version bump** when it introduces wire-level constructs that other implementations need to know about beyond the method key itself — for example, a new transfer *direction* (push vs pull), a new validation regime with carve-outs in the spec's security rules, a new error class or envelope field, or a new tool-contract shape that requires explicit advertisement. The `http_upload` method introduced in v0.3 met all four of these criteria and warranted the 0.2 → 0.3 bump; a hypothetical `gdrive` method that just adds a new pull-direction method key with the existing `http`-style contract would not. The rule of thumb: if a v0.x implementation that doesn't know about the new method would behave correctly when ignoring it AND the method introduces no new validation rules or error vocabulary, ship without a bump. Otherwise bump minor and document the new constructs.
+The general rule above ("Across minor versions: may introduce new required fields or change semantics") manifests in practice as the **bump-trigger checklist** for new methods. A new method warrants a minor version bump when it introduces wire-level constructs that other implementations need to know about beyond the method key itself — specifically, any of: a new transfer *direction* (push vs pull), a new validation regime with carve-outs in the spec's security rules, a new error class or envelope field, or a new tool-contract shape that requires explicit advertisement. The `http_upload` method introduced in v0.3 met all four of these criteria and warranted the 0.2 → 0.3 bump; a hypothetical `gdrive` method that just adds a new pull-direction method key with the existing `http`-style contract would not. The rule of thumb: if a v0.x implementation that doesn't know about the new method would behave correctly when ignoring it AND the method introduces no new validation rules or error vocabulary, ship without a bump. Otherwise bump minor and document the new constructs. §"Adding future methods" defines the structural recipe for declaring a method; this section governs whether the declaration also requires a spec-version bump.
 
 ### Mixed-OS exchange groups
 

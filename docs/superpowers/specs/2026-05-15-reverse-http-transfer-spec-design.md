@@ -13,13 +13,14 @@ transfer in one direction: a producer publishes a file via
 producer-minted download URL (`http` method). The reverse direction
 is missing — and is a real, legitimate transfer method.
 
-The motivating use case (one of several): an MCP server is *not*
-publicly reachable; an external party (LLM/agent, another server,
-or a human with `curl`) has bytes that need to land inside that
-server. With download-only methods, this is impossible — the
-non-public server cannot mint a URL the bytes-haver can fetch from,
-and the bytes-haver cannot push without the server first issuing a
-reachable endpoint.
+The motivating use case (one of several): the *sender* cannot serve
+an HTTP endpoint. With the existing `http` (download) method the
+consumer must pull bytes from a producer-served URL, which fails
+if the bytes-haver is a local agent, a `curl` invocation, or any
+client that can make outbound requests but cannot receive inbound
+connections. `http_upload` inverts the direction: the receiver
+issues the URL, the sender only needs outbound HTTP access to
+reach it.
 
 The previous attempt captured the missing direction as Amendment 11
 inside the same spec doc as the v0.2.5 wording, presented as a
@@ -133,13 +134,13 @@ existing spec already permits any HTTP client.
 ```json
 {
   "url": "https://receiver.example/uploads/<token>",
-  "expires_in_seconds": 3600,
+  "ttl_seconds": 3600,
   "max_bytes": 10485760
 }
 ```
 
 - `url` (MUST) — the POST endpoint.
-- `expires_in_seconds` (MUST) — effective TTL after clamping.
+- `ttl_seconds` (MUST) — effective TTL after clamping.
 - `max_bytes` (SHOULD) — effective body-size ceiling after
   clamping. Sender uses this to decide whether to abort early.
 
@@ -150,7 +151,7 @@ matching the existing download spec:
 {
   "error": "transfer_failed",
   "method": "http_upload",
-  "origin_server": "<receiver namespace>",
+  "receiver_server": "<receiver namespace>",
   "origin_id": "<the origin_id passed in>",
   "message": "destination validation failed: ..."
 }
