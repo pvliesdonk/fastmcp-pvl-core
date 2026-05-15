@@ -141,6 +141,21 @@ mcp = FastMCP(
 wire_middleware_stack(mcp)
 ```
 
+### Logging
+
+`configure_logging_from_env` resolves the log level from the `-v` CLI flag
+(forces `DEBUG`), then `FASTMCP_LOG_LEVEL`, then defaults to `INFO`.
+
+At `INFO` and above, two noisy third-party loggers are demoted to `WARNING`
+so they do not flood the operator log stream:
+
+- `uvicorn.access` — the `INFO: <ip> - "POST /mcp ..."` HTTP access log.
+- `mcp.server.lowlevel.server` — the MCP SDK's `Processing request of
+  type ...` line.
+
+Both reappear at `DEBUG` (`-v` or `FASTMCP_LOG_LEVEL=DEBUG`). `uvicorn.error`
+is never demoted — it carries genuine bind / startup failures.
+
 ### Per-user subject mapping (bearer auth)
 
 Bearer auth has two modes:
