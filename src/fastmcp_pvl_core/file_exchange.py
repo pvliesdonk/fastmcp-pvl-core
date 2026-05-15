@@ -1408,7 +1408,8 @@ _UPLOAD_CHUNK_BYTES = 65536
 # Test seam: when set, the upload sender routes POSTs through this
 # httpx transport instead of the real network. Production leaves it None.
 # httpx.AsyncBaseTransport is what httpx.AsyncClient(transport=...) expects;
-# httpx.MockTransport subclasses it, so tests can inject one.
+# httpx.MockTransport subclasses it, so tests can inject one. Tests set it
+# via monkeypatch.setattr, which auto-restores the None default on teardown.
 _upload_sender_transport: httpx.AsyncBaseTransport | None = None
 
 PreLinkValidator = Callable[
@@ -2013,6 +2014,12 @@ def register_file_exchange_upload_sender(
             On success, ``{"status": <int>, "body": <receiver response>}``.
             On failure, a ``transfer_failed`` envelope.
         """
+        # Every _upload_transfer_failed below uses receiver_server="": the
+        # sender knows only the POST URL, never the receiver's server
+        # namespace — whether the failure is a pre-POST rejection (the
+        # receiver was never contacted) or a transport error. A receiver-
+        # issued transfer_failed body is passed through verbatim instead
+        # (see the non-2xx branch), so it keeps the receiver's real value.
         try:
             ExchangeURI.validate_segment(origin_id, role="json_param")
         except ExchangeURIError as exc:
@@ -2078,9 +2085,6 @@ def register_file_exchange_upload_sender(
                 async with httpx.AsyncClient(**client_kwargs) as client:
                     resp = await client.post(url, content=_chunks(), headers=headers)
             except httpx.HTTPError as exc:
-                # receiver_server="" because the sender knows only the URL,
-                # not the receiver's namespace; a receiver-issued
-                # transfer_failed passed through verbatim carries the real value.
                 return _upload_transfer_failed(
                     receiver_server="",
                     origin_id=origin_id,
