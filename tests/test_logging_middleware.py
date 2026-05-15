@@ -69,7 +69,10 @@ async def test_notification_uses_notification_vocabulary(caplog):
     ctx = _context(method="notifications/initialized", type_="notification")
     with caplog.at_level(logging.INFO, logger=_LOGGER_NAME):
         await mw.on_message(ctx, _ok_call_next)
-    assert caplog.records[0].getMessage().startswith("notification_started ")
+    started = caplog.records[0].getMessage()
+    assert started.startswith("notification_started ")
+    assert "method=notifications/initialized" in started
+    assert "source=client" in started
     assert caplog.records[1].getMessage().startswith("notification_completed ")
 
 
@@ -169,3 +172,20 @@ async def test_custom_logger_is_used(caplog):
         await mw.on_message(ctx, _ok_call_next)
     assert caplog.records
     assert all(record.name == "test.custom.requests" for record in caplog.records)
+
+
+async def test_tool_name_with_whitespace_is_quoted(caplog):
+    mw = RequestLoggingMiddleware()
+    ctx = _context(method="tools/call", message=_ToolParams("read section"))
+    with caplog.at_level(logging.INFO, logger=_LOGGER_NAME):
+        await mw.on_message(ctx, _ok_call_next)
+    assert 'tool="read section"' in caplog.records[0].getMessage()
+
+
+async def test_render_value_escapes_embedded_quotes(caplog):
+    mw = RequestLoggingMiddleware()
+    ctx = _context(method="tools/call", message=_ToolParams("read"))
+    with caplog.at_level(logging.INFO, logger=_LOGGER_NAME):
+        with pytest.raises(ValueError):
+            await mw.on_message(ctx, _failing_call_next(ValueError('say"hi"')))
+    assert r'error="say\"hi\""' in caplog.records[-1].getMessage()

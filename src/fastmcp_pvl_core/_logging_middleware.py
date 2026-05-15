@@ -34,13 +34,15 @@ def _duration_ms(start: float) -> float:
 def _render_value(value: object) -> str:
     """Render a field value for the rich (text) output mode.
 
-    Strings containing whitespace are double-quoted so the surrounding
-    ``key=value`` structure stays unambiguous; everything else renders
-    bare.
+    Strings containing whitespace or a double quote are wrapped in
+    double quotes — with embedded backslashes and double quotes escaped
+    — so the surrounding ``key=value`` structure stays unambiguous;
+    everything else renders bare.
     """
     text = str(value)
-    if any(char.isspace() for char in text):
-        return '"' + text + '"'
+    if any(char.isspace() for char in text) or '"' in text:
+        escaped = text.replace("\\", "\\\\").replace('"', '\\"')
+        return '"' + escaped + '"'
     return text
 
 

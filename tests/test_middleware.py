@@ -46,27 +46,17 @@ def test_structured_mode_when_rich_disabled(monkeypatch):
     assert _request_logging_mws(mcp)[0].structured is True
 
 
-def test_include_traceback_inferred_from_debug_log_level():
+def test_include_traceback_inferred_from_debug_log_level(caplog):
     """include_traceback is inferred True when the root logger is at DEBUG."""
-    root = logging.getLogger()
-    prev = root.level
-    root.setLevel(logging.DEBUG)
-    try:
+    with caplog.at_level(logging.DEBUG):
         mcp = FastMCP(name="t")
         wire_middleware_stack(mcp)
-        assert _request_logging_mws(mcp)[0].include_traceback is True
-    finally:
-        root.setLevel(prev)
+    assert _request_logging_mws(mcp)[0].include_traceback is True
 
 
-def test_include_traceback_inferred_off_when_root_above_debug():
+def test_include_traceback_inferred_off_when_root_above_debug(caplog):
     """include_traceback is inferred False when the root logger sits above DEBUG."""
-    root = logging.getLogger()
-    prev = root.level
-    root.setLevel(logging.WARNING)
-    try:
+    with caplog.at_level(logging.WARNING):
         mcp = FastMCP(name="t")
         wire_middleware_stack(mcp)
-        assert _request_logging_mws(mcp)[0].include_traceback is False
-    finally:
-        root.setLevel(prev)
+    assert _request_logging_mws(mcp)[0].include_traceback is False
