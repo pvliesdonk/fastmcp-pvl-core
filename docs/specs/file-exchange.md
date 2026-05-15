@@ -549,7 +549,7 @@ During the MCP `initialize` handshake, a participating server declares exchange 
 
 | Field | Required | Description |
 |---|---|---|
-| `version` | MUST | Spec version as `MAJOR.MINOR` (e.g. `"0.2"`). Patch versions are spec-internal and MUST NOT appear in the capability declaration. A server implementing spec version `0.2.5` MUST advertise `"0.2"`; patch-level differences do not change the wire-level capability. |
+| `version` | MUST | Spec version as `MAJOR.MINOR` (e.g. `"0.3"`). Patch versions are spec-internal and MUST NOT appear in the capability declaration. A server implementing spec version `0.3.0` MUST advertise `"0.3"`; patch-level differences do not change the wire-level capability. |
 | `namespace` | MUST | The server's exchange namespace. |
 | `exchange_id` | SHOULD | The exchange group ID. Present when the server participates in an exchange group. |
 | `produces` | SHOULD | MIME types this server can produce as file references. |
