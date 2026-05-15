@@ -35,13 +35,20 @@ def _render_value(value: object) -> str:
     """Render a field value for the rich (text) output mode.
 
     Strings containing whitespace or a double quote are wrapped in
-    double quotes — with embedded backslashes and double quotes escaped
-    — so the surrounding ``key=value`` structure stays unambiguous;
-    everything else renders bare.
+    double quotes — with embedded backslashes, double quotes, and
+    control characters (newline, carriage return, tab) escaped — so the
+    record stays on one unambiguous ``key=value`` line; everything else
+    renders bare.
     """
     text = str(value)
     if any(char.isspace() for char in text) or '"' in text:
-        escaped = text.replace("\\", "\\\\").replace('"', '\\"')
+        escaped = (
+            text.replace("\\", "\\\\")
+            .replace('"', '\\"')
+            .replace("\n", "\\n")
+            .replace("\r", "\\r")
+            .replace("\t", "\\t")
+        )
         return '"' + escaped + '"'
     return text
 
