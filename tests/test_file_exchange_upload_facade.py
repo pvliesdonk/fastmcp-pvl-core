@@ -434,6 +434,64 @@ async def test_create_upload_link_rejects_path_traversal_origin_id(
     assert payload["origin_id"] == "../etc/passwd"
 
 
+@pytest.mark.asyncio
+async def test_create_upload_link_rejects_destination_with_leading_whitespace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Built-in destination guard rejects leading/trailing whitespace.
+
+    This validation runs BEFORE any pre_link_validator, so no validator
+    is registered here — the tool's own guard is under test.
+    """
+    monkeypatch.setenv("TEST_UPLOAD_TRANSPORT", "http")
+    monkeypatch.setenv("TEST_UPLOAD_BASE_URL", "http://srv.test")
+
+    mcp = FastMCP(name="test")
+    register_file_exchange_upload(
+        mcp,
+        namespace="ns",
+        env_prefix="TEST_UPLOAD",
+        receiver=lambda rec, body: {"ok": True},
+    )
+    tool = await mcp.get_tool("create_upload_link")
+    assert tool is not None
+    result = await tool.run({"origin_id": "x", "destination": " foo"})
+    payload = result.structured_content or {}
+    assert payload["error"] == "transfer_failed"
+    assert payload["method"] == "http_upload"
+    assert payload["receiver_server"] == "ns"
+    assert payload["origin_id"] == "x"
+
+
+@pytest.mark.asyncio
+async def test_create_upload_link_rejects_destination_with_control_char(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Built-in destination guard rejects control characters (ord < 0x20).
+
+    This validation runs BEFORE any pre_link_validator, so no validator
+    is registered here — the tool's own guard is under test.
+    """
+    monkeypatch.setenv("TEST_UPLOAD_TRANSPORT", "http")
+    monkeypatch.setenv("TEST_UPLOAD_BASE_URL", "http://srv.test")
+
+    mcp = FastMCP(name="test")
+    register_file_exchange_upload(
+        mcp,
+        namespace="ns",
+        env_prefix="TEST_UPLOAD",
+        receiver=lambda rec, body: {"ok": True},
+    )
+    tool = await mcp.get_tool("create_upload_link")
+    assert tool is not None
+    result = await tool.run({"origin_id": "x", "destination": "foo\x01bar"})
+    payload = result.structured_content or {}
+    assert payload["error"] == "transfer_failed"
+    assert payload["method"] == "http_upload"
+    assert payload["receiver_server"] == "ns"
+    assert payload["origin_id"] == "x"
+
+
 def test_malformed_upload_max_bytes_raises_configuration_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

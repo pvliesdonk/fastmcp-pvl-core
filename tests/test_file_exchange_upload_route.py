@@ -182,8 +182,9 @@ async def test_upload_route_unknown_and_consumed_and_expired_all_404() -> None:
     assert r_consumed.status_code == 404
     assert r_expired.status_code == 404
 
-    # Bodies are byte-identical.
+    # Bodies are byte-identical and empty (spec §http_upload anti-leak rule).
     assert r_unknown.content == r_consumed.content == r_expired.content
+    assert r_unknown.content == b""
 
 
 @pytest.mark.asyncio
