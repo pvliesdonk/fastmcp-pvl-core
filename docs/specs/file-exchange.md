@@ -230,6 +230,174 @@ In a capability declaration (consumer):
 - The generated URL MUST be cryptographically unguessable (e.g. containing a UUID or HMAC token in the path or query string). The producer SHOULD invalidate the URL after a single successful download (one-time use). TLS/HTTPS is assumed; the URL path is encrypted in transit, so embedding secrets in the URL is equivalent in security to using an `Authorization` header while being compatible with any consumer that can fetch a URL.
 - Consumer tool MUST accept a parameter named `url`. It SHOULD accept an optional parameter named `path` to allow client-directed placement. If `path` is omitted or invalid, the consumer MUST auto-generate a safe local path (e.g. derived from `origin_id` or a UUID). This prevents failures caused by LLMs hallucinating invalid directory structures.
 
+#### `http_upload` (push to receiver-issued URL)
+
+The reverse of the `http` method: the *receiver* mints a one-time POST URL; any party with the URL pushes bytes. The sender can be an LLM/agent, another MCP server, or a human with an HTTP client (`curl`, browser, custom script) — the spec does not constrain who pushes. The motivating use case is uploading to a receiver that is not publicly reachable: with download-only methods, the receiver cannot mint a URL the sender can `GET` from, and the sender has no way to push without the receiver first issuing a reachable endpoint.
+
+Like the existing `http` (download) method, both the URL-mint tool on the receiver side and the POST-perform tool on the sender side are wire-optional from the spec's perspective. Any HTTP client that can issue a `POST` is a valid sender, just as any HTTP client that can `GET` is a valid consumer of the existing `http` method. The tool definitions exist to standardize MCP-mediated transfer between MCP servers; they are not the only valid implementation of either side.
+
+In a capability declaration (receiver):
+
+```json
+"http_upload": {
+  "tool": "create_upload_link",
+  "accepts": ["application/pdf", "text/markdown"],
+  "max_bytes": 10485760,
+  "max_ttl_seconds": 3600
+}
+```
+
+In a capability declaration (sender, optional):
+
+```json
+"http_upload": {"tool": "upload"}
+```
+
+Both sides advertise the same key (`http_upload`) with the same `{tool: <name>}` shape; the role is implicit based on which tool name the server registers. A single server MAY advertise both sides if it implements both roles.
+
+**Receiver-side tool: `create_upload_link`**
+
+The receiver registers a tool that mints upload URLs given a sender's identifier and (optionally) a destination instruction.
+
+| Param | Cardinality | Rules | Description |
+|---|---|---|---|
+| `origin_id` | MUST | Same rules as `origin_id` in the `http` method's `create_download_link` (raw-JSON validation; no path separators `/` or `\`; not equal to `.` or `..`; no null bytes / control characters; no leading or trailing whitespace). | The sender's opaque stable handle for the bytes (the *what*). The receiver MAY treat it as a filename, document id, content hash, or any internally-meaningful key, but MUST NOT interpret it as a path component. |
+| `destination` | MAY | Forbids only null bytes, control characters (U+0000 through U+001F), and leading/trailing whitespace. Path separators, dots, and traversal-shaped strings are **NOT** spec-rejected. The receiver MUST validate per its own domain rules before any filesystem interaction. | The sender's destination instruction (the *where*). The receiver decides semantics — path, slot, parent document key, anything. The relaxed character rules vs. `origin_id` reflect the asymmetric role: `destination` is consumed only by the receiver's own domain logic and never embedded in a URI by anyone else. |
+| `ttl_seconds` | MAY | Positive number of seconds. | Sender's TTL hint for the minted URL. The receiver MAY clamp to its own ceiling (`max_ttl_seconds`); the effective TTL is returned. |
+| `max_bytes` | MAY | Positive integer. | Sender's size hint. The receiver MAY clamp to its own ceiling (`max_bytes`); the effective ceiling is returned. |
+| `content_type` | MAY | Standard MIME type string. | Sender's hint about what `Content-Type` the upload will declare. The receiver MAY pre-filter against its `accepts` list at link-mint time and surface a `transfer_failed` envelope in-band, sparing the sender a 415 round-trip. |
+
+The tool MUST return:
+
+```json
+{
+  "url": "https://receiver.example/uploads/<token>",
+  "expires_in_seconds": 3600,
+  "max_bytes": 10485760
+}
+```
+
+- `url` (MUST) — the POST endpoint.
+- `expires_in_seconds` (MUST) — effective TTL after clamping.
+- `max_bytes` (SHOULD) — effective body-size ceiling after clamping.
+
+On in-band failure (invalid `destination`, `content_type` not in `accepts`, quota exhausted, dedup conflict, etc.), the receiver returns a `transfer_failed` envelope:
+
+```json
+{
+  "error": "transfer_failed",
+  "method": "http_upload",
+  "origin_server": "<receiver namespace>",
+  "origin_id": "<the origin_id passed in>",
+  "message": "destination validation failed: ..."
+}
+```
+
+**POST contract (at the minted URL):**
+
+The sender POSTs raw bytes to the receiver-issued URL.
+
+- **Method**: `POST`.
+- **Body**: raw bytes.
+- **`Content-Type` header**: MUST be set by the sender. The receiver MAY enforce per its `accepts` list at this point; mismatch yields `415 Unsupported Media Type`.
+- **`Content-Length` header**: SHOULD be set by the sender. The receiver MAY require it.
+
+The URL token:
+
+- MUST be cryptographically unguessable (≥128 bits of entropy in the URL path or query).
+- MUST be one-time use: the receiver MUST atomically consume the token on the first POST attempt — success OR failure. A retry on the same URL returns `404`, not the original error. Senders that need to retry MUST call `create_upload_link` again.
+- MUST be TTL-bounded: the receiver MUST reject expired tokens.
+
+Status code classes (the receiver picks specific codes within each class; senders SHOULD treat the class as the actionable signal):
+
+| Class | When | Spec rule |
+|---|---|---|
+| `2xx` | bytes accepted | MUST emit one of these on success. |
+| `404 Not Found` | token unknown, expired, OR already consumed | MUST NOT distinguish between these three conditions (anti-leak: avoid revealing token-existence to a probing caller). |
+| `413 Payload Too Large` | body exceeds the receiver's enforced `max_bytes` (either `Content-Length` declares too much, or the running body total exceeds the cap mid-stream) | MUST emit when the cap is breached. |
+| `415 Unsupported Media Type` | `Content-Type` does not match the receiver's `accepts` filter | MUST emit when the filter rejects. |
+| Other `4xx` | receiver-domain rejection (invalid destination, quota, dedup conflict, etc.) | The receiver picks the code; the response body MUST carry a `transfer_failed` envelope. |
+| `5xx` | server-side error | The body MAY be generic; the receiver MUST NOT echo internal error details (the full traceback is logged server-side). |
+
+Success body: the spec does NOT mandate a shape. Receivers MAY return JSON with domain-specific data (saved-path confirmation, generated id, etc.). Senders SHOULD parse JSON when the response `Content-Type` indicates JSON; otherwise treat the body as opaque acknowledgment.
+
+Failure body (4xx with structured information): a `transfer_failed` envelope, same shape as the in-band failure example above.
+
+**Sender-side tool: `upload` (optional)**
+
+A server that wants to act as an MCP-mediated *pusher* of bytes (e.g., a mover-server that reads from a remote source and POSTs to a receiver-issued upload URL) advertises a sender-side tool. Servers that don't have a push role simply omit this side of the capability.
+
+| Param | Cardinality | Description |
+|---|---|---|
+| `url` | MUST | The receiver-issued POST endpoint (returned from `create_upload_link`). |
+| `source` | MUST | Tagged union: exactly one of `{ "path": "<local path>" }`, `{ "exchange_uri": "exchange://..." }`, `{ "http_url": "https://..." }`, or `{ "inline_b64": "<base64 content>" }`. Implementations MAY support a subset; `path` is the lowest-common-denominator. |
+| `content_type` | SHOULD | The MIME type the sender will declare in the POST `Content-Type` header. If omitted, the sender SHOULD sniff or default. |
+
+The tool MUST return:
+
+```json
+{
+  "status": 201,
+  "body": "<receiver's response body, passed through>"
+}
+```
+
+- `status` (MUST) — the receiver's HTTP status code.
+- `body` (MAY) — the receiver's response body, passed through to the caller (opaque to the sender tool itself).
+
+On 4xx with a structured `transfer_failed` envelope, the sender tool SHOULD unwrap and re-raise as a tool error, mirroring how the existing `http` method's `fetch` tool propagates `transfer_failed`.
+
+**Worked example — agent push:**
+
+An LLM agent has a local PDF at `/tmp/draft.pdf` and wants to upload it to a vault server with `namespace: "vault-mcp"`. The agent calls the vault's `create_upload_link` tool:
+
+```jsonc
+// request
+{
+  "origin_id": "draft-2026-05-15.pdf",
+  "destination": "projects/research/papers/draft.pdf",
+  "content_type": "application/pdf"
+}
+
+// response
+{
+  "url": "https://vault-mcp.example/uploads/8f3a9e2b...",
+  "expires_in_seconds": 3600,
+  "max_bytes": 10485760
+}
+```
+
+The agent then pushes the bytes with `curl`:
+
+```
+curl -X POST --data-binary @/tmp/draft.pdf \
+     -H "Content-Type: application/pdf" \
+     https://vault-mcp.example/uploads/8f3a9e2b...
+```
+
+The receiver responds `201 Created` with an optional JSON body (e.g., `{"saved_path": "projects/research/papers/draft.pdf"}`).
+
+**Worked example — MCP-mediated push:**
+
+A mover-server is asked to copy bytes from an internal `exchange://` URI into an external vault. The mover calls the vault's `create_upload_link` to obtain the URL, then calls its own `upload` tool to actually POST the bytes:
+
+```jsonc
+// step 1: vault.create_upload_link
+{
+  "origin_id": "moved-from-vault",
+  "destination": "incoming/2026-05-15/movement.bin"
+}
+// -> {"url": "https://vault-mcp.example/uploads/<token>", "expires_in_seconds": 3600, "max_bytes": 10485760}
+
+// step 2: mover.upload
+{
+  "url": "https://vault-mcp.example/uploads/<token>",
+  "source": {"exchange_uri": "exchange://hades-01/mover-mcp/moved-from-vault.bin"},
+  "content_type": "application/octet-stream"
+}
+// -> {"status": 201, "body": {"saved_path": "incoming/2026-05-15/movement.bin"}}
+```
+
 #### Method priority
 
 When multiple methods are available, the client SHOULD prefer them in this order:
