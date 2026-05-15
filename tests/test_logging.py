@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import logging
 
+import pytest
+
 from fastmcp_pvl_core import SecretMaskFilter, configure_logging_from_env
 
 
@@ -55,6 +57,59 @@ def test_unknown_level_falls_back_to_info(monkeypatch):
     monkeypatch.setenv("FASTMCP_LOG_LEVEL", "BOGUS")
     configure_logging_from_env(verbose=False)
     assert logging.getLogger().getEffectiveLevel() == logging.INFO
+
+
+_NOISY_LOGGER_NAMES = (
+    "uvicorn.access",
+    "mcp.server.lowlevel.server",
+    "uvicorn.error",
+)
+
+
+@pytest.fixture
+def _restore_noisy_levels():
+    """Save and restore the levels of every logger the demotion logic touches."""
+    saved = {name: logging.getLogger(name).level for name in _NOISY_LOGGER_NAMES}
+    yield
+    for name, level in saved.items():
+        logging.getLogger(name).setLevel(level)
+
+
+def test_noisy_loggers_demoted_to_warning_at_info(monkeypatch, _restore_noisy_levels):
+    monkeypatch.setenv("FASTMCP_LOG_LEVEL", "INFO")
+    configure_logging_from_env(verbose=False)
+    assert logging.getLogger("uvicorn.access").level == logging.WARNING
+    assert logging.getLogger("mcp.server.lowlevel.server").level == logging.WARNING
+
+
+def test_noisy_loggers_notset_at_debug(monkeypatch, _restore_noisy_levels):
+    monkeypatch.setenv("FASTMCP_LOG_LEVEL", "DEBUG")
+    configure_logging_from_env(verbose=False)
+    assert logging.getLogger("uvicorn.access").level == logging.NOTSET
+    assert logging.getLogger("mcp.server.lowlevel.server").level == logging.NOTSET
+
+
+def test_uvicorn_error_logger_untouched(monkeypatch, _restore_noisy_levels):
+    monkeypatch.setenv("FASTMCP_LOG_LEVEL", "INFO")
+    logging.getLogger("uvicorn.error").setLevel(logging.INFO)
+    configure_logging_from_env(verbose=False)
+    assert logging.getLogger("uvicorn.error").level == logging.INFO
+
+
+def test_demotion_idempotent_across_level_flips(monkeypatch, _restore_noisy_levels):
+    access = logging.getLogger("uvicorn.access")
+
+    monkeypatch.setenv("FASTMCP_LOG_LEVEL", "DEBUG")
+    configure_logging_from_env(verbose=False)
+    assert access.level == logging.NOTSET
+
+    monkeypatch.setenv("FASTMCP_LOG_LEVEL", "INFO")
+    configure_logging_from_env(verbose=False)
+    assert access.level == logging.WARNING
+
+    monkeypatch.setenv("FASTMCP_LOG_LEVEL", "DEBUG")
+    configure_logging_from_env(verbose=False)
+    assert access.level == logging.NOTSET
 
 
 class TestSecretMaskFilter:

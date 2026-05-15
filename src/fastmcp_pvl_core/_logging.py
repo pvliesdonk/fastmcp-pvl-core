@@ -18,6 +18,12 @@ from fastmcp.utilities.logging import configure_logging
 
 _VALID_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
 
+# Third-party transport / SDK loggers that emit non-conforming INFO-level
+# chatter — one or two lines per request. Demoted to WARNING unless the
+# operator opts into DEBUG. ``uvicorn.error`` is deliberately excluded: it
+# carries genuine bind / startup failures.
+_NOISY_THIRD_PARTY_LOGGERS = ("uvicorn.access", "mcp.server.lowlevel.server")
+
 
 def configure_logging_from_env(*, verbose: bool = False) -> None:
     """Configure logging globally based on environment and verbose flag.
@@ -35,6 +41,13 @@ def configure_logging_from_env(*, verbose: bool = False) -> None:
     to the resolved level and FastMCP's ``configure_logging`` is called
     so its loggers produce matching output.
 
+    Two noisy third-party loggers — ``uvicorn.access`` (the HTTP access
+    log) and ``mcp.server.lowlevel.server`` (the MCP SDK request line) —
+    are demoted to ``WARNING`` whenever the resolved level is above
+    ``DEBUG``, so their per-request chatter stays out of the default
+    ``INFO`` stream. At ``DEBUG`` they are reset to ``NOTSET`` and
+    reappear. ``uvicorn.error`` is never demoted.
+
     Args:
         verbose: If ``True``, force ``DEBUG`` (overrides
             ``FASTMCP_LOG_LEVEL``).
@@ -50,6 +63,10 @@ def configure_logging_from_env(*, verbose: bool = False) -> None:
     level = getattr(logging, level_name, logging.INFO)
     logging.getLogger().setLevel(level)
     configure_logging(level)
+
+    noisy_level = logging.NOTSET if level == logging.DEBUG else logging.WARNING
+    for name in _NOISY_THIRD_PARTY_LOGGERS:
+        logging.getLogger(name).setLevel(noisy_level)
 
 
 class SecretMaskFilter(logging.Filter):
