@@ -27,7 +27,7 @@ classification test that follows from it.
 `fastmcp-pvl-core` is not a buffet of helpers downstream picks from
 à la carte. It is the load-bearing layer that fixes the shape of
 cross-cutting concerns across the server family so the family stays
-coherent as it grows. Four principles follow from that role.
+coherent as it grows. Five principles follow from that role.
 
 ### Shape decisions live in pvl-core
 
@@ -98,6 +98,21 @@ This applies to *shape* divergence (the things owned by pvl-core).
 Domain-specific divergence between downstreams is expected and does
 not require any migration — downstreams are *supposed* to differ in
 domain logic.
+
+### Downstream reuses pvl-core; it does not reimplement the protocol
+
+Downstream servers reuse pvl-core's implementation of the shared
+cross-cutting protocols — file exchange, auth, logging, and the rest.
+They do not reimplement a wire protocol independently. The specs under
+`docs/specs/` are the wire authority; pvl-core is their single shared
+implementation. No implementation is "the reference" — not pvl-core's
+either; the spec is.
+
+If pvl-core's implementation is wrong, or diverges from a spec, the fix
+is to correct pvl-core centrally — one change, every downstream follows
+— or to evolve the spec. A downstream that believes pvl-core is wrong
+files the issue against pvl-core; it does not fork the behaviour and
+reimplement it locally.
 
 ## API stability
 

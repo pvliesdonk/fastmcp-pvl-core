@@ -867,8 +867,3 @@ The general rule above ("Across minor versions: may introduce new required field
 ### Mixed-OS exchange groups
 
 The spec assumes POSIX filesystem semantics. Mixed-OS exchange groups would require standardising path handling. Out of scope since Docker containers are Linux regardless of host OS.
-
-## Reference Implementations
-
-- **markdown-vault-mcp** ([pvliesdonk/markdown-vault-mcp](https://github.com/pvliesdonk/markdown-vault-mcp)): Consumer. Has `fetch` tool (accepts URL + path). Would add exchange resolution and declare `transfer_methods: {exchange: {}, http: {sink: {tool: "fetch"}}}`.
-- **image-mcp**: Producer. Has `create_download_link` tool with TTL. Would add exchange writes, file references in tool responses, and declare `transfer_methods: {exchange: {}, http: {source: {tool: "create_download_link"}}}`. The `create_download_link` tool would need to accept `origin_id` as a parameter.
