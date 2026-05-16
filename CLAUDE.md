@@ -21,7 +21,7 @@ concerns so the server family stays coherent as it grows.
 ## The framing principle
 
 Shape decisions live in pvl-core. Downstream contributes
-domain-specific logic only. Four facets in detail.
+domain-specific logic only. Five facets in detail.
 
 ### Shape decisions live in pvl-core
 
@@ -100,6 +100,23 @@ This applies to *shape* divergence (the things owned by pvl-core).
 Domain-specific divergence between downstreams is expected and does
 not require any migration — downstreams are supposed to differ in
 domain logic.
+
+### Downstream reuses pvl-core; it does not reimplement the protocol
+
+Downstream servers reuse pvl-core's implementation of the shared
+cross-cutting protocols (file exchange, auth, logging, ...). They do
+not reimplement a wire protocol independently. The `docs/specs/` spec
+is the wire authority; pvl-core is its single shared implementation.
+**No implementation is "the reference" — not even pvl-core's; the spec
+is.** A downstream is never a reference implementation entitled to
+declare its own behaviour authoritative.
+
+If pvl-core's implementation is wrong, or diverges from a `docs/specs/`
+spec, the resolution is to fix pvl-core centrally — one change, every
+downstream follows — or to evolve the spec. A downstream that believes
+pvl-core is wrong files against pvl-core; it does not fork the
+behaviour and reimplement. "pvl-core is wrong, so I'll do it myself" is
+the failure this principle exists to prevent.
 
 ## Practical consequences
 
