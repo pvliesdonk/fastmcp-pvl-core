@@ -2135,6 +2135,7 @@ def register_file_exchange_upload_sender(
 
 
 __all__ = [
+    "BufferedReceiver",
     "ByteSourceResolver",
     "ConsumerSink",
     "FetchContext",
@@ -2142,6 +2143,7 @@ __all__ = [
     "FileExchangeHandle",
     "PreLinkValidator",
     "ResolvedSource",
+    "StreamReceiver",
     "UploadHandle",
     "UploadSenderHandle",
     "register_file_exchange",

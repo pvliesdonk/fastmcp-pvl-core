@@ -5,6 +5,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [3.0.0] - UNRELEASED
 
+### Added
+
+- **Upload-direction type aliases are now exported from the package
+  root.** `BufferedReceiver`, `StreamReceiver`, and `PreLinkValidator`
+  are importable directly from `fastmcp_pvl_core`; receiver-author code
+  no longer needs to import them from private submodules. This brings
+  the upload-direction aliases in line with the already-exported
+  download-direction aliases (`ConsumerSink`, `FetchContext`,
+  `FetchResult`). (#67)
+
 ### Removed
 
 - **`register_file_exchange` no longer accepts the following kwargs.**
