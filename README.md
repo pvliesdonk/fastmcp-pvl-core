@@ -384,9 +384,9 @@ wire contract.
 
 Both helpers cooperate on the same `experimental.file_exchange`
 capability — registering both on one FastMCP instance advertises a
-single capability whose `transfer_methods` carries a separate `http`
-block (the download direction) and `http_upload` block (the upload
-direction), each using `source` / `sink` role sub-objects.
+single capability whose `transfer_methods` object carries a separate
+`http` block (the download direction) and `http_upload` block (the
+upload direction), each following the `source` / `sink` role pattern.
 
 ## License
 
