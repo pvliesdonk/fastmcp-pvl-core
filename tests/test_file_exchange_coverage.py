@@ -1,4 +1,8 @@
-"""Coverage-gap tests added in response to the PR #33 review.
+"""Coverage-gap tests for the file-exchange internals.
+
+Originally added in response to the PR #33 review; rewritten for the
+issue #105 hook-API unification (the four divergent hook shapes
+collapsed into a single ``source`` hook and a single ``sink`` hook).
 
 Specifically targets:
 
@@ -6,12 +10,14 @@ Specifically targets:
   via ``httpx.MockTransport``.
 - ``_ssrf_guard`` parametrised matrix (IPv6 loopback, link-local,
   RFC1918, multicast, plus a positive DNS-name pass-through).
-- ``_filename_from_disposition`` parsing variants.
 - Umask-resistant 0o644 / 0o755 file modes for ``.exchange-id``,
   namespace dirs, and exchange data files (cross-UID multi-container
   deployments).
-- ``_resolve_lazy`` edge cases (sync returning awaitable, non-bytes).
-- Expired-record path for ``create_download_link``.
+- ``_resolve_source`` / ``_invoke_sink`` sync-vs-async dispatch and
+  bad-return ``TypeError`` guards.
+- ``create_download_link`` translating a ``source``-hook ``ValueError``
+  into a ``transfer_failed`` envelope (folds in former issue #78), and
+  clamping ``ttl_seconds`` to the handle's configured ceiling.
 - Concurrent ``sweep`` + ``write_atomic`` race.
 - ``client_orchestration_required`` envelope when a file_ref offers
   only the ``http`` method.
@@ -19,31 +25,33 @@ Specifically targets:
 
 from __future__ import annotations
 
+import io
 import os
 import threading
-import time
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO
 
 import httpx
 import pytest
 from fastmcp import FastMCP
 
 from fastmcp_pvl_core import (
-    FetchContext,
-    FetchResult,
     FileExchange,
     FileExchangeHandle,
     FileRef,
+    ResolvedSource,
+    SinkContext,
     register_file_exchange,
     set_artifact_store,
 )
 from fastmcp_pvl_core._file_exchange_runtime import _resolve_exchange_id
 from fastmcp_pvl_core.file_exchange import (
     FetchTransportError,
-    _filename_from_disposition,
-    _resolve_lazy,
+    SinkHook,
+    SourceHook,
+    _invoke_sink,
+    _resolve_source,
     _ssrf_guard,
 )
 
@@ -66,38 +74,100 @@ def _clean_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
 
 
 # ---------------------------------------------------------------------------
-# _consume_http via httpx.MockTransport
+# Module-level hook helpers
 # ---------------------------------------------------------------------------
+#
+# The downstream surface is exactly two hooks. These factories build the
+# minimal sync/async variants the coverage suite exercises.
 
 
-async def _capture_sink(captured: dict[str, Any]) -> Any:
-    async def sink(data: bytes, ctx: FetchContext) -> FetchResult:
-        captured["data"] = data
-        captured["mime_type"] = ctx.mime_type
-        captured["suggested_filename"] = ctx.suggested_filename
-        return FetchResult(
-            stored_at="memory", bytes_written=len(data), extra={"ok": True}
+def _src(payload: bytes, content_type: str | None = None) -> SourceHook:
+    """Build a sync ``source`` hook that resolves any id to ``payload``."""
+
+    def source(origin_id: str) -> ResolvedSource:
+        return ResolvedSource(
+            stream=io.BytesIO(payload),
+            content_type=content_type,
+            size_bytes=len(payload),
         )
+
+    return source
+
+
+def _async_src(payload: bytes, content_type: str | None = None) -> SourceHook:
+    """Build an async ``source`` hook that resolves any id to ``payload``."""
+
+    async def source(origin_id: str) -> ResolvedSource:
+        return ResolvedSource(
+            stream=io.BytesIO(payload),
+            content_type=content_type,
+            size_bytes=len(payload),
+        )
+
+    return source
+
+
+def _rejecting_src(message: str = "unknown origin_id") -> SourceHook:
+    """Build a ``source`` hook that rejects every id with ``ValueError``."""
+
+    def source(origin_id: str) -> ResolvedSource:
+        raise ValueError(message)
+
+    return source
+
+
+def _sink(captured: dict[str, Any] | None = None) -> SinkHook:
+    """Build a sync ``sink`` hook that reads the stream and returns a dict."""
+
+    def sink(stream: BinaryIO, ctx: SinkContext) -> Mapping[str, Any]:
+        data = stream.read()
+        if captured is not None:
+            captured["data"] = data
+            captured["mime_type"] = ctx.mime_type
+            captured["origin_id"] = ctx.origin_id
+            captured["size_bytes"] = ctx.size_bytes
+        return {"stored_at": "memory", "bytes_written": len(data)}
 
     return sink
 
 
-def _new_consumer_mcp(monkeypatch: pytest.MonkeyPatch, sink: Any) -> Any:
+def _async_sink(captured: dict[str, Any] | None = None) -> SinkHook:
+    """Build an async ``sink`` hook that reads the stream and returns a dict."""
+
+    async def sink(stream: BinaryIO, ctx: SinkContext) -> Mapping[str, Any]:
+        data = stream.read()
+        if captured is not None:
+            captured["data"] = data
+            captured["mime_type"] = ctx.mime_type
+            captured["origin_id"] = ctx.origin_id
+            captured["size_bytes"] = ctx.size_bytes
+        return {"stored_at": "memory", "bytes_written": len(data)}
+
+    return sink
+
+
+# ---------------------------------------------------------------------------
+# _consume_http via httpx.MockTransport
+# ---------------------------------------------------------------------------
+
+
+def _new_consumer_mcp(monkeypatch: pytest.MonkeyPatch, sink: SinkHook) -> FastMCP:
     monkeypatch.setenv("TEST_FE_TRANSPORT", "http")
     mcp = FastMCP("test-fe")
     register_file_exchange(
         mcp,
         namespace="vault-mcp",
         env_prefix="TEST_FE",
-        consumer_sink=sink,
+        sink=sink,
     )
     return mcp
 
 
-async def _call_fetch(mcp: Any, **kwargs: Any) -> dict[str, Any]:
+async def _call_fetch(mcp: FastMCP, **kwargs: Any) -> dict[str, Any]:
     import json
 
     tool = await mcp.get_tool("fetch_file")
+    assert tool is not None
     result = await tool.run(kwargs)
     sc = getattr(result, "structured_content", None)
     if isinstance(sc, dict):
@@ -106,17 +176,23 @@ async def _call_fetch(mcp: Any, **kwargs: Any) -> dict[str, Any]:
     return json.loads(text_blocks[0]) if text_blocks else {}
 
 
+def _mock_http(
+    monkeypatch: pytest.MonkeyPatch,
+    handler: Any,
+) -> None:
+    """Patch ``httpx.AsyncClient`` so ``_consume_http`` uses a mock transport."""
+    original = httpx.AsyncClient
+
+    def mock_async_client(*args: Any, **kwargs: Any) -> httpx.AsyncClient:
+        kwargs["transport"] = httpx.MockTransport(handler)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", mock_async_client)
+
+
 class TestConsumeHTTP:
     async def test_happy_path(self, monkeypatch: pytest.MonkeyPatch) -> None:
         captured: dict[str, Any] = {}
-
-        async def sink(data: bytes, ctx: FetchContext) -> FetchResult:
-            captured["data"] = data
-            captured["mime_type"] = ctx.mime_type
-            captured["suggested_filename"] = ctx.suggested_filename
-            return FetchResult(
-                stored_at="vault://x", bytes_written=len(data), extra={"id": 7}
-            )
 
         def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(
@@ -128,42 +204,48 @@ class TestConsumeHTTP:
                 },
             )
 
-        # Patch httpx.AsyncClient at the module level so _consume_http
-        # uses the mock transport.
-        original = httpx.AsyncClient
-
-        def mock_async_client(*args: Any, **kwargs: Any) -> httpx.AsyncClient:
-            kwargs["transport"] = httpx.MockTransport(handler)
-            return original(*args, **kwargs)
-
-        monkeypatch.setattr(httpx, "AsyncClient", mock_async_client)
-        mcp = _new_consumer_mcp(monkeypatch, sink)
+        _mock_http(monkeypatch, handler)
+        mcp = _new_consumer_mcp(monkeypatch, _sink(captured))
 
         out = await _call_fetch(mcp, url="https://example.com/img.png")
         assert out["method"] == "http"
         assert out["bytes_written"] == 11
-        assert out["id"] == 7
+        assert out["stored_at"] == "memory"
         assert captured["data"] == b"hello-bytes"
+        # The Content-Type header flows into the SinkContext.
         assert captured["mime_type"] == "image/png"
-        assert captured["suggested_filename"] == "img.png"
+        # A bare-url fetch carries no origin_id.
+        assert captured["origin_id"] is None
+
+    async def test_async_sink_happy_path(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Same path as above but the sink hook is async — _invoke_sink
+        # must dispatch a coroutine function correctly.
+        captured: dict[str, Any] = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                content=b"async-bytes",
+                headers={"content-type": "image/webp"},
+            )
+
+        _mock_http(monkeypatch, handler)
+        mcp = _new_consumer_mcp(monkeypatch, _async_sink(captured))
+
+        out = await _call_fetch(mcp, url="https://example.com/img.webp")
+        assert out["method"] == "http"
+        assert out["bytes_written"] == 11
+        assert captured["data"] == b"async-bytes"
+        assert captured["mime_type"] == "image/webp"
 
     async def test_4xx_returns_transfer_failed(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        async def sink(data: bytes, ctx: FetchContext) -> FetchResult:
-            return FetchResult(bytes_written=len(data))
-
         def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(404, content=b"nope")
 
-        original = httpx.AsyncClient
-
-        def mock_async_client(*args: Any, **kwargs: Any) -> httpx.AsyncClient:
-            kwargs["transport"] = httpx.MockTransport(handler)
-            return original(*args, **kwargs)
-
-        monkeypatch.setattr(httpx, "AsyncClient", mock_async_client)
-        mcp = _new_consumer_mcp(monkeypatch, sink)
+        _mock_http(monkeypatch, handler)
+        mcp = _new_consumer_mcp(monkeypatch, _sink())
 
         out = await _call_fetch(mcp, url="https://example.com/missing")
         assert out["error"] == "transfer_failed"
@@ -178,20 +260,11 @@ class TestConsumeHTTP:
         # Shrink the cap so we don't have to fabricate 256 MiB.
         monkeypatch.setattr(fx_module, "_DEFAULT_HTTP_FETCH_MAX_BYTES", 100)
 
-        async def sink(data: bytes, ctx: FetchContext) -> FetchResult:
-            return FetchResult(bytes_written=len(data))
-
         def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(200, content=b"x" * 1000)
 
-        original = httpx.AsyncClient
-
-        def mock_async_client(*args: Any, **kwargs: Any) -> httpx.AsyncClient:
-            kwargs["transport"] = httpx.MockTransport(handler)
-            return original(*args, **kwargs)
-
-        monkeypatch.setattr(httpx, "AsyncClient", mock_async_client)
-        mcp = _new_consumer_mcp(monkeypatch, sink)
+        _mock_http(monkeypatch, handler)
+        mcp = _new_consumer_mcp(monkeypatch, _sink())
 
         out = await _call_fetch(mcp, url="https://example.com/big")
         assert out["error"] == "transfer_failed"
@@ -200,21 +273,22 @@ class TestConsumeHTTP:
     async def test_content_length_exceeds_cap_fails_fast(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # Round-8 fix: when the response advertises a Content-Length
-        # that already exceeds the cap, fail before streaming any
-        # bytes — saves bandwidth and surfaces the rejection earlier.
+        # When the response advertises a Content-Length that already
+        # exceeds the cap, fail before streaming any bytes — saves
+        # bandwidth and surfaces the rejection earlier. The sink must
+        # never be invoked.
         from fastmcp_pvl_core import file_exchange as fx_module
 
         monkeypatch.setattr(fx_module, "_DEFAULT_HTTP_FETCH_MAX_BYTES", 100)
         sink_called = False
 
-        async def sink(data: bytes, ctx: FetchContext) -> FetchResult:
+        def sink(stream: BinaryIO, ctx: SinkContext) -> Mapping[str, Any]:
             nonlocal sink_called
             sink_called = True
-            return FetchResult(bytes_written=len(data))
+            return {"bytes_written": len(stream.read())}
 
         def handler(request: httpx.Request) -> httpx.Response:
-            # Advertise a giant content-length but return short body so
+            # Advertise a giant content-length but return a short body so
             # the test fails fast on the header check, not the streaming
             # check (the streaming check would also reject this).
             return httpx.Response(
@@ -223,13 +297,7 @@ class TestConsumeHTTP:
                 headers={"content-length": "999999"},
             )
 
-        original = httpx.AsyncClient
-
-        def mock_async_client(*args: Any, **kwargs: Any) -> httpx.AsyncClient:
-            kwargs["transport"] = httpx.MockTransport(handler)
-            return original(*args, **kwargs)
-
-        monkeypatch.setattr(httpx, "AsyncClient", mock_async_client)
+        _mock_http(monkeypatch, handler)
         mcp = _new_consumer_mcp(monkeypatch, sink)
 
         out = await _call_fetch(mcp, url="https://example.com/big")
@@ -240,12 +308,8 @@ class TestConsumeHTTP:
     async def test_3xx_response_returns_transfer_failed(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # Round-7 fix: a 3xx response with follow_redirects=False must
-        # be treated as a failure, not silently consume the redirect
-        # body as file content.
-        async def sink(data: bytes, ctx: FetchContext) -> FetchResult:
-            return FetchResult(bytes_written=len(data))
-
+        # A 3xx response with follow_redirects=False must be treated as a
+        # failure, not silently consume the redirect body as file content.
         def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(
                 301,
@@ -253,24 +317,50 @@ class TestConsumeHTTP:
                 headers={"location": "https://elsewhere.example/x"},
             )
 
-        original = httpx.AsyncClient
-
-        def mock_async_client(*args: Any, **kwargs: Any) -> httpx.AsyncClient:
-            kwargs["transport"] = httpx.MockTransport(handler)
-            return original(*args, **kwargs)
-
-        monkeypatch.setattr(httpx, "AsyncClient", mock_async_client)
-        mcp = _new_consumer_mcp(monkeypatch, sink)
+        _mock_http(monkeypatch, handler)
+        mcp = _new_consumer_mcp(monkeypatch, _sink())
 
         out = await _call_fetch(mcp, url="https://example.com/redirect")
         assert out["error"] == "transfer_failed"
         assert out["method"] == "http"
         assert "redirect" in out["message"]
 
-    async def test_redirect_not_followed(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        async def sink(data: bytes, ctx: FetchContext) -> FetchResult:
-            return FetchResult(bytes_written=len(data))
+    async def test_body_above_spool_threshold_spills_to_disk(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # _consume_http streams the GET response into a
+        # SpooledTemporaryFile(max_size=_FETCH_SPOOL_MAX_BYTES). A body
+        # above that threshold exercises the on-disk spill path; the
+        # sink must still receive the exact bytes (full round-trip
+        # through the spilled spool).
+        from fastmcp_pvl_core import file_exchange as fx_module
 
+        # Shrink the spool threshold so a modest body spills to disk;
+        # keep the hard cap comfortably above the body so the size
+        # guard does not fire first.
+        monkeypatch.setattr(fx_module, "_FETCH_SPOOL_MAX_BYTES", 1024)
+        monkeypatch.setattr(fx_module, "_DEFAULT_HTTP_FETCH_MAX_BYTES", 1024 * 1024)
+
+        body = b"S" * (4 * 1024)  # 4 KiB — above the 1 KiB spool threshold
+        captured: dict[str, Any] = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                content=body,
+                headers={"content-type": "application/octet-stream"},
+            )
+
+        _mock_http(monkeypatch, handler)
+        mcp = _new_consumer_mcp(monkeypatch, _sink(captured))
+
+        out = await _call_fetch(mcp, url="https://example.com/big-but-ok")
+        assert out["method"] == "http"
+        assert out["bytes_written"] == len(body)
+        # Full round-trip through the spilled (on-disk) spool.
+        assert captured["data"] == body
+
+    async def test_redirect_not_followed(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # Redirect to an internal IP — if follow_redirects became True,
         # the SSRF guard wouldn't catch it (only the initial URL is
         # checked) and we'd get the redirected body.
@@ -282,14 +372,8 @@ class TestConsumeHTTP:
                 headers={"location": "http://127.0.0.1/redirected"},
             )
 
-        original = httpx.AsyncClient
-
-        def mock_async_client(*args: Any, **kwargs: Any) -> httpx.AsyncClient:
-            kwargs["transport"] = httpx.MockTransport(handler)
-            return original(*args, **kwargs)
-
-        monkeypatch.setattr(httpx, "AsyncClient", mock_async_client)
-        mcp = _new_consumer_mcp(monkeypatch, sink)
+        _mock_http(monkeypatch, handler)
+        mcp = _new_consumer_mcp(monkeypatch, _sink())
 
         out = await _call_fetch(mcp, url="https://example.com/redirect")
         # 302 with raise_for_status → http error → transfer_failed.
@@ -349,38 +433,6 @@ class TestSSRFGuard:
 
 
 # ---------------------------------------------------------------------------
-# _filename_from_disposition
-# ---------------------------------------------------------------------------
-
-
-class TestFilenameFromDisposition:
-    @pytest.mark.parametrize(
-        ("header", "expected"),
-        [
-            (None, None),
-            ("", None),
-            ("attachment", None),
-            ('attachment; filename="x.png"', "x.png"),
-            ("inline; filename=bare.txt", "bare.txt"),
-            ('attachment; foo=bar; filename="multi.bin"', "multi.bin"),
-            ('attachment; FILENAME="upper.png"', "upper.png"),  # case-insensitive
-            # Embedded semicolon inside quoted value — the old hand-rolled
-            # parser truncated this; the stdlib parser handles it.
-            ('attachment; filename="report;v1.csv"', "report;v1.csv"),
-            # RFC 5987 extended form with UTF-8 charset.
-            (
-                "attachment; filename*=UTF-8''hello%20world.txt",
-                "hello world.txt",
-            ),
-        ],
-    )
-    def test_parses_common_shapes(
-        self, header: str | None, expected: str | None
-    ) -> None:
-        assert _filename_from_disposition(header) == expected
-
-
-# ---------------------------------------------------------------------------
 # Umask-resistant file modes
 # ---------------------------------------------------------------------------
 
@@ -417,72 +469,278 @@ class TestUmaskResistance:
 
 
 # ---------------------------------------------------------------------------
-# _resolve_lazy edge cases
+# ResolvedSource — frozen-dataclass validation
 # ---------------------------------------------------------------------------
 
 
-class TestResolveLazyEdgeCases:
-    async def test_sync_returning_awaitable_is_awaited(self) -> None:
-        async def inner() -> bytes:
-            return b"awaited"
+class TestResolvedSource:
+    def test_negative_size_bytes_raises_value_error(self) -> None:
+        # __post_init__ rejects a negative size_bytes — a byte length
+        # can never be negative, so a negative value is a programmer bug
+        # caught at construction.
+        with pytest.raises(ValueError, match="non-negative"):
+            ResolvedSource(stream=io.BytesIO(b""), size_bytes=-1)
 
-        # Sync callable returning a coroutine — unusual but supported.
-        def lazy() -> Any:
+    def test_zero_size_bytes_is_allowed(self) -> None:
+        # Zero is a valid byte length (an empty file); only negative
+        # values are rejected.
+        resolved = ResolvedSource(stream=io.BytesIO(b""), size_bytes=0)
+        assert resolved.size_bytes == 0
+
+
+# ---------------------------------------------------------------------------
+# _resolve_source — sync / async dispatch and bad-return guard
+# ---------------------------------------------------------------------------
+
+
+class TestResolveSource:
+    async def test_sync_hook_resolved(self) -> None:
+        resolved = await _resolve_source(_src(b"sync-bytes", "text/plain"), "id-1")
+        assert isinstance(resolved, ResolvedSource)
+        assert resolved.stream.read() == b"sync-bytes"
+        assert resolved.content_type == "text/plain"
+
+    async def test_async_hook_resolved(self) -> None:
+        resolved = await _resolve_source(_async_src(b"async-bytes"), "id-1")
+        assert isinstance(resolved, ResolvedSource)
+        assert resolved.stream.read() == b"async-bytes"
+
+    async def test_sync_hook_returning_awaitable_is_awaited(self) -> None:
+        # A plain (non-coroutine) function that returns a coroutine —
+        # unusual but supported: _resolve_source awaits the result.
+        async def inner() -> ResolvedSource:
+            return ResolvedSource(stream=io.BytesIO(b"awaited"))
+
+        def hook(origin_id: str) -> Any:
             return inner()
 
-        out = await _resolve_lazy(lazy)
-        assert out == b"awaited"
+        resolved = await _resolve_source(hook, "id-1")
+        assert resolved.stream.read() == b"awaited"
 
-    async def test_sync_returning_non_bytes_raises_typeerror(self) -> None:
-        def lazy() -> Any:
-            return 42
+    async def test_non_resolvedsource_return_raises_typeerror(self) -> None:
+        def bad(origin_id: str) -> Any:
+            return b"raw bytes, not a ResolvedSource"
 
-        with pytest.raises(TypeError, match="must return bytes"):
-            await _resolve_lazy(lazy)
+        with pytest.raises(TypeError, match="must return a ResolvedSource"):
+            await _resolve_source(bad, "id-1")
 
-    async def test_async_returning_non_bytes_raises_typeerror(self) -> None:
-        async def lazy() -> Any:
-            return "not bytes"
-
-        with pytest.raises(TypeError, match="must return bytes"):
-            await _resolve_lazy(lazy)
+    async def test_value_error_propagates_unchanged(self) -> None:
+        # A source hook rejecting an id raises ValueError; _resolve_source
+        # lets it through untouched (callers translate to transfer_failed).
+        with pytest.raises(ValueError, match="bad id"):
+            await _resolve_source(_rejecting_src("bad id"), "id-1")
 
 
 # ---------------------------------------------------------------------------
-# create_download_link — expired-record path
+# _invoke_sink — sync / async dispatch and bad-return guard
 # ---------------------------------------------------------------------------
 
 
-class TestCreateDownloadLinkExpiry:
-    async def test_expired_origin_id_returns_transfer_failed(
+class TestInvokeSink:
+    def _ctx(self) -> SinkContext:
+        return SinkContext(
+            origin_id=None,
+            mime_type=None,
+            size_bytes=None,
+            file_ref=None,
+            params={},
+            handle=None,
+        )
+
+    async def test_sync_sink_invoked(self) -> None:
+        result = await _invoke_sink(_sink(), io.BytesIO(b"abc"), self._ctx())
+        assert result == {"stored_at": "memory", "bytes_written": 3}
+
+    async def test_async_sink_invoked(self) -> None:
+        result = await _invoke_sink(_async_sink(), io.BytesIO(b"abcd"), self._ctx())
+        assert result == {"stored_at": "memory", "bytes_written": 4}
+
+    async def test_sync_sink_returning_awaitable_is_awaited(self) -> None:
+        async def inner() -> Mapping[str, Any]:
+            return {"ok": True}
+
+        def hook(stream: BinaryIO, ctx: SinkContext) -> Any:
+            return inner()
+
+        result = await _invoke_sink(hook, io.BytesIO(b"x"), self._ctx())
+        assert result == {"ok": True}
+
+    async def test_non_mapping_return_raises_typeerror(self) -> None:
+        def bad(stream: BinaryIO, ctx: SinkContext) -> Any:
+            return "not a mapping"
+
+        with pytest.raises(TypeError, match="must return a mapping"):
+            await _invoke_sink(bad, io.BytesIO(b"x"), self._ctx())
+
+
+# ---------------------------------------------------------------------------
+# create_download_link — source-hook rejection and TTL clamping
+# ---------------------------------------------------------------------------
+
+
+def _new_producer_mcp(
+    monkeypatch: pytest.MonkeyPatch,
+    source: SourceHook,
+    *,
+    ttl_env: str | None = None,
+) -> FastMCP:
+    monkeypatch.setenv("TEST_FE_BASE_URL", "http://test.example")
+    monkeypatch.setenv("TEST_FE_TRANSPORT", "http")
+    if ttl_env is not None:
+        monkeypatch.setenv("TEST_FE_FILE_EXCHANGE_TTL", ttl_env)
+    mcp = FastMCP("test-fe")
+    register_file_exchange(
+        mcp,
+        namespace="image-mcp",
+        env_prefix="TEST_FE",
+        produces=("image/png",),
+        source=source,
+    )
+    return mcp
+
+
+async def _call_download_link(mcp: FastMCP, **kwargs: Any) -> dict[str, Any]:
+    import json
+
+    tool = await mcp.get_tool("create_download_link")
+    assert tool is not None
+    result = await tool.run(kwargs)
+    sc = getattr(result, "structured_content", None)
+    if isinstance(sc, dict):
+        return sc
+    text_blocks = [b.text for b in result.content if hasattr(b, "text")]
+    return json.loads(text_blocks[0]) if text_blocks else {}
+
+
+class TestCreateDownloadLink:
+    async def test_source_hook_value_error_returns_transfer_failed(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        # The source hook rejecting an id (unknown / expired / not
+        # permitted) surfaces as a structured transfer_failed envelope —
+        # this folds in the former "unknown/expired id" path (issue #78).
+        mcp = _new_producer_mcp(monkeypatch, _rejecting_src("no such image"))
+
+        out = await _call_download_link(mcp, origin_id="abc")
+        assert out["error"] == "transfer_failed"
+        assert out["method"] == "http"
+        assert out["origin_server"] == "image-mcp"
+        assert out["origin_id"] == "abc"
+        assert "no such image" in out["message"]
+
+    async def test_non_value_error_from_source_hook_reraised(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A non-ValueError from the source hook is a server-side bug, not
+        # a caller error — it is logged and re-raised, not swallowed.
+        def boom(origin_id: str) -> ResolvedSource:
+            raise RuntimeError("source hook crashed")
+
+        mcp = _new_producer_mcp(monkeypatch, boom)
+        tool = await mcp.get_tool("create_download_link")
+        assert tool is not None
+        with pytest.raises(RuntimeError, match="source hook crashed"):
+            await tool.run({"origin_id": "abc"})
+
+    async def test_sync_source_hook_mints_url(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        mcp = _new_producer_mcp(monkeypatch, _src(b"PNG", "image/png"))
+        out = await _call_download_link(mcp, origin_id="abc")
+        assert out["url"].startswith("http://test.example/artifacts/")
+        assert out["mime_type"] == "image/png"
+
+    async def test_async_source_hook_mints_url(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The sync-vs-async dimension now lives in the source hook;
+        # an async hook drives create_download_link just as a sync one does.
+        mcp = _new_producer_mcp(monkeypatch, _async_src(b"PNG", "image/png"))
+        out = await _call_download_link(mcp, origin_id="abc")
+        assert out["url"].startswith("http://test.example/artifacts/")
+        assert out["mime_type"] == "image/png"
+
+    async def test_ttl_clamped_to_handle_ceiling(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The download-URL TTL is clamped to the server's configured
+        # maximum — a caller can never request a longer-lived URL than
+        # the server is willing to retain. (Replaces the old publish-side
+        # TTL-expiry test: pvl-core no longer holds producer bytes.)
+        mcp = _new_producer_mcp(monkeypatch, _src(b"PNG", "image/png"), ttl_env="600")
+        out = await _call_download_link(mcp, origin_id="abc", ttl_seconds=99999.0)
+        assert out["ttl_seconds"] == 600.0
+
+    async def test_ttl_default_used_when_unset(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        mcp = _new_producer_mcp(monkeypatch, _src(b"PNG", "image/png"), ttl_env="600")
+        out = await _call_download_link(mcp, origin_id="abc")
+        assert out["ttl_seconds"] == 600.0
+
+    async def test_invalid_origin_id_returns_transfer_failed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        mcp = _new_producer_mcp(monkeypatch, _src(b"PNG", "image/png"))
+        out = await _call_download_link(mcp, origin_id="../escape")
+        assert out["error"] == "transfer_failed"
+        assert out["method"] == "http"
+        assert "validation" in out["message"]
+
+
+# ---------------------------------------------------------------------------
+# make_file_ref — http-only producer path
+# ---------------------------------------------------------------------------
+
+
+class TestMakeFileRef:
+    async def test_http_only_builds_ref_without_invoking_source(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # http-only (no MCP_EXCHANGE_DIR): make_file_ref just builds the
+        # ref naming the download tool; the source hook is NOT invoked
+        # until a client calls create_download_link.
+        invoked = False
+
+        def source(origin_id: str) -> ResolvedSource:
+            nonlocal invoked
+            invoked = True
+            return ResolvedSource(stream=io.BytesIO(b"x"))
+
         monkeypatch.setenv("TEST_FE_BASE_URL", "http://test.example")
         monkeypatch.setenv("TEST_FE_TRANSPORT", "http")
         mcp = FastMCP("test-fe")
-        h = register_file_exchange(
+        handle = register_file_exchange(
             mcp,
             namespace="image-mcp",
             env_prefix="TEST_FE",
             produces=("image/png",),
+            source=source,
         )
-        await h.publish(source=b"x", mime_type="image/png", origin_id="abc")
-        # Backdate the publish-side expiry.
-        h.publish_registry["abc"].expires_at = time.time() - 60
+        ref = await handle.make_file_ref("my-id", mime_type="image/png")
+        assert ref.origin_server == "image-mcp"
+        assert ref.origin_id == "my-id"
+        assert ref.transfer["http"]["tool"] == "create_download_link"
+        assert "exchange" not in ref.transfer
+        assert invoked is False
 
-        import json
+    async def test_make_file_ref_rejects_dotted_origin_id(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from fastmcp_pvl_core._file_exchange_protocol import ExchangeURIError
 
-        tool = await mcp.get_tool("create_download_link")
-        result = await tool.run({"origin_id": "abc"})
-        sc = getattr(result, "structured_content", None)
-        out = (
-            sc
-            if isinstance(sc, dict)
-            else json.loads(next(b.text for b in result.content if hasattr(b, "text")))
+        monkeypatch.setenv("TEST_FE_BASE_URL", "http://test.example")
+        monkeypatch.setenv("TEST_FE_TRANSPORT", "http")
+        mcp = FastMCP("test-fe")
+        handle = register_file_exchange(
+            mcp,
+            namespace="image-mcp",
+            env_prefix="TEST_FE",
+            produces=("image/png",),
+            source=_src(b"x", "image/png"),
         )
-        assert out["error"] == "transfer_failed"
-        assert out["method"] == "http"
-        assert "abc" not in h.publish_registry  # swept out
+        with pytest.raises(ExchangeURIError, match="dot"):
+            await handle.make_file_ref(".hidden", mime_type="image/png")
 
 
 # ---------------------------------------------------------------------------
@@ -544,14 +802,14 @@ class TestConcurrentSweepAndWrite:
 
 
 # ---------------------------------------------------------------------------
-# client_orchestration_required envelope
+# read_exchange_uri size cap
 # ---------------------------------------------------------------------------
 
 
 class TestSizeCap:
-    """Round-5 finding: ``read_exchange_uri`` needs a size cap to match
-    the http path's 256 MiB guard, otherwise a malicious or accidental
-    large file in the exchange volume could OOM the consumer process.
+    """``read_exchange_uri`` needs a size cap to match the http path's
+    256 MiB guard, otherwise a malicious or accidental large file in the
+    exchange volume could OOM the consumer process.
     """
 
     def test_read_exchange_uri_rejects_oversize_file(self, tmp_path: Path) -> None:
@@ -571,8 +829,8 @@ class TestSizeCap:
 
 
 class TestStreamingWriteAtomic:
-    """Round-9 fix: ``write_atomic(content=Path)`` stream-copies in
-    64 KiB chunks instead of requiring the whole file in memory.
+    """``write_atomic(content=Path)`` stream-copies in 64 KiB chunks
+    instead of requiring the whole file in memory.
     """
 
     def test_path_source_writes_correct_bytes(self, tmp_path: Path) -> None:
@@ -612,10 +870,10 @@ class TestStreamingWriteAtomic:
 
 
 class TestHTTPClientReuse:
-    """Round-9 fix: ``FileExchangeHandle._get_http_client`` lazy-creates
-    a single ``httpx.AsyncClient`` and reuses it across fetch calls so
-    repeated transfers to the same producer host enjoy connection
-    pooling and TLS-session resumption.
+    """``FileExchangeHandle._get_http_client`` lazy-creates a single
+    ``httpx.AsyncClient`` and reuses it across fetch calls so repeated
+    transfers to the same producer host enjoy connection pooling and
+    TLS-session resumption.
     """
 
     async def test_client_is_lazy_and_reused(self) -> None:
@@ -657,156 +915,9 @@ class TestHTTPClientReuse:
         await h.aclose()
 
 
-class TestPathDeletedAfterPublish:
-    """Round-8 fix: ``create_download_link`` should return a structured
-    ``transfer_failed`` envelope when the published Path has been
-    deleted from disk between publish and the download-link request,
-    instead of crashing the tool with a raw FileNotFoundError.
-    """
-
-    async def test_eager_path_deleted_returns_transfer_failed(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
-        import json
-
-        monkeypatch.setenv("TEST_FE_BASE_URL", "http://test.example")
-        monkeypatch.setenv("TEST_FE_TRANSPORT", "http")
-        mcp = FastMCP("test-fe")
-        h = register_file_exchange(
-            mcp,
-            namespace="image-mcp",
-            env_prefix="TEST_FE",
-            produces=("image/png",),
-        )
-        f = tmp_path / "img.png"
-        f.write_bytes(b"PNG-bytes")
-        await h.publish(source=f, mime_type="image/png", origin_id="abc")
-        # Producer's file gets deleted (moved, garbage-collected, etc.)
-        # between publish and the download-link request.
-        f.unlink()
-
-        tool = await mcp.get_tool("create_download_link")
-        result = await tool.run({"origin_id": "abc"})
-        sc = getattr(result, "structured_content", None)
-        out = (
-            sc
-            if isinstance(sc, dict)
-            else json.loads(next(b.text for b in result.content if hasattr(b, "text")))
-        )
-        assert out["error"] == "transfer_failed"
-        assert out["method"] == "http"
-        assert "no longer exists" in out["message"]
-
-
-class TestExpiredRecordThrottleRegression:
-    """Round-6 finding: the round-5 throttle made
-    ``expire_publish_registry`` skip its sweep within 30 s of the last
-    one, which meant an expired record could still be looked up and
-    served. The fix is an O(1) per-record TTL check after the
-    registry lookup; this test locks it in.
-    """
-
-    async def test_expired_record_refused_inside_throttle_window(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        import json
-
-        monkeypatch.setenv("TEST_FE_BASE_URL", "http://test.example")
-        monkeypatch.setenv("TEST_FE_TRANSPORT", "http")
-        mcp = FastMCP("test-fe")
-        h = register_file_exchange(
-            mcp,
-            namespace="image-mcp",
-            env_prefix="TEST_FE",
-            produces=("image/png",),
-        )
-        await h.publish(source=b"x", mime_type="image/png", origin_id="abc")
-        # Set _last_expiry_sweep to "just now" so the throttle skips the
-        # bulk sweep, then backdate the record's individual expires_at.
-        h._last_expiry_sweep = time.time()
-        h.publish_registry["abc"].expires_at = time.time() - 60
-
-        tool = await mcp.get_tool("create_download_link")
-        result = await tool.run({"origin_id": "abc"})
-        sc = getattr(result, "structured_content", None)
-        out = (
-            sc
-            if isinstance(sc, dict)
-            else json.loads(next(b.text for b in result.content if hasattr(b, "text")))
-        )
-        assert out["error"] == "transfer_failed"
-        assert out["method"] == "http"
-        assert "expired" in out["message"]
-
-
-class TestExpiryThrottle:
-    """Round-5 finding: ``expire_publish_registry`` runs on every
-    create_download_link call; throttle to once per N seconds so the
-    O(N) scan doesn't bottleneck high-throughput producers.
-    """
-
-    def test_throttle_skips_recent_sweeps(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        from fastmcp_pvl_core.file_exchange import _PublishRecord
-
-        h = FileExchangeHandle(
-            namespace="x",
-            enabled=True,
-            produce=True,
-            consume=False,
-            artifact_store=None,
-            exchange=None,
-            capability=None,
-        )
-        # Insert an already-expired record.
-        h.publish_registry["a"] = _PublishRecord(
-            mime_type="text/plain",
-            ext="txt",
-            filename="a.txt",
-            eager_bytes=b"x",
-            expires_at=time.time() - 60,
-        )
-        # First call sweeps (last_sweep is 0 → far past the threshold).
-        assert h.expire_publish_registry() == 1
-        # Re-insert and call again immediately — the throttle skips it.
-        h.publish_registry["b"] = _PublishRecord(
-            mime_type="text/plain",
-            ext="txt",
-            filename="b.txt",
-            eager_bytes=b"x",
-            expires_at=time.time() - 60,
-        )
-        assert h.expire_publish_registry() == 0
-        assert "b" in h.publish_registry  # not swept
-
-    def test_force_bypasses_throttle(self) -> None:
-        from fastmcp_pvl_core.file_exchange import _PublishRecord
-
-        h = FileExchangeHandle(
-            namespace="x",
-            enabled=True,
-            produce=True,
-            consume=False,
-            artifact_store=None,
-            exchange=None,
-            capability=None,
-        )
-        h._last_expiry_sweep = time.time()  # very recent → throttled
-        h.publish_registry["a"] = _PublishRecord(
-            mime_type="text/plain",
-            ext="txt",
-            filename="a.txt",
-            eager_bytes=b"x",
-            expires_at=time.time() - 60,
-        )
-        assert h.expire_publish_registry(force=True) == 1
-
-
 class TestDefensiveErrorPaths:
-    """Locks in the round-3 / round-4 try/except guards that absorb rare
-    OSErrors instead of crashing the caller (background sweepers,
-    producer tool handlers).
+    """Locks in the try/except guards that absorb rare OSErrors instead
+    of crashing the caller (background sweepers, producer tool handlers).
     """
 
     def test_sweep_iterdir_oserror_returns_zero(
@@ -870,10 +981,7 @@ class TestClientOrchestrationRequired:
     async def test_file_ref_with_only_http_returns_orchestration_envelope(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        async def sink(data: bytes, ctx: FetchContext) -> FetchResult:
-            return FetchResult(bytes_written=len(data))
-
-        mcp = _new_consumer_mcp(monkeypatch, sink)
+        mcp = _new_consumer_mcp(monkeypatch, _sink())
 
         ref = FileRef(
             origin_server="image-mcp",
@@ -889,10 +997,7 @@ class TestClientOrchestrationRequired:
     async def test_file_ref_with_no_dispatchable_methods(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        async def sink(data: bytes, ctx: FetchContext) -> FetchResult:
-            return FetchResult(bytes_written=len(data))
-
-        mcp = _new_consumer_mcp(monkeypatch, sink)
+        mcp = _new_consumer_mcp(monkeypatch, _sink())
 
         # Future-method only — consumer can't attempt or orchestrate it.
         ref = FileRef(

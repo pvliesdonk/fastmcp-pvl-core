@@ -362,17 +362,24 @@ so it is safe to ship in default scaffolds.
 
 Servers that produce or consume binary artefacts (PDFs, images,
 documents) wire the MCP File Exchange spec with a single call. The
-download direction registers a `create_download_link` tool and the
-artifact HTTP route:
+whole downstream surface is two domain hooks: a `source`
+(`origin_id -> ResolvedSource`) and a `sink` (`file-like -> domain
+result`). The download direction registers a `create_download_link`
+tool and the artifact HTTP route when a `source` hook is supplied:
 
 ```python
-from fastmcp_pvl_core import register_file_exchange
+from fastmcp_pvl_core import register_file_exchange, ResolvedSource
+
+def _resolve(origin_id: str) -> ResolvedSource:
+    # Your domain turns an opaque id into a readable byte stream.
+    return ResolvedSource(stream=open(_path_for(origin_id), "rb"))
 
 handle = register_file_exchange(
     mcp,
     namespace="vault",
     env_prefix="MARKDOWN_VAULT_MCP",
     produces=["text/markdown"],
+    source=_resolve,
 )
 ```
 
@@ -386,13 +393,13 @@ register_file_exchange_upload(
     mcp,
     namespace="vault",
     env_prefix="MARKDOWN_VAULT_MCP",
-    receiver=_my_upload_receiver,
+    sink=_my_upload_sink,
     pre_link_validator=_validate_target_path,
 )
 ```
 
 This mints one-time `POST` URLs via a `create_upload_link` tool and
-dispatches the bytes to your receiver. See the File Exchange spec's
+hands the received bytes to your `sink`. See the File Exchange spec's
 §"Transfer Methods → `http_upload`" at
 [`docs/specs/file-exchange.md`](docs/specs/file-exchange.md) for the
 wire contract.
