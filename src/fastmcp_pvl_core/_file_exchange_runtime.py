@@ -17,6 +17,7 @@ Lifecycle constraints from the spec:
 
 from __future__ import annotations
 
+import asyncio
 import errno
 import logging
 import os
@@ -756,7 +757,10 @@ def register_upload_route(
         )
         try:
             async for chunk in _bounded_chunks():
-                spool.write(chunk)
+                # spool.write is a blocking disk write once the spool
+                # spills past its in-memory threshold — keep it off the
+                # event loop.
+                await asyncio.to_thread(spool.write, chunk)
             spool.seek(0)
             result = await sink(record, cast("BinaryIO", spool))
         except _UploadOversizeError:

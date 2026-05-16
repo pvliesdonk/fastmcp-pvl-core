@@ -1244,7 +1244,10 @@ async def _consume_http(
                     raise FetchTransportError(
                         f"response exceeds {_DEFAULT_HTTP_FETCH_MAX_BYTES} bytes"
                     )
-                spool.write(chunk)
+                # spool.write is a blocking disk write once the spool
+                # spills past its in-memory threshold — keep it off the
+                # event loop.
+                await asyncio.to_thread(spool.write, chunk)
             content_type = resp.headers.get("content-type")
         spool.seek(0)
     except httpx.HTTPError as exc:
