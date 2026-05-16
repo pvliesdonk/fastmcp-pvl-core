@@ -325,6 +325,41 @@ class TestConsumeHTTP:
         assert out["method"] == "http"
         assert "redirect" in out["message"]
 
+    async def test_body_above_spool_threshold_spills_to_disk(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # _consume_http streams the GET response into a
+        # SpooledTemporaryFile(max_size=_FETCH_SPOOL_MAX_BYTES). A body
+        # above that threshold exercises the on-disk spill path; the
+        # sink must still receive the exact bytes (full round-trip
+        # through the spilled spool).
+        from fastmcp_pvl_core import file_exchange as fx_module
+
+        # Shrink the spool threshold so a modest body spills to disk;
+        # keep the hard cap comfortably above the body so the size
+        # guard does not fire first.
+        monkeypatch.setattr(fx_module, "_FETCH_SPOOL_MAX_BYTES", 1024)
+        monkeypatch.setattr(fx_module, "_DEFAULT_HTTP_FETCH_MAX_BYTES", 1024 * 1024)
+
+        body = b"S" * (4 * 1024)  # 4 KiB — above the 1 KiB spool threshold
+        captured: dict[str, Any] = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                content=body,
+                headers={"content-type": "application/octet-stream"},
+            )
+
+        _mock_http(monkeypatch, handler)
+        mcp = _new_consumer_mcp(monkeypatch, _sink(captured))
+
+        out = await _call_fetch(mcp, url="https://example.com/big-but-ok")
+        assert out["method"] == "http"
+        assert out["bytes_written"] == len(body)
+        # Full round-trip through the spilled (on-disk) spool.
+        assert captured["data"] == body
+
     async def test_redirect_not_followed(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # Redirect to an internal IP — if follow_redirects became True,
         # the SSRF guard wouldn't catch it (only the initial URL is
@@ -431,6 +466,26 @@ class TestUmaskResistance:
         file_st = (tmp_path / "image-mcp" / "abc.png").stat()
         assert (ns_st.st_mode & 0o777) == 0o755
         assert (file_st.st_mode & 0o777) == 0o644
+
+
+# ---------------------------------------------------------------------------
+# ResolvedSource — frozen-dataclass validation
+# ---------------------------------------------------------------------------
+
+
+class TestResolvedSource:
+    def test_negative_size_bytes_raises_value_error(self) -> None:
+        # __post_init__ rejects a negative size_bytes — a byte length
+        # can never be negative, so a negative value is a programmer bug
+        # caught at construction.
+        with pytest.raises(ValueError, match="non-negative"):
+            ResolvedSource(stream=io.BytesIO(b""), size_bytes=-1)
+
+    def test_zero_size_bytes_is_allowed(self) -> None:
+        # Zero is a valid byte length (an empty file); only negative
+        # values are rejected.
+        resolved = ResolvedSource(stream=io.BytesIO(b""), size_bytes=0)
+        assert resolved.size_bytes == 0
 
 
 # ---------------------------------------------------------------------------

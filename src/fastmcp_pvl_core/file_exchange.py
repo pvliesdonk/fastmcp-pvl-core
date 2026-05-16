@@ -279,6 +279,12 @@ class ResolvedSource:
 # will move (write to the exchange volume, serve as an ``http`` download,
 # or POST as an ``http_upload``). Raising ``ValueError`` rejects a
 # caller-supplied id — surfaced as a ``transfer_failed`` envelope.
+#
+# Stream ownership: pvl-core owns ``ResolvedSource.stream`` and closes it
+# only once the hook has *successfully returned* a ``ResolvedSource``. A
+# hook that opens a stream and then raises (or whose post-open work
+# raises) must close that stream itself — pvl-core never received it and
+# cannot.
 SourceHook = Callable[[str], "ResolvedSource | Awaitable[ResolvedSource]"]
 
 
@@ -355,9 +361,7 @@ async def _invoke_sink(
         if inspect.isawaitable(result):
             result = await result
     if not isinstance(result, Mapping):
-        raise TypeError(
-            f"sink hook must return a mapping, got {type(result).__name__}"
-        )
+        raise TypeError(f"sink hook must return a mapping, got {type(result).__name__}")
     return result
 
 
@@ -371,7 +375,7 @@ class FileExchangeHandle:
     """The downstream-facing surface returned by :func:`register_file_exchange`.
 
     Stash this on ``mcp.state`` (or in a module-level singleton) so
-    your producer-side tool bodies can call :meth:`publish`.
+    your producer-side tool bodies can call :meth:`make_file_ref`.
     """
 
     namespace: str
@@ -1678,9 +1682,7 @@ def register_file_exchange_upload(
     # follow-up issue #65 for the architectural fix.
     set_upload_store(store)
 
-    async def _route_sink(
-        record: UploadRecord, stream: BinaryIO
-    ) -> Mapping[str, Any]:
+    async def _route_sink(record: UploadRecord, stream: BinaryIO) -> Mapping[str, Any]:
         """Adapt the public ``sink`` hook to the upload route's shape."""
         params: dict[str, Any] = {}
         if record.destination is not None:

@@ -398,6 +398,34 @@ class TestMakeFileRef:
         assert uri.startswith("exchange://")
         assert ref.size_bytes == len(b"rendered")
 
+    async def test_dual_transport_ref_carries_both_keys(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """With both the exchange volume AND a BASE_URL, the ref is dual-transport.
+
+        ``MCP_EXCHANGE_DIR`` enables the ``exchange`` method and
+        ``{PREFIX}_BASE_URL`` enables the ``http`` method; a producing
+        ``make_file_ref`` then mints a ref whose ``transfer`` dict
+        carries *both* keys so a consumer can pick either path.
+        """
+        monkeypatch.setenv("MCP_EXCHANGE_DIR", str(tmp_path))
+        monkeypatch.setenv("TEST_FE_BASE_URL", "http://test.example")
+        monkeypatch.setenv("TEST_FE_TRANSPORT", "http")
+        mcp = _new_mcp()
+        h = register_file_exchange(
+            mcp,
+            namespace="image-mcp",
+            env_prefix="TEST_FE",
+            produces=("image/png",),
+            source=_src(b"rendered"),
+        )
+        ref = await h.make_file_ref("abc", mime_type="image/png")
+        assert set(ref.transfer) == {"exchange", "http"}
+        assert ref.transfer["http"]["tool"] == "create_download_link"
+        assert ref.transfer["exchange"]["uri"].startswith("exchange://")
+
     async def test_disabled_handle_raises(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

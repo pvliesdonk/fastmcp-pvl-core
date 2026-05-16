@@ -6,6 +6,7 @@ import logging
 from collections.abc import Mapping
 from typing import Any, BinaryIO
 
+import httpx
 import pytest
 from fastmcp import FastMCP
 
@@ -620,6 +621,128 @@ def test_negative_upload_ttl_max_raises_configuration_error(
             env_prefix="TEST_UPLOAD",
             sink=_sink,
         )
+
+
+# ---------------------------------------------------------------------------
+# Real upload POST through the facade — exercises the _route_sink adapter
+# ---------------------------------------------------------------------------
+
+
+async def _post_upload(
+    mcp: FastMCP,
+    url: str,
+    body: bytes,
+    *,
+    content_type: str = "application/octet-stream",
+) -> httpx.Response:
+    """POST ``body`` to a facade-minted upload ``url`` via the ASGI transport.
+
+    ``create_upload_link`` returns an absolute URL
+    (``http://srv.test/<ns>/uploads/<token>``); the route is mounted on
+    ``mcp.http_app()``, so the path component is what the ASGI client posts to.
+    """
+    path = url.split("srv.test", 1)[1]
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=mcp.http_app()),
+        base_url="http://test",
+    ) as client:
+        return await client.post(
+            path,
+            content=body,
+            headers={"Content-Type": content_type},
+        )
+
+
+@pytest.mark.asyncio
+async def test_upload_post_propagates_sink_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A real upload POST hands the ``sink`` a fully populated ``SinkContext``.
+
+    The ``_route_sink`` adapter maps the upload record onto a
+    :class:`SinkContext`: ``origin_id`` = the record's origin_id,
+    ``mime_type`` = the record's content_type, and ``params["destination"]``
+    = the ``destination`` the ``create_upload_link`` caller passed.
+    """
+    monkeypatch.setenv("TEST_UPLOAD_TRANSPORT", "http")
+    monkeypatch.setenv("TEST_UPLOAD_BASE_URL", "http://srv.test")
+
+    captured: dict[str, Any] = {}
+
+    async def capturing_sink(stream: BinaryIO, ctx: SinkContext) -> Mapping[str, Any]:
+        data = stream.read()
+        captured["origin_id"] = ctx.origin_id
+        captured["mime_type"] = ctx.mime_type
+        captured["destination"] = ctx.params.get("destination")
+        return {"stored": True, "bytes": len(data)}
+
+    mcp = FastMCP(name="test")
+    register_file_exchange_upload(
+        mcp,
+        namespace="ns",
+        env_prefix="TEST_UPLOAD",
+        sink=capturing_sink,
+    )
+    tool = await mcp.get_tool("create_upload_link")
+    assert tool is not None
+    result = await tool.run(
+        {
+            "origin_id": "doc.md",
+            "destination": "vault/notes",
+            "content_type": "text/markdown",
+        }
+    )
+    payload = result.structured_content or {}
+
+    resp = await _post_upload(
+        mcp, payload["url"], b"hello", content_type="text/markdown"
+    )
+    assert resp.status_code == 200
+    assert resp.json() == {"stored": True, "bytes": 5}
+    # SinkContext carries the record's origin_id, content_type, and destination.
+    assert captured["origin_id"] == "doc.md"
+    assert captured["mime_type"] == "text/markdown"
+    assert captured["destination"] == "vault/notes"
+
+
+@pytest.mark.asyncio
+async def test_upload_post_with_sync_sink_works_end_to_end(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A plain (sync ``def``) ``sink`` works through the upload POST path.
+
+    The public ``sink`` hook is documented as sync-or-async; the
+    ``_route_sink`` adapter (via ``_invoke_sink``) wraps a sync sink so
+    a real upload POST drives it end-to-end.
+    """
+    monkeypatch.setenv("TEST_UPLOAD_TRANSPORT", "http")
+    monkeypatch.setenv("TEST_UPLOAD_BASE_URL", "http://srv.test")
+
+    captured: dict[str, Any] = {}
+
+    def sync_sink(stream: BinaryIO, ctx: SinkContext) -> Mapping[str, Any]:
+        data = stream.read()
+        captured["origin_id"] = ctx.origin_id
+        captured["data"] = data
+        return {"stored": True, "bytes": len(data)}
+
+    mcp = FastMCP(name="test")
+    register_file_exchange_upload(
+        mcp,
+        namespace="ns",
+        env_prefix="TEST_UPLOAD",
+        sink=sync_sink,
+    )
+    tool = await mcp.get_tool("create_upload_link")
+    assert tool is not None
+    result = await tool.run({"origin_id": "x.bin"})
+    payload = result.structured_content or {}
+
+    resp = await _post_upload(mcp, payload["url"], b"sync-bytes")
+    assert resp.status_code == 200
+    assert resp.json() == {"stored": True, "bytes": 10}
+    assert captured["origin_id"] == "x.bin"
+    assert captured["data"] == b"sync-bytes"
 
 
 @pytest.mark.asyncio

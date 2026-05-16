@@ -595,13 +595,14 @@ class _UploadOversizeError(BaseException):  # noqa: N818  -- internal sentinel
 
     Raised by the bounded chunk generator when the request body exceeds
     ``record.max_bytes`` mid-stream. Caught inside the upload handler and
-    translated to a ``413`` response. Not part of the receiver contract —
+    translated to a ``413`` response. Not part of the sink contract —
     never propagates to user code.
 
-    Derives from :class:`BaseException` (not :class:`Exception`) so a
-    stream receiver wrapping ``async for chunk in body`` in a broad
-    ``except Exception`` cannot accidentally swallow it and complete on
-    a truncated body. The handler catches it explicitly via
+    Derives from :class:`BaseException` (not :class:`Exception`) so the
+    handler's broad ``except Exception`` (which maps a sink failure to a
+    ``500``) cannot accidentally swallow the oversize abort raised while
+    spooling the body and complete on a truncated upload. The handler
+    catches it explicitly via
     ``except _UploadOversizeError``; ``BaseException`` subclasses remain
     catchable by name. Same pattern Python uses for
     :class:`asyncio.CancelledError` (Python 3.8+).
@@ -727,12 +728,11 @@ def register_upload_route(
                 )
                 return Response(content="Payload Too Large", status_code=413)
 
-        # Defense in depth — the client may lie about Content-Length. A single
-        # bounded async-generator wraps ``request.stream()`` with a running-
-        # total cap; both branches consume it. The buffered branch collects
-        # chunks into bytes before calling the receiver; the streaming branch
-        # passes the generator straight through, so oversize aborts mid-
-        # iteration without ever materialising the full body.
+        # Defense in depth — the client may lie about Content-Length. A
+        # bounded async-generator wraps ``request.stream()`` with a
+        # running-total cap; the handler spools its output into a
+        # SpooledTemporaryFile. The cap fires mid-iteration, aborting
+        # before the spool is fully written.
         async def _bounded_chunks() -> AsyncIterator[bytes]:
             total = 0
             async for chunk in request.stream():
@@ -800,6 +800,5 @@ __all__ = [
     "ExchangeGroupMismatch",
     "FileExchange",
     "FileExchangeConfigError",
-    "RouteSink",
     "register_upload_route",
 ]
