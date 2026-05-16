@@ -3,41 +3,92 @@
 from __future__ import annotations
 
 
-def test_upload_direction_type_aliases_are_exported() -> None:
-    """#67: receiver-author type aliases are importable from the package root.
+def test_file_exchange_hook_types_are_exported() -> None:
+    """#105: the file-exchange hook surface is importable from the package root.
 
-    ``BufferedReceiver`` / ``StreamReceiver`` are the receiver-callback
-    types, and ``PreLinkValidator`` is the type of
-    ``register_file_exchange_upload``'s ``pre_link_validator`` callback
-    (run before an upload token is minted) — all three are part of the
-    upload-direction public API. Before #67 the package root did not
-    re-export them: ``BufferedReceiver`` / ``StreamReceiver`` were
-    reachable only via the private ``_file_exchange_runtime`` submodule,
-    and ``PreLinkValidator`` only via the ``file_exchange`` submodule —
-    unlike the download-direction aliases ``ConsumerSink`` /
-    ``FetchContext`` / ``FetchResult``, which the root already re-exports.
+    The downstream-facing surface is two hook types — ``SourceHook``
+    (``(origin_id) -> ResolvedSource``) and ``SinkHook``
+    (``(file-like, SinkContext) -> mapping``) — plus the value types
+    they move (``ResolvedSource``, ``SinkContext``) and the
+    upload-direction ``PreLinkValidator`` callback. All five are part
+    of the public API and must be reachable from the package root, not
+    only via the ``file_exchange`` submodule.
+
+    This is the post-#105 successor to the #67 test that asserted the
+    re-export of the now-removed ``BufferedReceiver`` / ``StreamReceiver``
+    receiver-callback aliases and the ``ConsumerSink`` / ``FetchContext``
+    / ``FetchResult`` download-direction aliases — the four divergent
+    hook shapes that #105 collapsed into ``SourceHook`` / ``SinkHook``.
     """
     import fastmcp_pvl_core
     from fastmcp_pvl_core import (
-        BufferedReceiver,
         PreLinkValidator,
-        StreamReceiver,
+        ResolvedSource,
+        SinkContext,
+        SinkHook,
+        SourceHook,
         file_exchange,
     )
 
+    public_names = (
+        "SourceHook",
+        "SinkHook",
+        "SinkContext",
+        "ResolvedSource",
+        "PreLinkValidator",
+    )
+
     # Listed in the package-root __all__.
-    for name in ("BufferedReceiver", "StreamReceiver", "PreLinkValidator"):
+    for name in public_names:
         assert name in fastmcp_pvl_core.__all__, (
             f"{name} missing from fastmcp_pvl_core.__all__"
         )
 
     # Listed in the file_exchange facade's __all__.
-    for name in ("BufferedReceiver", "StreamReceiver", "PreLinkValidator"):
+    for name in public_names:
         assert name in file_exchange.__all__, (
             f"{name} missing from file_exchange.__all__"
         )
 
     # The package-root names are the same objects as the facade's.
-    assert BufferedReceiver is file_exchange.BufferedReceiver
-    assert StreamReceiver is file_exchange.StreamReceiver
+    assert SourceHook is file_exchange.SourceHook
+    assert SinkHook is file_exchange.SinkHook
+    assert SinkContext is file_exchange.SinkContext
+    assert ResolvedSource is file_exchange.ResolvedSource
     assert PreLinkValidator is file_exchange.PreLinkValidator
+
+
+def test_removed_download_direction_aliases_are_gone() -> None:
+    """#105: the pre-collapse hook aliases are no longer importable.
+
+    ``FetchContext`` / ``FetchResult`` / ``ConsumerSink`` /
+    ``ByteSourceResolver`` / ``BufferedReceiver`` / ``StreamReceiver``
+    were the four divergent download-/upload-direction hook shapes. #105
+    replaced them with the unified ``SourceHook`` / ``SinkHook`` pair, so
+    the old names must be gone from both the package root and the
+    ``file_exchange`` facade.
+    """
+    import fastmcp_pvl_core
+    from fastmcp_pvl_core import file_exchange
+
+    removed = (
+        "FetchContext",
+        "FetchResult",
+        "ConsumerSink",
+        "ByteSourceResolver",
+        "BufferedReceiver",
+        "StreamReceiver",
+    )
+    for name in removed:
+        assert name not in fastmcp_pvl_core.__all__, (
+            f"{name} should be removed from fastmcp_pvl_core.__all__"
+        )
+        assert not hasattr(fastmcp_pvl_core, name), (
+            f"{name} should not be importable from fastmcp_pvl_core"
+        )
+        assert name not in file_exchange.__all__, (
+            f"{name} should be removed from file_exchange.__all__"
+        )
+        assert not hasattr(file_exchange, name), (
+            f"{name} should not be importable from file_exchange"
+        )

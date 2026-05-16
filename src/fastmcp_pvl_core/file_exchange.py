@@ -13,18 +13,27 @@ uses the v0.3.0 ``transfer_methods`` shape: ``http`` and
 
 Downstream usage::
 
-    from fastmcp_pvl_core import register_file_exchange, FileRefPreview
+    from fastmcp_pvl_core import (
+        register_file_exchange, FileRefPreview, ResolvedSource,
+    )
+
+    def resolve(origin_id: str) -> ResolvedSource:
+        # The downstream owns the origin_id -> bytes mapping.
+        return ResolvedSource(
+            stream=open(_path_for(origin_id), "rb"), content_type="image/png"
+        )
 
     handle = register_file_exchange(
         mcp,
         namespace="image-mcp",
         env_prefix="IMAGE_GENERATION_MCP",
         produces=("image/png", "image/webp"),
+        source=resolve,
     )
 
     # Inside a tool body that produces content:
-    file_ref = await handle.publish(
-        source=image_bytes,
+    file_ref = await handle.make_file_ref(
+        image_id,
         mime_type="image/png",
         preview=FileRefPreview(description=prompt, dimensions=(w, h)),
     )
@@ -39,11 +48,11 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import io
 import ipaddress
 import logging
 import mimetypes
-import time
-import uuid
+import tempfile
 from collections.abc import (
     AsyncIterator,
     Awaitable,
@@ -52,9 +61,7 @@ from collections.abc import (
     Sequence,
 )
 from dataclasses import dataclass, field
-from email.message import Message
-from pathlib import Path
-from typing import TYPE_CHECKING, Any, BinaryIO, Final, Literal, NamedTuple
+from typing import TYPE_CHECKING, Any, BinaryIO, Final, Literal, NamedTuple, cast
 from urllib.parse import urlsplit
 
 import httpx
@@ -71,16 +78,15 @@ from fastmcp_pvl_core._file_exchange_protocol import (
     register_file_exchange_capability,
 )
 from fastmcp_pvl_core._file_exchange_runtime import (
-    BufferedReceiver,
     ExchangeGroupMismatch,
     FileExchange,
     FileExchangeConfigError,
-    StreamReceiver,
     _accepts_match,
     register_upload_route,
 )
 from fastmcp_pvl_core._token_store import (
     ArtifactStore,
+    UploadRecord,
     UploadStore,
     set_artifact_store,
     set_upload_store,
@@ -97,6 +103,9 @@ _DEFAULT_FETCH_TOOL = "fetch_file"
 _DEFAULT_TTL_SECONDS = 3600.0
 _DEFAULT_HTTP_FETCH_TIMEOUT = 30.0
 _DEFAULT_HTTP_FETCH_MAX_BYTES = 256 * 1024 * 1024  # 256 MiB hard cap
+# http-fetch spool: keep small responses in memory, spill larger ones to
+# disk so a fetch never holds the whole 256 MiB cap in RAM at once.
+_FETCH_SPOOL_MAX_BYTES: Final = 8 * 1024 * 1024
 
 
 # Private test seam: when set, ``register_file_exchange`` uses this store
@@ -230,78 +239,126 @@ class FetchTransportError(RuntimeError):
 
 
 # ---------------------------------------------------------------------------
-# Consumer-sink types
+# The two downstream hooks: one source, one sink
 # ---------------------------------------------------------------------------
+#
+# The file-exchange protocol has three transfer methods (``exchange``,
+# ``http``, ``http_upload``) and two roles (``source`` where bytes
+# originate, ``sink`` where they land). The whole downstream-facing
+# surface is exactly two hooks, used uniformly across all of them. Every
+# mechanism difference — volume paths, URL minting, one-time tokens,
+# POST routes, SSRF guarding, TTL ceilings — is pvl-core-internal and
+# invisible to the two hooks.
 
 
-class FetchContext(NamedTuple):
-    """Per-call context handed to the consumer sink.
+@dataclass(frozen=True)
+class ResolvedSource:
+    """What a :data:`SourceHook` resolves an opaque ``origin_id`` to.
 
-    Attributes:
-        url: The URL that was fetched (``exchange://`` or ``http(s)://``).
-        file_ref: Full file reference if the caller passed one to
-            ``fetch_file``; otherwise ``None``.
-        mime_type: Preferred mime type (from the file_ref or the
-            HTTP Content-Type header).
-        suggested_filename: A producer-suggested filename when
-            available.
-        params: The caller-supplied ``path`` plus any other ``**extra``
-            arguments forwarded into ``fetch_file``.
-        handle: The :class:`FileExchangeHandle` that owns this sink —
-            handy for sinks that want to re-publish what they just
-            consumed (chaining).
+    ``stream`` is a sync file-like binary object — pvl-core reads it in
+    chunks and closes it. ``content_type`` and ``size_bytes`` are
+    optional metadata pvl-core uses for transport headers when known;
+    ``size_bytes``, when supplied, MUST equal the exact byte length of
+    ``stream`` (pvl-core may send it verbatim as ``Content-Length``).
     """
 
-    url: str
-    file_ref: FileRef | None
+    stream: BinaryIO
+    content_type: str | None = None
+    size_bytes: int | None = None
+
+    def __post_init__(self) -> None:
+        """Validate field invariants at construction time."""
+        if self.size_bytes is not None and self.size_bytes < 0:
+            raise ValueError(
+                f"ResolvedSource.size_bytes must be non-negative; got {self.size_bytes}"
+            )
+
+
+# **Domain hook.** ``(origin_id) -> ResolvedSource``, sync or async. The
+# downstream resolves its own opaque ``origin_id`` to the bytes pvl-core
+# will move (write to the exchange volume, serve as an ``http`` download,
+# or POST as an ``http_upload``). Raising ``ValueError`` rejects a
+# caller-supplied id — surfaced as a ``transfer_failed`` envelope.
+SourceHook = Callable[[str], "ResolvedSource | Awaitable[ResolvedSource]"]
+
+
+class SinkContext(NamedTuple):
+    """Per-call context handed to a :data:`SinkHook` alongside the bytes.
+
+    Attributes:
+        origin_id: The opaque id the bytes arrived under, when the
+            mechanism carries one (``exchange`` URI, ``http_upload``
+            POST); ``None`` for a bare-``url`` ``http`` fetch.
+        mime_type: Best-known MIME type — from the file reference, the
+            HTTP ``Content-Type`` header, or the upload request hint.
+        size_bytes: Byte length when known up front, else ``None``.
+        file_ref: The full file reference when the consumer was handed
+            one; ``None`` for a bare-``url`` fetch or an upload receive.
+        params: Caller-supplied parameters (e.g. ``path`` on
+            ``fetch_file``, ``destination`` on an upload) plus extras.
+        handle: The :class:`FileExchangeHandle` owning a download-side
+            sink — handy for consume-then-produce chaining; ``None`` for
+            the ``http_upload`` receiver sink, which has no such handle.
+    """
+
+    origin_id: str | None
     mime_type: str | None
-    suggested_filename: str | None
+    size_bytes: int | None
+    file_ref: FileRef | None
     params: Mapping[str, Any]
-    handle: FileExchangeHandle
+    handle: FileExchangeHandle | None
 
 
-@dataclass
-class FetchResult:
-    """Return value the consumer sink hands back to ``fetch_file``.
+# **Domain hook.** ``(file-like, SinkContext) -> domain-result mapping``,
+# sync or async. pvl-core hands the downstream a sync file-like over the
+# received bytes; the downstream stores them however its domain dictates
+# and returns a mapping merged into the tool/route response. Raising
+# ``ValueError`` signals a caller-facing rejection.
+SinkHook = Callable[
+    [BinaryIO, SinkContext],
+    "Mapping[str, Any] | Awaitable[Mapping[str, Any]]",
+]
 
-    Attributes:
-        stored_at: Optional path/URI describing where the consumer
-            stored the bytes.
-        bytes_written: Number of bytes the sink wrote (typically equal
-            to ``len(data)``).
-        extra: Arbitrary extra keys merged into the tool's response —
-            e.g. ``{"document_id": 42}`` for paperless-mcp.
+
+async def _resolve_source(hook: SourceHook, origin_id: str) -> ResolvedSource:
+    """Invoke a source hook (sync or async) and return its ``ResolvedSource``.
+
+    A sync hook runs in :func:`asyncio.to_thread` so blocking I/O does
+    not stall the event loop. ``ValueError`` from the hook propagates
+    unchanged (callers translate it into a ``transfer_failed`` envelope).
     """
+    if inspect.iscoroutinefunction(hook):
+        result: Any = await hook(origin_id)
+    else:
+        result = await asyncio.to_thread(hook, origin_id)
+        if inspect.isawaitable(result):
+            result = await result
+    if not isinstance(result, ResolvedSource):
+        raise TypeError(
+            f"source hook must return a ResolvedSource, got {type(result).__name__}"
+        )
+    return result
 
-    stored_at: str | None = None
-    bytes_written: int = 0
-    extra: Mapping[str, Any] | None = None
 
+async def _invoke_sink(
+    hook: SinkHook, stream: BinaryIO, ctx: SinkContext
+) -> Mapping[str, Any]:
+    """Invoke a sink hook (sync or async) and return its domain mapping.
 
-ConsumerSink = Callable[[bytes, FetchContext], Awaitable[FetchResult]]
-
-
-# ---------------------------------------------------------------------------
-# Publish registry (per-handle origin_id → record)
-# ---------------------------------------------------------------------------
-
-
-@dataclass
-class _PublishRecord:
-    """One published file — what the http branch needs to mint a download.
-
-    Stored in ``FileExchangeHandle.publish_registry`` keyed by ``origin_id``.
-    Lazy callables stay un-invoked until ``create_download_link`` actually
-    needs the bytes.
+    A sync hook runs in :func:`asyncio.to_thread` so blocking storage
+    I/O does not stall the event loop.
     """
-
-    mime_type: str
-    ext: str
-    filename: str
-    eager_bytes: bytes | None = None
-    eager_path: Path | None = None
-    lazy: Callable[[], Awaitable[bytes] | bytes] | None = None
-    expires_at: float = 0.0
+    if inspect.iscoroutinefunction(hook):
+        result: Any = await hook(stream, ctx)
+    else:
+        result = await asyncio.to_thread(hook, stream, ctx)
+        if inspect.isawaitable(result):
+            result = await result
+    if not isinstance(result, Mapping):
+        raise TypeError(
+            f"sink hook must return a mapping, got {type(result).__name__}"
+        )
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -324,6 +381,10 @@ class FileExchangeHandle:
     artifact_store: ArtifactStore | None
     exchange: FileExchange | None
     capability: FileExchangeCapability | None
+    # **Domain hook.** Resolves an opaque ``origin_id`` to the bytes
+    # pvl-core moves. Set whenever this server produces; ``None`` for a
+    # consume-only server.
+    source: SourceHook | None = None
     # pvl-core owns these tool names as part of the shared shape (see
     # framing principle in CLAUDE.md). ``init=False`` keeps them out of
     # the constructor so a directly-constructed handle cannot advertise
@@ -336,15 +397,6 @@ class FileExchangeHandle:
     download_tool_name: str = field(default=_DEFAULT_DOWNLOAD_TOOL, init=False)
     fetch_tool_name: str = field(default=_DEFAULT_FETCH_TOOL, init=False)
     ttl_seconds: float = _DEFAULT_TTL_SECONDS
-    publish_registry: dict[str, _PublishRecord] = field(default_factory=dict)
-    # Throttle: skip ``expire_publish_registry`` if it ran more recently
-    # than this many seconds ago. The registry is in-process and short-
-    # lived per record, so a once-per-30s sweep keeps memory bounded
-    # without the O(N) scan running on every download-link request.
-    # ``init=False`` keeps these out of the constructor signature —
-    # they're internal scheduler state, not config the caller picks.
-    _expiry_sweep_interval: float = field(default=30.0, init=False)
-    _last_expiry_sweep: float = field(default=0.0, init=False)
     # Reused httpx client for the consumer ``http`` branch. Lazy-
     # initialised on first fetch so handles that never consume don't
     # pay for an idle connection pool. Closed via :meth:`aclose`.
@@ -367,44 +419,40 @@ class FileExchangeHandle:
 
     # ---- producer entry point ---------------------------------------------
 
-    async def publish(
+    async def make_file_ref(
         self,
-        source: bytes | Path | None = None,
+        origin_id: str,
         *,
-        lazy: Callable[[], Awaitable[bytes] | bytes] | None = None,
-        origin_id: str | None = None,
         mime_type: str,
-        ext: str | None = None,
-        filename: str | None = None,
         size_bytes: int | None = None,
         preview: FileRefPreview | None = None,
     ) -> FileRef:
-        """Materialise (or register) a file and return a :class:`FileRef`.
+        """Build a :class:`FileRef` for content this server can serve.
 
-        Exactly one of ``source`` (bytes / :class:`pathlib.Path`) or
-        ``lazy`` (callable returning bytes, sync or async) MUST be
-        provided. ``lazy`` is preferred when bytes are expensive to
-        compute (e.g. on-the-fly image transforms) and the file is not
-        being written into the exchange volume — ``lazy`` plus an
-        active exchange volume materialises eagerly with a warning,
-        because the exchange method has no pull trigger.
+        Call this from a producer-side tool body once the content is
+        retrievable by ``origin_id`` through this handle's ``source``
+        hook. pvl-core stores no bytes — the ``source`` hook is the
+        single producer-side byte path:
+
+        - ``http``: the ``transfer["http"]`` block just names the
+          download tool; the ``source`` hook is not invoked until a
+          client calls ``create_download_link``.
+        - ``exchange``: the shared volume has no pull trigger, so
+          pvl-core resolves the ``source`` hook now and writes the
+          bytes into the volume before returning.
 
         Args:
-            source: Eager bytes or a :class:`pathlib.Path` that already
-                exists on disk.
-            lazy: Sync or async callable that returns the bytes when
-                invoked (per ``create_download_link`` call — not cached).
-            origin_id: Producer-chosen opaque id. Defaults to a fresh
-                UUID4 hex. Validated as a raw JSON parameter (spec
-                §"Security and Path Resolution" — never URI-decoded).
-            mime_type: MIME type of the file. Required. Used to pick a
-                default extension when ``ext`` is omitted.
-            ext: File extension (no leading dot). Defaults to a sensible
-                value derived from ``mime_type`` via :mod:`mimetypes`.
-            filename: ``Content-Disposition`` filename for HTTP downloads.
-                Defaults to ``{origin_id}.{ext}``.
-            size_bytes: Optional precomputed size; if omitted, derived
-                from ``source`` when possible.
+            origin_id: The downstream's own opaque handle for the
+                content. It MUST be resolvable by this handle's
+                ``source`` hook — pvl-core never invents one, because a
+                pvl-core-generated id would be unknown to the hook.
+                Validated as a raw JSON parameter (spec §"Security and
+                Path Resolution" — never URI-decoded).
+            mime_type: MIME type of the content. Required; also selects
+                the ``exchange`` URI extension via :mod:`mimetypes`.
+            size_bytes: Optional size for the file reference. When the
+                ``exchange`` volume is written and this is omitted,
+                pvl-core fills it from the resolved source.
             preview: Optional :class:`FileRefPreview` for the LLM.
 
         Returns:
@@ -413,119 +461,54 @@ class FileExchangeHandle:
         """
         if not self.enabled or not self.produce:
             raise RuntimeError(
-                f"FileExchangeHandle({self.namespace}): publishing is "
+                f"FileExchangeHandle({self.namespace}): producing is "
                 "disabled — check the {prefix}_FILE_EXCHANGE_ENABLED and "
-                "{prefix}_FILE_EXCHANGE_PRODUCE env vars (where {prefix} "
-                "is the env_prefix passed to register_file_exchange)"
+                "{prefix}_FILE_EXCHANGE_PRODUCE env vars and that a source "
+                "hook was passed to register_file_exchange (where {prefix} "
+                "is the env_prefix)"
             )
-        if (source is None) == (lazy is None):
-            raise ValueError("publish() requires exactly one of source= or lazy=")
-
-        origin_id = origin_id or uuid.uuid4().hex
         ExchangeURI.validate_segment(origin_id, role="json_param")
         if origin_id.startswith("."):
             raise ExchangeURIError(
                 f"origin_id MUST NOT start with a dot: {origin_id!r}"
             )
 
-        if ext is None:
-            guessed = mimetypes.guess_extension(mime_type or "") or ".bin"
-            ext = guessed.lstrip(".")
-        ExchangeURI.validate_segment(ext, role="json_param")
+        transfer: dict[str, dict[str, Any]] = {}
 
-        if filename is None:
-            filename = f"{origin_id}.{ext}"
-
-        # Resolve eager_bytes / eager_path / lazy.
-        eager_bytes: bytes | None = None
-        eager_path: Path | None = None
-        if isinstance(source, (bytes, bytearray)):
-            eager_bytes = bytes(source)
-            if size_bytes is None:
-                size_bytes = len(eager_bytes)
-        elif isinstance(source, Path):
-            eager_path = source
-            if size_bytes is None:
-                # Fail fast: if we can't stat the source, the producer
-                # is publishing a reference to a file we'll be unable to
-                # read at create_download_link time anyway. Surfacing
-                # the error here gives a stack at the actual call site
-                # instead of a deferred mystery error in the tool body.
-                stat_result = await asyncio.to_thread(source.stat)
-                size_bytes = stat_result.st_size
-        elif source is not None:
-            raise TypeError(
-                f"publish() source must be bytes or pathlib.Path, "
-                f"got {type(source).__name__}"
-            )
-
-        # Lazy + exchange enabled: spec has no pull trigger for files on
-        # the exchange volume, so we have to materialise the bytes now.
-        # Log a warning so producers know the laziness is silently lost.
-        if lazy is not None and self.exchange_enabled:
-            logger.warning(
-                "publish(lazy=...) with exchange volume active — "
-                "materialising eagerly (origin_id=%s)",
-                origin_id,
-            )
-            eager_bytes = await _resolve_lazy(lazy)
-            if size_bytes is None:
-                size_bytes = len(eager_bytes)
-            lazy = None
-
-        # If exchange is enabled, write the bytes into the volume now.
-        exchange_uri_str: str | None = None
+        # The exchange volume has no pull trigger — resolve the source
+        # hook now and write the bytes in before returning the ref.
         if self.exchange_enabled:
-            # exchange_enabled implies self.exchange is not None.
             exchange_runtime = self.exchange
-            if exchange_runtime is None:
+            if exchange_runtime is None:  # exchange_enabled implies not None
                 raise RuntimeError(
                     "exchange_enabled is True but exchange runtime is None"
                 )
-            payload: bytes | Path
-            if eager_bytes is not None:
-                payload = eager_bytes
-            elif eager_path is not None:
-                # Pass the Path through to write_atomic — it streams
-                # from disk in 64 KiB chunks so a 256 MiB source never
-                # lands in memory in one piece. (The http registry
-                # also stores eager_path and re-reads on demand, so the
-                # whole publish→download flow is constant-memory.)
-                payload = eager_path
-            else:
-                # Lazy callables are materialised eagerly above when
-                # exchange is on, so reaching here means the input
-                # validation at the top of publish() let through a
-                # combination it shouldn't have. Surface as
-                # RuntimeError so we get a meaningful traceback.
+            if self.source is None:  # produce implies a source hook is set
                 raise RuntimeError(
-                    "publish(): no byte source after lazy materialisation"
+                    "exchange producing requires a source hook on the handle"
                 )
+            resolved = await _resolve_source(self.source, origin_id)
+            try:
+                data = await asyncio.to_thread(resolved.stream.read)
+            finally:
+                resolved.stream.close()
             exchange_uri = await asyncio.to_thread(
                 exchange_runtime.write_atomic,
                 origin_id=origin_id,
-                ext=ext,
-                content=payload,
+                ext=_ext_for(mime_type),
+                content=data,
             )
-            exchange_uri_str = str(exchange_uri)
+            transfer["exchange"] = {"uri": str(exchange_uri)}
+            if size_bytes is None:
+                size_bytes = (
+                    resolved.size_bytes
+                    if resolved.size_bytes is not None
+                    else len(data)
+                )
 
-        # Register for the http branch (only when http is enabled).
-        if self.http_enabled:
-            self.publish_registry[origin_id] = _PublishRecord(
-                mime_type=mime_type,
-                ext=ext,
-                filename=filename,
-                eager_bytes=eager_bytes,
-                eager_path=eager_path if eager_bytes is None else None,
-                lazy=lazy,
-                expires_at=time.time() + self.ttl_seconds,
-            )
-
-        transfer: dict[str, dict[str, Any]] = {}
-        if exchange_uri_str is not None:
-            transfer["exchange"] = {"uri": exchange_uri_str}
         if self.http_enabled:
             transfer["http"] = {"tool": self.download_tool_name}
+
         if not transfer:
             raise RuntimeError(
                 f"FileExchangeHandle({self.namespace}): no transfer methods "
@@ -571,49 +554,16 @@ class FileExchangeHandle:
             await self._http_client.aclose()
             self._http_client = None
 
-    def expire_publish_registry(self, *, force: bool = False) -> int:
-        """Drop registry records past their TTL.
 
-        Throttled: returns ``0`` immediately if a sweep ran within the
-        last ``_expiry_sweep_interval`` seconds. Pass ``force=True`` to
-        bypass the throttle (useful in tests and explicit
-        ``aclose``-style shutdown).
+def _ext_for(mime_type: str | None) -> str:
+    """Pick a file extension (no leading dot) for a MIME type.
 
-        Returns:
-            The number of records removed (``0`` when throttled).
-        """
-        now = time.time()
-        if not force and (now - self._last_expiry_sweep) < self._expiry_sweep_interval:
-            return 0
-        self._last_expiry_sweep = now
-        expired = [k for k, r in self.publish_registry.items() if r.expires_at < now]
-        for k in expired:
-            del self.publish_registry[k]
-        return len(expired)
-
-
-async def _resolve_lazy(
-    lazy: Callable[[], Awaitable[bytes] | bytes],
-) -> bytes:
-    """Call a sync-or-async lazy provider and return bytes.
-
-    A sync callable is dispatched via :func:`asyncio.to_thread` so any
-    blocking I/O it performs doesn't stall the event loop; the thread's
-    return value is then awaited (in case the sync callable returned an
-    awaitable, which is unusual but legal).
+    Used for the ``exchange`` URI's filename segment and the ``http``
+    download's ``Content-Disposition``. Always pvl-core-derived — never
+    a hook input — so the result is always a safe path segment.
     """
-    if asyncio.iscoroutinefunction(lazy):
-        result: Any = await lazy()
-    else:
-        result = await asyncio.to_thread(lazy)
-        if inspect.isawaitable(result):
-            result = await result
-    if not isinstance(result, bytes):
-        raise TypeError(
-            "lazy provider must return bytes or an awaitable yielding "
-            f"bytes, got {type(result).__name__}"
-        )
-    return result
+    guessed = mimetypes.guess_extension(mime_type or "") or ".bin"
+    return guessed.lstrip(".")
 
 
 # ---------------------------------------------------------------------------
@@ -628,11 +578,12 @@ def register_file_exchange(
     env_prefix: str,
     produces: Sequence[str] = (),
     consumes: Sequence[str] = (),
-    consumer_sink: ConsumerSink | None = None,
+    source: SourceHook | None = None,
+    sink: SinkHook | None = None,
 ) -> FileExchangeHandle:
     """Wire MCP File Exchange (v0.3.0) onto ``mcp``.
 
-    The kwarg surface is intentionally minimal — five domain hooks,
+    The kwarg surface is intentionally minimal — only domain hooks,
     no operator-config kwargs, no override seams. Operator config
     goes to environment variables (see "Environment" below).
     Implementation choices pvl-core makes (tool names, transport
@@ -665,11 +616,18 @@ def register_file_exchange(
             file references — advertised in the capability declaration.
         consumes: **Domain hook.** MIME types this server can ingest
             via ``fetch_file``.
-        consumer_sink: **Domain hook.** Required to register
-            ``fetch_file``. Receives the resolved bytes and a
-            :class:`FetchContext`; returns a :class:`FetchResult`.
-            When ``None``, the consumer side is not advertised in the
-            capability declaration and ``fetch_file`` is not registered.
+        source: **Domain hook.** Resolves an opaque ``origin_id`` to a
+            :class:`ResolvedSource` (a readable byte stream). Required
+            to produce: drives ``create_download_link`` and the
+            ``exchange`` volume write. When ``None``, the producer side
+            is not advertised and ``create_download_link`` is not
+            registered.
+        sink: **Domain hook.** ``(file-like, SinkContext) -> domain
+            mapping``. Required to consume: pvl-core hands it the
+            resolved bytes; it stores them and returns a mapping merged
+            into the ``fetch_file`` response. When ``None``, the
+            consumer side is not advertised and ``fetch_file`` is not
+            registered.
 
     Environment:
         Operator-controlled configuration. ``{PREFIX}`` matches the
@@ -682,7 +640,7 @@ def register_file_exchange(
           ``create_download_link`` tool to produce reachable URLs;
           unset means the producer side is silently skipped.
         - ``{PREFIX}_FILE_EXCHANGE_TTL`` (default 3600 seconds): TTL
-          for issued download URLs and for published file records.
+          for issued download URLs.
         - ``{PREFIX}_FILE_EXCHANGE_PRODUCE`` (default ``"true"``):
           operator opt-out of producer side independent of transport.
         - ``{PREFIX}_FILE_EXCHANGE_CONSUME`` (default ``"true"``):
@@ -697,16 +655,24 @@ def register_file_exchange(
     """
     resolved_transport = _resolve_transport(env_prefix)
     enabled = _resolve_enabled(env_prefix, resolved_transport)
-    produce = enabled and parse_bool(env(env_prefix, "FILE_EXCHANGE_PRODUCE", "true"))
-    consume_env = parse_bool(env(env_prefix, "FILE_EXCHANGE_CONSUME", "true"))
-    consume = enabled and consumer_sink is not None and consume_env
-    if enabled and consume_env and consumer_sink is None:
-        # Operator opted in but the downstream code didn't supply a sink
-        # — capability advertisement and fetch_file will both be silently
-        # absent, which is exactly the kind of inconsistency that turns
-        # into "tool not found" support tickets.
+    produce_env = parse_bool(env(env_prefix, "FILE_EXCHANGE_PRODUCE", "true"))
+    produce = enabled and produce_env and source is not None
+    if enabled and produce_env and source is None:
+        # Operator opted in but the downstream code didn't supply a
+        # source hook — the producer side is silently absent, exactly
+        # the inconsistency that turns into "tool not found" tickets.
         logger.warning(
-            "%s_FILE_EXCHANGE_CONSUME is true but no consumer_sink was "
+            "%s_FILE_EXCHANGE_PRODUCE is true but no source hook was "
+            "passed to register_file_exchange — producer side will NOT "
+            "be advertised",
+            env_prefix,
+        )
+    consume_env = parse_bool(env(env_prefix, "FILE_EXCHANGE_CONSUME", "true"))
+    consume = enabled and consume_env and sink is not None
+    if enabled and consume_env and sink is None:
+        # Same inconsistency on the consumer side.
+        logger.warning(
+            "%s_FILE_EXCHANGE_CONSUME is true but no sink hook was "
             "passed to register_file_exchange — consumer side will NOT "
             "be advertised",
             env_prefix,
@@ -778,14 +744,15 @@ def register_file_exchange(
         artifact_store=store,
         exchange=exchange,
         capability=capability,
+        source=source,
         ttl_seconds=ttl_seconds,
     )
 
     # --- Tool registration ---
     if enabled and produce and store is not None and base_url is not None:
         _register_create_download_link(mcp, handle)
-    if enabled and consume and consumer_sink is not None:
-        _register_fetch_file(mcp, handle, consumer_sink)
+    if enabled and consume and sink is not None:
+        _register_fetch_file(mcp, handle, sink)
 
     return handle
 
@@ -839,11 +806,12 @@ def _register_create_download_link(mcp: FastMCP, handle: FileExchangeHandle) -> 
         origin_id: str,
         ttl_seconds: float | None = None,
     ) -> dict[str, Any]:
-        """Mint a one-time HTTP download URL for a previously-published file.
+        """Mint a one-time HTTP download URL for an ``origin_id``.
 
-        See spec §"Transfer Methods / http". ``origin_id`` is the opaque handle from a
-        ``file_ref.origin_id`` field. ``ttl_seconds`` is clamped to the
-        server's configured maximum.
+        See spec §"Transfer Methods / http". ``origin_id`` is the opaque
+        handle from a ``file_ref.origin_id`` field; it is resolved to
+        bytes by the server's ``source`` hook. ``ttl_seconds`` is
+        clamped to the server's configured maximum.
         """
         try:
             ExchangeURI.validate_segment(origin_id, role="json_param")
@@ -855,74 +823,56 @@ def _register_create_download_link(mcp: FastMCP, handle: FileExchangeHandle) -> 
                 message=f"origin_id failed validation: {exc}",
             )
 
-        # Throttled bulk sweep keeps the registry from growing unbounded
-        # between create_download_link calls (an O(N) operation that
-        # would otherwise run every request). The per-record TTL check
-        # below is what enforces freshness for *this* lookup — the
-        # bulk sweep can return 0 while the requested record is
-        # individually expired, and we still need to refuse to mint a
-        # fresh URL for it.
-        handle.expire_publish_registry()
-        record = handle.publish_registry.get(origin_id)
-        if record is None or record.expires_at < time.time():
+        if handle.source is None:  # produce gating guarantees this
+            raise RuntimeError("create_download_link reached without a source hook")
+        try:
+            resolved = await _resolve_source(handle.source, origin_id)
+        except ValueError as exc:
+            # The downstream's source hook rejected the id — unknown,
+            # expired, or not permitted. Surface as transfer_failed so
+            # the client can fall back to other methods (spec §"Step 2").
             return _transfer_failed(
                 origin_server=handle.namespace,
                 origin_id=origin_id,
                 method="http",
-                message="origin_id is unknown or has expired",
+                message=str(exc),
             )
+        except Exception:
+            logger.exception(
+                "source hook raised non-ValueError (origin_id=%r) — "
+                "server-side bug, not a caller error",
+                origin_id,
+            )
+            raise
+
+        try:
+            data = await asyncio.to_thread(resolved.stream.read)
+        finally:
+            resolved.stream.close()
 
         effective_ttl: float
         if ttl_seconds is None or ttl_seconds <= 0:
             effective_ttl = handle.ttl_seconds
         else:
-            # Clamp to the publish-side TTL — never serve a download URL
-            # that outlives the bytes the server is willing to retain.
+            # Clamp to the server TTL — never serve a download URL that
+            # outlives what the server is willing to retain.
             effective_ttl = min(float(ttl_seconds), handle.ttl_seconds)
 
-        # Resolve bytes (eager / Path / lazy).
-        if record.eager_bytes is not None:
-            data = record.eager_bytes
-        elif record.eager_path is not None:
-            try:
-                data = await asyncio.to_thread(record.eager_path.read_bytes)
-            except FileNotFoundError:
-                # Producer published a Path that has since been deleted
-                # from disk. Surface as a structured transfer_failed so
-                # the client can try other methods rather than crashing
-                # the tool with a raw stack trace.
-                return _transfer_failed(
-                    origin_server=handle.namespace,
-                    origin_id=origin_id,
-                    method="http",
-                    message=(
-                        f"published file no longer exists on disk: {record.eager_path}"
-                    ),
-                )
-        elif record.lazy is not None:
-            data = await _resolve_lazy(record.lazy)
-        else:
-            return _transfer_failed(
-                origin_server=handle.namespace,
-                origin_id=origin_id,
-                method="http",
-                message="record has no resolvable byte source (internal error)",
-            )
-
+        content_type = resolved.content_type or "application/octet-stream"
         # http_enabled guarantees this in normal operation; defend
         # against future refactors that might bypass that check.
         if handle.artifact_store is None:
             raise RuntimeError("create_download_link reached without an artifact store")
         url = handle.artifact_store.put_ephemeral(
             data,
-            content_type=record.mime_type,
-            filename=record.filename,
+            content_type=content_type,
+            filename=f"{origin_id}.{_ext_for(resolved.content_type)}",
             ttl_seconds=effective_ttl,
         )
         return {
             "url": url,
             "ttl_seconds": effective_ttl,
-            "mime_type": record.mime_type,
+            "mime_type": content_type,
         }
 
 
@@ -1002,7 +952,7 @@ def _transfer_exhausted(
 
 
 def _register_fetch_file(
-    mcp: FastMCP, handle: FileExchangeHandle, sink: ConsumerSink
+    mcp: FastMCP, handle: FileExchangeHandle, sink: SinkHook
 ) -> None:
     """Register the spec-compliant ``fetch_file`` MCP tool."""
 
@@ -1048,7 +998,7 @@ def _register_fetch_file(
 
 async def _fetch_via_url(
     handle: FileExchangeHandle,
-    sink: ConsumerSink,
+    sink: SinkHook,
     url: str,
     params: Mapping[str, Any],
 ) -> dict[str, Any]:
@@ -1110,7 +1060,7 @@ _CONSUMER_DISPATCHABLE_METHODS = ("exchange",)
 
 async def _fetch_via_file_ref(
     handle: FileExchangeHandle,
-    sink: ConsumerSink,
+    sink: SinkHook,
     raw: dict[str, Any],
     params: Mapping[str, Any],
 ) -> dict[str, Any]:
@@ -1213,7 +1163,7 @@ async def _fetch_via_file_ref(
 
 async def _consume_exchange(
     handle: FileExchangeHandle,
-    sink: ConsumerSink,
+    sink: SinkHook,
     uri: str,
     *,
     file_ref: FileRef | None,
@@ -1228,21 +1178,21 @@ async def _consume_exchange(
         uri,
         max_bytes=_DEFAULT_HTTP_FETCH_MAX_BYTES,
     )
-    ctx = FetchContext(
-        url=uri,
-        file_ref=file_ref,
+    ctx = SinkContext(
+        origin_id=file_ref.origin_id if file_ref else None,
         mime_type=file_ref.mime_type if file_ref else None,
-        suggested_filename=None,
+        size_bytes=file_ref.size_bytes if file_ref else None,
+        file_ref=file_ref,
         params=params,
         handle=handle,
     )
-    result = await sink(data, ctx)
+    result = await _invoke_sink(sink, io.BytesIO(data), ctx)
     return _sink_response(result, method="exchange")
 
 
 async def _consume_http(
     handle: FileExchangeHandle,
-    sink: ConsumerSink,
+    sink: SinkHook,
     url: str,
     *,
     file_ref: FileRef | None,
@@ -1251,23 +1201,27 @@ async def _consume_http(
     _ssrf_guard(url)
 
     client = handle._get_http_client()
+    content_type: str | None = None
+    # Spool the response so a large download never holds the whole
+    # 256 MiB cap in RAM; the sink reads it back as a plain file-like.
+    spool: tempfile.SpooledTemporaryFile[bytes] = tempfile.SpooledTemporaryFile(
+        max_size=_FETCH_SPOOL_MAX_BYTES
+    )
     try:
         async with client.stream("GET", url) as resp:
             # ``raise_for_status`` only raises for 4xx/5xx — a 3xx
             # redirect with follow_redirects=False would otherwise
             # stream the redirect body (a small "Moved" HTML page)
             # as if it were the file content, silently corrupting
-            # what reaches the consumer sink.
+            # what reaches the sink.
             if resp.is_redirect:
                 raise FetchTransportError(
                     f"http fetch failed: redirect ({resp.status_code}) not allowed"
                 )
             resp.raise_for_status()
             # Fail fast if the server's advertised Content-Length
-            # already exceeds the cap, so we don't waste a single
-            # chunk's worth of bandwidth on a response we'll
-            # reject anyway. The streaming check below stays as
-            # defence in depth for servers that lie about content
+            # already exceeds the cap. The streaming check below stays
+            # as defence in depth for servers that lie about content
             # length or omit the header.
             cl_str = resp.headers.get("content-length")
             if (
@@ -1279,7 +1233,6 @@ async def _consume_http(
                     f"response exceeds {_DEFAULT_HTTP_FETCH_MAX_BYTES} "
                     f"bytes (content-length={cl_str})"
                 )
-            chunks: list[bytes] = []
             total = 0
             async for chunk in resp.aiter_bytes():
                 total += len(chunk)
@@ -1287,39 +1240,42 @@ async def _consume_http(
                     raise FetchTransportError(
                         f"response exceeds {_DEFAULT_HTTP_FETCH_MAX_BYTES} bytes"
                     )
-                chunks.append(chunk)
-            data = b"".join(chunks)
+                spool.write(chunk)
             content_type = resp.headers.get("content-type")
-            suggested = _filename_from_disposition(
-                resp.headers.get("content-disposition")
-            )
+        spool.seek(0)
     except httpx.HTTPError as exc:
+        spool.close()
         # Translate the entire httpx error hierarchy (timeouts, connect
         # errors, status errors, transport errors) into our own domain
         # error so callers don't depend on httpx types.
         raise FetchTransportError(f"http fetch failed: {exc}") from exc
+    except BaseException:
+        spool.close()
+        raise
 
-    ctx = FetchContext(
-        url=url,
-        file_ref=file_ref,
+    ctx = SinkContext(
+        origin_id=file_ref.origin_id if file_ref else None,
         mime_type=content_type or (file_ref.mime_type if file_ref else None),
-        suggested_filename=suggested,
+        size_bytes=file_ref.size_bytes if file_ref else None,
+        file_ref=file_ref,
         params=params,
         handle=handle,
     )
-    result = await sink(data, ctx)
+    try:
+        result = await _invoke_sink(sink, cast("BinaryIO", spool), ctx)
+    finally:
+        spool.close()
     return _sink_response(result, method="http")
 
 
-def _sink_response(result: FetchResult, *, method: str) -> dict[str, Any]:
-    out: dict[str, Any] = {
-        "method": method,
-        "bytes_written": result.bytes_written,
-    }
-    if result.stored_at is not None:
-        out["stored_at"] = result.stored_at
-    if result.extra:
-        out.update(dict(result.extra))
+def _sink_response(result: Mapping[str, Any], *, method: str) -> dict[str, Any]:
+    """Merge a sink hook's domain mapping into the ``fetch_file`` response.
+
+    pvl-core owns the ``method`` key (which transfer method succeeded);
+    everything else is whatever the downstream sink chose to return.
+    """
+    out: dict[str, Any] = dict(result)
+    out["method"] = method
     return out
 
 
@@ -1376,22 +1332,6 @@ def _ssrf_guard(url: str) -> None:
         )
 
 
-def _filename_from_disposition(value: str | None) -> str | None:
-    """Extract the filename from a ``Content-Disposition`` header value.
-
-    Uses :class:`email.message.Message` so quoted strings, escaped
-    characters, embedded semicolons (``filename="report;v1.csv"``), and
-    RFC 5987 ``filename*=UTF-8''...`` extended forms are all handled
-    correctly. Falls back to ``None`` when the header is absent or
-    contains no filename parameter.
-    """
-    if not value:
-        return None
-    msg = Message()
-    msg["Content-Disposition"] = value
-    return msg.get_filename()
-
-
 # ---------------------------------------------------------------------------
 # Upload direction (intake) — public facade
 # ---------------------------------------------------------------------------
@@ -1415,39 +1355,6 @@ _upload_sender_transport: httpx.AsyncBaseTransport | None = None
 PreLinkValidator = Callable[
     [str, "str | None"],
     "None | Awaitable[None]",
-]
-
-
-@dataclass(frozen=True)
-class ResolvedSource:
-    """The bytes a sender's ``upload`` tool will POST.
-
-    Returned by a :data:`ByteSourceResolver`. ``stream`` is a file-like
-    binary object pvl-core reads in chunks and streams into the POST
-    body, then closes. ``content_type`` is the resource's MIME type if
-    the downstream knows it (used unless the ``upload`` caller passes an
-    explicit ``content_type``). ``size_bytes``, when known, lets pvl-core
-    set a ``Content-Length`` header; when provided it MUST be the exact
-    byte length of the stream — pvl-core sends it verbatim as
-    ``Content-Length``, and an inaccurate value produces a malformed
-    request.
-    """
-
-    stream: BinaryIO
-    content_type: str | None = None
-    size_bytes: int | None = None
-
-    def __post_init__(self) -> None:
-        """Validate field invariants at construction time."""
-        if self.size_bytes is not None and self.size_bytes < 0:
-            raise ValueError(
-                f"ResolvedSource.size_bytes must be non-negative; got {self.size_bytes}"
-            )
-
-
-ByteSourceResolver = Callable[
-    [str],
-    "ResolvedSource | Awaitable[ResolvedSource]",
 ]
 
 
@@ -1602,15 +1509,13 @@ def register_file_exchange_upload(
     *,
     namespace: str,
     env_prefix: str,
-    receiver: BufferedReceiver | None = None,
-    stream_receiver: StreamReceiver | None = None,
+    sink: SinkHook,
     pre_link_validator: PreLinkValidator | None = None,
     accepts: tuple[str, ...] = ("*/*",),
 ) -> UploadHandle:
     """Wire MCP File Exchange upload direction onto ``mcp``.
 
-    Mirrors :func:`register_file_exchange` for the inbound half. Exactly
-    one of ``receiver`` / ``stream_receiver`` MUST be supplied. The
+    Mirrors :func:`register_file_exchange` for the inbound half. The
     helper:
 
     1. Resolves transport from env (``{PREFIX}_TRANSPORT`` /
@@ -1644,9 +1549,11 @@ def register_file_exchange_upload(
             upload route.
         env_prefix: Per-server env var prefix (e.g.
             ``"MARKDOWN_VAULT_MCP"``).
-        receiver: Buffered receiver; mutually exclusive with
-            ``stream_receiver``.
-        stream_receiver: Streaming receiver; receives chunks live.
+        sink: **Domain hook.** ``(file-like, SinkContext) -> domain
+            mapping``, sync or async. pvl-core hands it a file-like over
+            the received POST body (spooled, so the request size is
+            bounded in memory); it stores the bytes and returns a
+            mapping serialised as the 200 response.
         pre_link_validator: Optional callback
             ``(origin_id, destination) -> None`` (sync OR async) run
             inside the registered tool AFTER baseline ``origin_id``
@@ -1672,17 +1579,7 @@ def register_file_exchange_upload(
         An :class:`UploadHandle`. Stash if you need ``create_link`` for
         advanced wrapping; otherwise discard — registration side-effects
         are sufficient for normal use.
-
-    Raises:
-        ValueError: if neither or both of ``receiver``/``stream_receiver``
-            are supplied.
     """
-    if (receiver is None) == (stream_receiver is None):
-        raise ValueError(
-            "register_file_exchange_upload requires exactly one of "
-            "receiver= or stream_receiver="
-        )
-
     max_bytes_default = _DEFAULT_UPLOAD_MAX_BYTES
     ttl_default = _DEFAULT_UPLOAD_TTL_SECONDS
     ttl_max = _DEFAULT_UPLOAD_TTL_MAX_SECONDS
@@ -1780,12 +1677,29 @@ def register_file_exchange_upload(
     # convenience. Multi-direction registration: last-caller-wins; see
     # follow-up issue #65 for the architectural fix.
     set_upload_store(store)
+
+    async def _route_sink(
+        record: UploadRecord, stream: BinaryIO
+    ) -> Mapping[str, Any]:
+        """Adapt the public ``sink`` hook to the upload route's shape."""
+        params: dict[str, Any] = {}
+        if record.destination is not None:
+            params["destination"] = record.destination
+        ctx = SinkContext(
+            origin_id=record.origin_id,
+            mime_type=record.content_type,
+            size_bytes=None,
+            file_ref=None,
+            params=params,
+            handle=None,
+        )
+        return await _invoke_sink(sink, stream, ctx)
+
     register_upload_route(
         mcp,
         store=store,
         namespace=namespace,
-        receiver=receiver,
-        stream_receiver=stream_receiver,
+        sink=_route_sink,
         accepts=accepts,
     )
 
@@ -1934,12 +1848,12 @@ def register_file_exchange_upload_sender(
     *,
     namespace: str,
     env_prefix: str,
-    byte_source: ByteSourceResolver,
+    source: SourceHook,
 ) -> UploadSenderHandle:
     """Wire the MCP File Exchange ``http_upload`` *sender* side onto ``mcp``.
 
     Registers an ``upload`` MCP tool that resolves an opaque ``origin_id``
-    to a file-like byte source (via ``byte_source``) and POSTs the bytes
+    to a file-like byte source (via ``source``) and POSTs the bytes
     to a receiver-issued upload URL. Counterpart to
     :func:`register_file_exchange_upload` (the receiver side).
 
@@ -1954,7 +1868,7 @@ def register_file_exchange_upload_sender(
             ``"MARKDOWN_VAULT_MCP"``). The sender reads
             ``{PREFIX}_UPLOAD_SEND_TIMEOUT`` (seconds, float; default
             300) for the outbound-POST timeout.
-        byte_source: **Domain hook.** ``(origin_id) -> ResolvedSource``
+        source: **Domain hook.** ``(origin_id) -> ResolvedSource``
             (sync or async). Resolves the sender's opaque ``origin_id``
             to the bytes to push. Raise ``ValueError`` for a
             caller-facing rejection (unknown / not-permitted
@@ -2000,7 +1914,7 @@ def register_file_exchange_upload_sender(
                 push. Validated against the spec's segment rules (no
                 ``/``, ``\``, ``.``, ``..``, control bytes,
                 leading/trailing whitespace); resolved to bytes by the
-                server's ``byte_source`` hook. This ``origin_id`` is the
+                server's ``source`` hook. This ``origin_id`` is the
                 *sender's own* handle, independent of any ``origin_id``
                 the caller earlier passed to the receiver's
                 ``create_upload_link`` — the two are unrelated opaque
@@ -2033,19 +1947,14 @@ def register_file_exchange_upload_sender(
                 receiver_server="", origin_id=origin_id, message=str(exc)
             )
         try:
-            if inspect.iscoroutinefunction(byte_source):
-                resolved = await byte_source(origin_id)
-            else:
-                resolved = await asyncio.to_thread(byte_source, origin_id)
-                if inspect.isawaitable(resolved):
-                    resolved = await resolved
+            resolved = await _resolve_source(source, origin_id)
         except ValueError as exc:
             return _upload_transfer_failed(
                 receiver_server="", origin_id=origin_id, message=str(exc)
             )
         except Exception:
             logger.exception(
-                "byte_source resolver raised non-ValueError (origin_id=%r) "
+                "source hook raised non-ValueError (origin_id=%r) "
                 "— server-side bug, not a caller error",
                 origin_id,
             )
@@ -2092,7 +2001,7 @@ def register_file_exchange_upload_sender(
                 )
             except OSError as exc:
                 # OSError here is almost always the downstream-controlled
-                # byte_source stream failing mid-read, but socket/teardown
+                # source-hook stream failing mid-read, but socket/teardown
                 # OSErrors not normalised into httpx.HTTPError can land here
                 # too — caller-facing either way, so the message stays
                 # source-neutral rather than asserting an unproven cause.
@@ -2126,7 +2035,7 @@ def register_file_exchange_upload_sender(
                 resolved.stream.close()
             except Exception:
                 logger.warning(
-                    "failed to close byte_source stream (origin_id=%r)",
+                    "failed to close source stream (origin_id=%r)",
                     origin_id,
                     exc_info=True,
                 )
@@ -2135,15 +2044,12 @@ def register_file_exchange_upload_sender(
 
 
 __all__ = [
-    "BufferedReceiver",
-    "ByteSourceResolver",
-    "ConsumerSink",
-    "FetchContext",
-    "FetchResult",
     "FileExchangeHandle",
     "PreLinkValidator",
     "ResolvedSource",
-    "StreamReceiver",
+    "SinkContext",
+    "SinkHook",
+    "SourceHook",
     "UploadHandle",
     "UploadSenderHandle",
     "register_file_exchange",

@@ -2,20 +2,21 @@
 
 from __future__ import annotations
 
+import io
 import json
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO
 
 import pytest
 from fastmcp import FastMCP
 
 from fastmcp_pvl_core import (
-    FetchContext,
-    FetchResult,
     FileExchangeHandle,
     FileRef,
     FileRefPreview,
+    ResolvedSource,
+    SinkContext,
     register_file_exchange,
     set_artifact_store,
 )
@@ -60,6 +61,58 @@ def _tool_names(mcp: FastMCP) -> set[str]:
 
 
 # ---------------------------------------------------------------------------
+# Downstream hook helpers
+# ---------------------------------------------------------------------------
+#
+# The file-exchange surface is two hooks: a SourceHook
+# ``(origin_id) -> ResolvedSource`` and a SinkHook
+# ``(file-like, SinkContext) -> mapping``. The helpers below build the
+# minimal in-memory hooks the tests need.
+
+
+def _src(
+    payload: bytes,
+    *,
+    content_type: str | None = None,
+    origin_id: str | None = None,
+) -> Any:
+    """Return a sync :data:`SourceHook` resolving to ``payload``.
+
+    When ``origin_id`` is given, the hook rejects any other id with a
+    ``ValueError`` (the contract for an unknown id). Otherwise it
+    resolves every id to the same bytes.
+    """
+
+    def hook(requested: str) -> ResolvedSource:
+        if origin_id is not None and requested != origin_id:
+            raise ValueError(f"unknown origin_id: {requested!r}")
+        return ResolvedSource(stream=io.BytesIO(payload), content_type=content_type)
+
+    return hook
+
+
+def _async_src(payload: bytes, *, content_type: str | None = None) -> Any:
+    """Return an async :data:`SourceHook` resolving to ``payload``."""
+
+    async def hook(requested: str) -> ResolvedSource:
+        return ResolvedSource(stream=io.BytesIO(payload), content_type=content_type)
+
+    return hook
+
+
+def _sink(stream: BinaryIO, ctx: SinkContext) -> Mapping[str, Any]:
+    """A sync :data:`SinkHook` that records the bytes it received."""
+    data = stream.read()
+    return {"stored_at": "memory", "bytes_written": len(data)}
+
+
+async def _async_sink(stream: BinaryIO, ctx: SinkContext) -> Mapping[str, Any]:
+    """An async :data:`SinkHook` that records the bytes it received."""
+    data = stream.read()
+    return {"stored_at": "memory", "bytes_written": len(data)}
+
+
+# ---------------------------------------------------------------------------
 # enable / transport gating
 # ---------------------------------------------------------------------------
 
@@ -68,7 +121,13 @@ class TestEnableGating:
     def test_stdio_default_disables(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("TEST_FE_TRANSPORT", "stdio")
         mcp = _new_mcp()
-        h = register_file_exchange(mcp, namespace="test-mcp", env_prefix="TEST_FE")
+        h = register_file_exchange(
+            mcp,
+            namespace="test-mcp",
+            env_prefix="TEST_FE",
+            source=_src(b"x"),
+            sink=_sink,
+        )
         assert h.enabled is False
         assert "create_download_link" not in _tool_names(mcp)
         assert "fetch_file" not in _tool_names(mcp)
@@ -77,7 +136,12 @@ class TestEnableGating:
         monkeypatch.setenv("TEST_FE_BASE_URL", "http://test.example")
         monkeypatch.setenv("TEST_FE_TRANSPORT", "http")
         mcp = _new_mcp()
-        h = register_file_exchange(mcp, namespace="test-mcp", env_prefix="TEST_FE")
+        h = register_file_exchange(
+            mcp,
+            namespace="test-mcp",
+            env_prefix="TEST_FE",
+            source=_src(b"x"),
+        )
         assert h.enabled is True
         assert "create_download_link" in _tool_names(mcp)
 
@@ -104,15 +168,42 @@ class TestProducerOnly:
         monkeypatch.setenv("TEST_FE_BASE_URL", "http://test.example")
         monkeypatch.setenv("TEST_FE_TRANSPORT", "http")
         mcp = _new_mcp()
-        register_file_exchange(
+        h = register_file_exchange(
+            mcp,
+            namespace="test-mcp",
+            env_prefix="TEST_FE",
+            produces=("image/png",),
+            source=_src(b"x"),
+        )
+        names = _tool_names(mcp)
+        assert "create_download_link" in names
+        assert "fetch_file" not in names
+        assert h.produce is True
+        assert h.consume is False
+
+    def test_no_source_hook_skips_producer_side(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Producer side is gated on a source hook, not just env.
+
+        Even on http transport with BASE_URL set, a registration with
+        no ``source=`` does not register ``create_download_link`` and
+        does not advertise the producer capability.
+        """
+        monkeypatch.setenv("TEST_FE_BASE_URL", "http://test.example")
+        monkeypatch.setenv("TEST_FE_TRANSPORT", "http")
+        mcp = _new_mcp()
+        h = register_file_exchange(
             mcp,
             namespace="test-mcp",
             env_prefix="TEST_FE",
             produces=("image/png",),
         )
-        names = _tool_names(mcp)
-        assert "create_download_link" in names
-        assert "fetch_file" not in names
+        assert h.produce is False
+        assert "create_download_link" not in _tool_names(mcp)
+        # With neither role active, no file-exchange capability is
+        # advertised at all.
+        assert h.capability is None
 
     def test_capability_advertises_http_only_without_exchange(
         self, monkeypatch: pytest.MonkeyPatch
@@ -125,6 +216,7 @@ class TestProducerOnly:
             namespace="test-mcp",
             env_prefix="TEST_FE",
             produces=("image/png",),
+            source=_src(b"x"),
         )
         assert h.capability is not None
         cap = h.capability.to_capability_dict()
@@ -140,25 +232,38 @@ class TestProducerOnly:
 # ---------------------------------------------------------------------------
 
 
-async def _identity_sink(data: bytes, ctx: FetchContext) -> FetchResult:
-    return FetchResult(stored_at="memory", bytes_written=len(data))
-
-
 class TestConsumerOnly:
     def test_registers_fetch_file_only(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # No BASE_URL → producer side (http) is not active.
+        # No source hook → producer side (http) is not active.
         monkeypatch.setenv("TEST_FE_TRANSPORT", "http")
         mcp = _new_mcp()
-        register_file_exchange(
+        h = register_file_exchange(
             mcp,
             namespace="vault-mcp",
             env_prefix="TEST_FE",
             consumes=("image/png", "application/pdf"),
-            consumer_sink=_identity_sink,
+            sink=_sink,
         )
         names = _tool_names(mcp)
         assert "fetch_file" in names
         assert "create_download_link" not in names
+        assert h.consume is True
+        assert h.produce is False
+
+    def test_no_sink_hook_skips_consumer_side(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Consumer side is gated on a sink hook, not just env."""
+        monkeypatch.setenv("TEST_FE_TRANSPORT", "http")
+        mcp = _new_mcp()
+        h = register_file_exchange(
+            mcp,
+            namespace="vault-mcp",
+            env_prefix="TEST_FE",
+            consumes=("image/png",),
+        )
+        assert h.consume is False
+        assert "fetch_file" not in _tool_names(mcp)
 
 
 # ---------------------------------------------------------------------------
@@ -180,7 +285,8 @@ class TestFullModeCapability:
             env_prefix="TEST_FE",
             produces=("image/png",),
             consumes=("image/png",),
-            consumer_sink=_identity_sink,
+            source=_src(b"x"),
+            sink=_sink,
         )
         assert h.capability is not None
         cap = h.capability.to_capability_dict()
@@ -190,13 +296,20 @@ class TestFullModeCapability:
 
 
 # ---------------------------------------------------------------------------
-# publish() — origin_id, lazy, eager, exchange interaction
+# make_file_ref — origin_id, http, exchange interaction
 # ---------------------------------------------------------------------------
 
 
 def _make_handle_http(
-    monkeypatch: pytest.MonkeyPatch, *, base_url: str = "http://test.example"
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    base_url: str = "http://test.example",
+    source: Any | None = None,
 ) -> tuple[FastMCP, FileExchangeHandle]:
+    """Register an http-only producing handle and return ``(mcp, handle)``.
+
+    ``source`` defaults to a hook resolving every id to ``b"x"``.
+    """
     monkeypatch.setenv("TEST_FE_BASE_URL", base_url)
     monkeypatch.setenv("TEST_FE_TRANSPORT", "http")
     mcp = _new_mcp()
@@ -205,130 +318,106 @@ def _make_handle_http(
         namespace="image-mcp",
         env_prefix="TEST_FE",
         produces=("image/png",),
+        source=source if source is not None else _src(b"x"),
     )
     return mcp, h
 
 
-class TestPublish:
-    async def test_default_origin_id_is_uuid_hex(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+class TestMakeFileRef:
+    async def test_origin_id_round_trips(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # The downstream owns the origin_id; make_file_ref echoes it.
         _, h = _make_handle_http(monkeypatch)
-        ref = await h.publish(source=b"x", mime_type="image/png")
-        assert len(ref.origin_id) == 32
-        # Hex-only.
-        int(ref.origin_id, 16)
-
-    async def test_explicit_origin_id_round_trips(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        _, h = _make_handle_http(monkeypatch)
-        ref = await h.publish(
-            source=b"x", mime_type="image/png", origin_id="my-stable-id"
-        )
+        ref = await h.make_file_ref("my-stable-id", mime_type="image/png")
         assert ref.origin_id == "my-stable-id"
 
-    async def test_publish_bytes_advertises_http_transfer(
+    async def test_advertises_http_transfer(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         _, h = _make_handle_http(monkeypatch)
-        ref = await h.publish(source=b"x", mime_type="image/png")
+        ref = await h.make_file_ref("abc", mime_type="image/png")
         assert "http" in ref.transfer
         assert ref.transfer["http"]["tool"] == "create_download_link"
 
-    async def test_publish_path_writes_through_to_http(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
-        _, h = _make_handle_http(monkeypatch)
-        f = tmp_path / "img.png"
-        f.write_bytes(b"PNG-bytes")
-        ref = await h.publish(source=f, mime_type="image/png")
-        assert ref.size_bytes == len(b"PNG-bytes")
-        # Record present in registry; bytes not yet read (Path not opened
-        # until create_download_link is called).
-        record = h.publish_registry[ref.origin_id]
-        assert record.eager_path == f
-        assert record.eager_bytes is None
-
-    async def test_publish_lazy_not_invoked_at_publish_time(
+    async def test_http_only_does_not_touch_source_bytes(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        _, h = _make_handle_http(monkeypatch)
+        """For an http-only server make_file_ref does not invoke the hook.
+
+        The ``transfer["http"]`` block just names the download tool;
+        the source hook is not resolved until ``create_download_link``
+        is actually called.
+        """
         invocations = 0
 
-        def render() -> bytes:
+        def render(requested: str) -> ResolvedSource:
             nonlocal invocations
             invocations += 1
-            return b"rendered"
+            return ResolvedSource(stream=io.BytesIO(b"rendered"))
 
-        ref = await h.publish(lazy=render, mime_type="image/png")
+        _, h = _make_handle_http(monkeypatch, source=render)
+        ref = await h.make_file_ref("abc", mime_type="image/png")
         assert invocations == 0
-        # The record stores the callable; bytes still un-materialised.
-        record = h.publish_registry[ref.origin_id]
-        assert record.lazy is render
-        assert record.eager_bytes is None
+        assert set(ref.transfer) == {"http"}
 
-    async def test_publish_lazy_with_exchange_materialises_eagerly(
+    async def test_exchange_materialises_via_source_hook(
         self,
         monkeypatch: pytest.MonkeyPatch,
         tmp_path: Path,
-        caplog: pytest.LogCaptureFixture,
     ) -> None:
+        """With the exchange volume on, make_file_ref resolves the hook now.
+
+        The shared volume has no pull trigger, so pvl-core invokes the
+        source hook and writes the bytes into the volume eagerly.
+        """
         monkeypatch.setenv("MCP_EXCHANGE_DIR", str(tmp_path))
         monkeypatch.setenv("TEST_FE_BASE_URL", "http://test.example")
         monkeypatch.setenv("TEST_FE_TRANSPORT", "http")
         mcp = _new_mcp()
+
+        invocations = 0
+
+        async def render(requested: str) -> ResolvedSource:
+            nonlocal invocations
+            invocations += 1
+            return ResolvedSource(stream=io.BytesIO(b"rendered"))
+
         h = register_file_exchange(
             mcp,
             namespace="image-mcp",
             env_prefix="TEST_FE",
             produces=("image/png",),
+            source=render,
         )
-
-        invocations = 0
-
-        async def render() -> bytes:
-            nonlocal invocations
-            invocations += 1
-            return b"rendered"
-
-        with caplog.at_level("WARNING"):
-            ref = await h.publish(lazy=render, mime_type="image/png")
+        ref = await h.make_file_ref("abc", mime_type="image/png")
         assert invocations == 1, (
-            "lazy callable must be invoked at publish time when exchange is on"
+            "source hook must be invoked when the exchange volume is on"
         )
-        assert any("materialising eagerly" in r.message for r in caplog.records)
         # Bytes are now on the exchange volume.
         assert "exchange" in ref.transfer
         uri = ref.transfer["exchange"]["uri"]
         assert uri.startswith("exchange://")
+        assert ref.size_bytes == len(b"rendered")
 
-    async def test_publish_neither_source_nor_lazy_raises(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        _, h = _make_handle_http(monkeypatch)
-        with pytest.raises(ValueError, match="source= or lazy="):
-            await h.publish(mime_type="image/png")
-
-    async def test_publish_both_source_and_lazy_raises(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        _, h = _make_handle_http(monkeypatch)
-        with pytest.raises(ValueError, match="source= or lazy="):
-            await h.publish(
-                source=b"x",
-                lazy=lambda: b"y",
-                mime_type="image/png",
-            )
-
-    async def test_publish_disabled_handle_raises(
+    async def test_disabled_handle_raises(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv("TEST_FE_TRANSPORT", "stdio")
         mcp = _new_mcp()
-        h = register_file_exchange(mcp, namespace="x", env_prefix="TEST_FE")
+        h = register_file_exchange(
+            mcp, namespace="x", env_prefix="TEST_FE", source=_src(b"x")
+        )
         with pytest.raises(RuntimeError, match="disabled"):
-            await h.publish(source=b"x", mime_type="image/png")
+            await h.make_file_ref("abc", mime_type="image/png")
+
+    async def test_preview_round_trips(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _, h = _make_handle_http(monkeypatch)
+        preview = FileRefPreview(description="Test", dimensions=(10, 20))
+        ref = await h.make_file_ref("abc", mime_type="image/png", preview=preview)
+        assert ref.preview == preview
+        assert ref.to_dict()["preview"] == {
+            "description": "Test",
+            "dimensions": {"width": 10, "height": 20},
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -353,47 +442,56 @@ async def _call_tool(mcp: FastMCP, name: str, **kwargs: Any) -> dict[str, Any]:
 
 
 class TestCreateDownloadLinkTool:
-    async def test_round_trip_eager(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        mcp, h = _make_handle_http(monkeypatch)
-        ref = await h.publish(
-            source=b"hello",
-            mime_type="text/plain",
-            ext="txt",
-            origin_id="abc",
+    async def test_round_trip_resolves_source_hook(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        mcp, h = _make_handle_http(
+            monkeypatch,
+            source=_src(b"hello", content_type="text/plain", origin_id="abc"),
         )
         out = await _call_tool(mcp, "create_download_link", origin_id="abc")
         assert "url" in out
         assert out["url"].startswith("http://test.example/artifacts/")
         assert out["mime_type"] == "text/plain"
         assert out["ttl_seconds"] > 0
-        # FileRef advertises only http here (no MCP_EXCHANGE_DIR).
-        assert set(ref.transfer) == {"http"}
 
-    async def test_round_trip_lazy_invoked_per_call(
+    async def test_async_source_hook_works(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        mcp, h = _make_handle_http(monkeypatch)
+        mcp, _ = _make_handle_http(
+            monkeypatch, source=_async_src(b"async-bytes", content_type="image/png")
+        )
+        out = await _call_tool(mcp, "create_download_link", origin_id="abc")
+        assert out["url"].startswith("http://test.example/artifacts/")
+        assert out["mime_type"] == "image/png"
+
+    async def test_source_hook_re_invoked_per_call(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         invocations = 0
 
-        def render() -> bytes:
+        def render(requested: str) -> ResolvedSource:
             nonlocal invocations
             invocations += 1
-            return f"v{invocations}".encode()
+            return ResolvedSource(stream=io.BytesIO(f"v{invocations}".encode()))
 
-        await h.publish(lazy=render, mime_type="image/png", origin_id="abc")
+        mcp, _ = _make_handle_http(monkeypatch, source=render)
         await _call_tool(mcp, "create_download_link", origin_id="abc")
         await _call_tool(mcp, "create_download_link", origin_id="abc")
         assert invocations == 2, (
-            "lazy must be re-invoked on each create_download_link call"
+            "source hook must be re-invoked on each create_download_link call"
         )
 
-    async def test_unknown_origin_id_returns_transfer_failed(
+    async def test_source_value_error_returns_transfer_failed(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        mcp, _ = _make_handle_http(monkeypatch)
+        # The source hook rejects any id other than "abc" with ValueError.
+        mcp, _ = _make_handle_http(monkeypatch, source=_src(b"x", origin_id="abc"))
         out = await _call_tool(mcp, "create_download_link", origin_id="never-published")
         assert out["error"] == "transfer_failed"
         assert out["method"] == "http"
+        assert out["origin_id"] == "never-published"
+        assert out["origin_server"] == "image-mcp"
 
     async def test_invalid_origin_id_returns_transfer_failed(
         self, monkeypatch: pytest.MonkeyPatch
@@ -402,11 +500,26 @@ class TestCreateDownloadLinkTool:
         out = await _call_tool(mcp, "create_download_link", origin_id="bad/with-slash")
         assert out["error"] == "transfer_failed"
 
+    async def test_source_non_value_error_is_reraised(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A non-ValueError from the source hook is a server bug — re-raised.
+
+        Only ``ValueError`` maps to a ``transfer_failed`` envelope;
+        anything else is logged and propagates so the failure is loud.
+        """
+
+        def boom(requested: str) -> ResolvedSource:
+            raise RuntimeError("source hook is broken")
+
+        mcp, _ = _make_handle_http(monkeypatch, source=boom)
+        with pytest.raises(RuntimeError, match="source hook is broken"):
+            await _call_tool(mcp, "create_download_link", origin_id="abc")
+
     async def test_ttl_clamped_to_handle_default(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         mcp, h = _make_handle_http(monkeypatch)
-        await h.publish(source=b"x", mime_type="image/png", origin_id="abc")
         out = await _call_tool(
             mcp,
             "create_download_link",
@@ -422,7 +535,7 @@ class TestCreateDownloadLinkTool:
 
 
 class TestFetchFileTool:
-    async def test_exchange_url_via_consumer_sink(
+    async def test_exchange_url_via_sink(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         monkeypatch.setenv("MCP_EXCHANGE_DIR", str(tmp_path))
@@ -436,14 +549,15 @@ class TestFetchFileTool:
         # …consumer wires fetch_file with a sink and reads it.
         captured: dict[str, Any] = {}
 
-        async def vault_sink(data: bytes, ctx: FetchContext) -> FetchResult:
+        async def vault_sink(stream: BinaryIO, ctx: SinkContext) -> Mapping[str, Any]:
+            data = stream.read()
             captured["data"] = data
-            captured["url"] = ctx.url
-            return FetchResult(
-                stored_at="vault://generated/test.png",
-                bytes_written=len(data),
-                extra={"saved_path": "generated/test.png"},
-            )
+            captured["origin_id"] = ctx.origin_id
+            return {
+                "stored_at": "vault://generated/test.png",
+                "bytes_written": len(data),
+                "saved_path": "generated/test.png",
+            }
 
         monkeypatch.setenv("TEST_FE_TRANSPORT", "http")
         mcp = _new_mcp()
@@ -452,13 +566,38 @@ class TestFetchFileTool:
             namespace="vault-mcp",
             env_prefix="TEST_FE",
             consumes=("image/png",),
-            consumer_sink=vault_sink,
+            sink=vault_sink,
         )
         out = await _call_tool(mcp, "fetch_file", url=uri)
         assert out["method"] == "exchange"
         assert out["bytes_written"] == 3
         assert out["saved_path"] == "generated/test.png"
         assert captured["data"] == b"img"
+
+    async def test_sync_sink_works(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A sync sink hook is supported alongside the async form."""
+        monkeypatch.setenv("MCP_EXCHANGE_DIR", str(tmp_path))
+        from fastmcp_pvl_core import FileExchange
+
+        producer = FileExchange.from_env(default_namespace="image-mcp")
+        assert producer is not None
+        uri = str(producer.write_atomic(origin_id="abc", ext="png", content=b"img"))
+
+        monkeypatch.setenv("TEST_FE_TRANSPORT", "http")
+        mcp = _new_mcp()
+        register_file_exchange(
+            mcp,
+            namespace="vault-mcp",
+            env_prefix="TEST_FE",
+            consumes=("image/png",),
+            sink=_sink,
+        )
+        out = await _call_tool(mcp, "fetch_file", url=uri)
+        assert out["method"] == "exchange"
+        assert out["bytes_written"] == 3
+        assert out["stored_at"] == "memory"
 
     async def test_invalid_input_neither_or_both(
         self, monkeypatch: pytest.MonkeyPatch
@@ -469,7 +608,7 @@ class TestFetchFileTool:
             mcp,
             namespace="vault-mcp",
             env_prefix="TEST_FE",
-            consumer_sink=_identity_sink,
+            sink=_sink,
         )
         # Neither
         out = await _call_tool(mcp, "fetch_file")
@@ -488,7 +627,7 @@ class TestFetchFileTool:
             mcp,
             namespace="vault-mcp",
             env_prefix="TEST_FE",
-            consumer_sink=_identity_sink,
+            sink=_sink,
         )
         out = await _call_tool(mcp, "fetch_file", url="ftp://nope/x")
         assert out["error"] == "invalid_input"
@@ -508,7 +647,7 @@ class TestFetchFileTool:
             mcp,
             namespace="vault-mcp",
             env_prefix="TEST_FE",
-            consumer_sink=_identity_sink,
+            sink=_sink,
         )
         ref = FileRef(
             origin_server="image-mcp",
@@ -533,7 +672,7 @@ class TestFetchFileTool:
             mcp,
             namespace="vault-mcp",
             env_prefix="TEST_FE",
-            consumer_sink=_identity_sink,
+            sink=_sink,
         )
         # Bare-URL SSRF refusals come back as a structured transfer_failed
         # envelope (the same shape as a file_ref-supplied http failure).
@@ -558,33 +697,10 @@ class TestMisc:
             namespace="x",
             env_prefix="TEST_FE",
             produces=("image/png",),
+            source=_src(b"x"),
         )
         assert h.http_enabled is True
         assert h.exchange_enabled is False  # no MCP_EXCHANGE_DIR
-
-    def test_preview_round_trips_via_publish(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setenv("TEST_FE_BASE_URL", "http://t")
-        monkeypatch.setenv("TEST_FE_TRANSPORT", "http")
-        mcp = _new_mcp()
-        h = register_file_exchange(
-            mcp,
-            namespace="x",
-            env_prefix="TEST_FE",
-            produces=("image/png",),
-        )
-        preview = FileRefPreview(description="Test", dimensions=(10, 20))
-        import asyncio
-
-        ref = asyncio.run(
-            h.publish(source=b"x", mime_type="image/png", preview=preview)
-        )
-        assert ref.preview == preview
-        assert ref.to_dict()["preview"] == {
-            "description": "Test",
-            "dimensions": {"width": 10, "height": 20},
-        }
 
     def test_internal_artifact_store_seam_injects_fake(
         self,
@@ -603,6 +719,7 @@ class TestMisc:
             namespace="x",
             env_prefix="TEST_FE",
             produces=("application/pdf",),
+            source=_src(b"x"),
         )
         assert h.artifact_store is fake
 
@@ -663,4 +780,16 @@ class TestMisc:
                 namespace="x",
                 env_prefix="TEST_FE",
                 legacy_capability_shape=True,  # type: ignore[call-arg]
+            )
+
+    def test_register_file_exchange_rejects_consumer_sink_kwarg(self) -> None:
+        """consumer_sink= was the pre-#105 consumer hook kwarg — replaced
+        by sink=."""
+        mcp = _new_mcp()
+        with pytest.raises(TypeError, match="consumer_sink"):
+            register_file_exchange(
+                mcp,
+                namespace="x",
+                env_prefix="TEST_FE",
+                consumer_sink=_sink,  # type: ignore[call-arg]
             )

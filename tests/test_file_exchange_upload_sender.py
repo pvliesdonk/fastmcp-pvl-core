@@ -16,7 +16,7 @@ from fastmcp_pvl_core import (
 
 
 def _resolver(payload: bytes, content_type: str | None = None):
-    """A byte_source returning the given payload for any origin_id."""
+    """A source hook returning the given payload for any origin_id."""
 
     def resolve(origin_id: str) -> ResolvedSource:
         return ResolvedSource(
@@ -32,7 +32,7 @@ def _resolver(payload: bytes, content_type: str | None = None):
 async def test_registration_adds_upload_tool() -> None:
     mcp = FastMCP(name="t")
     handle = register_file_exchange_upload_sender(
-        mcp, namespace="ns", env_prefix="TEST_SEND", byte_source=_resolver(b"x")
+        mcp, namespace="ns", env_prefix="TEST_SEND", source=_resolver(b"x")
     )
     assert handle.namespace == "ns"
     assert handle.tool_name == "upload"
@@ -43,7 +43,7 @@ async def test_registration_adds_upload_tool() -> None:
 async def test_capability_advertises_http_upload_source() -> None:
     mcp = FastMCP(name="t")
     register_file_exchange_upload_sender(
-        mcp, namespace="ns", env_prefix="TEST_SEND", byte_source=_resolver(b"x")
+        mcp, namespace="ns", env_prefix="TEST_SEND", source=_resolver(b"x")
     )
     builder = mcp._pvl_file_exchange_builder  # type: ignore[attr-defined]
     cap = builder.build()
@@ -74,7 +74,7 @@ async def test_upload_success_returns_status_and_body(
         mcp,
         namespace="ns",
         env_prefix="TEST_SEND",
-        byte_source=_resolver(b"PAYLOAD", content_type="application/pdf"),
+        source=_resolver(b"PAYLOAD", content_type="application/pdf"),
     )
     tool = await mcp.get_tool("upload")
     assert tool is not None
@@ -107,7 +107,7 @@ async def test_upload_content_type_param_overrides_resolver(
         mcp,
         namespace="ns",
         env_prefix="TEST_SEND",
-        byte_source=_resolver(b"x", content_type="application/pdf"),
+        source=_resolver(b"x", content_type="application/pdf"),
     )
     tool = await mcp.get_tool("upload")
     assert tool is not None
@@ -125,7 +125,7 @@ async def test_upload_content_type_param_overrides_resolver(
 async def test_upload_ssrf_guard_rejects_loopback_url() -> None:
     mcp = FastMCP(name="t")
     register_file_exchange_upload_sender(
-        mcp, namespace="ns", env_prefix="TEST_SEND", byte_source=_resolver(b"x")
+        mcp, namespace="ns", env_prefix="TEST_SEND", source=_resolver(b"x")
     )
     tool = await mcp.get_tool("upload")
     assert tool is not None
@@ -143,7 +143,7 @@ async def test_upload_resolver_value_error_returns_transfer_failed() -> None:
 
     mcp = FastMCP(name="t")
     register_file_exchange_upload_sender(
-        mcp, namespace="ns", env_prefix="TEST_SEND", byte_source=bad_resolver
+        mcp, namespace="ns", env_prefix="TEST_SEND", source=bad_resolver
     )
     tool = await mcp.get_tool("upload")
     assert tool is not None
@@ -175,7 +175,7 @@ async def test_upload_4xx_transfer_failed_body_passed_through(
     )
     mcp = FastMCP(name="t")
     register_file_exchange_upload_sender(
-        mcp, namespace="ns", env_prefix="TEST_SEND", byte_source=_resolver(b"x")
+        mcp, namespace="ns", env_prefix="TEST_SEND", source=_resolver(b"x")
     )
     tool = await mcp.get_tool("upload")
     assert tool is not None
@@ -201,7 +201,7 @@ async def test_upload_async_resolver_supported(
 
     mcp = FastMCP(name="t")
     register_file_exchange_upload_sender(
-        mcp, namespace="ns", env_prefix="TEST_SEND", byte_source=aresolve
+        mcp, namespace="ns", env_prefix="TEST_SEND", source=aresolve
     )
     tool = await mcp.get_tool("upload")
     assert tool is not None
@@ -223,7 +223,7 @@ async def test_upload_transport_error_returns_transfer_failed(
     )
     mcp = FastMCP(name="t")
     register_file_exchange_upload_sender(
-        mcp, namespace="ns", env_prefix="TEST_SEND", byte_source=_resolver(b"data")
+        mcp, namespace="ns", env_prefix="TEST_SEND", source=_resolver(b"data")
     )
     tool = await mcp.get_tool("upload")
     assert tool is not None
@@ -263,7 +263,7 @@ async def test_upload_closes_stream_on_transport_error(
 
     mcp = FastMCP(name="t")
     register_file_exchange_upload_sender(
-        mcp, namespace="ns", env_prefix="TEST_SEND", byte_source=source_with_tracking
+        mcp, namespace="ns", env_prefix="TEST_SEND", source=source_with_tracking
     )
     tool = await mcp.get_tool("upload")
     assert tool is not None
@@ -292,7 +292,7 @@ async def test_upload_sets_content_length_from_size_bytes(
         mcp,
         namespace="ns",
         env_prefix="TEST_SEND",
-        byte_source=_resolver(payload),
+        source=_resolver(payload),
     )
     tool = await mcp.get_tool("upload")
     assert tool is not None
@@ -323,7 +323,7 @@ async def test_upload_omits_content_length_when_size_unknown(
 
     mcp = FastMCP(name="t")
     register_file_exchange_upload_sender(
-        mcp, namespace="ns", env_prefix="TEST_SEND", byte_source=no_size_resolver
+        mcp, namespace="ns", env_prefix="TEST_SEND", source=no_size_resolver
     )
     tool = await mcp.get_tool("upload")
     assert tool is not None
@@ -347,7 +347,7 @@ async def test_upload_non_json_body_passed_through_as_text(
     )
     mcp = FastMCP(name="t")
     register_file_exchange_upload_sender(
-        mcp, namespace="ns", env_prefix="TEST_SEND", byte_source=_resolver(b"x")
+        mcp, namespace="ns", env_prefix="TEST_SEND", source=_resolver(b"x")
     )
     tool = await mcp.get_tool("upload")
     assert tool is not None
@@ -380,7 +380,7 @@ async def test_upload_invalid_origin_id_returns_transfer_failed(
     )
     mcp = FastMCP(name="t")
     register_file_exchange_upload_sender(
-        mcp, namespace="ns", env_prefix="TEST_SEND", byte_source=_resolver(b"x")
+        mcp, namespace="ns", env_prefix="TEST_SEND", source=_resolver(b"x")
     )
     tool = await mcp.get_tool("upload")
     assert tool is not None
@@ -421,7 +421,7 @@ async def test_upload_non_envelope_error_response_returns_transfer_failed(
     )
     mcp = FastMCP(name="t")
     register_file_exchange_upload_sender(
-        mcp, namespace="ns", env_prefix="TEST_SEND", byte_source=_resolver(b"x")
+        mcp, namespace="ns", env_prefix="TEST_SEND", source=_resolver(b"x")
     )
     tool = await mcp.get_tool("upload")
     assert tool is not None
@@ -459,7 +459,7 @@ async def test_upload_content_type_octet_stream_fallback(
 
     mcp = FastMCP(name="t")
     register_file_exchange_upload_sender(
-        mcp, namespace="ns", env_prefix="TEST_SEND", byte_source=no_ct_resolver
+        mcp, namespace="ns", env_prefix="TEST_SEND", source=no_ct_resolver
     )
     tool = await mcp.get_tool("upload")
     assert tool is not None
@@ -493,7 +493,7 @@ async def test_upload_malformed_json_body_falls_back_to_text(
     )
     mcp = FastMCP(name="t")
     register_file_exchange_upload_sender(
-        mcp, namespace="ns", env_prefix="TEST_SEND", byte_source=_resolver(b"x")
+        mcp, namespace="ns", env_prefix="TEST_SEND", source=_resolver(b"x")
     )
     tool = await mcp.get_tool("upload")
     assert tool is not None
@@ -528,7 +528,7 @@ async def test_upload_single_post_no_retry(
     )
     mcp = FastMCP(name="t")
     register_file_exchange_upload_sender(
-        mcp, namespace="ns", env_prefix="TEST_SEND", byte_source=_resolver(b"payload")
+        mcp, namespace="ns", env_prefix="TEST_SEND", source=_resolver(b"payload")
     )
     tool = await mcp.get_tool("upload")
     assert tool is not None
@@ -572,7 +572,7 @@ async def test_upload_sync_resolver_returning_awaitable(
         mcp,
         namespace="ns",
         env_prefix="TEST_SEND",
-        byte_source=sync_returning_awaitable,
+        source=sync_returning_awaitable,
     )
     tool = await mcp.get_tool("upload")
     assert tool is not None
@@ -589,7 +589,7 @@ async def test_upload_sync_resolver_returning_awaitable(
 async def test_upload_stream_read_oserror_returns_transfer_failed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """An OSError from the byte_source stream during POST body → transfer_failed."""
+    """An OSError from the source hook's stream during POST body → transfer_failed."""
 
     class _FailingStream(io.BytesIO):
         def read(self, size: int | None = -1, /) -> bytes:
@@ -609,7 +609,7 @@ async def test_upload_stream_read_oserror_returns_transfer_failed(
 
     mcp = FastMCP(name="t")
     register_file_exchange_upload_sender(
-        mcp, namespace="ns", env_prefix="TEST_SEND", byte_source=failing_resolver
+        mcp, namespace="ns", env_prefix="TEST_SEND", source=failing_resolver
     )
     tool = await mcp.get_tool("upload")
     assert tool is not None
@@ -656,7 +656,7 @@ async def test_upload_stream_close_error_does_not_mask_result(
         mcp,
         namespace="ns",
         env_prefix="TEST_SEND",
-        byte_source=resolver_with_bad_close,
+        source=resolver_with_bad_close,
     )
     tool = await mcp.get_tool("upload")
     assert tool is not None

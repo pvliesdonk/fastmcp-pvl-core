@@ -17,18 +17,17 @@ Lifecycle constraints from the spec:
 
 from __future__ import annotations
 
-import asyncio
 import errno
-import inspect
 import logging
 import os
 import secrets
+import tempfile
 import time
 import uuid
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Final
+from typing import TYPE_CHECKING, Any, BinaryIO, Final, cast
 
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
@@ -579,14 +578,16 @@ def _try_unlink(path: Path) -> bool:
 # ---------------------------------------------------------------------------
 
 
-BufferedReceiver = Callable[
-    ["UploadRecord", bytes],
-    "dict[str, Any] | Awaitable[dict[str, Any]]",
+# pvl-core's file_exchange facade adapts the public ``SinkHook`` to
+# this internal shape; the route itself only sees ``(record, file-like)``.
+RouteSink = Callable[
+    ["UploadRecord", BinaryIO],
+    "Awaitable[Mapping[str, Any]]",
 ]
-StreamReceiver = Callable[
-    ["UploadRecord", AsyncIterator[bytes]],
-    "dict[str, Any] | Awaitable[dict[str, Any]]",
-]
+
+# Inbound POST body spool: keep small uploads in memory, spill larger
+# ones to disk so a receive never holds the whole body in RAM at once.
+_UPLOAD_SPOOL_MAX_BYTES: Final = 1024 * 1024
 
 
 class _UploadOversizeError(BaseException):  # noqa: N818  -- internal sentinel
@@ -625,18 +626,16 @@ def register_upload_route(
     *,
     store: UploadStore,
     namespace: str,
-    receiver: BufferedReceiver | None = None,
-    stream_receiver: StreamReceiver | None = None,
+    sink: RouteSink,
     accepts: tuple[str, ...] = ("*/*",),
 ) -> None:
     """Mount ``POST /<namespace>/uploads/{token}`` on ``mcp``.
 
-    Exactly one of ``receiver`` (buffered) or ``stream_receiver``
-    (chunked) MUST be supplied.
+    The received body is spooled into a :class:`tempfile.SpooledTemporaryFile`
+    — bounded in memory, spilling to disk past a threshold — and handed
+    to ``sink`` as a sync file-like. The route returns:
 
-    The route returns:
-
-    - ``200`` with the receiver's dict serialised as JSON on success.
+    - ``200`` with the sink's mapping serialised as JSON on success.
     - ``404 Not Found`` if the token is unknown, expired, or already
       consumed (indistinguishable, to avoid leaking token state to a
       probing caller).
@@ -645,36 +644,30 @@ def register_upload_route(
       mid-stream (defense in depth against lying clients).
     - ``415 Unsupported Media Type`` if ``Content-Type`` does not match
       any entry in ``accepts`` (with ``*/*`` semantics as below).
-    - ``400 Bad Request`` if the receiver raises ``ValueError`` —
-      the exception's ``str()`` is returned as the response body, so
-      receivers SHOULD frame ``ValueError`` messages as caller-facing
-      diagnostics ("invalid path", "extension not allowed").
-    - ``409 Conflict`` if the receiver raises ``FileExistsError`` —
-      same body convention as 400.
-    - ``500 Internal Server Error`` if the receiver raises any other
-      exception, OR if the receiver returns a non-dict (programmer
-      bug). The full traceback (or non-dict-marker log line) is
-      written at ERROR; the response body is a generic
-      ``"Internal Server Error"`` (does NOT echo ``str(exc)`` to avoid
-      leaking internal detail).
+    - ``400 Bad Request`` if the sink raises ``ValueError`` — the
+      exception's ``str()`` is returned as the response body, so sinks
+      SHOULD frame ``ValueError`` messages as caller-facing diagnostics
+      ("invalid path", "extension not allowed").
+    - ``409 Conflict`` if the sink raises ``FileExistsError`` — same
+      body convention as 400.
+    - ``500 Internal Server Error`` if the sink raises any other
+      exception. The full traceback is written at ERROR; the response
+      body is a generic ``"Internal Server Error"`` (does NOT echo
+      ``str(exc)`` to avoid leaking internal detail).
 
     All non-success responses (4xx, 5xx) consume the token; clients
     MUST re-call ``create_upload_link`` to retry. This is intentional —
     the runtime consumes the token at the lookup step for anti-replay
     safety, before the precondition gates (size, content-type) and
-    the receiver run. A naive retry on the same URL after a 413 / 415
+    the sink run. A naive retry on the same URL after a 413 / 415
     therefore returns 404, not the original error code.
 
-    The streaming-receiver path feeds chunks directly from
+    The body is read through a bounded async generator wrapping
     ``request.stream()``; the running-total cap fires mid-iteration if
-    the body exceeds ``record.max_bytes``, aborting before the receiver
-    completes. The buffered-receiver path consumes the same bounded
-    generator into a ``bytes`` object before dispatch.
-
-    The runtime uses a :class:`BaseException` subclass internally to
-    signal oversize-mid-iteration, so a stream receiver's normal
-    ``except Exception`` cannot accidentally swallow the abort signal.
-    Receivers may catch ``Exception`` freely without truncation risk.
+    the body exceeds ``record.max_bytes``, aborting before the spool is
+    fully written. The runtime uses a :class:`BaseException` subclass
+    internally to signal that oversize abort, so a sink's normal
+    ``except Exception`` cannot accidentally swallow it.
 
     ``accepts`` is enforced before any body read — a request whose
     ``Content-Type`` does not match any entry returns 415. Use ``"*/*"``
@@ -682,23 +675,7 @@ def register_upload_route(
     match any subtype. A request with no ``Content-Type`` header is
     treated as not matching any non-wildcard entry — explicit
     accept-lists therefore demand the header.
-
-    Sync vs async receivers: sync buffered receivers run in an asyncio
-    threadpool (``asyncio.to_thread``) so blocking I/O (file writes, DB
-    writes, etc.) does not stall the event loop. Async receivers run on
-    the loop. Stream receivers should be ``async def``; the
-    ``_bounded_chunks`` generator is an async iterator whose
-    ``__anext__`` must be awaited on the event loop, so a sync stream
-    receiver cannot consume the body from a thread. Sync stream
-    receivers are tolerated only in the degenerate "ignore the body"
-    case.
     """
-    if (receiver is None) == (stream_receiver is None):
-        raise ValueError(
-            "register_upload_route requires exactly one of receiver= or "
-            "stream_receiver="
-        )
-
     path = f"/{namespace}/uploads/{{token}}"
 
     @mcp.custom_route(path, methods=["POST"])
@@ -770,62 +747,30 @@ def register_upload_route(
                     raise _UploadOversizeError()
                 yield chunk
 
+        # Spool the bounded body into a sync file-like; the sink reads
+        # it back. SpooledTemporaryFile keeps small bodies in memory and
+        # spills larger ones to disk, so memory stays bounded regardless
+        # of ``record.max_bytes``.
+        spool: tempfile.SpooledTemporaryFile[bytes] = tempfile.SpooledTemporaryFile(
+            max_size=_UPLOAD_SPOOL_MAX_BYTES
+        )
         try:
-            if receiver is not None:
-                # Buffered path: fully consume the bounded generator into bytes.
-                buf: list[bytes] = []
-                async for c in _bounded_chunks():
-                    buf.append(c)
-                body = b"".join(buf)
-                if inspect.iscoroutinefunction(receiver):
-                    result = await receiver(record, body)
-                else:
-                    # Sync receiver — run in a thread so blocking I/O
-                    # (file writes, DB writes, etc.) does not stall the
-                    # asyncio event loop. Receivers that want to stay on
-                    # the loop should declare ``async def`` and use
-                    # ``asyncio.to_thread`` themselves for any blocking
-                    # call.
-                    result = await asyncio.to_thread(receiver, record, body)
-                    if inspect.isawaitable(result):
-                        # Sync function that returned an awaitable
-                        # (uncommon but legal). Await on the loop.
-                        result = await result
-            else:
-                # Streaming path: pass the bounded generator directly. The
-                # receiver iterates it; oversize aborts mid-iteration.
-                # Mirror the buffered path's threadpool dispatch: async
-                # receivers run on the loop, sync receivers run via
-                # ``asyncio.to_thread`` so blocking work (DB lookups,
-                # bookkeeping) does not stall the event loop. Note: a
-                # sync stream receiver still cannot iterate the body —
-                # ``_bounded_chunks`` is an async generator whose
-                # ``__anext__`` must be awaited on the event loop, which
-                # is impossible from a thread. The supported pattern for
-                # stream receivers is ``async def``; sync stream
-                # receivers are tolerated only in the degenerate "ignore
-                # the body" case (DB-only bookkeeping etc.).
-                assert stream_receiver is not None  # narrow
-                if inspect.iscoroutinefunction(stream_receiver):
-                    result = await stream_receiver(record, _bounded_chunks())
-                else:
-                    result = await asyncio.to_thread(
-                        stream_receiver, record, _bounded_chunks()
-                    )
-                    if inspect.isawaitable(result):
-                        result = await result
+            async for chunk in _bounded_chunks():
+                spool.write(chunk)
+            spool.seek(0)
+            result = await sink(record, cast("BinaryIO", spool))
         except _UploadOversizeError:
             return Response(content="Payload Too Large", status_code=413)
         except ValueError as exc:
             logger.info(
-                "upload_receiver_value_error token_prefix=%s: %s",
+                "upload_sink_value_error token_prefix=%s: %s",
                 token[:8],
                 exc,
             )
             return Response(content=str(exc), status_code=400)
         except FileExistsError as exc:
             logger.info(
-                "upload_receiver_conflict token_prefix=%s: %s",
+                "upload_sink_conflict token_prefix=%s: %s",
                 token[:8],
                 exc,
             )
@@ -837,7 +782,7 @@ def register_upload_route(
             # that only render the message field — getMessage() does
             # not include exc_info.
             logger.exception(
-                "upload_receiver_failure token_prefix=%s: %s",
+                "upload_sink_failure token_prefix=%s: %s",
                 token[:8],
                 exc,
             )
@@ -845,21 +790,16 @@ def register_upload_route(
                 content="Internal Server Error",
                 status_code=500,
             )
+        finally:
+            spool.close()
 
-        if not isinstance(result, dict):
-            logger.error(
-                "upload_receiver returned non-dict (%s); responding 500 — receiver bug",
-                type(result).__name__,
-            )
-            return Response(content="Internal Server Error", status_code=500)
-        return JSONResponse(result, status_code=200)
+        return JSONResponse(dict(result), status_code=200)
 
 
 __all__ = [
-    "BufferedReceiver",
     "ExchangeGroupMismatch",
     "FileExchange",
     "FileExchangeConfigError",
-    "StreamReceiver",
+    "RouteSink",
     "register_upload_route",
 ]

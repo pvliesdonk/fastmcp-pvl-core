@@ -6,20 +6,42 @@ Capability declarations use the v0.3.0 ``source``/``sink`` role-keyed
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+import io
+from collections.abc import Iterator, Mapping
+from typing import Any, BinaryIO
 
 import pytest
 from fastmcp import FastMCP
 
 from fastmcp_pvl_core import (
-    FetchContext,
-    FetchResult,
+    ResolvedSource,
+    SinkContext,
+    SourceHook,
     register_file_exchange,
     register_file_exchange_upload,
 )
 from fastmcp_pvl_core._file_exchange_protocol import (
     _FileExchangeCapabilityBuilder,
 )
+
+
+def _src(payload: bytes, content_type: str | None = None) -> SourceHook:
+    """A sync ``SourceHook`` returning ``payload`` for any ``origin_id``."""
+
+    def _hook(origin_id: str) -> ResolvedSource:
+        return ResolvedSource(
+            stream=io.BytesIO(payload),
+            content_type=content_type,
+            size_bytes=len(payload),
+        )
+
+    return _hook
+
+
+async def _sink(stream: BinaryIO, ctx: SinkContext) -> Mapping[str, Any]:
+    """An async ``SinkHook`` that drains the stream and reports the byte count."""
+    data = stream.read()
+    return {"stored": True, "bytes": len(data)}
 
 
 def test_builder_http_source_only_emits_source_role() -> None:
@@ -224,11 +246,9 @@ def test_register_file_exchange_dual_role_advertises_http_source_and_sink(
     monkeypatch.setenv("TEST_FE_TRANSPORT", "http")
     monkeypatch.setenv("TEST_FE_BASE_URL", "http://test.example")
     # FILE_EXCHANGE_PRODUCE / _CONSUME both default to "true", so the
-    # producer side and — with consumer_sink supplied — the consumer side
-    # both activate without setting those env vars explicitly.
-
-    async def _sink(data: bytes, ctx: FetchContext) -> FetchResult:
-        raise AssertionError("consumer_sink must not be invoked by this test")
+    # producer side (with ``source`` supplied) and the consumer side
+    # (with ``sink`` supplied) both activate without setting those env
+    # vars explicitly.
 
     mcp = FastMCP(name="dual-role-probe")
     handle = register_file_exchange(
@@ -236,7 +256,8 @@ def test_register_file_exchange_dual_role_advertises_http_source_and_sink(
         namespace="image-mcp",
         env_prefix="TEST_FE",
         produces=("image/png",),
-        consumer_sink=_sink,
+        source=_src(b"png-bytes", content_type="image/png"),
+        sink=_sink,
     )
 
     assert handle.capability is not None
@@ -267,7 +288,7 @@ def test_register_file_exchange_upload_default_accepts_wildcard_on_wire(
         mcp,
         namespace="ns",
         env_prefix="TEST_UP",
-        receiver=lambda record, body: {"ok": True},
+        sink=_sink,
     )
 
     builder = getattr(mcp, _BUILDER_ATTR)

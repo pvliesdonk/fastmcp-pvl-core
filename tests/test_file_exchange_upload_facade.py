@@ -3,12 +3,19 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
+from collections.abc import Mapping
+from typing import Any, BinaryIO
 
 import pytest
 from fastmcp import FastMCP
 
-from fastmcp_pvl_core import UploadRecord, register_file_exchange_upload
+from fastmcp_pvl_core import SinkContext, register_file_exchange_upload
+
+
+async def _sink(stream: BinaryIO, ctx: SinkContext) -> Mapping[str, Any]:
+    """An async ``SinkHook`` that drains the stream and reports the byte count."""
+    data = stream.read()
+    return {"stored": True, "bytes": len(data)}
 
 
 @pytest.mark.asyncio
@@ -18,15 +25,15 @@ async def test_registration_adds_create_upload_link_tool(
     monkeypatch.setenv("TEST_UPLOAD_TRANSPORT", "http")
     monkeypatch.setenv("TEST_UPLOAD_BASE_URL", "http://srv.test")
 
-    def recv(record: UploadRecord, body: bytes) -> dict[str, Any]:
-        return {"origin_id": record.origin_id}
+    async def recv(stream: BinaryIO, ctx: SinkContext) -> Mapping[str, Any]:
+        return {"origin_id": ctx.origin_id}
 
     mcp = FastMCP(name="test")
     handle = register_file_exchange_upload(
         mcp,
         namespace="ns",
         env_prefix="TEST_UPLOAD",
-        receiver=recv,
+        sink=recv,
     )
     assert handle.namespace == "ns"
     assert handle.tool_name == "create_upload_link"
@@ -48,7 +55,7 @@ async def test_create_upload_link_success_returns_url_ttl_maxbytes(
         mcp,
         namespace="ns",
         env_prefix="TEST_UPLOAD",
-        receiver=lambda rec, body: {"ok": True},
+        sink=_sink,
     )
     tool = await mcp.get_tool("create_upload_link")
     assert tool is not None
@@ -75,7 +82,7 @@ async def test_missing_base_url_returns_disabled_handle(
             mcp,
             namespace="ns",
             env_prefix="TEST_UPLOAD",
-            receiver=lambda rec, body: {"ok": True},
+            sink=_sink,
         )
 
     assert handle.enabled is False
@@ -110,7 +117,7 @@ async def test_create_upload_link_rejection_returns_transfer_failed_envelope(
         mcp,
         namespace="ns",
         env_prefix="TEST_UPLOAD",
-        receiver=lambda rec, body: {"ok": True},
+        sink=_sink,
         pre_link_validator=reject,
     )
     tool = await mcp.get_tool("create_upload_link")
@@ -139,7 +146,7 @@ async def test_create_upload_link_content_type_mismatch_returns_transfer_failed(
         mcp,
         namespace="ns",
         env_prefix="TEST_UPLOAD",
-        receiver=lambda rec, body: {"ok": True},
+        sink=_sink,
         accepts=("text/markdown",),
     )
     tool = await mcp.get_tool("create_upload_link")
@@ -167,7 +174,7 @@ async def test_create_upload_link_clamps_ttl_and_max_bytes_to_ceilings(
         mcp,
         namespace="ns",
         env_prefix="TEST_UPLOAD",
-        receiver=lambda rec, body: {"ok": True},
+        sink=_sink,
     )
     tool = await mcp.get_tool("create_upload_link")
     assert tool is not None
@@ -197,7 +204,7 @@ async def test_pre_link_validator_blocks_invalid_origin_id(
         mcp,
         namespace="ns",
         env_prefix="TEST_UPLOAD",
-        receiver=lambda rec, body: {"ok": True},
+        sink=_sink,
         pre_link_validator=reject,
     )
     tool = await mcp.get_tool("create_upload_link")
@@ -234,7 +241,7 @@ async def test_pre_link_validator_other_exception_logs_as_bug(
         mcp,
         namespace="ns",
         env_prefix="TEST_UPLOAD",
-        receiver=lambda rec, body: {"ok": True},
+        sink=_sink,
         pre_link_validator=buggy,
     )
     tool = await mcp.get_tool("create_upload_link")
@@ -268,7 +275,7 @@ async def test_pre_link_validator_async_is_awaited(
         mcp,
         namespace="ns",
         env_prefix="TEST_UPLOAD",
-        receiver=lambda rec, body: {"ok": True},
+        sink=_sink,
         pre_link_validator=vlog,
     )
     tool = await mcp.get_tool("create_upload_link")
@@ -289,7 +296,7 @@ async def test_env_overrides_max_bytes_and_ttl(monkeypatch: pytest.MonkeyPatch) 
         mcp,
         namespace="ns",
         env_prefix="TEST_UPLOAD",
-        receiver=lambda rec, body: {"ok": True},
+        sink=_sink,
     )
     assert h.max_bytes_default == 5_000_000
     assert h.ttl_default == 120.0
@@ -307,27 +314,24 @@ async def test_env_override_ttl_max(monkeypatch: pytest.MonkeyPatch) -> None:
         mcp,
         namespace="ns",
         env_prefix="TEST_UPLOAD",
-        receiver=lambda rec, body: {"ok": True},
+        sink=_sink,
     )
     assert h.ttl_max == 7200.0
 
 
-def test_mutual_exclusion_of_receivers() -> None:
-    mcp = FastMCP(name="test")
-    with pytest.raises(ValueError, match="exactly one"):
-        register_file_exchange_upload(
-            mcp,
-            namespace="ns",
-            env_prefix="TEST_X",
-            receiver=lambda rec, body: {},
-            stream_receiver=lambda rec, body: {},  # type: ignore[arg-type]
-        )
+def test_missing_sink_raises_type_error() -> None:
+    """``sink`` is a required kwarg; omitting it is a plain ``TypeError``.
 
-
-def test_neither_receiver_raises() -> None:
+    Replaces the former ``test_neither_receiver_raises`` /
+    ``test_mutual_exclusion_of_receivers`` pair. The four divergent
+    receiver shapes collapsed into a single required ``sink`` hook, so
+    there is no "exactly one of receiver/stream_receiver" rule and no
+    library-raised ``ValueError`` — a missing ``sink`` is simply a
+    missing required argument, caught by Python itself.
+    """
     mcp = FastMCP(name="test")
-    with pytest.raises(ValueError, match="exactly one"):
-        register_file_exchange_upload(
+    with pytest.raises(TypeError):
+        register_file_exchange_upload(  # type: ignore[call-arg]
             mcp,
             namespace="ns",
             env_prefix="TEST_X",
@@ -343,7 +347,7 @@ def test_stdio_transport_returns_disabled_handle(
         mcp,
         namespace="ns",
         env_prefix="TEST_UPLOAD",
-        receiver=lambda rec, body: {"ok": True},
+        sink=_sink,
     )
     assert h.enabled is False
     assert h.upload_store is None
@@ -387,7 +391,7 @@ def test_create_link_floors_non_positive_ttl_to_default(
         mcp,
         namespace="ns",
         env_prefix="TEST_UPLOAD_FLOOR",
-        receiver=lambda rec, body: {"ok": True},
+        sink=_sink,
     )
     # Set ttl_default via env for test isolation.
     _, eff_zero, _ = handle.create_link(origin_id="x", ttl_seconds=0)
@@ -419,7 +423,7 @@ async def test_create_upload_link_rejects_path_traversal_origin_id(
         mcp,
         namespace="ns",
         env_prefix="TEST_UPLOAD",
-        receiver=lambda rec, body: {"ok": True},
+        sink=_sink,
     )
     tool = await mcp.get_tool("create_upload_link")
     assert tool is not None
@@ -451,7 +455,7 @@ async def test_create_upload_link_rejects_destination_with_leading_whitespace(
         mcp,
         namespace="ns",
         env_prefix="TEST_UPLOAD",
-        receiver=lambda rec, body: {"ok": True},
+        sink=_sink,
     )
     tool = await mcp.get_tool("create_upload_link")
     assert tool is not None
@@ -480,7 +484,7 @@ async def test_create_upload_link_rejects_destination_with_control_char(
         mcp,
         namespace="ns",
         env_prefix="TEST_UPLOAD",
-        receiver=lambda rec, body: {"ok": True},
+        sink=_sink,
     )
     tool = await mcp.get_tool("create_upload_link")
     assert tool is not None
@@ -514,7 +518,7 @@ def test_malformed_upload_max_bytes_raises_configuration_error(
             mcp,
             namespace="ns",
             env_prefix="TEST_UPLOAD",
-            receiver=lambda rec, body: {"ok": True},
+            sink=_sink,
         )
 
 
@@ -534,7 +538,7 @@ def test_malformed_upload_ttl_raises_configuration_error(
             mcp,
             namespace="ns",
             env_prefix="TEST_UPLOAD",
-            receiver=lambda rec, body: {"ok": True},
+            sink=_sink,
         )
 
 
@@ -554,7 +558,7 @@ def test_malformed_upload_ttl_max_raises_configuration_error(
             mcp,
             namespace="ns",
             env_prefix="TEST_UPLOAD",
-            receiver=lambda rec, body: {"ok": True},
+            sink=_sink,
         )
 
 
@@ -574,7 +578,7 @@ def test_negative_upload_max_bytes_raises_configuration_error(
             mcp,
             namespace="ns",
             env_prefix="TEST_UPLOAD",
-            receiver=lambda rec, body: {"ok": True},
+            sink=_sink,
         )
 
 
@@ -594,7 +598,7 @@ def test_negative_upload_ttl_raises_configuration_error(
             mcp,
             namespace="ns",
             env_prefix="TEST_UPLOAD",
-            receiver=lambda rec, body: {"ok": True},
+            sink=_sink,
         )
 
 
@@ -614,7 +618,7 @@ def test_negative_upload_ttl_max_raises_configuration_error(
             mcp,
             namespace="ns",
             env_prefix="TEST_UPLOAD",
-            receiver=lambda rec, body: {"ok": True},
+            sink=_sink,
         )
 
 
@@ -644,7 +648,7 @@ async def test_sync_pre_link_validator_runs_in_threadpool(
         mcp,
         namespace="ns",
         env_prefix="TEST_UPLOAD",
-        receiver=lambda rec, body: {"ok": True},
+        sink=_sink,
         pre_link_validator=sync_vld,
     )
     tool = await mcp.get_tool("create_upload_link")
