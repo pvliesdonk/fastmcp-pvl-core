@@ -13,11 +13,11 @@ def test_upload_direction_type_aliases_are_exported() -> None:
     aliases ``ConsumerSink`` / ``FetchContext`` / ``FetchResult``.
     """
     import fastmcp_pvl_core
-    from fastmcp_pvl_core import file_exchange
     from fastmcp_pvl_core import (
         BufferedReceiver,
         PreLinkValidator,
         StreamReceiver,
+        file_exchange,
     )
 
     # Listed in the package-root __all__.
