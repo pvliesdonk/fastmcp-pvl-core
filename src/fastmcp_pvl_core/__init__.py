@@ -80,7 +80,7 @@ from fastmcp_pvl_core.file_exchange import (
     register_file_exchange_upload_sender,
 )
 
-__version__ = "3.0.0-rc.1"  # PSR overrides at build time
+__version__ = "3.0.1-rc.1"  # PSR overrides at build time
 
 __all__ = [
     "ArtifactStore",
