@@ -647,7 +647,7 @@ class TestCreateDownloadLink:
     ) -> None:
         mcp = _new_producer_mcp(monkeypatch, _src(b"PNG", "image/png"))
         out = await _call_download_link(mcp, origin_id="abc")
-        assert out["url"].startswith("http://test.example")
+        assert out["url"].startswith("http://test.example/artifacts/")
         assert out["mime_type"] == "image/png"
 
     async def test_async_source_hook_mints_url(
@@ -657,7 +657,7 @@ class TestCreateDownloadLink:
         # an async hook drives create_download_link just as a sync one does.
         mcp = _new_producer_mcp(monkeypatch, _async_src(b"PNG", "image/png"))
         out = await _call_download_link(mcp, origin_id="abc")
-        assert out["url"].startswith("http://test.example")
+        assert out["url"].startswith("http://test.example/artifacts/")
         assert out["mime_type"] == "image/png"
 
     async def test_ttl_clamped_to_handle_ceiling(

@@ -1254,6 +1254,10 @@ async def _consume_http(
         # error so callers don't depend on httpx types.
         raise FetchTransportError(f"http fetch failed: {exc}") from exc
     except BaseException:
+        # Close the spool on any other failure and let it propagate.
+        # A non-HTTP system error here (e.g. a disk-full while the spool
+        # spills) is a server fault, not a transfer the client can
+        # retry — it surfaces as a tool error, not a transfer_failed.
         spool.close()
         raise
 
