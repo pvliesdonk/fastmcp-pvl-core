@@ -377,15 +377,16 @@ register_file_exchange_upload(
 ```
 
 This mints one-time `POST` URLs via a `create_upload_link` tool and
-dispatches the bytes to your receiver. See File Exchange spec
-§"Inbound HTTP transfer" (v0.4 amendments) at
+dispatches the bytes to your receiver. See the File Exchange spec's
+§"Transfer Methods → `http_upload`" at
 [`docs/specs/file-exchange.md`](docs/specs/file-exchange.md) for the
 wire contract.
 
 Both helpers cooperate on the same `experimental.file_exchange`
 capability — registering both on one FastMCP instance advertises a
-single capability whose `transfer_methods.http` block carries both
-`download` and `upload` sub-keys.
+single capability whose `transfer_methods` object carries a separate
+`http` block (the download direction) and `http_upload` block (the
+upload direction), each following the `source` / `sink` role pattern.
 
 ## License
 
