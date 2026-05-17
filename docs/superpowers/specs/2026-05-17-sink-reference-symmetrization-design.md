@@ -58,8 +58,9 @@ identical to `origin_id`'s v0.5 definition but sink-side:
   local path" to *the consumer auto-places per its own domain* (a
   domain-default location, a UUID-derived name, etc.; the rationale —
   "prevents LLMs hallucinating invalid directory structures" — is unchanged).
-  If `destination` is *supplied but* fails the minimal-safety floor, that is a
-  `transfer_failed`, not a silent fallback.
+  If `destination` is *supplied but* fails the minimal-safety floor,
+  `fetch_file` returns its `invalid_input` error envelope (the tool's existing
+  shape for malformed input) — surfaced, not a silent fallback.
 
 The spec enumerates, non-normatively, the range of valid downstream
 interpretations — the same freedom `origin_id` has on the source side:
@@ -168,6 +169,6 @@ breaking changes shipped.
 - The spec's consumer-tool surface has no placement parameter named `path`;
   `docs/specs/file-exchange.md` is at v0.6 and `SPEC_VERSION == "0.6"`.
 - A supplied `destination` that violates the minimal-safety floor yields
-  `transfer_failed`; an omitted `destination` triggers the auto-place
-  fallback.
+  `fetch_file`'s `invalid_input` error envelope; an omitted `destination`
+  triggers the auto-place fallback.
 - Full suite + `ruff` + `mypy` green.

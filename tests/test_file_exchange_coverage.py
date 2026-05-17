@@ -387,16 +387,16 @@ class TestConsumeHTTP:
 
 
 # ---------------------------------------------------------------------------
-# fetch_file ``destination`` — the sink-side opaque domain reference (v0.6)
+# fetch_file ``destination`` — the sink-side opaque domain reference
 # ---------------------------------------------------------------------------
 
 
 class TestFetchFileDestination:
     """``fetch_file(destination=...)`` threads the sink-side reference.
 
-    Spec v0.6 §"File reference" makes ``destination`` a first-class
-    :class:`SinkContext` field, mirroring ``origin_id`` on the source
-    side: it is the caller's opaque placement handle for the consumer.
+    ``destination`` is a first-class :class:`SinkContext` field,
+    mirroring ``origin_id`` on the source side: the caller's opaque
+    placement handle for the consumer.
     """
 
     async def test_http_path_populates_destination(
