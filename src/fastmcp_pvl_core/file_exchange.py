@@ -811,7 +811,9 @@ def _disposition_filename(origin_id: str, ext: str) -> str:
     characters; it is never used verbatim. Keep a readable tail and
     sanitise to a conservative charset.
     """
-    tail = origin_id.rsplit("/", 1)[-1] or origin_id
+    # Treat ``\`` like ``/`` so a path-shaped origin_id yields the same
+    # tail regardless of separator style.
+    tail = origin_id.replace("\\", "/").rsplit("/", 1)[-1] or origin_id
     safe = re.sub(r"[^A-Za-z0-9._-]", "_", tail).strip("._") or "download"
     return f"{safe}.{ext}"
 

@@ -806,6 +806,9 @@ class TestDispositionFilename:
             # extension; harmless for an advisory Content-Disposition name,
             # asserted here as the documented contract.
             ("image://job-1/0.png", "png", "0.png.png"),
+            # Backslash is treated as a path separator, same as a forward
+            # slash, so tail extraction is separator-style-agnostic.
+            ("dir\\file.txt", "png", "file.txt.png"),
         ],
     )
     def test_derives_header_safe_filename(
