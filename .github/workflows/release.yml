@@ -33,6 +33,12 @@ jobs:
       id-token: write
 
     steps:
+      - name: Reject contradictory dispatch inputs
+        if: inputs.force == 'prerelease' && inputs.prerelease == false
+        run: |
+          echo "::error::force=prerelease advances the rc revision and requires the pre-release box to stay checked"
+          exit 1
+
       - name: Checkout repository
         uses: actions/checkout@v6
         with:
