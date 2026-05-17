@@ -798,17 +798,20 @@ class TestDispositionFilename:
     @pytest.mark.parametrize(
         ("origin_id", "ext", "expected"),
         [
-            ("folder/note.md", "png", "note.md.png"),
-            ("image://job-1/0", "webp", "0.webp"),
+            # origin_id is opaque — pvl-core does not parse it; the whole
+            # reference is folded to a safe charset, never split.
+            ("folder/note.md", "png", "folder_note.md.png"),
+            ("image://job-1/0", "webp", "image_job-1_0.webp"),
             ("a1b2c3", "png", "a1b2c3.png"),
+            # Runs of unsafe characters collapse to one "_"; an all-unsafe
+            # id falls back to "download".
             ("///", "png", "download.png"),
-            # A tail that already carries an extension yields a double
-            # extension; harmless for an advisory Content-Disposition name,
-            # asserted here as the documented contract.
-            ("image://job-1/0.png", "png", "0.png.png"),
-            # Backslash is treated as a path separator, same as a forward
-            # slash, so tail extraction is separator-style-agnostic.
-            ("dir\\file.txt", "png", "file.txt.png"),
+            # Slash and backslash are folded identically — neither is a
+            # path separator inside an opaque reference.
+            ("dir\\file.txt", "png", "dir_file.txt.png"),
+            # A "." is kept, so an extension-suffixed id plus the appended
+            # ext yields a (harmless) double extension.
+            ("image://job-1/0.png", "png", "image_job-1_0.png.png"),
         ],
     )
     def test_derives_header_safe_filename(

@@ -807,14 +807,14 @@ def _resolve_enabled(env_prefix: str, transport: Literal["http", "stdio"]) -> bo
 def _disposition_filename(origin_id: str, ext: str) -> str:
     """Derive a header-safe Content-Disposition filename from an origin_id.
 
-    ``origin_id`` is an opaque reference that MAY contain URI/path
-    characters; it is never used verbatim. Keep a readable tail and
-    sanitise to a conservative charset.
+    ``origin_id`` is opaque: pvl-core does not parse its structure, so
+    it is not split on ``/`` (or any other character) to extract a
+    "tail" — nothing inside an opaque reference is a path separator.
+    The whole reference is folded to a conservative charset; slash,
+    backslash, colon, space and every other non-``[A-Za-z0-9._-]``
+    character are treated identically. Advisory download-name only.
     """
-    # Treat ``\`` like ``/`` so a path-shaped origin_id yields the same
-    # tail regardless of separator style.
-    tail = origin_id.replace("\\", "/").rsplit("/", 1)[-1] or origin_id
-    safe = re.sub(r"[^A-Za-z0-9._-]", "_", tail).strip("._") or "download"
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "_", origin_id).strip("._") or "download"
     return f"{safe}.{ext}"
 
 
