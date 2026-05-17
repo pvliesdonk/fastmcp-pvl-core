@@ -802,6 +802,10 @@ class TestDispositionFilename:
             ("image://job-1/0", "webp", "0.webp"),
             ("a1b2c3", "png", "a1b2c3.png"),
             ("///", "png", "download.png"),
+            # A tail that already carries an extension yields a double
+            # extension; harmless for an advisory Content-Disposition name,
+            # asserted here as the documented contract.
+            ("image://job-1/0.png", "png", "0.png.png"),
         ],
     )
     def test_derives_header_safe_filename(

@@ -1801,21 +1801,14 @@ def register_file_exchange_upload(
         # rest per its own domain rules.
         try:
             validate_reference(origin_id, field="origin_id")
+            if destination is not None:
+                validate_reference(destination, field="destination")
         except ExchangeURIError as exc:
             return _upload_transfer_failed(
                 receiver_server=namespace,
                 origin_id=origin_id,
                 message=str(exc),
             )
-        if destination is not None:
-            try:
-                validate_reference(destination, field="destination")
-            except ExchangeURIError as exc:
-                return _upload_transfer_failed(
-                    receiver_server=namespace,
-                    origin_id=origin_id,
-                    message=str(exc),
-                )
         # content_type hint: pre-filter against the receiver's accepts
         # list so a mismatched hint is rejected in-band, before a wasted
         # POST round-trip (the route still enforces 415 on the actual
