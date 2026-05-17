@@ -255,7 +255,7 @@ class TestValidateSegment:
 
 
 class TestValidateReference:
-    """Spec v0.5 minimal-safety floor for opaque domain references."""
+    """Minimal-safety floor for opaque domain references."""
 
     @pytest.mark.parametrize(
         "value",

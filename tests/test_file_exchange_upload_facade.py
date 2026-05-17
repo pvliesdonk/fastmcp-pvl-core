@@ -411,7 +411,7 @@ async def test_create_upload_link_accepts_opaque_origin_id(
     origin_id: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """v0.5: ``origin_id`` is an opaque domain reference.
+    """``origin_id`` is an opaque domain reference.
 
     Path-shaped and URI-shaped values are no longer rejected — they are
     only checked against the minimal-safety floor and otherwise passed

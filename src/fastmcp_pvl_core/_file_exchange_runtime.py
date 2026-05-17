@@ -342,7 +342,7 @@ class FileExchange:
             origin_id: Producer-chosen opaque reference. Never used
                 verbatim as a path component — the ``exchange://`` URI
                 ``{id}`` segment is derived from it via
-                :func:`_exchange_segment` (spec v0.5 §"Security and
+                :func:`_exchange_segment` (spec §"Security and
                 Path Resolution"). Validated against the minimal-safety
                 floor; otherwise used only for the debug log and as the
                 derivation input.
@@ -365,7 +365,7 @@ class FileExchange:
         ExchangeURI.validate_segment(ext, role="json_param")
         # Defence-in-depth: the producing facade validates origin_id
         # before calling here, but write_atomic is also reachable
-        # directly — enforce the spec v0.5 minimal-safety floor too.
+        # directly — enforce the spec minimal-safety floor too.
         validate_reference(origin_id, field="origin_id")
         seg = _exchange_segment(origin_id)
 

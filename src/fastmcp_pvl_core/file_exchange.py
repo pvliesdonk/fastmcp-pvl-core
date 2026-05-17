@@ -1,13 +1,13 @@
 """MCP File Exchange — public facade.
 
 Single-entry-point wiring for downstream MCP servers that want to
-participate in the File Exchange convention (spec v0.5). Composes
+participate in the File Exchange convention. Composes
 the artifact store, the protocol surface, and the exchange-volume
 runtime, and registers the spec-compliant ``create_download_link``
 and ``fetch_file`` MCP tools.
 
 The ``experimental.file_exchange`` capability this module advertises
-uses the v0.5 ``transfer_methods`` shape: ``http`` and
+uses the ``transfer_methods`` shape: ``http`` and
 ``http_upload`` are separate method keys, each carrying ``source`` /
 ``sink`` role sub-objects for whichever role(s) the server fills.
 
@@ -459,7 +459,7 @@ class FileExchangeHandle:
                 ``source`` hook — pvl-core never invents one, because a
                 pvl-core-generated id would be unknown to the hook.
                 Validated only against the minimal-safety floor (spec
-                v0.5 §"Security and Path Resolution"): non-empty, no
+                §"Security and Path Resolution"): non-empty, no
                 null bytes or control characters, no leading/trailing
                 whitespace. It is otherwise opaque — the ``source`` hook
                 owns domain validation, and pvl-core derives every path
@@ -593,7 +593,7 @@ def register_file_exchange(
     source: SourceHook | None = None,
     sink: SinkHook | None = None,
 ) -> FileExchangeHandle:
-    """Wire MCP File Exchange (v0.5) onto ``mcp``.
+    """Wire MCP File Exchange onto ``mcp``.
 
     The kwarg surface is intentionally minimal — only domain hooks,
     no operator-config kwargs, no override seams. Operator config
@@ -727,7 +727,7 @@ def register_file_exchange(
     # --- Capability declaration ---
     # Push contributions into the per-FastMCP builder so that an upload
     # registrar on the same ``mcp`` can merge into one capability dict.
-    # The shape emitted is the v0.5 ``source``/``sink`` role-keyed form.
+    # The shape emitted is the ``source``/``sink`` role-keyed form.
     capability: FileExchangeCapability | None = None
     if enabled:
         builder = _get_or_create_builder(
@@ -1789,7 +1789,7 @@ def register_file_exchange_upload(
         Args:
             origin_id: The sender's opaque stable handle for the bytes
                 (the *what*). Validated against the minimal-safety floor
-                (spec v0.5 §"Security and Path Resolution"): non-empty,
+                (spec §"Security and Path Resolution"): non-empty,
                 no null bytes or control characters, no leading/trailing
                 whitespace. Otherwise opaque — the receiver validates
                 the rest per its own domain rules.
@@ -1811,7 +1811,7 @@ def register_file_exchange_upload(
             envelope.
         """
         # origin_id and destination share the minimal-safety floor (spec
-        # v0.5 §"Security and Path Resolution"): non-empty, no null bytes
+        # §"Security and Path Resolution"): non-empty, no null bytes
         # or control chars, no leading/trailing whitespace. Both are
         # otherwise opaque domain references — the receiver validates the
         # rest per its own domain rules.
@@ -1946,7 +1946,7 @@ def register_file_exchange_upload_sender(
                 ``create_upload_link`` call.
             origin_id: The sender's opaque stable handle for the bytes to
                 push. Validated against the minimal-safety floor (spec
-                v0.5 §"Security and Path Resolution"): non-empty, no null
+                §"Security and Path Resolution"): non-empty, no null
                 bytes or control characters, no leading/trailing
                 whitespace; resolved to bytes by the server's ``source``
                 hook. This ``origin_id`` is the

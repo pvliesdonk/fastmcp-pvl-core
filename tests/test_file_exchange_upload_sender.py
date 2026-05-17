@@ -399,7 +399,7 @@ async def test_upload_opaque_origin_id_accepted(
     origin_id: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """v0.5: path-/URI-shaped origin_id is opaque — the POST proceeds."""
+    """A path-/URI-shaped origin_id is opaque — the POST proceeds."""
     call_count: list[int] = [0]
 
     def handler(request: httpx.Request) -> httpx.Response:

@@ -382,7 +382,7 @@ class UploadRecord:
     An ``UploadRecord`` does not carry bytes — bytes arrive over the wire
     when a client ``POST``s to ``/<ns>/uploads/{token}``. The record
     carries the metadata the receiver needs to commit the bytes, modelling
-    the v0.5 spec's WHAT/WHERE split, plus the runtime guards.
+    the spec's WHAT/WHERE split, plus the runtime guards.
 
     Attributes:
         origin_id: The sender's opaque stable handle for the bytes (the

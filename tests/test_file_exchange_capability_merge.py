@@ -1,6 +1,6 @@
 """Tests for capability-merge across the http / http_upload registrars.
 
-Capability declarations use the v0.5 ``source``/``sink`` role-keyed
+Capability declarations use the ``source``/``sink`` role-keyed
 ``transfer_methods`` shape (spec §"Transfer Methods").
 """
 

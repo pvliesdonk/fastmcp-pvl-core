@@ -82,7 +82,7 @@ rejection of residuals.
 def validate_reference(value: str, *, field: str = "origin_id") -> str:
     """Validate an opaque domain reference (``origin_id`` / ``destination``).
 
-    The minimal-safety floor (spec v0.5 §"Security and Path Resolution"):
+    The minimal-safety floor (spec §"Security and Path Resolution"):
     non-empty, no null bytes, no control characters U+0000-U+001F, no
     leading or trailing whitespace. The reference is otherwise opaque —
     the owning domain server's hook validates it against its own domain
@@ -482,7 +482,7 @@ class _FileExchangeCapabilityBuilder:
     instance; the capability dict is materialised by :meth:`build` once
     every registrar has run.
 
-    Transfer methods are advertised in the v0.5 ``source``/``sink``
+    Transfer methods are advertised in the ``source``/``sink``
     role-keyed shape (spec §"Transfer Methods"): ``http`` and
     ``http_upload`` are separate top-level method keys, and each carries
     whichever of the ``source`` / ``sink`` roles the server fills.
@@ -548,7 +548,7 @@ class _FileExchangeCapabilityBuilder:
             ``None`` if no transfer method has been set (neither
             exchange nor an ``http`` role nor an ``http_upload`` role).
             Otherwise a frozen :class:`FileExchangeCapability` whose
-            ``transfer_methods`` uses the v0.5 ``source``/``sink`` shape.
+            ``transfer_methods`` uses the ``source``/``sink`` shape.
         """
         transfer_methods: dict[str, dict[str, Any]] = {}
         if self._exchange_present:

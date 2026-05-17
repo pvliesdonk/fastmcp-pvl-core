@@ -810,7 +810,7 @@ class TestCreateDownloadLink:
     async def test_floor_violation_origin_id_returns_transfer_failed(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # v0.5: ``../escape`` is now an opaque reference, not a rejection.
+        # ``../escape`` is an opaque reference, not a rejection.
         # The minimal-safety floor still rejects control characters.
         mcp = _new_producer_mcp(monkeypatch, _src(b"PNG", "image/png"))
         out = await _call_download_link(mcp, origin_id="bad\x00id")
@@ -867,7 +867,7 @@ class TestMakeFileRef:
     async def test_make_file_ref_accepts_dotted_origin_id(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # v0.5: a leading dot is opaque data — make_file_ref accepts it
+        # a leading dot is opaque data — make_file_ref accepts it
         # and echoes it back; no segment-rule rejection.
         monkeypatch.setenv("TEST_FE_BASE_URL", "http://test.example")
         monkeypatch.setenv("TEST_FE_TRANSPORT", "http")
