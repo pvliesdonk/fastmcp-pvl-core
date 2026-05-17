@@ -52,7 +52,6 @@ import io
 import ipaddress
 import logging
 import mimetypes
-import re
 import tempfile
 from collections.abc import (
     AsyncIterator,
@@ -564,9 +563,9 @@ class FileExchangeHandle:
 def _ext_for(mime_type: str | None) -> str:
     """Pick a file extension (no leading dot) for a MIME type.
 
-    Used for the ``exchange`` URI's filename segment and the ``http``
-    download's ``Content-Disposition``. Always pvl-core-derived — never
-    a hook input — so the result is always a safe path segment.
+    Used for the ``exchange`` URI's filename-segment extension. Always
+    pvl-core-derived — never a hook input — so the result is always a
+    safe path segment.
     """
     guessed = mimetypes.guess_extension(mime_type or "") or ".bin"
     return guessed.lstrip(".")
@@ -804,20 +803,6 @@ def _resolve_enabled(env_prefix: str, transport: Literal["http", "stdio"]) -> bo
 # ---------------------------------------------------------------------------
 
 
-def _disposition_filename(origin_id: str, ext: str) -> str:
-    """Derive a header-safe Content-Disposition filename from an origin_id.
-
-    ``origin_id`` is opaque: pvl-core does not parse its structure, so
-    it is not split on ``/`` (or any other character) to extract a
-    "tail" — nothing inside an opaque reference is a path separator.
-    The whole reference is folded to a conservative charset; slash,
-    backslash, colon, space and every other non-``[A-Za-z0-9._-]``
-    character are treated identically. Advisory download-name only.
-    """
-    safe = re.sub(r"[^A-Za-z0-9._-]+", "_", origin_id).strip("._") or "download"
-    return f"{safe}.{ext}"
-
-
 def _register_create_download_link(mcp: FastMCP, handle: FileExchangeHandle) -> None:
     """Register the spec-compliant ``create_download_link`` MCP tool."""
 
@@ -886,7 +871,6 @@ def _register_create_download_link(mcp: FastMCP, handle: FileExchangeHandle) -> 
         url = handle.artifact_store.put_ephemeral(
             data,
             content_type=content_type,
-            filename=_disposition_filename(origin_id, _ext_for(resolved.content_type)),
             ttl_seconds=effective_ttl,
         )
         return {

@@ -106,35 +106,13 @@ class TokenRecord:
 
     Attributes:
         content: The raw bytes to serve.
-        filename: Suggested filename for the ``Content-Disposition`` header.
         mime_type: MIME type served in the ``Content-Type`` header.
         expires_at: Unix timestamp after which the record is considered expired.
     """
 
     content: bytes
-    filename: str
     mime_type: str
     expires_at: float
-
-
-def _sanitize_filename(filename: str) -> str:
-    """Strip characters that would break a ``Content-Disposition`` header.
-
-    The HTTP header grammar forbids raw CR/LF and treats double quote and
-    backslash as structural characters. We remove CR/LF entirely (prevents
-    header injection) and replace quote and backslash with ``_`` so the
-    header remains parseable. Non-ASCII code points are not percent-encoded
-    here — callers that need them should pass an already-sanitised filename.
-
-    Args:
-        filename: Raw filename supplied by the caller.
-
-    Returns:
-        A filename safe to embed inside a quoted-string ``filename=`` param.
-    """
-    cleaned = filename.replace("\r", "").replace("\n", "")
-    cleaned = cleaned.replace('"', "_").replace("\\", "_")
-    return cleaned or "download"
 
 
 class ArtifactStore(_BaseTokenStore[TokenRecord]):
@@ -185,7 +163,6 @@ class ArtifactStore(_BaseTokenStore[TokenRecord]):
         self,
         content: bytes,
         *,
-        filename: str,
         mime_type: str,
         ttl_seconds: float | None = None,
     ) -> str:
@@ -193,7 +170,6 @@ class ArtifactStore(_BaseTokenStore[TokenRecord]):
 
         Args:
             content: Raw bytes to serve on retrieval.
-            filename: Filename advertised via ``Content-Disposition``.
             mime_type: MIME type advertised via ``Content-Type``.
             ttl_seconds: Per-token lifetime override. ``None`` (default)
                 uses the store's default TTL set at construction.
@@ -206,7 +182,6 @@ class ArtifactStore(_BaseTokenStore[TokenRecord]):
         ttl = self._ttl if ttl_seconds is None else float(ttl_seconds)
         self._records[token] = TokenRecord(
             content=content,
-            filename=filename,
             mime_type=mime_type,
             expires_at=time.time() + ttl,
         )
@@ -275,7 +250,6 @@ class ArtifactStore(_BaseTokenStore[TokenRecord]):
         content: bytes,
         *,
         content_type: str,
-        filename: str,
         ttl_seconds: float | None = None,
     ) -> str:
         """Stash ``content`` and return a one-time download URL.
@@ -286,7 +260,6 @@ class ArtifactStore(_BaseTokenStore[TokenRecord]):
         Args:
             content: Raw bytes to serve on retrieval.
             content_type: MIME type advertised via ``Content-Type``.
-            filename: Filename advertised via ``Content-Disposition``.
             ttl_seconds: Per-token lifetime override. ``None`` (default)
                 uses the store's default TTL.
 
@@ -299,7 +272,6 @@ class ArtifactStore(_BaseTokenStore[TokenRecord]):
         """
         token = self.add(
             content,
-            filename=filename,
             mime_type=content_type,
             ttl_seconds=ttl_seconds,
         )
@@ -340,7 +312,6 @@ class ArtifactStore(_BaseTokenStore[TokenRecord]):
                 )
                 return Response(content="Not Found", status_code=404)
 
-            safe_filename = _sanitize_filename(record.filename)
             logger.info(
                 "artifact_handler_serve token_prefix=%s size=%d mime=%s",
                 token[:8],
@@ -351,7 +322,7 @@ class ArtifactStore(_BaseTokenStore[TokenRecord]):
                 content=record.content,
                 media_type=record.mime_type,
                 headers={
-                    "Content-Disposition": (f'attachment; filename="{safe_filename}"'),
+                    "Content-Disposition": "attachment",
                 },
             )
 
