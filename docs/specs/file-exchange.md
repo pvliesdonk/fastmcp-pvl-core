@@ -63,7 +63,7 @@ The interop surface. When an MCP tool produces a file intended for cross-server 
 | Field | Required | Description |
 |---|---|---|
 | `origin_server` | MUST | Namespace of the producing server. The client uses this to identify which server connection to call for transfer negotiation. |
-| `origin_id` | MUST | Opaque round-trip handle for this file on the origin server. The producer MAY interpret it as a path, document id, image id with embedded variant, HMAC token, MCP resource URI, or any other internally-meaningful handle. It is opaque to **intermediaries** — the transport and the consuming server — which MUST NOT parse, decode, or embed it verbatim in any URI, path, or filename; they only round-trip it unchanged. The producer's only obligation is round-trip: the exact string returned in `file_ref.origin_id` MUST, when handed back to the producer via any transfer method that accepts an `origin_id` parameter, resolve to the same file (subject to TTL). `origin_id` is validated only against the minimal-safety floor (§"Security and Path Resolution"); the producer's source resolution MUST itself validate the reference against its own domain rules and the caller's authorization before resolving it to bytes. |
+| `origin_id` | MUST | Opaque round-trip handle for this file on the origin server. The producer MAY interpret it as a path, document id, image id with embedded variant, HMAC token, MCP resource URI, or any other internally-meaningful handle. It is opaque to intermediaries — the transport and the consuming server — which MUST NOT parse, decode, or embed it verbatim in any URI, path, or filename; they only round-trip it unchanged. The producer's only obligation is round-trip: the exact string returned in `file_ref.origin_id` MUST, when handed back to the producer via any transfer method that accepts an `origin_id` parameter, resolve to the same file (subject to TTL). `origin_id` is validated only against the minimal-safety floor — non-empty, no null or control characters, no leading or trailing whitespace — (§"Security and Path Resolution"); the producer's source resolution MUST itself validate the reference against its own domain rules and the caller's authorization before resolving it to bytes. |
 | `mime_type` | SHOULD | MIME type of the file. |
 | `size_bytes` | MAY | File size in bytes. |
 | `transfer` | MUST | Object whose keys are transfer method names and whose values are method-specific metadata. At least one method MUST be present. See [Transfer Methods](#transfer-methods). |
@@ -512,7 +512,7 @@ These segment rules apply to `exchange://` URI components only. They do **not** 
 
 **Minimal-safety floor.** Every `origin_id` and `destination` value MUST be non-empty, MUST NOT contain null bytes or control characters (U+0000 through U+001F), and MUST NOT have leading or trailing whitespace. `origin_id` and `destination` share this floor identically. Path separators, dots, and traversal-shaped strings are NOT spec-rejected by the floor; the domain server that owns the reference MUST validate it per its own domain rules before any filesystem interaction.
 
-`origin_id` and `destination` are **symmetric**: both are opaque domain references, both are validated against the minimal-safety floor only, neither is embedded verbatim in a URI by any party, and each is resolved by the domain server that owns it.
+`origin_id` and `destination` are **symmetric**: both are opaque domain references, neither is embedded verbatim in a URI by any party, and each is resolved by the domain server that owns it.
 
 In addition, `exchange://` URIs themselves MUST NOT contain a query component (`?...`) or fragment (`#...`). A URI with either is rejected as `exchange_uri_invalid`. This closes a parser-bypass class where a query string or fragment could slip past naive parsing and be misinterpreted as part of a path segment or file extension.
 
@@ -525,7 +525,7 @@ If a server detects an invalid segment, it MUST abort and return an error:
 }
 ```
 
-Both producers (when writing) and consumers (when reading) MUST apply these rules.
+Both producers (when writing) and consumers (when reading) MUST apply the segment rules and the no-query/no-fragment rule above to `exchange://` URIs.
 
 ### Server Identification
 
@@ -744,7 +744,7 @@ This signals definitively to the client that retrying is pointless. The client S
 - **MUST** write exchange files atomically: write to a temporary dotfile (e.g. `.{id}.{ext}.tmp`), close the file descriptor, then rename to the final path. This prevents consumers from reading partially written files.
 - **MUST** own the complete lifecycle of exchange files it produces. Only the producer deletes its own files. Implementation-specific (SQLite TTL, cron, stat-based, etc.).
 - **SHOULD** implement a storage ceiling or LRU eviction policy alongside time-based TTL to prevent shared volume exhaustion during high-throughput operation (e.g. generating thousands of images). TTL alone is insufficient if the production rate exceeds the expiry rate.
-- **MUST** validate `origin_id` against the minimal-safety floor. The source resolution MUST validate the reference against the server's own domain rules and the caller's authorization before resolving it to bytes (the removed segment rules were traversal hygiene, never authorization).
+- **MUST** validate `origin_id` against the minimal-safety floor. The source resolution MUST validate the reference against the server's own domain rules and the caller's authorization before resolving it to bytes.
 - **MUST**, for tools declared in `transfer_methods.http.source`, accept a parameter named `origin_id` and return a JSON object with at minimum a `url` field.
 - **SHOULD** support the `exchange` method when `MCP_EXCHANGE_DIR` is configured.
 - **SHOULD** support the `http` method to enable cross-host transfers.
