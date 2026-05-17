@@ -1,6 +1,6 @@
 """Tests for capability-merge across the http / http_upload registrars.
 
-Capability declarations use the v0.3.0 ``source``/``sink`` role-keyed
+Capability declarations use the v0.5 ``source``/``sink`` role-keyed
 ``transfer_methods`` shape (spec §"Transfer Methods").
 """
 
@@ -50,7 +50,7 @@ def test_builder_http_source_only_emits_source_role() -> None:
     cap = b.build()
     assert cap is not None
     d = cap.to_capability_dict()
-    assert d["version"] == "0.3"
+    assert d["version"] == "0.5"
     assert d["transfer_methods"]["http"] == {
         "source": {"tool": "create_download_link"},
     }

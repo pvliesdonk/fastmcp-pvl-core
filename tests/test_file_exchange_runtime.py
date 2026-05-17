@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import threading
 import time
@@ -18,7 +19,20 @@ from fastmcp_pvl_core._file_exchange_runtime import (
     ExchangeGroupMismatch,
     FileExchange,
     FileExchangeConfigError,
+    _exchange_segment,
 )
+
+
+def _seg(origin_id: str) -> str:
+    """Expected ``exchange://`` ``{id}`` segment for an ``origin_id``.
+
+    Computed independently from :func:`_exchange_segment` (raw SHA-256
+    hexdigest) so the test asserts the digest contract, not just that
+    the function agrees with itself; the two are cross-checked below.
+    """
+    independent = hashlib.sha256(origin_id.encode("utf-8")).hexdigest()
+    assert independent == _exchange_segment(origin_id)
+    return independent
 
 
 @pytest.fixture(autouse=True)
@@ -200,8 +214,12 @@ class TestWriteAtomic:
         fx = _make_fx(tmp_path)
         uri = fx.write_atomic(origin_id="abc", ext="png", content=b"hello")
         assert isinstance(uri, ExchangeURI)
-        assert str(uri) == "exchange://hades-01/image-mcp/abc.png"
-        assert (tmp_path / "image-mcp" / "abc.png").read_bytes() == b"hello"
+        # The exchange segment is the SHA-256 of the origin_id, not the
+        # raw origin_id (spec v0.5 decoupling).
+        seg = _seg("abc")
+        assert uri.id == seg
+        assert str(uri) == f"exchange://hades-01/image-mcp/{seg}.png"
+        assert (tmp_path / "image-mcp" / f"{seg}.png").read_bytes() == b"hello"
 
     def test_no_tmp_file_remains_on_success(self, tmp_path: Path) -> None:
         fx = _make_fx(tmp_path)
@@ -209,58 +227,72 @@ class TestWriteAtomic:
         # Only the final file should exist (no leftover dotfile).
         ns_dir = tmp_path / "image-mcp"
         names = sorted(p.name for p in ns_dir.iterdir())
-        assert names == ["abc.png"]
+        assert names == [f"{_seg('abc')}.png"]
 
     def test_pre_existing_tmp_invisible_to_consumer(self, tmp_path: Path) -> None:
         """A simulated crashed writer leaves a .tmp file consumers ignore."""
         fx = _make_fx(tmp_path)
         ns_dir = tmp_path / "image-mcp"
         ns_dir.mkdir()
+        seg = _seg("abc")
         # Writer crashed mid-flight — only the dotfile temp exists.
-        (ns_dir / ".abc.png.tmp").write_bytes(b"half-written")
+        (ns_dir / f".{seg}.png.tmp").write_bytes(b"half-written")
         # The consumer side refuses to read it (file isn't visible by URI).
         with pytest.raises(FileNotFoundError):
-            fx.read_exchange_uri("exchange://hades-01/image-mcp/abc.png")
+            fx.read_exchange_uri(f"exchange://hades-01/image-mcp/{seg}.png")
 
-    def test_invalid_origin_id_rejected(self, tmp_path: Path) -> None:
+    def test_opaque_origin_id_accepted(self, tmp_path: Path) -> None:
+        # v0.5: origin_id is opaque — path-shaped values are no longer
+        # rejected by write_atomic; the exchange segment is derived.
+        fx = _make_fx(tmp_path)
+        for origin_id in ("bad/id", ".hidden", "../weird", "image://job-1/0"):
+            uri = fx.write_atomic(origin_id=origin_id, ext="png", content=b"x")
+            assert uri.id == _seg(origin_id)
+            assert origin_id not in str(uri)
+
+    def test_invalid_ext_still_rejected(self, tmp_path: Path) -> None:
+        # ``ext`` is a literal URI segment and is still validated.
         fx = _make_fx(tmp_path)
         with pytest.raises(ExchangeURIError):
-            fx.write_atomic(origin_id="bad/id", ext="png", content=b"x")
+            fx.write_atomic(origin_id="abc", ext="p/g", content=b"x")
 
-    def test_origin_id_starting_with_dot_rejected(self, tmp_path: Path) -> None:
+    def test_floor_violation_origin_id_rejected(self, tmp_path: Path) -> None:
+        # v0.5: write_atomic enforces the minimal-safety floor on
+        # origin_id (defence-in-depth alongside the producing facade).
         fx = _make_fx(tmp_path)
-        with pytest.raises(ExchangeURIError, match="dot"):
-            fx.write_atomic(origin_id=".hidden", ext="png", content=b"x")
+        for bad in ("", " leading", "trailing ", "with\x00null", "ctl\x01"):
+            with pytest.raises(ExchangeURIError):
+                fx.write_atomic(origin_id=bad, ext="png", content=b"x")
 
     def test_overwrite_replaces_atomically(self, tmp_path: Path) -> None:
         fx = _make_fx(tmp_path)
         fx.write_atomic(origin_id="abc", ext="png", content=b"v1")
         fx.write_atomic(origin_id="abc", ext="png", content=b"v2")
-        assert (tmp_path / "image-mcp" / "abc.png").read_bytes() == b"v2"
+        assert (tmp_path / "image-mcp" / f"{_seg('abc')}.png").read_bytes() == b"v2"
 
 
 class TestReadExchangeURI:
     def test_round_trip(self, tmp_path: Path) -> None:
         fx = _make_fx(tmp_path)
-        fx.write_atomic(origin_id="abc", ext="png", content=b"hello")
-        data = fx.read_exchange_uri("exchange://hades-01/image-mcp/abc.png")
+        uri = fx.write_atomic(origin_id="abc", ext="png", content=b"hello")
+        data = fx.read_exchange_uri(str(uri))
         assert data == b"hello"
 
     def test_cross_namespace_read(self, tmp_path: Path) -> None:
         """A consumer (vault-mcp) reads bytes a different namespace produced."""
         producer = _make_fx(tmp_path, namespace="image-mcp")
-        producer.write_atomic(origin_id="abc", ext="png", content=b"image")
+        uri = producer.write_atomic(origin_id="abc", ext="png", content=b"image")
 
         consumer = FileExchange(
             base_dir=tmp_path, exchange_id="hades-01", namespace="vault-mcp"
         )
-        data = consumer.read_exchange_uri("exchange://hades-01/image-mcp/abc.png")
+        data = consumer.read_exchange_uri(str(uri))
         assert data == b"image"
 
     def test_group_mismatch_carries_both_ids(self, tmp_path: Path) -> None:
         fx = _make_fx(tmp_path)
         with pytest.raises(ExchangeGroupMismatch) as exc_info:
-            fx.read_exchange_uri("exchange://other-group/image-mcp/abc.png")
+            fx.read_exchange_uri(f"exchange://other-group/image-mcp/{_seg('abc')}.png")
         msg = str(exc_info.value)
         assert "other-group" in msg
         assert "hades-01" in msg
@@ -300,7 +332,7 @@ class TestSweep:
         )
         fx.write_atomic(origin_id="old", ext="bin", content=b"x")
         # Backdate the file's mtime by 5 seconds.
-        target = tmp_path / "image-mcp" / "old.bin"
+        target = tmp_path / "image-mcp" / f"{_seg('old')}.bin"
         past = time.time() - 5
         os.utime(target, (past, past))
         # And add a fresh one.
@@ -310,7 +342,7 @@ class TestSweep:
         assert removed == 1
         ns = tmp_path / "image-mcp"
         names = sorted(p.name for p in ns.iterdir())
-        assert names == ["fresh.bin"]
+        assert names == [f"{_seg('fresh')}.bin"]
 
     def test_dotfiles_skipped(self, tmp_path: Path) -> None:
         fx = _make_fx(tmp_path)
@@ -344,7 +376,7 @@ class TestSweep:
         for i, name in enumerate(("a", "b", "c")):
             fx.write_atomic(origin_id=name, ext="bin", content=b"x" * 100)
             # Each file gets a distinct mtime in increasing order.
-            target = tmp_path / "image-mcp" / f"{name}.bin"
+            target = tmp_path / "image-mcp" / f"{_seg(name)}.bin"
             mtime = time.time() - (3 - i) * 10
             os.utime(target, (mtime, mtime))
 
@@ -352,4 +384,4 @@ class TestSweep:
         removed = fx.sweep(storage_ceiling_bytes=150)
         assert removed == 2
         names = sorted(p.name for p in (tmp_path / "image-mcp").iterdir())
-        assert names == ["c.bin"]
+        assert names == [f"{_seg('c')}.bin"]

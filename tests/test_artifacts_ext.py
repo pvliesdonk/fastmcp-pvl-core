@@ -29,9 +29,7 @@ class TestPerTokenTTL:
     ) -> None:
         # Default would expire in 1s; per-token override sets it to 60s.
         store = ArtifactStore(ttl_seconds=1)
-        token = store.add(
-            b"x", filename="x.txt", mime_type="text/plain", ttl_seconds=60
-        )
+        token = store.add(b"x", mime_type="text/plain", ttl_seconds=60)
         original = time.time()
         # Move past the default TTL but well before the per-token one.
         monkeypatch.setattr(time, "time", lambda: original + 5)
@@ -44,14 +42,14 @@ class TestPerTokenTTL:
     ) -> None:
         # Default would not expire for an hour; per-token override makes it 1s.
         store = ArtifactStore(ttl_seconds=3600)
-        token = store.add(b"x", filename="x.txt", mime_type="text/plain", ttl_seconds=1)
+        token = store.add(b"x", mime_type="text/plain", ttl_seconds=1)
         original = time.time()
         monkeypatch.setattr(time, "time", lambda: original + 5)
         assert store.pop(token) is None
 
     def test_default_ttl_used_when_none_passed(self) -> None:
         store = ArtifactStore(ttl_seconds=42.0)
-        token = store.add(b"x", filename="x.txt", mime_type="text/plain")
+        token = store.add(b"x", mime_type="text/plain")
         record = store.pop(token)
         assert record is not None
         # Within ±1s of "now + 42".
@@ -110,7 +108,6 @@ class TestPutEphemeral:
         url = store.put_ephemeral(
             b"hello",
             content_type="text/plain; charset=utf-8",
-            filename="hello.txt",
         )
         assert url.startswith("http://testserver/artifacts/")
 
@@ -122,7 +119,8 @@ class TestPutEphemeral:
         assert resp.status_code == 200
         assert resp.content == b"hello"
         assert resp.headers["content-type"].startswith("text/plain")
-        assert 'filename="hello.txt"' in resp.headers["content-disposition"]
+        # Bare ``attachment`` — file exchange carries no filename.
+        assert resp.headers["content-disposition"] == "attachment"
 
     async def test_put_ephemeral_is_one_time(self) -> None:
         from starlette.testclient import TestClient
@@ -131,9 +129,7 @@ class TestPutEphemeral:
         store = ArtifactStore(base_url="http://testserver")
         ArtifactStore.register_route(mcp, store)
 
-        url = store.put_ephemeral(
-            b"data", content_type="application/octet-stream", filename="d.bin"
-        )
+        url = store.put_ephemeral(b"data", content_type="application/octet-stream")
         path = url.replace("http://testserver", "")
 
         app = mcp.http_app()
@@ -148,7 +144,6 @@ class TestPutEphemeral:
         url = store.put_ephemeral(
             b"x",
             content_type="text/plain",
-            filename="x.txt",
             ttl_seconds=60,
         )
         token = url.rsplit("/", 1)[-1]
@@ -160,7 +155,7 @@ class TestPutEphemeral:
     def test_put_ephemeral_without_base_url_raises(self) -> None:
         store = ArtifactStore()
         with pytest.raises(RuntimeError, match="base_url is required"):
-            store.put_ephemeral(b"x", content_type="text/plain", filename="x.txt")
+            store.put_ephemeral(b"x", content_type="text/plain")
 
 
 class TestSingleton:

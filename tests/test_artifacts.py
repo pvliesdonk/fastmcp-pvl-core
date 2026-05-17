@@ -15,35 +15,33 @@ class TestTokenRecord:
     def test_is_frozen(self) -> None:
         record = TokenRecord(
             content=b"x",
-            filename="x.txt",
             mime_type="text/plain",
             expires_at=0.0,
         )
         assert dataclasses.is_dataclass(record)
         with pytest.raises(dataclasses.FrozenInstanceError):
-            record.filename = "y.txt"  # type: ignore[misc]
+            record.mime_type = "text/html"  # type: ignore[misc]
 
 
 class TestArtifactStore:
     def test_add_returns_token(self) -> None:
         store = ArtifactStore()
-        token = store.add(b"hello", filename="a.txt", mime_type="text/plain")
+        token = store.add(b"hello", mime_type="text/plain")
         assert isinstance(token, str)
         assert len(token) > 0
 
     def test_add_returns_unique_tokens(self) -> None:
         store = ArtifactStore()
-        t1 = store.add(b"a", filename="a", mime_type="text/plain")
-        t2 = store.add(b"b", filename="b", mime_type="text/plain")
+        t1 = store.add(b"a", mime_type="text/plain")
+        t2 = store.add(b"b", mime_type="text/plain")
         assert t1 != t2
 
     def test_pop_returns_data_and_removes_token(self) -> None:
         store = ArtifactStore()
-        token = store.add(b"hello", filename="a.txt", mime_type="text/plain")
+        token = store.add(b"hello", mime_type="text/plain")
         record = store.pop(token)
         assert record is not None
         assert record.content == b"hello"
-        assert record.filename == "a.txt"
         assert record.mime_type == "text/plain"
         # Second pop is idempotent — returns None.
         assert store.pop(token) is None
@@ -54,7 +52,7 @@ class TestArtifactStore:
 
     def test_expired_tokens_are_purged(self, monkeypatch: pytest.MonkeyPatch) -> None:
         store = ArtifactStore(ttl_seconds=1)
-        token = store.add(b"x", filename="x", mime_type="application/octet-stream")
+        token = store.add(b"x", mime_type="application/octet-stream")
         original_time = time.time()
         monkeypatch.setattr(time, "time", lambda: original_time + 10)
         assert store.pop(token) is None
@@ -62,17 +60,17 @@ class TestArtifactStore:
     def test_purge_runs_on_add(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Expired tokens should be pruned from memory when a new token is added."""
         store = ArtifactStore(ttl_seconds=1)
-        t1 = store.add(b"one", filename="one.txt", mime_type="text/plain")
+        t1 = store.add(b"one", mime_type="text/plain")
         original_time = time.time()
         monkeypatch.setattr(time, "time", lambda: original_time + 10)
         # Add a fresh token at the shifted time — the prior one should purge.
-        store.add(b"two", filename="two.txt", mime_type="text/plain")
+        store.add(b"two", mime_type="text/plain")
         # Internal store no longer retains t1.
         assert t1 not in store._records  # type: ignore[attr-defined]
 
     def test_custom_ttl(self) -> None:
         store = ArtifactStore(ttl_seconds=42.0)
-        token = store.add(b"x", filename="x.txt", mime_type="text/plain")
+        token = store.add(b"x", mime_type="text/plain")
         record = store.pop(token)
         assert record is not None
         # expires_at roughly now + 42 seconds
@@ -104,7 +102,6 @@ class TestRegisterRoute:
 
         token = store.add(
             b"hello world",
-            filename="greeting.txt",
             mime_type="text/plain; charset=utf-8",
         )
 
@@ -114,9 +111,10 @@ class TestRegisterRoute:
             assert resp.status_code == 200
             assert resp.content == b"hello world"
             assert resp.headers["content-type"].startswith("text/plain")
-            cd = resp.headers["content-disposition"]
-            assert "attachment" in cd
-            assert 'filename="greeting.txt"' in cd
+            # Content-Disposition is bare ``attachment`` — file exchange
+            # carries no filename, so no ``filename=`` parameter is emitted.
+            assert resp.headers["content-disposition"] == "attachment"
+            assert "filename" not in resp.headers["content-disposition"]
 
             # Second request is 404 — token is single-use.
             resp2 = client.get(f"/artifacts/{token}")
@@ -131,7 +129,7 @@ class TestRegisterRoute:
         store = ArtifactStore(ttl_seconds=1)
         ArtifactStore.register_route(mcp, store)
 
-        token = store.add(b"x", filename="x.txt", mime_type="text/plain")
+        token = store.add(b"x", mime_type="text/plain")
         original_time = time.time()
         monkeypatch.setattr(time, "time", lambda: original_time + 10)
 
@@ -147,37 +145,10 @@ class TestRegisterRoute:
         store = ArtifactStore()
         ArtifactStore.register_route(mcp, store, path="/downloads/{token}")
 
-        token = store.add(
-            b"payload", filename="payload.bin", mime_type="application/octet-stream"
-        )
+        token = store.add(b"payload", mime_type="application/octet-stream")
 
         app = mcp.http_app()
         with TestClient(app) as client:
             resp = client.get(f"/downloads/{token}")
         assert resp.status_code == 200
         assert resp.content == b"payload"
-
-    async def test_filename_with_quote_is_sanitised(self) -> None:
-        """Quote/backslash/newline in filename must not break the header."""
-        from starlette.testclient import TestClient
-
-        mcp = FastMCP("test")
-        store = ArtifactStore()
-        ArtifactStore.register_route(mcp, store)
-
-        token = store.add(
-            b"data",
-            filename='evil".txt\r\nX-Injected: yes',
-            mime_type="text/plain",
-        )
-
-        app = mcp.http_app()
-        with TestClient(app) as client:
-            resp = client.get(f"/artifacts/{token}")
-        assert resp.status_code == 200
-        cd = resp.headers["content-disposition"]
-        # No raw CR/LF in the header value.
-        assert "\r" not in cd
-        assert "\n" not in cd
-        # No unescaped injection header leaked.
-        assert "X-Injected" not in resp.headers

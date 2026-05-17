@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 #: field in the ``experimental.file_exchange`` capability declaration
 #: (spec §"Capability declaration"). Major.minor only — patch revisions
 #: are spec-internal.
-SPEC_VERSION = "0.3"
+SPEC_VERSION = "0.5"
 
 
 # ---------------------------------------------------------------------------
@@ -56,9 +56,14 @@ class ExchangeURIError(ValueError):
 # - inside an ``exchange://`` URI (where a single pass of percent-decoding
 #   MUST be applied before validation, and double-encoded payloads MUST
 #   be rejected); and
-# - as raw JSON-RPC parameters such as ``origin_id`` (where decoding
-#   MUST NOT be applied — a literal ``%`` in the value is data, not
-#   encoding). Both contexts share the rule set below.
+# - as raw JSON-RPC-derived path components such as ``namespace``,
+#   ``exchange_id``, and ``ext`` (where decoding MUST NOT be applied — a
+#   literal ``%`` in the value is data, not encoding). Both contexts
+#   share the rule set below.
+#
+# Opaque domain references (``origin_id``, ``destination``) are NOT
+# segment values: they go through the looser minimal-safety floor in
+# ``validate_reference``, not these rules.
 
 _FORBIDDEN_SEGMENT_CHARS = re.compile(r"[/\\\x00-\x1f]")
 """Path separators and ASCII control characters (U+0000–U+001F)."""
@@ -72,6 +77,26 @@ traversal-bypass vector (``%252e%252e%252f`` decodes once to
 §"Security and Path Resolution" mandates exactly one decode pass and
 rejection of residuals.
 """
+
+
+def validate_reference(value: str, *, field: str = "origin_id") -> str:
+    """Validate an opaque domain reference (``origin_id`` / ``destination``).
+
+    The minimal-safety floor (spec v0.5 §"Security and Path Resolution"):
+    non-empty, no null bytes, no control characters U+0000-U+001F, no
+    leading or trailing whitespace. The reference is otherwise opaque —
+    the owning domain server's hook validates it against its own domain
+    rules and the caller's authorization. Returns the value unchanged.
+    """
+    if not value:
+        raise ExchangeURIError(f"{field} MUST NOT be empty")
+    if value != value.strip():
+        raise ExchangeURIError(f"{field} MUST NOT have leading or trailing whitespace")
+    if any(ord(c) < 0x20 for c in value):
+        raise ExchangeURIError(
+            f"{field} MUST NOT contain null bytes or control characters"
+        )
+    return value
 
 
 def _check_segment_rules(value: str, *, where: str) -> str:
@@ -365,8 +390,9 @@ class ExchangeURI:
             role: ``"uri"`` decodes the value once before validating
                 (and rejects residual ``%XX`` to defeat double-encoded
                 traversal). ``"json_param"`` validates the value as-is
-                — JSON-RPC parameters such as ``origin_id`` MUST NOT be
-                URI-decoded (a literal ``%`` is data, not encoding).
+                — JSON-RPC-derived components such as ``namespace`` or
+                ``ext`` MUST NOT be URI-decoded (a literal ``%`` is data,
+                not encoding).
 
         Returns:
             The decoded (for ``role="uri"``) or raw (for
@@ -456,7 +482,7 @@ class _FileExchangeCapabilityBuilder:
     instance; the capability dict is materialised by :meth:`build` once
     every registrar has run.
 
-    Transfer methods are advertised in the v0.3.0 ``source``/``sink``
+    Transfer methods are advertised in the v0.5 ``source``/``sink``
     role-keyed shape (spec §"Transfer Methods"): ``http`` and
     ``http_upload`` are separate top-level method keys, and each carries
     whichever of the ``source`` / ``sink`` roles the server fills.
@@ -522,7 +548,7 @@ class _FileExchangeCapabilityBuilder:
             ``None`` if no transfer method has been set (neither
             exchange nor an ``http`` role nor an ``http_upload`` role).
             Otherwise a frozen :class:`FileExchangeCapability` whose
-            ``transfer_methods`` uses the v0.3.0 ``source``/``sink`` shape.
+            ``transfer_methods`` uses the v0.5 ``source``/``sink`` shape.
         """
         transfer_methods: dict[str, dict[str, Any]] = {}
         if self._exchange_present:
@@ -707,4 +733,5 @@ __all__ = [
     "FileRefPreview",
     "TransferMethods",
     "register_file_exchange_capability",
+    "validate_reference",
 ]

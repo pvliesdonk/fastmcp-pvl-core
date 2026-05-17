@@ -404,17 +404,18 @@ def test_create_link_floors_non_positive_ttl_to_default(
 
 
 @pytest.mark.asyncio
-async def test_create_upload_link_rejects_path_traversal_origin_id(
+@pytest.mark.parametrize(
+    "origin_id", ["folder/to/note.md", "image://job-1/0", "../weird"]
+)
+async def test_create_upload_link_accepts_opaque_origin_id(
+    origin_id: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Baseline ExchangeURI.validate_segment fires before pre_link_validator.
+    """v0.5: ``origin_id`` is an opaque domain reference.
 
-    The spec requires ``origin_id`` to follow the same character rules as
-    ``exchange://`` segments. The ``create_upload_link`` tool calls
-    ``ExchangeURI.validate_segment(..., role="json_param")`` BEFORE running
-    ``pre_link_validator``, so a traversal attempt is rejected in-band even
-    when no validator is configured — consistent with all other in-band
-    rejections in this tool.
+    Path-shaped and URI-shaped values are no longer rejected — they are
+    only checked against the minimal-safety floor and otherwise passed
+    through. A well-formed value mints a URL.
     """
     monkeypatch.setenv("TEST_UPLOAD_TRANSPORT", "http")
     monkeypatch.setenv("TEST_UPLOAD_BASE_URL", "http://srv.test")
@@ -428,15 +429,46 @@ async def test_create_upload_link_rejects_path_traversal_origin_id(
     )
     tool = await mcp.get_tool("create_upload_link")
     assert tool is not None
-    # ExchangeURIError is wrapped and returned as a transfer_failed
-    # envelope — consistent with destination/content_type/pre_link_validator
-    # rejections — rather than surfacing as a raw tool error.
-    result = await tool.run({"origin_id": "../etc/passwd"})
+    result = await tool.run({"origin_id": origin_id})
+    payload = result.structured_content or {}
+    assert "error" not in payload, payload
+    assert "url" in payload
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("field", ["origin_id", "destination"])
+@pytest.mark.parametrize(
+    "bad", ["", " leading", "trailing ", "with\x00null", "with\x01ctrl"]
+)
+async def test_create_upload_link_enforces_floor_on_both_references(
+    field: str,
+    bad: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The minimal-safety floor is enforced symmetrically.
+
+    Both ``origin_id`` and ``destination`` are rejected for empty,
+    whitespace-edged, null-byte, and control-character values.
+    """
+    monkeypatch.setenv("TEST_UPLOAD_TRANSPORT", "http")
+    monkeypatch.setenv("TEST_UPLOAD_BASE_URL", "http://srv.test")
+
+    mcp = FastMCP(name="test")
+    register_file_exchange_upload(
+        mcp,
+        namespace="ns",
+        env_prefix="TEST_UPLOAD",
+        sink=_sink,
+    )
+    tool = await mcp.get_tool("create_upload_link")
+    assert tool is not None
+    args: dict[str, str] = {"origin_id": "ok-id"}
+    args[field] = bad
+    result = await tool.run(args)
     payload = result.structured_content or {}
     assert payload["error"] == "transfer_failed"
     assert payload["method"] == "http_upload"
     assert payload["receiver_server"] == "ns"
-    assert payload["origin_id"] == "../etc/passwd"
 
 
 @pytest.mark.asyncio
