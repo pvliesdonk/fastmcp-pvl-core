@@ -1027,6 +1027,10 @@ async def _fetch_via_url(
         try:
             parsed = ExchangeURI.parse(url)
             origin_server = parsed.namespace
+            # parsed.id is the exchange URI's {id} segment — a producer-
+            # derived value (pvl-core derives it as a SHA-256 digest),
+            # not the real origin_id, which a bare exchange:// URL on
+            # this no-file_ref path does not carry.
             origin_id = parsed.id
         except ExchangeURIError:
             origin_server = ""

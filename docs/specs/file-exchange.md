@@ -60,6 +60,10 @@ The interop surface. When an MCP tool produces a file intended for cross-server 
 }
 ```
 
+> The `exchange://` URI's final `{id}` segment is **producer-derived** and
+> need not resemble `origin_id` — the matching values in these examples are
+> for readability only. See §"Exchange URI".
+
 | Field | Required | Description |
 |---|---|---|
 | `origin_server` | MUST | Namespace of the producing server. The client uses this to identify which server connection to call for transfer negotiation. |

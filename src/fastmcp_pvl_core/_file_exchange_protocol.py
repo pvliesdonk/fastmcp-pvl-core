@@ -482,7 +482,7 @@ class _FileExchangeCapabilityBuilder:
     instance; the capability dict is materialised by :meth:`build` once
     every registrar has run.
 
-    Transfer methods are advertised in the v0.3.0 ``source``/``sink``
+    Transfer methods are advertised in the v0.5 ``source``/``sink``
     role-keyed shape (spec §"Transfer Methods"): ``http`` and
     ``http_upload`` are separate top-level method keys, and each carries
     whichever of the ``source`` / ``sink`` roles the server fills.
@@ -548,7 +548,7 @@ class _FileExchangeCapabilityBuilder:
             ``None`` if no transfer method has been set (neither
             exchange nor an ``http`` role nor an ``http_upload`` role).
             Otherwise a frozen :class:`FileExchangeCapability` whose
-            ``transfer_methods`` uses the v0.3.0 ``source``/``sink`` shape.
+            ``transfer_methods`` uses the v0.5 ``source``/``sink`` shape.
         """
         transfer_methods: dict[str, dict[str, Any]] = {}
         if self._exchange_present:
