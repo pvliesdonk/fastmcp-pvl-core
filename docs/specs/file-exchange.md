@@ -1,6 +1,6 @@
 # MCP File Exchange Specification
 
-**Version:** 0.3.0
+**Version:** 0.5.0
 **Status:** experimental
 **Tags:** mcp, spec, interop
 
@@ -63,13 +63,15 @@ The interop surface. When an MCP tool produces a file intended for cross-server 
 | Field | Required | Description |
 |---|---|---|
 | `origin_server` | MUST | Namespace of the producing server. The client uses this to identify which server connection to call for transfer negotiation. |
-| `origin_id` | MUST | Opaque round-trip handle for this file on the origin server. The producer MAY interpret it as a path, document id, image id with embedded variant, HMAC token, or any other internally-meaningful handle; clients and consumers MUST treat it as opaque. The producer's only obligation is round-trip: the exact string returned in `file_ref.origin_id` MUST, when handed back to the producer via any transfer method that accepts an `origin_id` parameter (e.g. the `http` method's producer tool — see [Transfer Methods](#transfer-methods)), resolve to the same file (subject to TTL). |
+| `origin_id` | MUST | Opaque round-trip handle for this file on the origin server. The producer MAY interpret it as a path, document id, image id with embedded variant, HMAC token, MCP resource URI, or any other internally-meaningful handle. It is opaque to **intermediaries** — the transport and the consuming server — which MUST NOT parse, decode, or embed it verbatim in any URI, path, or filename; they only round-trip it unchanged. The producer's only obligation is round-trip: the exact string returned in `file_ref.origin_id` MUST, when handed back to the producer via any transfer method that accepts an `origin_id` parameter, resolve to the same file (subject to TTL). `origin_id` is validated only against the minimal-safety floor (§"Security and Path Resolution"); the producer's source resolution MUST itself validate the reference against its own domain rules and the caller's authorization before resolving it to bytes. |
 | `mime_type` | SHOULD | MIME type of the file. |
 | `size_bytes` | MAY | File size in bytes. |
 | `transfer` | MUST | Object whose keys are transfer method names and whose values are method-specific metadata. At least one method MUST be present. See [Transfer Methods](#transfer-methods). |
 | `preview` | SHOULD | Lightweight representation of the file for LLM context. See below. |
 
 The file reference does **not** contain a download URL or inline content. Transfer is initiated lazily by the client through the declared methods.
+
+Because the file-exchange tools are themselves MCP tools, a server that exposes its bytes as MCP resources MAY reuse the resource URI as the `origin_id` (and a sink MAY likewise accept a resource URI as `destination`). The protocol neither requires nor assumes this — it is one natural choice of opaque reference among others.
 
 #### Preview
 
@@ -305,8 +307,8 @@ The receiver registers a tool that mints upload URLs given a sender's identifier
 
 | Param | Cardinality | Rules | Description |
 |---|---|---|---|
-| `origin_id` | MUST | Same rules as `origin_id` in the `http` method's `create_download_link` (raw-JSON validation; no path separators `/` or `\`; not equal to `.` or `..`; no null bytes / control characters; no leading or trailing whitespace). | The sender's opaque stable handle for the bytes (the *what*). The receiver MAY treat it as a filename, document id, content hash, or any internally-meaningful key, but MUST NOT interpret it as a path component. |
-| `destination` | MAY | Forbids only null bytes, control characters (U+0000 through U+001F), and leading/trailing whitespace. Path separators, dots, and traversal-shaped strings are **NOT** spec-rejected. The receiver MUST validate per its own domain rules before any filesystem interaction. | The sender's destination instruction (the *where*). The receiver decides semantics — path, slot, parent document key, anything. The relaxed character rules vs. `origin_id` reflect the asymmetric role: `destination` is consumed only by the receiver's own domain logic and never embedded in a URI by anyone else. |
+| `origin_id` | MUST | Validated against the minimal-safety floor (§"Security and Path Resolution") — identical to `destination`. | The sender's opaque stable handle for the bytes (the *what*). The receiver MAY treat it as a filename, document id, content hash, MCP resource URI, or any internally-meaningful key, but MUST NOT interpret it as a path component. |
+| `destination` | MAY | Validated against the minimal-safety floor (§"Security and Path Resolution") — identical to `origin_id`. Path separators, dots, and traversal-shaped strings are **NOT** spec-rejected. The receiver MUST validate per its own domain rules before any filesystem interaction. | The sender's destination instruction (the *where*). The receiver decides semantics — path, slot, parent document key, MCP resource URI, anything. |
 | `ttl_seconds` | MAY | Positive number of seconds. | Sender's TTL hint for the minted URL. The receiver MAY clamp to its own ceiling (`max_ttl_seconds`); the effective TTL is returned. |
 | `max_bytes` | MAY | Positive integer. | Sender's intended upper bound on the upload size, used as a hint to the receiver. The receiver MAY clamp to its own ceiling (`max_bytes` in its capability declaration); the *effective* ceiling — the value the receiver will enforce at POST time — is returned in the response's `max_bytes` field. The receiver MAY use this hint to reject the link request early (via `transfer_failed`) if the requested size already exceeds policy, sparing a POST round-trip; no resource is pre-allocated. |
 | `content_type` | MAY | Standard MIME type string. | Sender's hint about what `Content-Type` the upload will declare. The receiver MAY pre-filter against its `accepts` list at link-mint time and surface a `transfer_failed` envelope in-band, sparing the sender a 415 round-trip. |
@@ -376,7 +378,7 @@ A server that wants to act as an MCP-mediated *pusher* of bytes (e.g., a mover-s
 | Param | Cardinality | Description |
 |---|---|---|
 | `url` | MUST | The receiver-issued POST endpoint (returned from `create_upload_link`). |
-| `origin_id` | MUST | The sender's opaque stable handle for the bytes to push. Same rules as `origin_id` in the `http` method's `create_download_link` (raw-JSON validation; no path separators `/` or `\`; not equal to `.` or `..`; no null bytes / control characters; no leading or trailing whitespace). The sender resolves it to bytes by its own domain logic — a file, a database row, an in-memory object, anything; callers treat it as opaque. |
+| `origin_id` | MUST | The sender's opaque stable handle for the bytes to push. Validated against the minimal-safety floor (§"Security and Path Resolution") — identical to `destination`. The sender resolves it to bytes by its own domain logic — a file, a database row, an in-memory object, anything; callers treat it as opaque. |
 | `content_type` | SHOULD | The MIME type the sender will declare in the POST `Content-Type` header. If omitted, the sender SHOULD sniff or default. |
 
 The tool MUST return:
@@ -488,7 +490,7 @@ exchange://{exchange-id}/{namespace}/{id}.{ext}
 
 - **exchange-id**: Identifies the exchange group. Scoped to the shared volume, not the server.
 - **namespace**: Namespace of the producing server. Each server writes only to its own namespace.
-- **id.ext**: File identifier with extension. The extension is informational and SHOULD match the `mime_type`.
+- **id.ext**: File identifier with extension. The `{id}` segment is **producer-derived** and **independent of `file_ref.origin_id`**: the producer derives it from the file's identity by any means (the spec does not mandate how), and it MUST satisfy the segment rules (§"Security and Path Resolution") because it is a literal path component. An `exchange://` URI is self-contained — a consumer resolving it never needs `file_ref.origin_id`. The extension is informational and SHOULD match the `mime_type`.
 
 ### Security and Path Resolution
 
@@ -497,16 +499,20 @@ All servers MUST sanitise the `{namespace}` and `{id}.{ext}` segments of exchang
 **URI decoding scope:** validation rules apply differently depending on the source of the data:
 
 - When parsing an `exchange://` URI, validation MUST occur after exactly one pass of URI decoding. Iterative or recursive decoding MUST NOT be applied, as double-encoded payloads (e.g. `%252e%252e%252f`) could bypass validation on a first-pass decode and execute traversal on a second.
-- When handling direct JSON-RPC parameters (such as `origin_id`), validation MUST be applied to the raw string as-is. Servers MUST NOT apply URI decoding to JSON parameters. An `origin_id` value is an opaque string, not a URI component; applying URI decoding would corrupt legitimate `%` characters (e.g. `req-%20-id` would be mutated to `req- -id`).
+- The `origin_id` and `destination` parameters are **opaque domain references, not URI components**. They MUST be validated as raw strings and MUST NOT be URI-decoded — URI-decoding would corrupt a legitimate `%` (e.g. `req-%20-id` would be mutated to `req- -id`). They are subject only to the **minimal-safety floor** defined below — not the segment rules.
 
-After decoding (for URIs) or direct extraction (for JSON parameters), segments:
+**`exchange://` URI segments — segment rules.** After a single URI-decode pass, the `{namespace}` and `{id}.{ext}` segments of an `exchange://` URI:
 
 - MUST NOT contain path separators (`/` or `\`).
 - MUST NOT be equal to `.` or `..`.
 - MUST NOT contain null bytes (`\0`) or control characters (U+0000 through U+001F).
 - MUST NOT contain leading or trailing whitespace.
 
-The `destination` parameter passed to a receiver's `create_upload_link` tool (new in v0.3, used by the `http_upload` method) is **not** subject to the segment-validation rules above. It is opaque to anyone but the receiver — the spec mandates only minimum safety constraints (no null bytes, no control characters U+0000 through U+001F, no leading or trailing whitespace). Path separators, dots, and traversal-shaped strings are NOT spec-rejected; the receiver MUST validate per its own domain rules before any filesystem interaction. The asymmetric rules vs. `origin_id` reflect the role split: `origin_id` MAY be echoed by the receiver into URIs or filenames (so it MUST be URI-safe), but `destination` is consumed only by the receiver's own domain logic and never embedded in a URI by anyone else.
+These segment rules apply to `exchange://` URI components only. They do **not** apply to `origin_id` or `destination`, which are opaque domain references rather than path components.
+
+**Minimal-safety floor.** Every `origin_id` and `destination` value MUST be non-empty, MUST NOT contain null bytes or control characters (U+0000 through U+001F), and MUST NOT have leading or trailing whitespace. `origin_id` and `destination` share this floor identically. Path separators, dots, and traversal-shaped strings are NOT spec-rejected by the floor; the domain server that owns the reference MUST validate it per its own domain rules before any filesystem interaction.
+
+`origin_id` and `destination` are **symmetric**: both are opaque domain references, both are validated against the minimal-safety floor only, neither is embedded verbatim in a URI by any party, and each is resolved by the domain server that owns it.
 
 In addition, `exchange://` URIs themselves MUST NOT contain a query component (`?...`) or fragment (`#...`). A URI with either is rejected as `exchange_uri_invalid`. This closes a parser-bypass class where a query string or fragment could slip past naive parsing and be misinterpreted as part of a path segment or file extension.
 
@@ -548,7 +554,7 @@ During the MCP `initialize` handshake, a participating server declares exchange 
   "capabilities": {
     "experimental": {
       "file_exchange": {
-        "version": "0.3",
+        "version": "0.5",
         "namespace": "image-mcp",
         "exchange_id": "hades-01",
         "produces": ["image/png", "image/webp", "image/jpeg"],
@@ -572,7 +578,7 @@ During the MCP `initialize` handshake, a participating server declares exchange 
   "capabilities": {
     "experimental": {
       "file_exchange": {
-        "version": "0.3",
+        "version": "0.5",
         "namespace": "vault-mcp",
         "exchange_id": "hades-01",
         "produces": [],
@@ -599,7 +605,7 @@ During the MCP `initialize` handshake, a participating server declares exchange 
 
 | Field | Required | Description |
 |---|---|---|
-| `version` | MUST | Spec version as `MAJOR.MINOR` (e.g. `"0.3"`). Patch versions are spec-internal and MUST NOT appear in the capability declaration. A server implementing spec version `0.3.0` MUST advertise `"0.3"`; patch-level differences do not change the wire-level capability. |
+| `version` | MUST | Spec version as `MAJOR.MINOR` (e.g. `"0.5"`). Patch versions are spec-internal and MUST NOT appear in the capability declaration. A server implementing spec version `0.5.0` MUST advertise `"0.5"`; patch-level differences do not change the wire-level capability. |
 | `namespace` | MUST | The server's exchange namespace. |
 | `exchange_id` | SHOULD | The exchange group ID. Present when the server participates in an exchange group. |
 | `produces` | SHOULD | MIME types this server can produce as file references. |
@@ -738,7 +744,7 @@ This signals definitively to the client that retrying is pointless. The client S
 - **MUST** write exchange files atomically: write to a temporary dotfile (e.g. `.{id}.{ext}.tmp`), close the file descriptor, then rename to the final path. This prevents consumers from reading partially written files.
 - **MUST** own the complete lifecycle of exchange files it produces. Only the producer deletes its own files. Implementation-specific (SQLite TTL, cron, stat-based, etc.).
 - **SHOULD** implement a storage ceiling or LRU eviction policy alongside time-based TTL to prevent shared volume exhaustion during high-throughput operation (e.g. generating thousands of images). TTL alone is insufficient if the production rate exceeds the expiry rate.
-- **MUST** validate `origin_id` against the path segment rules before writing. This validation applies to the raw JSON string; producers MUST NOT apply URI decoding to the `origin_id` parameter.
+- **MUST** validate `origin_id` against the minimal-safety floor. The source resolution MUST validate the reference against the server's own domain rules and the caller's authorization before resolving it to bytes (the removed segment rules were traversal hygiene, never authorization).
 - **MUST**, for tools declared in `transfer_methods.http.source`, accept a parameter named `origin_id` and return a JSON object with at minimum a `url` field.
 - **SHOULD** support the `exchange` method when `MCP_EXCHANGE_DIR` is configured.
 - **SHOULD** support the `http` method to enable cross-host transfers.
@@ -749,7 +755,7 @@ This signals definitively to the client that retrying is pointless. The client S
 - **MUST** attempt `exchange` resolution before signalling failure when a file reference includes an `exchange` entry.
 - **MUST** treat the exchange directory as read-only. Consumers MUST NOT modify exchange files. Lifecycle management is the exclusive responsibility of the producing server.
 - **MUST** ignore dotfiles in namespace directories.
-- **MUST** validate all path segments from exchange URIs after a single pass of URI decoding. JSON-RPC parameters (such as `origin_id`) MUST be validated as raw strings without URI decoding.
+- **MUST** validate the `{namespace}` and `{id}.{ext}` segments of exchange URIs against the segment rules after a single pass of URI decoding. The `origin_id` and `destination` parameters are opaque domain references — they MUST be validated as raw strings against the minimal-safety floor and MUST NOT be URI-decoded (§"Security and Path Resolution").
 - **MUST** include `remaining_transfer` in the `transfer_failed` error, containing the file reference's `transfer` with the failed method removed.
 - **SHOULD**, for tools declared in `transfer_methods.http.sink`, accept a parameter named `url` and an optional parameter named `path`. If `path` is omitted, the tool MUST auto-generate a safe local path.
 
@@ -818,7 +824,7 @@ The `http` method is deliberately simple (produce a URL, consume a URL) because 
 
 ### Validate after single decode, but only for URIs
 
-Path validation after URI decoding applies strictly to `exchange://` URI parsing. JSON-RPC parameters like `origin_id` are opaque strings that MUST be validated as-is, never URI-decoded. This distinction prevents a subtle data corruption bug: an `origin_id` containing a literal `%` character (e.g. `file-%2F-name`) would be mutated by URI decoding into `file-/-name`, which would then fail path validation or, worse, create a traversal path. The two validation contexts (URI components vs JSON strings) share the same rules but differ in preprocessing.
+`exchange://` URI segments are validated against the segment rules after exactly one URI-decode pass. `origin_id` and `destination` are opaque domain references, not URI components: they are validated as raw strings against the minimal-safety floor and are never URI-decoded. Keeping them raw prevents a subtle data corruption bug: an `origin_id` containing a literal `%` character (e.g. `file-%2F-name`) would be mutated by URI decoding into `file-/-name`, which would then misvalidate or, worse, create a traversal path. The two contexts use different rules (segment rules for URI components, the minimal-safety floor for domain references) and different preprocessing (single-decode for URIs, none for domain references).
 
 ### Implicit discovery is deliberately incomplete
 
