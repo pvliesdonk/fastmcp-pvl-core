@@ -215,7 +215,7 @@ class TestWriteAtomic:
         uri = fx.write_atomic(origin_id="abc", ext="png", content=b"hello")
         assert isinstance(uri, ExchangeURI)
         # The exchange segment is the SHA-256 of the origin_id, not the
-        # raw origin_id (spec v0.5 decoupling).
+        # raw origin_id (the spec's exchange-segment decoupling).
         seg = _seg("abc")
         assert uri.id == seg
         assert str(uri) == f"exchange://hades-01/image-mcp/{seg}.png"
@@ -242,7 +242,7 @@ class TestWriteAtomic:
             fx.read_exchange_uri(f"exchange://hades-01/image-mcp/{seg}.png")
 
     def test_opaque_origin_id_accepted(self, tmp_path: Path) -> None:
-        # v0.5: origin_id is opaque — path-shaped values are no longer
+        # origin_id is opaque — path-shaped values are not
         # rejected by write_atomic; the exchange segment is derived.
         fx = _make_fx(tmp_path)
         for origin_id in ("bad/id", ".hidden", "../weird", "image://job-1/0"):
@@ -257,7 +257,7 @@ class TestWriteAtomic:
             fx.write_atomic(origin_id="abc", ext="p/g", content=b"x")
 
     def test_floor_violation_origin_id_rejected(self, tmp_path: Path) -> None:
-        # v0.5: write_atomic enforces the minimal-safety floor on
+        # write_atomic enforces the minimal-safety floor on
         # origin_id (defence-in-depth alongside the producing facade).
         fx = _make_fx(tmp_path)
         for bad in ("", " leading", "trailing ", "with\x00null", "ctl\x01"):

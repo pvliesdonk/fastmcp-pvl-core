@@ -406,7 +406,7 @@ class TestMakeFileRef:
     ) -> None:
         """The ``exchange://`` URI segment is a SHA-256 of the origin_id.
 
-        v0.5: a path-shaped ``origin_id`` is never embedded verbatim in
+        A path-shaped ``origin_id`` is never embedded verbatim in
         the URI, path, or filename — pvl-core derives a segment-safe
         digest. The ``file_ref`` still carries the real ``origin_id``.
         """
@@ -561,7 +561,7 @@ class TestCreateDownloadLinkTool:
     async def test_opaque_origin_id_accepted(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # v0.5: origin_id is an opaque domain reference — path-shaped and
+        # origin_id is an opaque domain reference — path-shaped and
         # URI-shaped values are passed through to the source hook, not
         # rejected by pvl-core.
         for origin_id in ("folder/to/note.md", "image://job-1/0", "../weird"):
@@ -588,7 +588,7 @@ class TestCreateDownloadLinkTool:
     async def test_resource_uri_origin_id_round_trips_to_hook(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # v0.5: a resource-URI-shaped origin_id reaches the source hook
+        # a resource-URI-shaped origin_id reaches the source hook
         # verbatim and a download URL comes back.
         seen: list[str] = []
 

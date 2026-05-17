@@ -128,6 +128,7 @@ def _sink(captured: dict[str, Any] | None = None) -> SinkHook:
             captured["data"] = data
             captured["mime_type"] = ctx.mime_type
             captured["origin_id"] = ctx.origin_id
+            captured["destination"] = ctx.destination
             captured["size_bytes"] = ctx.size_bytes
         return {"stored_at": "memory", "bytes_written": len(data)}
 
@@ -143,6 +144,7 @@ def _async_sink(captured: dict[str, Any] | None = None) -> SinkHook:
             captured["data"] = data
             captured["mime_type"] = ctx.mime_type
             captured["origin_id"] = ctx.origin_id
+            captured["destination"] = ctx.destination
             captured["size_bytes"] = ctx.size_bytes
         return {"stored_at": "memory", "bytes_written": len(data)}
 
@@ -385,6 +387,129 @@ class TestConsumeHTTP:
 
 
 # ---------------------------------------------------------------------------
+# fetch_file ``destination`` — the sink-side opaque domain reference
+# ---------------------------------------------------------------------------
+
+
+class TestFetchFileDestination:
+    """``fetch_file(destination=...)`` threads the sink-side reference.
+
+    ``destination`` is a first-class :class:`SinkContext` field,
+    mirroring ``origin_id`` on the source side: the caller's opaque
+    placement handle for the consumer.
+    """
+
+    async def test_http_path_populates_destination(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        captured: dict[str, Any] = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200, content=b"bytes", headers={"content-type": "image/png"}
+            )
+
+        _mock_http(monkeypatch, handler)
+        mcp = _new_consumer_mcp(monkeypatch, _sink(captured))
+
+        out = await _call_fetch(
+            mcp, url="https://example.com/img.png", destination="vault/notes"
+        )
+        assert out["method"] == "http"
+        # destination is a first-class SinkContext field, not a params entry.
+        assert captured["destination"] == "vault/notes"
+
+    async def test_exchange_path_populates_destination(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.setenv("MCP_EXCHANGE_DIR", str(tmp_path))
+        from fastmcp_pvl_core import FileExchange
+
+        producer = FileExchange.from_env(default_namespace="image-mcp")
+        assert producer is not None
+        uri = str(producer.write_atomic(origin_id="abc", ext="png", content=b"img"))
+
+        captured: dict[str, Any] = {}
+        mcp = _new_consumer_mcp(monkeypatch, _sink(captured))
+
+        out = await _call_fetch(mcp, url=uri, destination="generated/test.png")
+        assert out["method"] == "exchange"
+        assert captured["destination"] == "generated/test.png"
+
+    async def test_file_ref_path_populates_destination(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # A file_ref-driven fetch over the exchange method also threads
+        # the caller-supplied destination through to the sink.
+        monkeypatch.setenv("MCP_EXCHANGE_DIR", str(tmp_path))
+        from fastmcp_pvl_core import FileExchange
+
+        producer = FileExchange.from_env(default_namespace="image-mcp")
+        assert producer is not None
+        uri = str(producer.write_atomic(origin_id="abc", ext="png", content=b"img"))
+
+        captured: dict[str, Any] = {}
+        mcp = _new_consumer_mcp(monkeypatch, _sink(captured))
+
+        ref = FileRef(
+            origin_server="image-mcp",
+            origin_id="src-ref",
+            transfer={"exchange": {"uri": uri}},
+        ).to_dict()
+        out = await _call_fetch(mcp, file_ref=ref, destination="vault/in")
+        assert out["method"] == "exchange"
+        # origin_id (source side) and destination (sink side) are both
+        # first-class SinkContext attributes.
+        assert captured["origin_id"] == "src-ref"
+        assert captured["destination"] == "vault/in"
+
+    async def test_omitted_destination_is_none(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # No destination supplied → ctx.destination is None, transfer
+        # still succeeds (the consumer decides placement itself).
+        captured: dict[str, Any] = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, content=b"bytes")
+
+        _mock_http(monkeypatch, handler)
+        mcp = _new_consumer_mcp(monkeypatch, _sink(captured))
+
+        out = await _call_fetch(mcp, url="https://example.com/img")
+        assert out["method"] == "http"
+        assert out["bytes_written"] == 5
+        assert captured["destination"] is None
+
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            "",  # empty
+            " leading-space",
+            "trailing-space ",
+            "bad\x00id",  # null byte
+            "ctrl\x1fchar",  # other control character
+        ],
+    )
+    async def test_floor_violation_rejected(
+        self, monkeypatch: pytest.MonkeyPatch, bad: str
+    ) -> None:
+        # A destination violating the minimal-safety floor is rejected
+        # with the invalid_input envelope before any transfer happens.
+        sink_called = False
+
+        def sink(stream: BinaryIO, ctx: SinkContext) -> Mapping[str, Any]:
+            nonlocal sink_called
+            sink_called = True
+            return {"bytes_written": len(stream.read())}
+
+        mcp = _new_consumer_mcp(monkeypatch, sink)
+        out = await _call_fetch(mcp, url="https://example.com/img", destination=bad)
+        assert out["error"] == "invalid_input"
+        assert sink_called is False
+
+
+# ---------------------------------------------------------------------------
 # _ssrf_guard matrix
 # ---------------------------------------------------------------------------
 
@@ -543,6 +668,7 @@ class TestInvokeSink:
     def _ctx(self) -> SinkContext:
         return SinkContext(
             origin_id=None,
+            destination=None,
             mime_type=None,
             size_bytes=None,
             file_ref=None,
@@ -684,7 +810,7 @@ class TestCreateDownloadLink:
     async def test_floor_violation_origin_id_returns_transfer_failed(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # v0.5: ``../escape`` is now an opaque reference, not a rejection.
+        # ``../escape`` is an opaque reference, not a rejection.
         # The minimal-safety floor still rejects control characters.
         mcp = _new_producer_mcp(monkeypatch, _src(b"PNG", "image/png"))
         out = await _call_download_link(mcp, origin_id="bad\x00id")
@@ -741,7 +867,7 @@ class TestMakeFileRef:
     async def test_make_file_ref_accepts_dotted_origin_id(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # v0.5: a leading dot is opaque data — make_file_ref accepts it
+        # a leading dot is opaque data — make_file_ref accepts it
         # and echoes it back; no segment-rule rejection.
         monkeypatch.setenv("TEST_FE_BASE_URL", "http://test.example")
         monkeypatch.setenv("TEST_FE_TRANSPORT", "http")
