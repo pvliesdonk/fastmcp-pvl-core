@@ -4,11 +4,12 @@ on:
   workflow_dispatch:
     inputs:
       force:
-        description: 'Force version bump (leave empty for auto)'
+        description: 'Force version bump (empty = auto; "prerelease" advances the rc revision, e.g. rc.1 → rc.2)'
         type: choice
         default: ''
         options:
           - ''
+          - prerelease
           - patch
           - minor
           - major
