@@ -100,7 +100,7 @@ async def test_post_already_consumed_token_returns_404() -> None:
 async def test_upload_route_expired_token_returns_404_not_410() -> None:
     """Expired tokens return 404, not 410 (spec §http_upload anti-leak rule).
 
-    The v0.3.0 spec mandates that unknown, expired, and already-consumed
+    The spec mandates that unknown, expired, and already-consumed
     tokens are all indistinguishable to the caller — all return 404.
     """
     mcp, store = _build_app(_ok_sink())

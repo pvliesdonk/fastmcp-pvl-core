@@ -310,7 +310,7 @@ class TestFileExchangeCapability:
         }
 
     def test_full_round_trip_matches_spec_3_9(self) -> None:
-        # Verbatim shape from spec §3.9 producer example (v0.3.0 source/sink shape).
+        # Verbatim shape from spec §3.9 producer example (v0.5 source/sink shape).
         cap = FileExchangeCapability(
             namespace="image-mcp",
             exchange_id="hades-01",
