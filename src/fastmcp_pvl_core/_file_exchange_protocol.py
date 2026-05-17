@@ -56,9 +56,14 @@ class ExchangeURIError(ValueError):
 # - inside an ``exchange://`` URI (where a single pass of percent-decoding
 #   MUST be applied before validation, and double-encoded payloads MUST
 #   be rejected); and
-# - as raw JSON-RPC parameters such as ``origin_id`` (where decoding
-#   MUST NOT be applied — a literal ``%`` in the value is data, not
-#   encoding). Both contexts share the rule set below.
+# - as raw JSON-RPC-derived path components such as ``namespace``,
+#   ``exchange_id``, and ``ext`` (where decoding MUST NOT be applied — a
+#   literal ``%`` in the value is data, not encoding). Both contexts
+#   share the rule set below.
+#
+# Opaque domain references (``origin_id``, ``destination``) are NOT
+# segment values: they go through the looser minimal-safety floor in
+# ``validate_reference``, not these rules.
 
 _FORBIDDEN_SEGMENT_CHARS = re.compile(r"[/\\\x00-\x1f]")
 """Path separators and ASCII control characters (U+0000–U+001F)."""
@@ -385,8 +390,9 @@ class ExchangeURI:
             role: ``"uri"`` decodes the value once before validating
                 (and rejects residual ``%XX`` to defeat double-encoded
                 traversal). ``"json_param"`` validates the value as-is
-                — JSON-RPC parameters such as ``origin_id`` MUST NOT be
-                URI-decoded (a literal ``%`` is data, not encoding).
+                — JSON-RPC-derived components such as ``namespace`` or
+                ``ext`` MUST NOT be URI-decoded (a literal ``%`` is data,
+                not encoding).
 
         Returns:
             The decoded (for ``role="uri"``) or raw (for
