@@ -1,6 +1,6 @@
 # MCP File Exchange Specification
 
-**Version:** 0.5.0
+**Version:** 0.6.0
 **Status:** experimental
 **Tags:** mcp, spec, interop
 
@@ -251,7 +251,7 @@ A server that is both producer and consumer populates both sub-keys:
 - Producer tool MUST accept a parameter named `origin_id`.
 - Producer tool MUST return a JSON object with at minimum a `url` field. It MAY include `ttl_seconds` and `mime_type`.
 - The generated URL MUST be cryptographically unguessable (e.g. containing a UUID or HMAC token in the path or query string). The producer SHOULD invalidate the URL after a single successful download (one-time use). TLS/HTTPS is assumed; the URL path is encrypted in transit, so embedding secrets in the URL is equivalent in security to using an `Authorization` header while being compatible with any consumer that can fetch a URL.
-- Consumer tool MUST accept a parameter named `url`. It SHOULD accept an optional parameter named `path` to allow client-directed placement. If `path` is omitted or invalid, the consumer MUST auto-generate a safe local path (e.g. derived from `origin_id` or a UUID). This prevents failures caused by LLMs hallucinating invalid directory structures.
+- Consumer tool MUST accept a parameter named `url`. It SHOULD accept an optional parameter named `destination` to allow client-directed placement. `destination` is an opaque domain reference, validated against the minimal-safety floor (§"Security and Path Resolution"), which the consumer interprets per its own domain — directly as a path/slot, a handle minted by a downstream prepare-receive tool, or a (possibly parametrized) resource URI. If `destination` is omitted, the consumer MUST auto-place the bytes per its own domain (a domain-default location, a UUID-derived name, etc.). This prevents failures caused by LLMs hallucinating invalid directory structures.
 
 #### `http_upload` (push to receiver-issued URL)
 
@@ -558,7 +558,7 @@ During the MCP `initialize` handshake, a participating server declares exchange 
   "capabilities": {
     "experimental": {
       "file_exchange": {
-        "version": "0.5",
+        "version": "0.6",
         "namespace": "image-mcp",
         "exchange_id": "hades-01",
         "produces": ["image/png", "image/webp", "image/jpeg"],
@@ -582,7 +582,7 @@ During the MCP `initialize` handshake, a participating server declares exchange 
   "capabilities": {
     "experimental": {
       "file_exchange": {
-        "version": "0.5",
+        "version": "0.6",
         "namespace": "vault-mcp",
         "exchange_id": "hades-01",
         "produces": [],
@@ -609,7 +609,7 @@ During the MCP `initialize` handshake, a participating server declares exchange 
 
 | Field | Required | Description |
 |---|---|---|
-| `version` | MUST | Spec version as `MAJOR.MINOR` (e.g. `"0.5"`). Patch versions are spec-internal and MUST NOT appear in the capability declaration. A server implementing spec version `0.5.0` MUST advertise `"0.5"`; patch-level differences do not change the wire-level capability. |
+| `version` | MUST | Spec version as `MAJOR.MINOR` (e.g. `"0.6"`). Patch versions are spec-internal and MUST NOT appear in the capability declaration. A server implementing spec version `0.6.0` MUST advertise `"0.6"`; patch-level differences do not change the wire-level capability. |
 | `namespace` | MUST | The server's exchange namespace. |
 | `exchange_id` | SHOULD | The exchange group ID. Present when the server participates in an exchange group. |
 | `produces` | SHOULD | MIME types this server can produce as file references. |
@@ -719,7 +719,7 @@ The client orchestrates a two-step handoff:
 
 1. Call the producer's tool (from `transfer.http.tool` or `remaining_transfer.http.tool`) with `origin_id` set to the file's `origin_id`.
 2. The tool returns `{"url": "https://...", "ttl_seconds": 3600}`.
-3. Call the consumer's tool (from `transfer_methods.http.sink.tool` in the consumer's capabilities, or known by configuration) with `url` and optionally `path`. If the LLM cannot determine a sensible path, it should omit the parameter and let the consumer auto-generate one.
+3. Call the consumer's tool (from `transfer_methods.http.sink.tool` in the consumer's capabilities, or known by configuration) with `url` and optionally `destination`. If the LLM cannot determine a sensible destination, it should omit the parameter and let the consumer auto-place the bytes.
 
 ### Step 3: Exhaustion
 
@@ -761,7 +761,7 @@ This signals definitively to the client that retrying is pointless. The client S
 - **MUST** ignore dotfiles in namespace directories.
 - **MUST** validate the `{namespace}` and `{id}.{ext}` segments of exchange URIs against the segment rules after a single pass of URI decoding. The `origin_id` and `destination` parameters are opaque domain references — they MUST be validated as raw strings against the minimal-safety floor and MUST NOT be URI-decoded (§"Security and Path Resolution").
 - **MUST** include `remaining_transfer` in the `transfer_failed` error, containing the file reference's `transfer` with the failed method removed.
-- **SHOULD**, for tools declared in `transfer_methods.http.sink`, accept a parameter named `url` and an optional parameter named `path`. If `path` is omitted, the tool MUST auto-generate a safe local path.
+- **SHOULD**, for tools declared in `transfer_methods.http.sink`, accept a parameter named `url` and an optional parameter named `destination`. If `destination` is omitted, the tool MUST auto-place the bytes per its own domain.
 
 ### Receiver server (`http_upload`)
 
@@ -804,7 +804,7 @@ Consumers never delete exchange files. This prevents a class of bugs where one c
 
 ### Standardised parameter names per method
 
-Each transfer method defines standard parameter names (e.g. `origin_id` for the `http` producer, `url` and `path` for the `http` consumer). Servers that internally use different names MUST alias. This trades a one-time implementation cost for permanent simplicity: clients never need parameter mappings.
+Each transfer method defines standard parameter names (e.g. `origin_id` for the `http` producer, `url` and `destination` for the `http` consumer). Servers that internally use different names MUST alias. This trades a one-time implementation cost for permanent simplicity: clients never need parameter mappings.
 
 ### Remaining methods in error payloads
 
