@@ -693,7 +693,7 @@ async def test_upload_post_propagates_sink_context(
 
     The ``_route_sink`` adapter maps the upload record onto a
     :class:`SinkContext`: ``origin_id`` = the record's origin_id,
-    ``mime_type`` = the record's content_type, and ``params["destination"]``
+    ``mime_type`` = the record's content_type, and ``destination``
     = the ``destination`` the ``create_upload_link`` caller passed.
     """
     monkeypatch.setenv("TEST_UPLOAD_TRANSPORT", "http")
@@ -705,7 +705,7 @@ async def test_upload_post_propagates_sink_context(
         data = stream.read()
         captured["origin_id"] = ctx.origin_id
         captured["mime_type"] = ctx.mime_type
-        captured["destination"] = ctx.params.get("destination")
+        captured["destination"] = ctx.destination
         return {"stored": True, "bytes": len(data)}
 
     mcp = FastMCP(name="test")

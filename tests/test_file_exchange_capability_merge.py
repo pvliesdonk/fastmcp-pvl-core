@@ -50,7 +50,7 @@ def test_builder_http_source_only_emits_source_role() -> None:
     cap = b.build()
     assert cap is not None
     d = cap.to_capability_dict()
-    assert d["version"] == "0.5"
+    assert d["version"] == "0.6"
     assert d["transfer_methods"]["http"] == {
         "source": {"tool": "create_download_link"},
     }

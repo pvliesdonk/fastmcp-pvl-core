@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 #: field in the ``experimental.file_exchange`` capability declaration
 #: (spec §"Capability declaration"). Major.minor only — patch revisions
 #: are spec-internal.
-SPEC_VERSION = "0.5"
+SPEC_VERSION = "0.6"
 
 
 # ---------------------------------------------------------------------------

@@ -300,19 +300,22 @@ class SinkContext(NamedTuple):
             ``http`` or ``exchange`` alike: a bare URL carries no
             ``origin_id`` — an ``exchange://`` URL carries only the
             pvl-core-derived segment, which is not the reference.
+        destination: The sink-side opaque domain reference: the
+            caller's placement handle for this consumer when supplied,
+            ``None`` when the caller left placement to the consumer.
         mime_type: Best-known MIME type — from the file reference, the
             HTTP ``Content-Type`` header, or the upload request hint.
         size_bytes: Byte length when known up front, else ``None``.
         file_ref: The full file reference when the consumer was handed
             one; ``None`` for a bare-``url`` fetch or an upload receive.
-        params: Caller-supplied parameters (e.g. ``path`` on
-            ``fetch_file``, ``destination`` on an upload) plus extras.
+        params: Caller-supplied extras passed alongside the transfer.
         handle: The :class:`FileExchangeHandle` owning a download-side
             sink — handy for consume-then-produce chaining; ``None`` for
             the ``http_upload`` receiver sink, which has no such handle.
     """
 
     origin_id: str | None
+    destination: str | None
     mime_type: str | None
     size_bytes: int | None
     file_ref: FileRef | None
@@ -968,7 +971,7 @@ def _register_fetch_file(
     async def fetch_file(
         file_ref: dict[str, Any] | None = None,
         url: str | None = None,
-        path: str | None = None,
+        destination: str | None = None,
     ) -> dict[str, Any]:
         """Resolve a file reference (or URL) and hand the bytes to a sink.
 
@@ -978,6 +981,15 @@ def _register_fetch_file(
         in spec priority (``exchange`` before ``http``), building
         ``remaining_transfer`` on each method failure per spec
         §"Transfer Negotiation".
+
+        ``destination`` is the optional sink-side opaque domain
+        reference — the caller's placement handle for this consumer,
+        mirroring ``origin_id`` on the source side. When supplied it is
+        validated against the minimal-safety floor (spec §"Security and
+        Path Resolution") and surfaced to the sink hook as
+        :attr:`SinkContext.destination`; when omitted the consumer
+        decides placement itself. The reference is otherwise opaque to
+        pvl-core.
 
         HTTP redirects are NOT followed — producers configure
         non-redirecting download URLs (the spec mandates one-time
@@ -990,24 +1002,28 @@ def _register_fetch_file(
                 "error": "invalid_input",
                 "message": "fetch_file requires exactly one of file_ref or url",
             }
+        if destination is not None:
+            try:
+                validate_reference(destination, field="destination")
+            except ExchangeURIError as exc:
+                return {"error": "invalid_input", "message": str(exc)}
         params: dict[str, Any] = {}
-        if path is not None:
-            params["path"] = path
 
         if url is not None:
-            return await _fetch_via_url(handle, sink, url, params)
+            return await _fetch_via_url(handle, sink, url, destination, params)
 
         # url is None here (the (file_ref is None) == (url is None)
         # check above guarantees one is set).
         if file_ref is None:
             raise RuntimeError("fetch_file: input validation should have caught this")
-        return await _fetch_via_file_ref(handle, sink, file_ref, params)
+        return await _fetch_via_file_ref(handle, sink, file_ref, destination, params)
 
 
 async def _fetch_via_url(
     handle: FileExchangeHandle,
     sink: SinkHook,
     url: str,
+    destination: str | None,
     params: Mapping[str, Any],
 ) -> dict[str, Any]:
     parts = urlsplit(url)
@@ -1027,7 +1043,7 @@ async def _fetch_via_url(
             origin_id = ""
         try:
             return await _consume_exchange(
-                handle, sink, url, file_ref=None, params=params
+                handle, sink, url, file_ref=None, destination=destination, params=params
             )
         except (
             ExchangeURIError,
@@ -1044,7 +1060,9 @@ async def _fetch_via_url(
             )
     if parts.scheme in ("http", "https"):
         try:
-            return await _consume_http(handle, sink, url, file_ref=None, params=params)
+            return await _consume_http(
+                handle, sink, url, file_ref=None, destination=destination, params=params
+            )
         except FetchTransportError as exc:
             logger.warning("fetch_file http url failed: %s", exc)
             return _transfer_failed(
@@ -1074,6 +1092,7 @@ async def _fetch_via_file_ref(
     handle: FileExchangeHandle,
     sink: SinkHook,
     raw: dict[str, Any],
+    destination: str | None,
     params: Mapping[str, Any],
 ) -> dict[str, Any]:
     try:
@@ -1138,7 +1157,12 @@ async def _fetch_via_file_ref(
                 continue
             try:
                 return await _consume_exchange(
-                    handle, sink, uri, file_ref=ref, params=params
+                    handle,
+                    sink,
+                    uri,
+                    file_ref=ref,
+                    destination=destination,
+                    params=params,
                 )
             except (
                 ExchangeURIError,
@@ -1179,6 +1203,7 @@ async def _consume_exchange(
     uri: str,
     *,
     file_ref: FileRef | None,
+    destination: str | None,
     params: Mapping[str, Any],
 ) -> dict[str, Any]:
     if handle.exchange is None:
@@ -1192,6 +1217,7 @@ async def _consume_exchange(
     )
     ctx = SinkContext(
         origin_id=file_ref.origin_id if file_ref else None,
+        destination=destination,
         mime_type=file_ref.mime_type if file_ref else None,
         size_bytes=file_ref.size_bytes if file_ref else None,
         file_ref=file_ref,
@@ -1208,6 +1234,7 @@ async def _consume_http(
     url: str,
     *,
     file_ref: FileRef | None,
+    destination: str | None,
     params: Mapping[str, Any],
 ) -> dict[str, Any]:
     _ssrf_guard(url)
@@ -1274,6 +1301,7 @@ async def _consume_http(
 
     ctx = SinkContext(
         origin_id=file_ref.origin_id if file_ref else None,
+        destination=destination,
         mime_type=content_type or (file_ref.mime_type if file_ref else None),
         size_bytes=file_ref.size_bytes if file_ref else None,
         file_ref=file_ref,
@@ -1699,15 +1727,13 @@ def register_file_exchange_upload(
 
     async def _route_sink(record: UploadRecord, stream: BinaryIO) -> Mapping[str, Any]:
         """Adapt the public ``sink`` hook to the upload route's shape."""
-        params: dict[str, Any] = {}
-        if record.destination is not None:
-            params["destination"] = record.destination
         ctx = SinkContext(
             origin_id=record.origin_id,
+            destination=record.destination,
             mime_type=record.content_type,
             size_bytes=None,
             file_ref=None,
-            params=params,
+            params={},
             handle=None,
         )
         return await _invoke_sink(sink, stream, ctx)
