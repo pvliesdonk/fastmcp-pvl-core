@@ -45,7 +45,10 @@ from fastmcp_pvl_core import (
     register_file_exchange,
     set_artifact_store,
 )
-from fastmcp_pvl_core._file_exchange_runtime import _resolve_exchange_id
+from fastmcp_pvl_core._file_exchange_runtime import (
+    _exchange_segment,
+    _resolve_exchange_id,
+)
 from fastmcp_pvl_core.file_exchange import (
     FetchTransportError,
     SinkHook,
@@ -459,11 +462,11 @@ class TestUmaskResistance:
                 exchange_id="g",
                 namespace="image-mcp",
             )
-            fx.write_atomic(origin_id="abc", ext="png", content=b"x")
+            uri = fx.write_atomic(origin_id="abc", ext="png", content=b"x")
         finally:
             os.umask(previous)
         ns_st = (tmp_path / "image-mcp").stat()
-        file_st = (tmp_path / "image-mcp" / "abc.png").stat()
+        file_st = (tmp_path / "image-mcp" / uri.filename).stat()
         assert (ns_st.st_mode & 0o777) == 0o755
         assert (file_st.st_mode & 0o777) == 0o644
 
@@ -678,14 +681,25 @@ class TestCreateDownloadLink:
         out = await _call_download_link(mcp, origin_id="abc")
         assert out["ttl_seconds"] == 600.0
 
-    async def test_invalid_origin_id_returns_transfer_failed(
+    async def test_floor_violation_origin_id_returns_transfer_failed(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        # v0.5: ``../escape`` is now an opaque reference, not a rejection.
+        # The minimal-safety floor still rejects control characters.
         mcp = _new_producer_mcp(monkeypatch, _src(b"PNG", "image/png"))
-        out = await _call_download_link(mcp, origin_id="../escape")
+        out = await _call_download_link(mcp, origin_id="bad\x00id")
         assert out["error"] == "transfer_failed"
         assert out["method"] == "http"
         assert "validation" in out["message"]
+
+    async def test_opaque_origin_id_accepted(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A path-shaped origin_id reaches the source hook and yields a URL.
+        mcp = _new_producer_mcp(monkeypatch, _src(b"PNG", "image/png"))
+        out = await _call_download_link(mcp, origin_id="../escape")
+        assert "error" not in out
+        assert "url" in out
 
 
 # ---------------------------------------------------------------------------
@@ -724,7 +738,25 @@ class TestMakeFileRef:
         assert "exchange" not in ref.transfer
         assert invoked is False
 
-    async def test_make_file_ref_rejects_dotted_origin_id(
+    async def test_make_file_ref_accepts_dotted_origin_id(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # v0.5: a leading dot is opaque data — make_file_ref accepts it
+        # and echoes it back; no segment-rule rejection.
+        monkeypatch.setenv("TEST_FE_BASE_URL", "http://test.example")
+        monkeypatch.setenv("TEST_FE_TRANSPORT", "http")
+        mcp = FastMCP("test-fe")
+        handle = register_file_exchange(
+            mcp,
+            namespace="image-mcp",
+            env_prefix="TEST_FE",
+            produces=("image/png",),
+            source=_src(b"x", "image/png"),
+        )
+        ref = await handle.make_file_ref(".hidden", mime_type="image/png")
+        assert ref.origin_id == ".hidden"
+
+    async def test_make_file_ref_rejects_floor_violation_origin_id(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         from fastmcp_pvl_core._file_exchange_protocol import ExchangeURIError
@@ -739,8 +771,8 @@ class TestMakeFileRef:
             produces=("image/png",),
             source=_src(b"x", "image/png"),
         )
-        with pytest.raises(ExchangeURIError, match="dot"):
-            await handle.make_file_ref(".hidden", mime_type="image/png")
+        with pytest.raises(ExchangeURIError):
+            await handle.make_file_ref("bad\x00id", mime_type="image/png")
 
 
 # ---------------------------------------------------------------------------
@@ -815,17 +847,17 @@ class TestSizeCap:
     def test_read_exchange_uri_rejects_oversize_file(self, tmp_path: Path) -> None:
         (tmp_path / ".exchange-id").write_text("g\n", encoding="utf-8")
         fx = FileExchange(base_dir=tmp_path, exchange_id="g", namespace="image-mcp")
-        fx.write_atomic(origin_id="big", ext="bin", content=b"x" * 1000)
+        uri = fx.write_atomic(origin_id="big", ext="bin", content=b"x" * 1000)
         with pytest.raises(OSError, match="exceeds max_bytes"):
-            fx.read_exchange_uri("exchange://g/image-mcp/big.bin", max_bytes=100)
+            fx.read_exchange_uri(str(uri), max_bytes=100)
 
     def test_read_exchange_uri_no_cap_by_default(self, tmp_path: Path) -> None:
         (tmp_path / ".exchange-id").write_text("g\n", encoding="utf-8")
         fx = FileExchange(base_dir=tmp_path, exchange_id="g", namespace="image-mcp")
-        fx.write_atomic(origin_id="big", ext="bin", content=b"x" * 1000)
+        uri = fx.write_atomic(origin_id="big", ext="bin", content=b"x" * 1000)
         # Direct callers (without max_bytes) get the unguarded read —
         # only fetch_file passes the cap.
-        assert len(fx.read_exchange_uri("exchange://g/image-mcp/big.bin")) == 1000
+        assert len(fx.read_exchange_uri(str(uri))) == 1000
 
 
 class TestStreamingWriteAtomic:
@@ -842,8 +874,8 @@ class TestStreamingWriteAtomic:
         src.write_bytes(body * 3)  # 192 KiB → 3 chunks
 
         uri = fx.write_atomic(origin_id="big", ext="bin", content=src)
-        assert uri.id == "big"
-        out = (tmp_path / "image-mcp" / "big.bin").read_bytes()
+        assert uri.id == _exchange_segment("big")
+        out = (tmp_path / "image-mcp" / uri.filename).read_bytes()
         assert out == body * 3
 
     def test_path_source_does_not_load_full_file_in_memory(
@@ -865,8 +897,8 @@ class TestStreamingWriteAtomic:
             return original_read_bytes(self)
 
         monkeypatch.setattr(Path, "read_bytes", boom)
-        fx.write_atomic(origin_id="abc", ext="bin", content=src)
-        assert (tmp_path / "image-mcp" / "abc.bin").read_bytes() == b"hello"
+        uri = fx.write_atomic(origin_id="abc", ext="bin", content=src)
+        assert (tmp_path / "image-mcp" / uri.filename).read_bytes() == b"hello"
 
 
 class TestHTTPClientReuse:

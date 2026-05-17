@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import errno
+import hashlib
 import logging
 import os
 import secrets
@@ -204,6 +205,19 @@ def _resolve_exchange_id(base_dir: Path, explicit: str | None) -> str:
     return candidate
 
 
+def _exchange_segment(origin_id: str) -> str:
+    """Derive the ``exchange://`` URI ``{id}`` segment from an ``origin_id``.
+
+    The segment is a literal path component and filename, so it must
+    satisfy the spec segment rules whatever the ``origin_id`` contains.
+    A SHA-256 hex digest is unconditionally segment-safe, fixed-length,
+    and deterministic — repeated writes for the same ``origin_id``
+    resolve to the same exchange file. One-way by design: the
+    ``file_ref`` carries the real ``origin_id``; nothing reverses this.
+    """
+    return hashlib.sha256(origin_id.encode("utf-8")).hexdigest()
+
+
 # ---------------------------------------------------------------------------
 # FileExchange — env-driven runtime
 # ---------------------------------------------------------------------------
@@ -321,11 +335,14 @@ class FileExchange:
         filesystem (spec §"Producing server").
 
         Args:
-            origin_id: Producer-chosen file id. Validated as a raw JSON
-                parameter (spec §"Security and Path Resolution") — a
-                literal ``%`` is preserved.
-            ext: File extension (no leading dot). Validated the same
-                way.
+            origin_id: Producer-chosen opaque reference. Never used
+                verbatim as a path component — the ``exchange://`` URI
+                ``{id}`` segment is derived from it via
+                :func:`_exchange_segment` (spec v0.5 §"Security and
+                Path Resolution"). Used here only for the debug log and
+                as the derivation input.
+            ext: File extension (no leading dot). Validated as a literal
+                URI segment.
             content: Bytes to write, OR a :class:`pathlib.Path` to a
                 file to copy. The Path form is stream-copied chunk by
                 chunk and never materialises the full file in memory —
@@ -336,18 +353,11 @@ class FileExchange:
             The resulting :class:`ExchangeURI`.
 
         Raises:
-            ExchangeURIError: ``origin_id`` or ``ext`` violates spec
-                segment rules from spec §"Security and Path Resolution",
-                or ``origin_id`` starts with a dot
-                (which would land in the dotfile name space and be
-                hidden from consumers).
+            ExchangeURIError: ``ext`` violates the spec segment rules
+                from spec §"Security and Path Resolution".
         """
-        ExchangeURI.validate_segment(origin_id, role="json_param")
         ExchangeURI.validate_segment(ext, role="json_param")
-        if origin_id.startswith("."):
-            raise ExchangeURIError(
-                f"origin_id MUST NOT start with a dot: {origin_id!r}"
-            )
+        seg = _exchange_segment(origin_id)
 
         namespace_dir = self.base_dir / self.namespace
         namespace_dir.mkdir(mode=0o755, exist_ok=True)
@@ -361,7 +371,7 @@ class FileExchange:
                 namespace_dir,
                 exc,
             )
-        final_path = namespace_dir / f"{origin_id}.{ext}"
+        final_path = namespace_dir / f"{seg}.{ext}"
         # Include a random suffix in the temp name so two concurrent
         # writes for the same origin_id don't collide on the same temp
         # path (one writer's truncate would otherwise corrupt the
@@ -369,7 +379,7 @@ class FileExchange:
         # writer-wins on the final filename, which is the documented
         # contract — but each writer's stream is now isolated.
         unique = secrets.token_hex(8)
-        tmp_path = namespace_dir / f".{origin_id}.{unique}.{ext}.tmp"
+        tmp_path = namespace_dir / f".{seg}.{unique}.{ext}.tmp"
 
         try:
             # Open restrictively (0o600) to satisfy CodeQL's
@@ -421,7 +431,7 @@ class FileExchange:
         return ExchangeURI(
             exchange_id=self.exchange_id,
             namespace=self.namespace,
-            id=origin_id,
+            id=seg,
             ext=ext,
         )
 

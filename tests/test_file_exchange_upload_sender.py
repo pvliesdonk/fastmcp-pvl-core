@@ -356,17 +356,19 @@ async def test_upload_non_json_body_passed_through_as_text(
 
 
 # ---------------------------------------------------------------------------
-# H1: Invalid origin_id returns transfer_failed; POST is never invoked
+# H1: origin_id minimal-safety floor returns transfer_failed; POST never invoked
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("bad_id", ["a/b", "..", ".\x00a", " leading", "trailing "])
-async def test_upload_invalid_origin_id_returns_transfer_failed(
+@pytest.mark.parametrize(
+    "bad_id", ["", ".\x00a", "ctrl\x01here", " leading", "trailing "]
+)
+async def test_upload_floor_violation_origin_id_returns_transfer_failed(
     bad_id: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Segment-rule violations → transfer_failed without touching the network."""
+    """Minimal-safety floor violations → transfer_failed without the network."""
     call_count: list[int] = [0]
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -389,6 +391,36 @@ async def test_upload_invalid_origin_id_returns_transfer_failed(
     assert payload["error"] == "transfer_failed"
     assert payload["method"] == "http_upload"
     assert call_count[0] == 0, "POST handler must not be called for invalid origin_id"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("origin_id", ["a/b", "../weird", "image://job-1/0"])
+async def test_upload_opaque_origin_id_accepted(
+    origin_id: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """v0.5: path-/URI-shaped origin_id is opaque — the POST proceeds."""
+    call_count: list[int] = [0]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        call_count[0] += 1
+        return httpx.Response(200, json={"ok": True})
+
+    monkeypatch.setattr(
+        "fastmcp_pvl_core.file_exchange._upload_sender_transport",
+        httpx.MockTransport(handler),
+        raising=False,
+    )
+    mcp = FastMCP(name="t")
+    register_file_exchange_upload_sender(
+        mcp, namespace="ns", env_prefix="TEST_SEND", source=_resolver(b"x")
+    )
+    tool = await mcp.get_tool("upload")
+    assert tool is not None
+    result = await tool.run({"url": "https://recv.test/u/t", "origin_id": origin_id})
+    payload = result.structured_content or {}
+    assert "error" not in payload, payload
+    assert call_count[0] == 1, "POST handler must run for an opaque origin_id"
 
 
 # ---------------------------------------------------------------------------

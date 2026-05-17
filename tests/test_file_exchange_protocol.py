@@ -15,6 +15,7 @@ from fastmcp_pvl_core._file_exchange_protocol import (
     FileRef,
     FileRefPreview,
     register_file_exchange_capability,
+    validate_reference,
 )
 
 # ---------------------------------------------------------------------------
@@ -253,6 +254,42 @@ class TestValidateSegment:
             ExchangeURI.validate_segment(bad, role="uri")
 
 
+class TestValidateReference:
+    """Spec v0.5 minimal-safety floor for opaque domain references."""
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "folder/to/note.md",  # path separators are now data, not banned
+            "image://job-1/0",  # a resource URI
+            "../weird",  # ``..`` is opaque data, not traversal
+            ".hidden",  # a leading dot is opaque data
+            "req-%20-id",  # a literal '%' is data
+            "a single id",  # interior whitespace is allowed
+        ],
+    )
+    def test_accepts_opaque_references(self, value: str) -> None:
+        assert validate_reference(value) == value
+
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            "",  # empty
+            " leading",  # leading whitespace
+            "trailing ",  # trailing whitespace
+            "with\x00null",  # null byte
+            "with\x01ctrl",  # control character
+        ],
+    )
+    def test_rejects_floor_violations(self, bad: str) -> None:
+        with pytest.raises(ExchangeURIError):
+            validate_reference(bad)
+
+    def test_field_name_appears_in_message(self) -> None:
+        with pytest.raises(ExchangeURIError, match="destination"):
+            validate_reference("", field="destination")
+
+
 # ---------------------------------------------------------------------------
 # FileExchangeCapability
 # ---------------------------------------------------------------------------
@@ -286,7 +323,7 @@ class TestFileExchangeCapability:
         )
         d = cap.to_capability_dict()
         assert d == {
-            "version": "0.3",
+            "version": "0.5",
             "namespace": "image-mcp",
             "exchange_id": "hades-01",
             "produces": ["image/png", "image/webp", "image/jpeg"],

@@ -52,6 +52,7 @@ import io
 import ipaddress
 import logging
 import mimetypes
+import re
 import tempfile
 from collections.abc import (
     AsyncIterator,
@@ -76,6 +77,7 @@ from fastmcp_pvl_core._file_exchange_protocol import (
     FileRefPreview,
     _FileExchangeCapabilityBuilder,
     register_file_exchange_capability,
+    validate_reference,
 )
 from fastmcp_pvl_core._file_exchange_runtime import (
     ExchangeGroupMismatch,
@@ -450,8 +452,12 @@ class FileExchangeHandle:
                 content. It MUST be resolvable by this handle's
                 ``source`` hook — pvl-core never invents one, because a
                 pvl-core-generated id would be unknown to the hook.
-                Validated as a raw JSON parameter (spec §"Security and
-                Path Resolution" — never URI-decoded).
+                Validated only against the minimal-safety floor (spec
+                v0.5 §"Security and Path Resolution"): non-empty, no
+                null bytes or control characters, no leading/trailing
+                whitespace. It is otherwise opaque — the ``source`` hook
+                owns domain validation, and pvl-core derives every path
+                and URI segment it needs, never embedding it verbatim.
             mime_type: MIME type of the content. Required; also selects
                 the ``exchange`` URI extension via :mod:`mimetypes`.
             size_bytes: Optional size for the file reference. When the
@@ -471,11 +477,7 @@ class FileExchangeHandle:
                 "hook was passed to register_file_exchange (where {prefix} "
                 "is the env_prefix)"
             )
-        ExchangeURI.validate_segment(origin_id, role="json_param")
-        if origin_id.startswith("."):
-            raise ExchangeURIError(
-                f"origin_id MUST NOT start with a dot: {origin_id!r}"
-            )
+        validate_reference(origin_id, field="origin_id")
 
         transfer: dict[str, dict[str, Any]] = {}
 
@@ -802,6 +804,18 @@ def _resolve_enabled(env_prefix: str, transport: Literal["http", "stdio"]) -> bo
 # ---------------------------------------------------------------------------
 
 
+def _disposition_filename(origin_id: str, ext: str) -> str:
+    """Derive a header-safe Content-Disposition filename from an origin_id.
+
+    ``origin_id`` is an opaque reference that MAY contain URI/path
+    characters; it is never used verbatim. Keep a readable tail and
+    sanitise to a conservative charset.
+    """
+    tail = origin_id.rsplit("/", 1)[-1] or origin_id
+    safe = re.sub(r"[^A-Za-z0-9._-]", "_", tail).strip("._") or "download"
+    return f"{safe}.{ext}"
+
+
 def _register_create_download_link(mcp: FastMCP, handle: FileExchangeHandle) -> None:
     """Register the spec-compliant ``create_download_link`` MCP tool."""
 
@@ -818,7 +832,7 @@ def _register_create_download_link(mcp: FastMCP, handle: FileExchangeHandle) -> 
         clamped to the server's configured maximum.
         """
         try:
-            ExchangeURI.validate_segment(origin_id, role="json_param")
+            validate_reference(origin_id, field="origin_id")
         except ExchangeURIError as exc:
             return _transfer_failed(
                 origin_server=handle.namespace,
@@ -870,7 +884,7 @@ def _register_create_download_link(mcp: FastMCP, handle: FileExchangeHandle) -> 
         url = handle.artifact_store.put_ephemeral(
             data,
             content_type=content_type,
-            filename=f"{origin_id}.{_ext_for(resolved.content_type)}",
+            filename=_disposition_filename(origin_id, _ext_for(resolved.content_type)),
             ttl_seconds=effective_ttl,
         )
         return {
@@ -1754,14 +1768,15 @@ def register_file_exchange_upload(
 
         Args:
             origin_id: The sender's opaque stable handle for the bytes
-                (the *what*). Validated against the spec's segment rules
-                (§"Security and Path Resolution"): no ``/``, ``\``, ``.``,
-                ``..``, control bytes, leading/trailing whitespace.
+                (the *what*). Validated against the minimal-safety floor
+                (spec v0.5 §"Security and Path Resolution"): non-empty,
+                no null bytes or control characters, no leading/trailing
+                whitespace. Otherwise opaque — the receiver validates
+                the rest per its own domain rules.
             destination: Optional destination instruction (the *where*).
-                Only null bytes, control characters, and leading/trailing
-                whitespace are rejected at the spec level; the receiver
-                validates the rest per its own domain rules via
-                ``pre_link_validator``.
+                Validated against the same minimal-safety floor as
+                ``origin_id``; the receiver validates the rest per its
+                own domain rules via ``pre_link_validator``.
             content_type: Optional hint of the ``Content-Type`` the POST
                 will declare; pre-filtered against the receiver's
                 ``accepts`` list.
@@ -1775,30 +1790,27 @@ def register_file_exchange_upload(
             (post-clamp) values. On in-band rejection, a ``transfer_failed``
             envelope.
         """
-        # origin_id: strict spec segment grammar (the WHAT identifier).
+        # origin_id and destination share the minimal-safety floor (spec
+        # v0.5 §"Security and Path Resolution"): non-empty, no null bytes
+        # or control chars, no leading/trailing whitespace. Both are
+        # otherwise opaque domain references — the receiver validates the
+        # rest per its own domain rules.
         try:
-            ExchangeURI.validate_segment(origin_id, role="json_param")
+            validate_reference(origin_id, field="origin_id")
         except ExchangeURIError as exc:
             return _upload_transfer_failed(
                 receiver_server=namespace,
                 origin_id=origin_id,
                 message=str(exc),
             )
-        # destination: relaxed validation (the WHERE) — reject only null
-        # bytes, control chars, and leading/trailing whitespace; the
-        # receiver validates the rest.
         if destination is not None:
-            if destination != destination.strip():
+            try:
+                validate_reference(destination, field="destination")
+            except ExchangeURIError as exc:
                 return _upload_transfer_failed(
                     receiver_server=namespace,
                     origin_id=origin_id,
-                    message="destination must not have leading or trailing whitespace",
-                )
-            if any(ord(c) < 0x20 for c in destination):
-                return _upload_transfer_failed(
-                    receiver_server=namespace,
-                    origin_id=origin_id,
-                    message="destination must not contain control characters",
+                    message=str(exc),
                 )
         # content_type hint: pre-filter against the receiver's accepts
         # list so a mismatched hint is rejected in-band, before a wasted
@@ -1920,10 +1932,11 @@ def register_file_exchange_upload_sender(
             url: The receiver-issued POST endpoint, from a prior
                 ``create_upload_link`` call.
             origin_id: The sender's opaque stable handle for the bytes to
-                push. Validated against the spec's segment rules (no
-                ``/``, ``\``, ``.``, ``..``, control bytes,
-                leading/trailing whitespace); resolved to bytes by the
-                server's ``source`` hook. This ``origin_id`` is the
+                push. Validated against the minimal-safety floor (spec
+                v0.5 §"Security and Path Resolution"): non-empty, no null
+                bytes or control characters, no leading/trailing
+                whitespace; resolved to bytes by the server's ``source``
+                hook. This ``origin_id`` is the
                 *sender's own* handle, independent of any ``origin_id``
                 the caller earlier passed to the receiver's
                 ``create_upload_link`` — the two are unrelated opaque
@@ -1944,7 +1957,7 @@ def register_file_exchange_upload_sender(
         # issued transfer_failed body is passed through verbatim instead
         # (see the non-2xx branch), so it keeps the receiver's real value.
         try:
-            ExchangeURI.validate_segment(origin_id, role="json_param")
+            validate_reference(origin_id, field="origin_id")
         except ExchangeURIError as exc:
             return _upload_transfer_failed(
                 receiver_server="", origin_id=origin_id, message=str(exc)

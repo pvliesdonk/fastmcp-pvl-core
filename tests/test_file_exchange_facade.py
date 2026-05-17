@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 from collections.abc import Iterator, Mapping
@@ -398,6 +399,42 @@ class TestMakeFileRef:
         assert uri.startswith("exchange://")
         assert ref.size_bytes == len(b"rendered")
 
+    async def test_exchange_segment_decoupled_from_origin_id(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """The ``exchange://`` URI segment is a SHA-256 of the origin_id.
+
+        v0.5: a path-shaped ``origin_id`` is never embedded verbatim in
+        the URI, path, or filename — pvl-core derives a segment-safe
+        digest. The ``file_ref`` still carries the real ``origin_id``.
+        """
+        monkeypatch.setenv("MCP_EXCHANGE_DIR", str(tmp_path))
+        monkeypatch.setenv("TEST_FE_BASE_URL", "http://test.example")
+        monkeypatch.setenv("TEST_FE_TRANSPORT", "http")
+        mcp = _new_mcp()
+        h = register_file_exchange(
+            mcp,
+            namespace="image-mcp",
+            env_prefix="TEST_FE",
+            produces=("image/png",),
+            source=_src(b"rendered"),
+        )
+        origin_id = "folder/to/note.md"
+        ref = await h.make_file_ref(origin_id, mime_type="image/png")
+
+        uri = ref.transfer["exchange"]["uri"]
+        sha256hex = hashlib.sha256(b"folder/to/note.md").hexdigest()
+        # The raw origin_id never appears in the URI…
+        assert origin_id not in uri
+        # …and the URI ends with the derived segment + ext.
+        assert uri.endswith(f"/{sha256hex}.png")
+        # The file is on disk under the derived segment.
+        assert (tmp_path / "image-mcp" / f"{sha256hex}.png").exists()
+        # The file_ref still carries the real, opaque origin_id.
+        assert ref.origin_id == origin_id
+
     async def test_dual_transport_ref_carries_both_keys(
         self,
         monkeypatch: pytest.MonkeyPatch,
@@ -521,12 +558,54 @@ class TestCreateDownloadLinkTool:
         assert out["origin_id"] == "never-published"
         assert out["origin_server"] == "image-mcp"
 
-    async def test_invalid_origin_id_returns_transfer_failed(
+    async def test_opaque_origin_id_accepted(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        # v0.5: origin_id is an opaque domain reference — path-shaped and
+        # URI-shaped values are passed through to the source hook, not
+        # rejected by pvl-core.
+        for origin_id in ("folder/to/note.md", "image://job-1/0", "../weird"):
+            mcp, _ = _make_handle_http(
+                monkeypatch, source=_src(b"x", origin_id=origin_id)
+            )
+            out = await _call_tool(mcp, "create_download_link", origin_id=origin_id)
+            assert "url" in out, out
+            assert "error" not in out
+
+    @pytest.mark.parametrize(
+        "bad",
+        ["", " leading", "trailing ", "with\x00null", "with\x01ctrl"],
+    )
+    async def test_floor_violation_origin_id_returns_transfer_failed(
+        self, monkeypatch: pytest.MonkeyPatch, bad: str
+    ) -> None:
+        # The minimal-safety floor is still enforced: empty, whitespace
+        # edges, null bytes, control characters.
         mcp, _ = _make_handle_http(monkeypatch)
-        out = await _call_tool(mcp, "create_download_link", origin_id="bad/with-slash")
+        out = await _call_tool(mcp, "create_download_link", origin_id=bad)
         assert out["error"] == "transfer_failed"
+
+    async def test_resource_uri_origin_id_round_trips_to_hook(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # v0.5: a resource-URI-shaped origin_id reaches the source hook
+        # verbatim and a download URL comes back.
+        seen: list[str] = []
+
+        def render(requested: str) -> ResolvedSource:
+            seen.append(requested)
+            if requested != "image://job-1/view":
+                raise ValueError(f"unknown origin_id: {requested!r}")
+            return ResolvedSource(
+                stream=io.BytesIO(b"png-bytes"), content_type="image/png"
+            )
+
+        mcp, _ = _make_handle_http(monkeypatch, source=render)
+        out = await _call_tool(
+            mcp, "create_download_link", origin_id="image://job-1/view"
+        )
+        assert seen == ["image://job-1/view"]
+        assert out["url"].startswith("http://test.example/artifacts/")
 
     async def test_source_non_value_error_is_reraised(
         self, monkeypatch: pytest.MonkeyPatch
@@ -708,6 +787,29 @@ class TestFetchFileTool:
         assert out["error"] == "transfer_failed"
         assert out["method"] == "http"
         assert "private/loopback" in out["message"]
+
+
+# ---------------------------------------------------------------------------
+# _disposition_filename — header-safe filename derivation
+# ---------------------------------------------------------------------------
+
+
+class TestDispositionFilename:
+    @pytest.mark.parametrize(
+        ("origin_id", "ext", "expected"),
+        [
+            ("folder/note.md", "png", "note.md.png"),
+            ("image://job-1/0", "webp", "0.webp"),
+            ("a1b2c3", "png", "a1b2c3.png"),
+            ("///", "png", "download.png"),
+        ],
+    )
+    def test_derives_header_safe_filename(
+        self, origin_id: str, ext: str, expected: str
+    ) -> None:
+        from fastmcp_pvl_core.file_exchange import _disposition_filename
+
+        assert _disposition_filename(origin_id, ext) == expected
 
 
 # ---------------------------------------------------------------------------
