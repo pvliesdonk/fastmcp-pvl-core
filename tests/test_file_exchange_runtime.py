@@ -256,6 +256,14 @@ class TestWriteAtomic:
         with pytest.raises(ExchangeURIError):
             fx.write_atomic(origin_id="abc", ext="p/g", content=b"x")
 
+    def test_floor_violation_origin_id_rejected(self, tmp_path: Path) -> None:
+        # v0.5: write_atomic enforces the minimal-safety floor on
+        # origin_id (defence-in-depth alongside the producing facade).
+        fx = _make_fx(tmp_path)
+        for bad in ("", " leading", "trailing ", "with\x00null", "ctl\x01"):
+            with pytest.raises(ExchangeURIError):
+                fx.write_atomic(origin_id=bad, ext="png", content=b"x")
+
     def test_overwrite_replaces_atomically(self, tmp_path: Path) -> None:
         fx = _make_fx(tmp_path)
         fx.write_atomic(origin_id="abc", ext="png", content=b"v1")

@@ -35,7 +35,11 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
 from fastmcp_pvl_core._env import env
-from fastmcp_pvl_core._file_exchange_protocol import ExchangeURI, ExchangeURIError
+from fastmcp_pvl_core._file_exchange_protocol import (
+    ExchangeURI,
+    ExchangeURIError,
+    validate_reference,
+)
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
@@ -339,8 +343,9 @@ class FileExchange:
                 verbatim as a path component — the ``exchange://`` URI
                 ``{id}`` segment is derived from it via
                 :func:`_exchange_segment` (spec v0.5 §"Security and
-                Path Resolution"). Used here only for the debug log and
-                as the derivation input.
+                Path Resolution"). Validated against the minimal-safety
+                floor; otherwise used only for the debug log and as the
+                derivation input.
             ext: File extension (no leading dot). Validated as a literal
                 URI segment.
             content: Bytes to write, OR a :class:`pathlib.Path` to a
@@ -353,10 +358,15 @@ class FileExchange:
             The resulting :class:`ExchangeURI`.
 
         Raises:
-            ExchangeURIError: ``ext`` violates the spec segment rules
-                from spec §"Security and Path Resolution".
+            ExchangeURIError: ``ext`` violates the spec segment rules,
+                or ``origin_id`` violates the minimal-safety floor
+                (spec §"Security and Path Resolution").
         """
         ExchangeURI.validate_segment(ext, role="json_param")
+        # Defence-in-depth: the producing facade validates origin_id
+        # before calling here, but write_atomic is also reachable
+        # directly — enforce the spec v0.5 minimal-safety floor too.
+        validate_reference(origin_id, field="origin_id")
         seg = _exchange_segment(origin_id)
 
         namespace_dir = self.base_dir / self.namespace
