@@ -293,9 +293,13 @@ class SinkContext(NamedTuple):
     """Per-call context handed to a :data:`SinkHook` alongside the bytes.
 
     Attributes:
-        origin_id: The opaque id the bytes arrived under, when the
-            mechanism carries one (``exchange`` URI, ``http_upload``
-            POST); ``None`` for a bare-``url`` ``http`` fetch.
+        origin_id: The producer's opaque ``origin_id`` when the call
+            carries one — a ``file_ref``-driven ``fetch_file`` (from
+            ``file_ref.origin_id``) or an ``http_upload`` receive (from
+            the POST parameter). ``None`` for a bare-``url`` fetch,
+            ``http`` or ``exchange`` alike: a bare URL carries no
+            ``origin_id`` — an ``exchange://`` URL carries only the
+            pvl-core-derived segment, which is not the reference.
         mime_type: Best-known MIME type — from the file reference, the
             HTTP ``Content-Type`` header, or the upload request hint.
         size_bytes: Byte length when known up front, else ``None``.
