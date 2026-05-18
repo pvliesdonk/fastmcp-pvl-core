@@ -60,10 +60,7 @@ kwargs at all. The kwarg surface stays purely domain hooks.
 If a proposed kwarg mixes the two — a legitimate hook bundled with an
 override of shape — split it: keep the hook component, drop the
 override component. Reviewers reject PRs that grow override kwargs
-disguised as hooks. `register_file_exchange` in
-`src/fastmcp_pvl_core/file_exchange.py` is the worked example of the
-sharpened test applied end-to-end: five kwargs, all domain hooks,
-every operator value on an env var.
+disguised as hooks.
 
 ### Spec docs are protocol extensions, not design docs
 
@@ -81,9 +78,7 @@ implementor docs or code comments, **not** in a spec doc.
 Real spec gaps are resolved through a proper spec evolution: a new
 release with the version field bumped per the spec's own
 versioning-and-compatibility section. Inline amendments to a
-published version are not a valid spec-evolution mechanism. The
-opening of [`docs/specs/file-exchange.md`](docs/specs/file-exchange.md)
-is the worked example.
+published version are not a valid spec-evolution mechanism.
 
 ### Pre-existing downstream conflicts resolve by migration
 
@@ -104,7 +99,7 @@ domain logic.
 ### Downstream reuses pvl-core; it does not reimplement the protocol
 
 Downstream servers reuse pvl-core's implementation of the shared
-cross-cutting protocols (file exchange, auth, logging, ...). They do
+cross-cutting protocols (auth, logging, ...). They do
 not reimplement a wire protocol independently. The `docs/specs/` spec
 is the wire authority; pvl-core is its single shared implementation.
 **No implementation is "the reference" — not even pvl-core's; the spec
@@ -122,12 +117,7 @@ the failure this principle exists to prevent.
 
 - **Adding a new `register_*` helper or `Build*` factory**: every
   kwarg passes the classification test above. Document each kwarg's
-  category (hook / config / shape) in the docstring. Existing
-  helpers (notably `register_file_exchange` / `register_file_exchange_upload`)
-  predate this rule and are being audited in
-  [#72](https://github.com/pvliesdonk/fastmcp-pvl-core/issues/72);
-  new kwargs added to existing helpers still pass the test and carry
-  the annotation.
+  category (hook / config / shape) in the docstring.
 - **Adding a new spec under `docs/specs/`**: it documents wire format
   for interop, not pvl-core's implementation. Implementation
   decisions are out of scope of the spec file.
