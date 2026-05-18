@@ -5,63 +5,27 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [3.0.0] - UNRELEASED
 
-### Added
-
-- **Upload-direction type aliases are now exported from the package
-  root.** `BufferedReceiver`, `StreamReceiver`, and `PreLinkValidator`
-  are importable directly from `fastmcp_pvl_core`; receiver-author code
-  no longer needs to import them from private submodules. This brings
-  the upload-direction aliases in line with the already-exported
-  download-direction aliases (`ConsumerSink`, `FetchContext`,
-  `FetchResult`). (#67)
-
 ### Removed
 
-- **`register_file_exchange` no longer accepts the following kwargs.**
-  Every one was either an override of a pvl-core shape decision or
-  operator config that already had an env-var counterpart:
-  - `artifact_store=` — pvl-core builds the store from
-    `{PREFIX}_BASE_URL` + `{PREFIX}_FILE_EXCHANGE_TTL`. Tests
-    inject via the private `_set_artifact_store_for_test` seam.
-  - `transport=` — resolved from `{PREFIX}_TRANSPORT` (fallback
-    `FASTMCP_TRANSPORT`, default `"stdio"`).
-  - `download_tool_name=` and `fetch_tool_name=` — pvl-core's tool
-    names (`create_download_link`, `fetch_file`) are the shared
-    shape; downstream collisions resolve by downstream renaming
-    the local tool.
-  - `legacy_capability_shape=` — transitional shim from the v0.4
-    amendments window (#76 / #77). The nested `http.{download,upload}`
-    capability shape is *kept* as the only shape advertised; what's
-    removed is the kwarg that let downstream toggle to the older flat
-    v0.2 shape. Spec doc itself remains at v0.2.5 (PR #77 reverted
-    the proposed amendments without changing the wire shape this
-    helper emits).
-
-### Migration
-
-Downstream consumers tracked per-repo:
-
-- pvliesdonk/markdown-vault-mcp#492 — dep-pin bump only (this repo
-  uses `register_file_exchange_upload`, not `register_file_exchange`).
-- pvliesdonk/scholar-mcp#196 — drop `transport=` kwarg; ensure
-  `SCHOLAR_MCP_TRANSPORT` env var is set by the CLI.
-- pvliesdonk/image-generation-mcp#227 — drop `transport=` from
-  `src/` and tests.
-- pvliesdonk/reqeng-mcp#17 — drop `transport="auto"` (default; no
-  behaviour change after migration).
-- pvliesdonk/fastmcp-server-template#133 (child of #131) — drop
-  `transport="auto"` from `server.py.jinja`.
-
-### Notes
-
-`register_file_exchange_upload` is intentionally untouched in this
-release; #74 redoes it wholesale against the #71 spec evolution.
-Its kwarg surface is audited at that point.
-
-The framing principle that drives this change is documented
-authoritatively in `README.md` `## Design principles` and `CLAUDE.md`
-`## The framing principle`. See pvliesdonk/fastmcp-pvl-core#73 and
-pvliesdonk/fastmcp-pvl-core#72 for context.
+- **The file-exchange spec and implementation have been removed in
+  full.** Gone: `docs/specs/file-exchange.md`; the `file_exchange`,
+  `_file_exchange_protocol`, `_file_exchange_runtime`, `_token_store`,
+  and `_artifacts` modules; and every symbol they exported from the
+  package root — `register_file_exchange`,
+  `register_file_exchange_upload`,
+  `register_file_exchange_upload_sender`,
+  `register_file_exchange_capability`, `FileExchange`,
+  `FileExchangeHandle`, `FileExchangeCapability`,
+  `FileExchangeConfigError`, `ExchangeGroupMismatch`, `ExchangeURI`,
+  `ExchangeURIError`, `FileRef`, `FileRefPreview`,
+  `FILE_EXCHANGE_SPEC_VERSION`, `ArtifactStore`, `UploadStore`,
+  `TokenRecord`, `UploadRecord`, `UploadHandle`, `UploadSenderHandle`,
+  `SourceHook`, `SinkHook`, `SinkContext`, `ResolvedSource`,
+  `PreLinkValidator`, `get_artifact_store`, `set_artifact_store`,
+  `get_upload_store`, `set_upload_store`. Repeated remediation passes
+  could not clear the spec and implementation of LLM contamination;
+  the protocol will be reintroduced through a cleanroom spec rewrite.
+  (#116)
 
 ## [2.1.0] - 2026-05-10
 

@@ -2,9 +2,9 @@
 
 The opinionated shared implementation for the `pvliesdonk/*-mcp`
 server family. `fastmcp-pvl-core` owns the shape of cross-cutting
-concerns — auth, middleware, logging, config, server-factory builders,
-the file-exchange wire surface — and exposes narrow hooks to
-downstream servers for domain-specific behaviour. Downstream conforms
+concerns — auth, middleware, logging, config, and server-factory
+builders — and exposes narrow hooks to downstream servers for
+domain-specific behaviour. Downstream conforms
 to the shape; pvl-core does not adapt to downstream preferences. See
 [Design principles](#design-principles) for the rationale and the
 classification test that follows from it.
@@ -61,10 +61,7 @@ kwargs. The kwarg surface is purely domain hooks.
 
 If a proposed kwarg mixes the two — a legitimate hook bundled with an
 override of shape — split it: keep the hook, drop the override. PRs
-that grow override kwargs disguised as hooks are rejected. The
-worked example is `register_file_exchange` in
-`src/fastmcp_pvl_core/file_exchange.py`: five kwargs, all domain
-hooks, every operator value on an env var.
+that grow override kwargs disguised as hooks are rejected.
 
 ### Spec docs are protocol extensions, not design docs
 
@@ -77,9 +74,7 @@ registration mechanics) do not belong in a spec doc; they belong in
 pvl-core's own implementor docs and code comments. Real spec gaps are
 resolved through a proper spec evolution — a new release with the
 version field bumped — not through inline amendments to a published
-version. The opening of
-[`docs/specs/file-exchange.md`](docs/specs/file-exchange.md) is the
-worked example of this distinction.
+version.
 
 ### Pre-existing downstream conflicts resolve by migration
 
@@ -102,8 +97,8 @@ domain logic.
 ### Downstream reuses pvl-core; it does not reimplement the protocol
 
 Downstream servers reuse pvl-core's implementation of the shared
-cross-cutting protocols — file exchange, auth, logging, and the rest.
-They do not reimplement a wire protocol independently. The specs under
+cross-cutting protocols — auth, logging, and the rest. They do not
+reimplement a wire protocol independently. The specs under
 `docs/specs/` are the wire authority; pvl-core is their single shared
 implementation. No implementation is "the reference" — not pvl-core's
 either; the spec is.
@@ -357,58 +352,6 @@ so it is safe to ship in default scaffolds.
 > solely from a trusted developer workstation, e.g. `kubectl
 > port-forward`, `docker run -p 127.0.0.1:5678:5678` (loopback bind),
 > or an SSH tunnel. Never publish the debug port on a public network.
-
-### File Exchange
-
-Servers that produce or consume binary artefacts (PDFs, images,
-documents) wire the MCP File Exchange spec with a single call. The
-whole downstream surface is two domain hooks: a `source`
-(`origin_id -> ResolvedSource`) and a `sink` (`file-like -> domain
-result`). The download direction registers a `create_download_link`
-tool and the artifact HTTP route when a `source` hook is supplied:
-
-```python
-from fastmcp_pvl_core import register_file_exchange, ResolvedSource
-
-def _resolve(origin_id: str) -> ResolvedSource:
-    # Your domain turns an opaque id into a readable byte stream.
-    return ResolvedSource(stream=open(_path_for(origin_id), "rb"))
-
-handle = register_file_exchange(
-    mcp,
-    namespace="vault",
-    env_prefix="MARKDOWN_VAULT_MCP",
-    produces=["text/markdown"],
-    source=_resolve,
-)
-```
-
-For the inbound direction (local agent pushes a file *into* the
-server), use the symmetric helper:
-
-```python
-from fastmcp_pvl_core import register_file_exchange_upload
-
-register_file_exchange_upload(
-    mcp,
-    namespace="vault",
-    env_prefix="MARKDOWN_VAULT_MCP",
-    sink=_my_upload_sink,
-    pre_link_validator=_validate_target_path,
-)
-```
-
-This mints one-time `POST` URLs via a `create_upload_link` tool and
-hands the received bytes to your `sink`. See the File Exchange spec's
-§"Transfer Methods → `http_upload`" at
-[`docs/specs/file-exchange.md`](docs/specs/file-exchange.md) for the
-wire contract.
-
-Both helpers cooperate on the same `experimental.file_exchange`
-capability — registering both on one FastMCP instance advertises a
-single capability whose `transfer_methods` object carries a separate
-`http` block (the download direction) and `http_upload` block (the
-upload direction), each following the `source` / `sink` role pattern.
 
 ## License
 
