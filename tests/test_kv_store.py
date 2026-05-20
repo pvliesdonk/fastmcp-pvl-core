@@ -12,16 +12,9 @@ from key_value.aio.wrappers.prefix_collections import PrefixCollectionsWrapper
 
 from fastmcp_pvl_core import ServerConfig, build_kv_store
 
-
-@pytest.fixture(autouse=True)
-def _reset_legacy_warning_flag(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Reset the module-level one-shot warning flag between tests.
-
-    ``build_kv_store`` suppresses the legacy-URL warning after its first
-    emission per-process, which would make legacy-warning tests
-    order-dependent without this reset.
-    """
-    monkeypatch.setattr("fastmcp_pvl_core._kv_store._legacy_url_warned", False)
+# Note: the autouse fixture that resets ``_legacy_url_warned`` between
+# tests lives in ``tests/conftest.py`` so it protects every test file
+# that exercises ``build_kv_store`` (not just this one).
 
 
 class TestBuildKvStoreMemoryBackend:
@@ -44,6 +37,20 @@ class TestBuildKvStoreMemoryBackend:
         a = build_kv_store(cfg, namespace="events")
         b = build_kv_store(cfg, namespace="file-exchange")
         assert a.prefix != b.prefix
+
+    async def test_namespace_isolation_is_behavioral(self):
+        # The .prefix check above proves the configuration; this proves
+        # the runtime contract — a write under one namespace is invisible
+        # under another, even when both share the same backend. This is
+        # the bug class the wrapper exists to prevent (events writing
+        # under collection "tokens" and file-exchange writing under
+        # collection "tokens" silently colliding).
+        cfg = ServerConfig(kv_store_url="memory://")
+        a = build_kv_store(cfg, namespace="events")
+        b = build_kv_store(cfg, namespace="file-exchange")
+        await a.put(collection="tokens", key="k1", value={"who": "events"})
+        assert await a.get(collection="tokens", key="k1") == {"who": "events"}
+        assert await b.get(collection="tokens", key="k1") is None
 
 
 class TestBuildKvStoreFileBackend:

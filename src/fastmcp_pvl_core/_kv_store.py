@@ -97,7 +97,7 @@ def build_kv_store(
         ImportError: If a backend-specific extra is required but not
             installed; the message names the extra to install.
     """
-    if not namespace:
+    if not namespace.strip():
         raise ValueError(
             "namespace must be a non-empty string — it is the "
             "PrefixCollectionsWrapper prefix that isolates subsystems "
@@ -159,7 +159,7 @@ def _build_backend(url: str) -> AsyncKeyValue:
         # so a missing extra does not leave an orphan directory behind.
         try:
             from key_value.aio.stores.filetree import FileTreeStore
-        except ImportError as exc:  # pragma: no cover — fastmcp pulls this in
+        except ModuleNotFoundError as exc:  # pragma: no cover — fastmcp pulls this in
             raise ImportError(
                 "FileTreeStore requires 'py-key-value-aio[filetree]'. "
                 "fastmcp pulls this in transitively; reinstall fastmcp "
@@ -173,7 +173,7 @@ def _build_backend(url: str) -> AsyncKeyValue:
     if scheme == "redis":
         try:
             from key_value.aio.stores.redis import RedisStore
-        except ImportError as exc:
+        except ModuleNotFoundError as exc:
             raise ImportError(
                 "RedisStore requires the 'redis' extra. Install with "
                 "`pip install 'fastmcp-pvl-core[redis]'` or add "
@@ -185,7 +185,7 @@ def _build_backend(url: str) -> AsyncKeyValue:
     if scheme == "dynamodb":
         try:
             from key_value.aio.stores.dynamodb import DynamoDBStore
-        except ImportError as exc:
+        except ModuleNotFoundError as exc:
             raise ImportError(
                 "DynamoDBStore requires the 'dynamodb' extra. Install "
                 "with `pip install 'fastmcp-pvl-core[dynamodb]'` or "
@@ -213,7 +213,7 @@ def _build_backend(url: str) -> AsyncKeyValue:
     if scheme == "mongodb":
         try:
             from key_value.aio.stores.mongodb import MongoDBStore
-        except ImportError as exc:
+        except ModuleNotFoundError as exc:
             raise ImportError(
                 "MongoDBStore requires the 'mongodb' extra. Install "
                 "with `pip install 'fastmcp-pvl-core[mongodb]'` or add "
