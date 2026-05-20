@@ -47,19 +47,43 @@ FileExchangeErrorCode            # StrEnum mirroring §13
 ```python
 def register_file_exchange_capability(
     server: FastMCP,
+    config: ServerConfig,
     *,
-    roles: Sequence[FileExchangeRole],
-    transports_by_role: Mapping[FileExchangeRole, Sequence[FileExchangeTransport]],
+    roles: Sequence[FileExchangeRole] = ("provider", "fetcher", "receiver", "sender"),
     kv_store: AsyncKeyValue,        # from build_kv_store(env_prefix, config, namespace="file-exchange")
     digests: Sequence[str] = ("sha-256",),
     max_artifact_size: int | None = None,
 ) -> None
 ```
 
-- Writes the `nl.liesdonk.file-exchange` block into `server.experimental_capabilities`.
-- When `transports_by_role` declares `download` for `provider` or `upload` for `receiver`, **auto-mounts** the sibling HTTP routes (`GET /file-exchange/d/<token>`, `PUT|POST /file-exchange/u/<token>`) on the FastMCP server.
+The downstream declares which **roles** it wants to play (a domain decision — does this server export, ingest, both?). pvl-core **derives the transport set per role** from what the deployment can actually satisfy. The advertised capability mirrors reality, never a declaration that runtime selection has to reject.
+
+#### Transport-availability gating (the load-bearing detail)
+
+Per the spec §4.2 table, role-vs-transport compatibility is asymmetric across deployment topology. pvl-core encodes the table once:
+
+| Transport | Required deployment capability |
+|---|---|
+| `filesystem` (any role) | `config.file_exchange_volumes` non-empty — i.e. operator configured at least one volume in `_FILE_EXCHANGE_VOLUMES` |
+| `download` (provider) | `config.transport == "http"` — the FastMCP server hosts an HTTP app on which to mount `GET /file-exchange/d/<token>` |
+| `download` (fetcher) | always available (outbound HTTP) |
+| `upload` (receiver) | `config.transport == "http"` — needs to host `PUT|POST /file-exchange/u/<token>` |
+| `upload` (sender) | always available (outbound HTTP) |
+
+Algorithm:
+
+1. For each role in `roles`, compute the set of transports the deployment can satisfy.
+2. Drop any role whose resulting transport set is empty (the deployment cannot play that role at all).
+3. If the post-gate role set is empty, **do not advertise the capability** — `nl.liesdonk.file-exchange` is simply absent from `experimental_capabilities`. Log at INFO: `file-exchange: no satisfiable transport for any declared role — capability not advertised`.
+4. Otherwise, write the gated `{role: [transports…]}` map into the `nl.liesdonk.file-exchange` block exactly as the spec requires (§5).
+5. Auto-mount HTTP routes iff `provider+download` or `receiver+upload` survives the gate (the stdio-only case skips this).
+
+This makes the call effectively zero-config for downstream — `register_file_exchange_capability(server, config, kv_store=…)` does the right thing in every deployment. A stdio server with volumes configured advertises filesystem-only. An HTTP server without volumes advertises HTTPS-only. An HTTP server with volumes advertises both, role-by-role. A stdio server with no volumes advertises nothing.
+
+#### Other behaviour
+
 - The `kv_store` parameter is the namespaced store from the existing `build_kv_store` factory. Internal sub-keyspaces: `tokens:<token>` and `intake:<artifact_id>` via `PrefixCollectionsWrapper`.
-- **Fails fast at registration** when declared transports are unsatisfiable in the current deployment: `filesystem` declared but `_FILE_EXCHANGE_VOLUMES` empty → `ConfigurationError`; `download`/`upload` declared but the FastMCP server has no HTTP app (stdio-only) → `ConfigurationError`. This is preferred over a silent runtime skip-on-selection for declared roles, because mis-declared capability blocks would mislead peers' selection algorithms.
+- `config` extends with new file-exchange fields (see §5 below); the call reads them rather than env-vars directly, matching the existing pvl-core pattern (`build_kv_store`, `build_oidc_proxy_auth`).
 
 ### Descriptor minting (producer side)
 
@@ -174,19 +198,29 @@ Public symbols are re-exported from `fastmcp_pvl_core/__init__.py`. The `_file_e
 
 ## 5. Operator configuration
 
-All operator-side concerns are environment variables (per pvl-core convention; not constructor kwargs). The `{PREFIX}` placeholder is the consuming server's env-prefix.
+All operator-side concerns are environment variables loaded into typed fields on `ServerConfig` (per pvl-core convention — `ServerConfig.from_env` is the single read point; downstream code touches `config.foo`, not `os.environ`). The `{PREFIX}` placeholder is the consuming server's env-prefix.
 
-| Variable | Required when | Meaning |
+| Variable | `ServerConfig` field | Meaning |
 |---|---|---|
-| `{PREFIX}_FILE_EXCHANGE_VOLUMES` | `filesystem` transport declared in any role | `<volume-id>=<local-mount-point>` mappings, comma-separated. Configures the `exchange://` resolver. |
-| `{PREFIX}_FILE_EXCHANGE_MAX_ARTIFACT_SIZE` | optional | Hard ceiling in bytes; enforced by fetchers/receivers, pre-checked by senders/providers. |
-| `{PREFIX}_FILE_EXCHANGE_HTTPS_ALLOW_LOOPBACK` | optional, dev only | `true`/`false` (default `false`). Disables SSRF guard for loopback addresses. |
-| `{PREFIX}_FILE_EXCHANGE_HTTPS_ALLOW_PRIVATE` | optional, dev only | Same shape, for RFC 1918 / link-local ranges. |
-| `{PREFIX}_FILE_EXCHANGE_CAPABILITY_URL_TTL_DEFAULT_S` | optional | Default `expiresAt` window for minted `download`/`upload` URLs (default: 3600s). |
-| `{PREFIX}_FILE_EXCHANGE_HTTPS_PUBLIC_BASE_URL` | when capability URLs are minted behind a reverse proxy with a different public hostname than what FastMCP computes | Overrides `compute_app_domain` for capability-URL construction. |
-| `{PREFIX}_KV_STORE_URL` | already required by `build_kv_store` | Selects the shared storage backend. File-exchange uses `namespace="file-exchange"`. |
+| `{PREFIX}_FILE_EXCHANGE_VOLUMES` | `file_exchange_volumes: str \| None` | `<volume-id>=<local-mount-point>` mappings, comma-separated. Parsed at registration time to gate `filesystem` transport availability per §3. |
+| `{PREFIX}_FILE_EXCHANGE_MAX_ARTIFACT_SIZE` | `file_exchange_max_artifact_size: int \| None` | Hard ceiling in bytes; enforced by fetchers/receivers, pre-checked by senders/providers. |
+| `{PREFIX}_FILE_EXCHANGE_HTTPS_ALLOW_LOOPBACK` | `file_exchange_https_allow_loopback: bool` | Dev-only; default `false`. Disables SSRF guard for loopback addresses. |
+| `{PREFIX}_FILE_EXCHANGE_HTTPS_ALLOW_PRIVATE` | `file_exchange_https_allow_private: bool` | Dev-only; same shape, for RFC 1918 / link-local ranges. |
+| `{PREFIX}_FILE_EXCHANGE_CAPABILITY_URL_TTL_DEFAULT_S` | `file_exchange_capability_url_ttl_default_s: int` | Default `expiresAt` window for minted `download`/`upload` URLs (default: 3600s). |
+| `{PREFIX}_FILE_EXCHANGE_HTTPS_PUBLIC_BASE_URL` | `file_exchange_https_public_base_url: str \| None` | Override for `compute_app_domain` for capability-URL construction (reverse-proxy case). |
+| `{PREFIX}_KV_STORE_URL` | `kv_store_url` (existing) | Selects the shared storage backend. File-exchange uses `namespace="file-exchange"`. |
+| `config.transport` (existing, set from `{PREFIX}_TRANSPORT`) | — | Whether the server hosts an HTTP app — gates `download`-as-provider and `upload`-as-receiver per §3. |
 
-The `_FILE_EXCHANGE_VOLUMES` parser is the single source of truth for the volume map. A party with no mapping for a referenced volume skips that descriptor during selection (§9).
+The volumes parser in `_transport_filesystem.py` is the single source of truth for the volume map; both directions (`provider` writing, `fetcher` reading) call it. A party with no mapping for a referenced volume skips that descriptor at selection time (§9), independent of the registration-time gate (which decides what to *advertise*).
+
+### What the gate means for operators
+
+A deployment can rotate its file-exchange surface without code changes — just env-vars:
+
+- Set `_FILE_EXCHANGE_VOLUMES=` (empty) + `_TRANSPORT=stdio` → no file-exchange capability advertised at all.
+- Set `_FILE_EXCHANGE_VOLUMES=vault-export=/mnt/exchange/vault` + `_TRANSPORT=stdio` → file-exchange advertised, filesystem-only.
+- Set `_FILE_EXCHANGE_VOLUMES=` (empty) + `_TRANSPORT=http` → file-exchange advertised, HTTPS-only (download for provider+fetcher, upload for receiver+sender).
+- Both set → both transports per role.
 
 ## 6. Transport mechanics
 
@@ -266,8 +300,8 @@ Eight items (including #122). Each PR runs the full `preflight-circus` skill loc
 
 The template propagates pvl-core API to every downstream via `copier update`. Template-side work:
 
-1. **Server-build scaffolding**: feature-gated `register_file_exchange_capability(…)` block (off by default; copier question `enable_file_exchange: bool = false`).
-2. **`copier.yml` questions**: `enable_file_exchange` and `file_exchange_default_roles`. Transport set per role is *not* a template-time decision — it's operator env-var.
+1. **Server-build scaffolding**: feature-gated `register_file_exchange_capability(server, config, kv_store=…)` block (off by default; copier question `enable_file_exchange: bool = false`). Note: no transport-set kwargs at the call site — they're derived from `config.file_exchange_volumes` and `config.transport` at registration, per §3.
+2. **`copier.yml` questions**: `enable_file_exchange` and `file_exchange_default_roles`. Transport availability per role is *not* a template-time decision — it's deployment-derived at registration time from `ServerConfig` + env-vars.
 3. **`.env.example` additions** when enabled — the env-vars from §5.
 4. **`docs/file-exchange-cookbook.md`** with two minimal worked examples (provider, receiver/processor). Documentation only, not committed as live tools.
 5. **`pyproject.toml` floor bump** to the pvl-core version that shipped the file-exchange APIs (after pvl-core issue F lands).
