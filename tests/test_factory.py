@@ -86,19 +86,17 @@ class TestBuildEventStore:
     def test_uses_events_namespace(self):
         # The "events" namespace is the load-bearing contract that
         # prevents collision with future subsystems (oauth-state,
-        # file-exchange) sharing the same backend. Pin it so a future
-        # rename surfaces here, not in production.
-        from unittest.mock import MagicMock, patch
-
-        sentinel_storage = MagicMock()
-        with patch(
-            "fastmcp_pvl_core._kv_store.build_kv_store",
-            return_value=sentinel_storage,
-        ) as mock_build:
-            config = ServerConfig(kv_store_url="memory://")
-            build_event_store("MY_APP", config)
-        mock_build.assert_called_once()
-        assert mock_build.call_args.kwargs["namespace"] == "events"
+        # file-exchange) sharing the same backend. Pin the runtime
+        # contract — read the wrapper prefix off the constructed
+        # EventStore, not the kwarg of a mocked call — so a future
+        # refactor that inlines storage construction (bypassing
+        # build_kv_store) still gets caught here.
+        config = ServerConfig(kv_store_url="memory://")
+        event_store = build_event_store("MY_APP", config)
+        # ``_storage`` is fastmcp.server.event_store.EventStore's
+        # private slot for the wrapped backend; reading it here is a
+        # deliberate cross-package introspection to pin the namespace.
+        assert event_store._storage.prefix == "events"  # noqa: SLF001
 
 
 class TestComputeAppDomain:
