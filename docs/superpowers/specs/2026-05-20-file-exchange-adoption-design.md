@@ -64,7 +64,7 @@ Per the spec §4.2 table, role-vs-transport compatibility is asymmetric across d
 
 | Transport | Required deployment capability |
 |---|---|
-| `filesystem` (any role) | `config.file_exchange_volumes` non-empty — i.e. operator configured at least one volume in `_FILE_EXCHANGE_VOLUMES` |
+| `filesystem` (any role) | `config.file_exchange_volumes` non-empty — i.e. operator configured at least one volume in `{PREFIX}_FILE_EXCHANGE_VOLUMES` |
 | `download` (provider) | `config.transport == "http"` — the FastMCP server hosts an HTTP app on which to mount `GET /file-exchange/d/<token>` |
 | `download` (fetcher) | always available (outbound HTTP) |
 | `upload` (receiver) | `config.transport == "http"` — needs to host `PUT|POST /file-exchange/u/<token>` |
@@ -248,10 +248,10 @@ The volumes parser in `_transport_filesystem.py` is the single source of truth f
 
 A deployment can rotate its file-exchange surface without code changes — just env-vars:
 
-- **`_FILE_EXCHANGE_VOLUMES=` (empty) + `_TRANSPORT=stdio`** → only the consumer roles are advertised (`fetcher: ["download"]`, `sender: ["upload"]`). The producer-side roles (`provider`, `receiver`) drop because they need an HTTP app to host endpoints. Outbound HTTPS works regardless.
-- **`_FILE_EXCHANGE_VOLUMES=vault-export=/mnt/exchange/vault` + `_TRANSPORT=stdio`** → all four roles advertised; consumer roles get both `filesystem` and outbound HTTPS, producer roles get `filesystem` only.
-- **`_FILE_EXCHANGE_VOLUMES=` (empty) + `_TRANSPORT=http`** → all four roles advertised, HTTPS-only.
-- **Both set + `_TRANSPORT=http`** → all four roles, both transports per role.
+- **`{PREFIX}_FILE_EXCHANGE_VOLUMES=` (empty) + `{PREFIX}_TRANSPORT=stdio`** → only the consumer roles are advertised (`fetcher: ["download"]`, `sender: ["upload"]`). The producer-side roles (`provider`, `receiver`) drop because they need an HTTP app to host endpoints. Outbound HTTPS works regardless.
+- **`{PREFIX}_FILE_EXCHANGE_VOLUMES=vault-export=/mnt/exchange/vault` + `{PREFIX}_TRANSPORT=stdio`** → all four roles advertised; consumer roles get both `filesystem` and outbound HTTPS, producer roles get `filesystem` only.
+- **`{PREFIX}_FILE_EXCHANGE_VOLUMES=` (empty) + `{PREFIX}_TRANSPORT=http`** → all four roles advertised, HTTPS-only.
+- **Both set + `{PREFIX}_TRANSPORT=http`** → all four roles, both transports per role.
 
 ## 6. Transport mechanics
 
@@ -277,7 +277,7 @@ A deployment can rotate its file-exchange surface without code changes — just 
 - 128-bit URL-safe random tokens stored in the namespaced `kv_store` under `tokens:<token>` (a single keyspace for both download and upload records, discriminated by a `kind` field; the upload record carries the `expected` constraints + `artifact_id` correlation).
 - `GET /file-exchange/d/<token>` — looks up; sets `Content-Type`/`Content-Length` from stored metadata; supports `Range`; on full-bytes-served success marks the token consumed; returns 404 for expired/unknown/consumed-single-use.
 
-  **Single-use concurrency posture**: pvl-core uses a per-key get-then-delete pattern (`kv_store.delete()` is atomic per key on every supported backend; a racing second consumer finds the key already gone and returns 404). This holds under high concurrency for Memory, FileTree, Redis, DynamoDB, and MongoDB backends. **It is best-effort if the kv_store backend lacks atomic-delete semantics**; a custom adapter must document this clearly. A future enhancement can introduce a `CompareAndSwap` primitive on the storage layer if a backend without atomic delete becomes load-bearing.
+  **Single-use concurrency posture**: pvl-core uses a per-key get-then-delete pattern. Two racing consumers can both read the token record in their `get` calls, but only one of their subsequent `delete` calls returns `True` — `kv_store.delete()` is atomic per key on every supported backend. The loser's `delete` returns `False` and the route surfaces it as HTTP 404. This holds under high concurrency for Memory, FileTree, Redis, DynamoDB, and MongoDB backends. **It is best-effort if the kv_store backend lacks atomic-delete semantics**; a custom adapter must document this clearly. A future enhancement can introduce a `CompareAndSwap` primitive on the storage layer if a backend without atomic delete becomes load-bearing.
 
 - `PUT|POST /file-exchange/u/<token>` — looks up; **streams** the request body chunk-by-chunk into a temp file via the `atomic_write` context manager (same helper as the filesystem transport). Each chunk is digested with `hashlib.sha256` (incremental), counted against `expected.maxSize` (fail-fast with HTTP 413 the moment cumulative bytes exceed the cap — never buffer beyond one chunk), and matched against `expected.acceptMimeTypes` via the request `Content-Type` header (HTTP 415 on mismatch). On body-fully-received success: verify the running digest matches any `Content-Digest` header (HTTP 422 / `digest-mismatch` on mismatch), then commit via `atomic_write`'s rename and mark the token consumed (atomic per-key `delete`). Validation failure or partial body causes the temp file to be discarded (no rename happens). The `intake:<artifact_id> → resolved_intake_path` mapping was recorded by `mint_upload_sink` at *mint* time — the route does not write it again; bytes simply arrive at the path the mapping already points to.
 

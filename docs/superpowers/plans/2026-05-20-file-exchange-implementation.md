@@ -578,7 +578,6 @@ from __future__ import annotations
 
 from enum import StrEnum
 
-from mcp.types import TextContent
 from mcp.types import CallToolResult, TextContent
 
 CAPABILITY_KEY = "nl.liesdonk.file-exchange"
@@ -1343,38 +1342,43 @@ from fastmcp_pvl_core._file_exchange._transport_https import (
 )
 
 
-def test_ssrf_rejects_http_scheme() -> None:
+@pytest.mark.asyncio
+async def test_ssrf_rejects_http_scheme() -> None:
     cfg = SSRFGuardConfig()
     with pytest.raises(FileExchangeError) as ei:
-        enforce_ssrf("http://example.com/x", config=cfg)
+        await enforce_ssrf("http://example.com/x", config=cfg)
     assert ei.value.code is FileExchangeErrorCode.NOT_ACCESSIBLE
     assert "https" in ei.value.detail
 
 
-def test_ssrf_rejects_loopback_by_default() -> None:
+@pytest.mark.asyncio
+async def test_ssrf_rejects_loopback_by_default() -> None:
     cfg = SSRFGuardConfig()
     with pytest.raises(FileExchangeError) as ei:
-        enforce_ssrf("https://127.0.0.1/x", config=cfg)
+        await enforce_ssrf("https://127.0.0.1/x", config=cfg)
     assert ei.value.code is FileExchangeErrorCode.NOT_ACCESSIBLE
 
 
-def test_ssrf_allows_loopback_when_opted_in() -> None:
+@pytest.mark.asyncio
+async def test_ssrf_allows_loopback_when_opted_in() -> None:
     cfg = SSRFGuardConfig(allow_loopback=True)
     # Must not raise; returns the pinned IP for connect-pinning.
-    pinned = enforce_ssrf("https://127.0.0.1/x", config=cfg)
+    pinned = await enforce_ssrf("https://127.0.0.1/x", config=cfg)
     assert pinned == "127.0.0.1"
 
 
-def test_ssrf_rejects_private_rfc1918_by_default() -> None:
+@pytest.mark.asyncio
+async def test_ssrf_rejects_private_rfc1918_by_default() -> None:
     cfg = SSRFGuardConfig()
     with pytest.raises(FileExchangeError) as ei:
-        enforce_ssrf("https://10.0.0.5/x", config=cfg)
+        await enforce_ssrf("https://10.0.0.5/x", config=cfg)
     assert ei.value.code is FileExchangeErrorCode.NOT_ACCESSIBLE
 
 
-def test_ssrf_allows_private_when_opted_in() -> None:
+@pytest.mark.asyncio
+async def test_ssrf_allows_private_when_opted_in() -> None:
     cfg = SSRFGuardConfig(allow_private=True)
-    pinned = enforce_ssrf("https://10.0.0.5/x", config=cfg)
+    pinned = await enforce_ssrf("https://10.0.0.5/x", config=cfg)
     assert pinned == "10.0.0.5"
 ```
 
@@ -1403,6 +1407,22 @@ class _FakeAsyncStream:
             raise RuntimeError(f"HTTP {self.status_code}")
 
 
+def _fake_stream_get_cm(chunks: list[bytes], headers: dict[str, str] | None = None):
+    """Build an @asynccontextmanager that yields a _FakeAsyncStream.
+
+    The production ``_stream_get`` is an async context manager (wraps
+    ``httpx.AsyncClient.stream``), so monkeypatches must match that
+    shape — a plain ``async def`` mock would fail at ``async with``.
+    """
+    from contextlib import asynccontextmanager
+
+    @asynccontextmanager
+    async def _fake_get(url: str, **_kw):
+        yield _FakeAsyncStream(chunks, headers=headers or {})
+
+    return _fake_get
+
+
 @pytest.mark.asyncio
 async def test_pull_download_streams_chunks_into_dest_path(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -1411,11 +1431,9 @@ async def test_pull_download_streams_chunks_into_dest_path(
     payload = b"hello world " * 100
     chunks = [payload[i : i + 16] for i in range(0, len(payload), 16)]
 
-    async def _fake_get(url: str, **_kw):
-        return _FakeAsyncStream(chunks, headers={"content-length": str(len(payload))})
-
     monkeypatch.setattr(
-        "fastmcp_pvl_core._file_exchange._transport_https._stream_get", _fake_get
+        "fastmcp_pvl_core._file_exchange._transport_https._stream_get",
+        _fake_stream_get_cm(chunks, headers={"content-length": str(len(payload))}),
     )
     digester = hashlib.sha256()
     await pull_download(
@@ -1435,11 +1453,9 @@ async def test_pull_download_streams_into_binaryio(
     payload = b"abc" * 1000
     chunks = [payload[i : i + 128] for i in range(0, len(payload), 128)]
 
-    async def _fake_get(url: str, **_kw):
-        return _FakeAsyncStream(chunks)
-
     monkeypatch.setattr(
-        "fastmcp_pvl_core._file_exchange._transport_https._stream_get", _fake_get
+        "fastmcp_pvl_core._file_exchange._transport_https._stream_get",
+        _fake_stream_get_cm(chunks),
     )
     buf = io.BytesIO()
     await pull_download(
@@ -1519,6 +1535,8 @@ import asyncio
 import hashlib
 import ipaddress
 import socket
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, BinaryIO
@@ -1543,14 +1561,15 @@ class SSRFGuardConfig:
     allow_private: bool = False
 
 
-def enforce_ssrf(url: str, *, config: SSRFGuardConfig) -> str:
+async def enforce_ssrf(url: str, *, config: SSRFGuardConfig) -> str:
     """Validate ``url`` and return the pinned IP literal.
 
     Rejects non-``https`` scheme, loopback (unless allowed), RFC 1918 /
-    link-local (unless allowed). Pinning the resolved IP defeats DNS
-    rebinding — callers pass the returned literal to httpx via
-    ``client.transport = httpx.AsyncHTTPTransport(local_address=...)`` or
-    via ``URL.copy_with(host=ip)``.
+    link-local (unless allowed). DNS resolution is dispatched off the
+    event loop via ``asyncio.to_thread`` so the call does not block
+    other tasks — `socket.gethostbyname` is a synchronous syscall.
+    Pinning the resolved IP defeats DNS rebinding: callers connect to
+    the returned literal and set TLS/SNI to the original hostname.
     """
     parts = urlsplit(url)
     if parts.scheme != "https":
@@ -1568,7 +1587,7 @@ def enforce_ssrf(url: str, *, config: SSRFGuardConfig) -> str:
         ip = ipaddress.ip_address(host)
     except ValueError:
         try:
-            resolved = socket.gethostbyname(host)
+            resolved = await asyncio.to_thread(socket.gethostbyname, host)
         except socket.gaierror as exc:
             raise FileExchangeError(
                 code=FileExchangeErrorCode.NOT_ACCESSIBLE,
@@ -1588,50 +1607,37 @@ def enforce_ssrf(url: str, *, config: SSRFGuardConfig) -> str:
     return str(ip)
 
 
-def _pinned_transport(host: str, pinned_ip: str) -> httpx.AsyncHTTPTransport:
-    """Return an httpx transport that dials ``pinned_ip`` instead of resolving
-    ``host`` again. Defeats DNS rebinding: the SSRF check resolves once, the
-    connect uses the pinned literal — and TLS/SNI still sees the original host.
-    """
-    return httpx.AsyncHTTPTransport(
-        retries=0,
-        # httpx >=0.27: ``local_address`` configures source IP, not destination.
-        # Destination pinning is via the ``transport``'s connection pool. We
-        # rewrite the URL host to the IP and set the Host header to the original
-        # name; TLS SNI is taken from the URL host so we also need to keep the
-        # original hostname for cert validation. The httpx idiom for that is
-        # ``client.get(url_with_ip, extensions={"sni_hostname": host})``.
-    )
-
-
+@asynccontextmanager
 async def _stream_get(
     url: str,
     *,
     pinned_ip: str,
     host: str,
     headers: dict[str, str] | None = None,
-) -> Any:
+) -> AsyncIterator[httpx.Response]:
     """Production GET seam — monkeypatched in unit tests.
 
-    Connects to ``pinned_ip`` (defeats DNS rebinding) with TLS SNI / Host header
-    set to the original ``host``. Returns an object with ``.aiter_bytes(chunk_size)``,
-    ``.headers``, ``.status_code``, and ``.raise_for_status()`` (httpx-shaped).
+    Yielded as an async context manager so the response body is truly
+    chunk-streamed via ``client.stream("GET", ...)`` rather than buffered
+    by ``client.get()``. The client stays open for the duration of the
+    ``async with`` block — closing it ends the stream.
+
+    DNS-rebind defence: the request URL has its host swapped for the
+    pinned IP literal; TLS SNI and the ``Host`` header keep the original
+    hostname so cert validation still works.
     """
-    parts = urlsplit(url)
     pinned_url = url.replace(f"//{host}", f"//{pinned_ip}", 1)
     merged_headers = {"Host": host, **(headers or {})}
-    client = httpx.AsyncClient(transport=_pinned_transport(host, pinned_ip))
-    try:
-        resp = await client.get(
+    async with httpx.AsyncClient() as client:
+        async with client.stream(
+            "GET",
             pinned_url,
             headers=merged_headers,
             follow_redirects=False,
             extensions={"sni_hostname": host},
-        )
-        resp.raise_for_status()
-        return resp
-    finally:
-        await client.aclose()
+        ) as resp:
+            resp.raise_for_status()
+            yield resp
 
 
 async def _stream_put(
@@ -1641,16 +1647,18 @@ async def _stream_put(
     host: str,
     content: Any,
     headers: dict[str, str],
-) -> Any:
+) -> httpx.Response:
     """Production PUT seam — monkeypatched in unit tests.
 
     Same SNI/Host pinning posture as ``_stream_get``. Accepts either a file-like
-    opened in ``"rb"`` or an async-iterator of bytes chunks.
+    opened in ``"rb"`` or an async-iterator of bytes chunks; httpx streams
+    the request body chunk-by-chunk from the supplied source — no full-buffer.
+    The response body is small (status confirmation), so it's fine to await
+    the full response here without streaming.
     """
     pinned_url = url.replace(f"//{host}", f"//{pinned_ip}", 1)
     merged_headers = {"Host": host, **headers}
-    client = httpx.AsyncClient(transport=_pinned_transport(host, pinned_ip))
-    try:
+    async with httpx.AsyncClient() as client:
         resp = await client.put(
             pinned_url,
             content=content,
@@ -1660,8 +1668,6 @@ async def _stream_put(
         )
         resp.raise_for_status()
         return resp
-    finally:
-        await client.aclose()
 
 
 async def pull_download(
@@ -1679,23 +1685,23 @@ async def pull_download(
     blocked on disk latency. Caller verifies the final digest against
     artifact.digest after this returns.
     """
-    pinned_ip = enforce_ssrf(url, config=ssrf)
+    pinned_ip = await enforce_ssrf(url, config=ssrf)
     host = urlsplit(url).hostname or ""
-    resp = await _stream_get(url, pinned_ip=pinned_ip, host=host)
-    if isinstance(dest, Path):
-        # Lazy import to avoid a circular cycle in the package layout.
-        from ._transport_filesystem import async_atomic_write
+    async with _stream_get(url, pinned_ip=pinned_ip, host=host) as resp:
+        if isinstance(dest, Path):
+            # Lazy import to avoid a circular cycle in the package layout.
+            from ._transport_filesystem import async_atomic_write
 
-        async with async_atomic_write(dest) as fh:
+            async with async_atomic_write(dest) as fh:
+                async for chunk in resp.aiter_bytes(chunk_size):
+                    if digester is not None:
+                        digester.update(chunk)
+                    await asyncio.to_thread(fh.write, chunk)
+        else:
             async for chunk in resp.aiter_bytes(chunk_size):
                 if digester is not None:
                     digester.update(chunk)
-                await asyncio.to_thread(fh.write, chunk)
-    else:
-        async for chunk in resp.aiter_bytes(chunk_size):
-            if digester is not None:
-                digester.update(chunk)
-            await asyncio.to_thread(dest.write, chunk)
+                await asyncio.to_thread(dest.write, chunk)
 
 
 async def push_upload(
@@ -1713,7 +1719,7 @@ async def push_upload(
     httpx (httpx streams it). For a ``BinaryIO``, passes directly. Never
     assembles a ``bytes`` blob.
     """
-    pinned_ip = enforce_ssrf(url, config=ssrf)
+    pinned_ip = await enforce_ssrf(url, config=ssrf)
     host = urlsplit(url).hostname or ""
     headers: dict[str, str] = {"Content-Type": content_type}
     if content_digest is not None:
@@ -2566,6 +2572,8 @@ async def test_upload_rejects_digest_mismatch_with_422(
     app, store = app_and_store
     from fastmcp_pvl_core._file_exchange._types import ExpectedConstraints
 
+    import base64
+
     intake = tmp_path / "o.bin"
     sink = await mint_upload_sink(
         intake_path=intake, artifact_id="a1", server=mcp, config=cfg, kv_store=store,
@@ -2573,7 +2581,11 @@ async def test_upload_rejects_digest_mismatch_with_422(
     )
     token = sink.root.url.rsplit("/", 1)[-1]
     body = b"abc"
-    wrong = "sha-256=:" + "0" * 44 + "=:"
+    # 32 zero bytes is a valid-length sha-256 digest, but it's the wrong
+    # digest for body=b"abc" (whose real sha-256 is ba7816bf...). A test
+    # that uses an invalid base64 length would assert for the wrong reason
+    # (length-decode failure, not digest mismatch).
+    wrong = "sha-256=:" + base64.b64encode(bytes(32)).decode("ascii") + ":"
     with TestClient(app) as client:
         r = client.put(
             f"/file-exchange/u/{token}",
@@ -3306,7 +3318,6 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any
 
-from mcp.types import TextContent
 from mcp.types import CallToolResult, TextContent
 
 from ._errors import CAPABILITY_KEY
@@ -3475,7 +3486,6 @@ import uuid
 from collections.abc import Sequence
 from typing import Any
 
-from mcp.types import TextContent
 from mcp.types import CallToolResult, TextContent
 
 from ._errors import CAPABILITY_KEY
