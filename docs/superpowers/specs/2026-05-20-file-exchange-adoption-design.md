@@ -7,7 +7,7 @@
 
 ## 1. Goal
 
-Implement the `nl.liesdonk.file-exchange` v0.1 extension as the **shared, opinionated reference implementation** for the pvl MCP server family. Downstream servers (markdown-vault-mcp, scholar-mcp, image-generation-mcp, …) opt into one or more roles (`provider`, `fetcher`, `receiver`, `sender`) and three transports (`filesystem`, `download`, `upload`) using pvl-core helpers, with all wire-format mechanics — capability declaration, reference construction, descriptor selection, transport semantics, error normalisation, capability-URL minting — owned by pvl-core.
+Implement the `nl.liesdonk.file-exchange` v0.1 extension as the **shared, opinionated implementation** for the pvl MCP server family. Downstream servers (markdown-vault-mcp, scholar-mcp, image-generation-mcp, …) opt into one or more roles (`provider`, `fetcher`, `receiver`, `sender`) and three transports (`filesystem`, `download`, `upload`) using pvl-core helpers, with all wire-format mechanics — capability declaration, reference construction, descriptor selection, transport semantics, error normalisation, capability-URL minting — owned by pvl-core.
 
 This is the cleanroom rewrite that follows [PR #117](https://github.com/pvliesdonk/fastmcp-pvl-core/pull/117) (the full removal of the prior v0.2–v0.6 design). The old design is not the basis; the external `mcp-file-exchange-ext` v0.1 spec is the only authority.
 
@@ -51,13 +51,12 @@ def register_file_exchange_capability(
     *,
     roles: Sequence[FileExchangeRole] = ("provider", "fetcher", "receiver", "sender"),
     kv_store: AsyncKeyValue,        # from build_kv_store(env_prefix, config, namespace="file-exchange")
-    digests: Sequence[str] = ("sha-256",),
 ) -> None
 ```
 
 The downstream declares which **roles** it wants to play (a domain decision — does this server export, ingest, both?). pvl-core **derives the transport set per role** from what the deployment can actually satisfy. The advertised capability mirrors reality, never a declaration that runtime selection has to reject.
 
-`maxArtifactSize` is operator-side configuration, not a kwarg — pvl-core reads `config.file_exchange_max_artifact_size` and emits it on the capability block when set. `digests` is the one shape kwarg with a near-universal default; downstream stays explicit so that the family can converge on stronger digests later without an API change.
+`maxArtifactSize` is operator-side configuration, not a kwarg — pvl-core reads `config.file_exchange_max_artifact_size` and emits it on the capability block when set. The advertised `digests` set is `("sha-256",)`, hardcoded in `_capability.py` — downstream has no domain-specific basis to vary it, and when the family converges on stronger digests later, the constant changes once in pvl-core and every downstream picks it up via `copier update`.
 
 #### Transport-availability gating (the load-bearing detail)
 
@@ -135,6 +134,8 @@ async def mint_upload_sink(
 
 Both sink-side minters (`make_filesystem_sink` and `mint_upload_sink`) record the `(artifact_id → resolved_intake_path)` mapping in `kv_store` at mint time — that single seam lets `resolve_intake` find the bytes after a successful transfer regardless of which transport was used. `config` supplies the volume map, the capability-URL TTL default, and (for HTTPS minters) the optional public-base-URL override. The trio `(server, config, kv_store)` is sufficient context for any helper in this section; no separate `volumes`/`ssrf`/`base_url` kwargs leak through.
 
+`make_filesystem_source` is synchronous (just composes the URI string); the three other minters are async because they write to `kv_store`. That asymmetry is intentional — there is no kv_store interaction on the read-side filesystem minter, and forcing all four to async would be ceremony without benefit.
+
 ### Role helpers
 
 ```python
@@ -197,7 +198,7 @@ Each helper validates inputs against the vendored JSON Schema, applies §17.3 ve
 
 `pull_artifact` and `push_artifact` take `config` so they can derive the volume map (`config.file_exchange_volumes`), the SSRF guard (`config.file_exchange_https_allow_loopback`/`allow_private`), and any other operator-side concern. No standalone `volumes`/`ssrf` kwargs — those are deployment state, not domain hooks. `open_intake` is pure construction: the `(artifact_id → resolved_intake_path)` mapping was already recorded by the sink-minter that produced its `sinks`, so it needs neither `config` nor `kv_store`.
 
-`resolve_intake` always returns a `Path`. If `kv_store` has no recorded mapping for `artifact_id` (the transfer never completed, or `artifact_id` is wrong), it raises `FileExchangeError(code=NOT_ACCESSIBLE)` so the caller's tool body can convert via `as_tool_error_result`. The `-> Path | None` shape was considered but creates a quiet-failure trap: callers forget the `None` branch and operate on the wrong path.
+`resolve_intake` always returns a `Path`. The sink minter writes the `(artifact_id → resolved_intake_path)` mapping at *mint* time — so the mapping exists from the moment the receiver returns the ticket, before any bytes arrive. To distinguish "wrong artifact_id" from "bytes not yet on disk", `resolve_intake` then asserts `path.exists()`; both cases raise `FileExchangeError(code=NOT_ACCESSIBLE)` (with distinct `detail` strings), so the caller's tool body can convert via `as_tool_error_result`. The `-> Path | None` shape was considered but creates a quiet-failure trap: callers forget the `None` branch and operate on the wrong path. The receiver-side discipline: the *processor* tool that consumes `artifact_id` is called only after the sender confirms the transfer; if it's called too early, `NOT_ACCESSIBLE` is the correct, observable failure.
 
 When `summary` is omitted on `build_pull_response` or `build_intake_response`, pvl-core auto-synthesises a short human-readable line of the form `"file-exchange: <artifact.name or artifact.id> (<size_human>, <mime_type>)"`, falling back gracefully when fields are missing. The intent is that the model sees enough to reason about the chain without ever seeing the bytes (spec §11.1).
 
