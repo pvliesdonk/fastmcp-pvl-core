@@ -77,14 +77,16 @@ def build_event_store(env_prefix: str, config: ServerConfig) -> EventStore:
     ``namespace="events"``. URL resolution priority (handled by the
     KV factory):
 
-    1. ``config.kv_store_url`` (recommended)
-    2. ``config.event_store_url`` (legacy override)
+    1. ``config.kv_store_url`` (recommended; driven by
+       ``<PREFIX>_KV_STORE_URL``)
+    2. ``config.event_store_url`` (legacy override; driven by
+       ``<PREFIX>_EVENT_STORE_URL``)
     3. Default: ``file://`` at the package default directory
 
     Args:
-        env_prefix: Env-var prefix of the consuming project. Forwarded
-            to :func:`build_kv_store` so future per-project defaults
-            apply consistently.
+        env_prefix: Env-var prefix of the consuming project. Accepted
+            for API compatibility with sibling ``build_*`` helpers;
+            currently unused inside this function.
         config: A :class:`~fastmcp_pvl_core.ServerConfig` whose
             ``kv_store_url`` (or legacy ``event_store_url``) field
             selects the backend.
@@ -104,7 +106,9 @@ def build_event_store(env_prefix: str, config: ServerConfig) -> EventStore:
 
     from fastmcp_pvl_core._kv_store import build_kv_store
 
-    storage = build_kv_store(env_prefix, config, namespace="events")
+    del env_prefix  # accepted for API compatibility; not consumed here
+
+    storage = build_kv_store(config, namespace="events")
     return _EventStore(storage=storage, max_events_per_stream=100, ttl=3600)
 
 

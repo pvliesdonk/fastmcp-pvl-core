@@ -12,11 +12,11 @@ URL scheme dispatch:
   development default)
 - ``file:///path`` → :class:`FileTreeStore` (single-server persistence)
 - ``redis://host:port[/db]`` → :class:`RedisStore` (requires the
-  ``redis`` extra)
+  ``redis`` extra; the URL is forwarded verbatim to the store)
 - ``dynamodb://<table_name>[?region=...&endpoint=...]`` →
   :class:`DynamoDBStore` (requires the ``dynamodb`` extra)
 - ``mongodb://host:port[/db]`` → :class:`MongoDBStore` (requires the
-  ``mongodb`` extra)
+  ``mongodb`` extra; the URL is forwarded verbatim to the store)
 
 Backend imports are lazy so memory/file deployments do not pull in
 optional client libraries.
@@ -46,8 +46,20 @@ the default to a tmp path rather than touching the real ``/data/state``.
 """
 
 
+_legacy_url_warned: bool = False
+"""Process-wide flag for the legacy-URL deprecation warning.
+
+Set to ``True`` the first time :func:`build_kv_store` falls back to
+``config.event_store_url``; suppresses the warning on subsequent calls
+within the same process so an operator with several subsystems sees
+exactly one log line, not one per subsystem.
+
+Tests reset this via ``monkeypatch.setattr`` so each test sees a fresh
+process-state.
+"""
+
+
 def build_kv_store(
-    env_prefix: str,
     config: ServerConfig,
     *,
     namespace: str,
@@ -59,7 +71,7 @@ def build_kv_store(
     1. ``config.kv_store_url`` (recommended; one variable selects the
        backend for every pvl-core subsystem)
     2. ``config.event_store_url`` (legacy override; emits a one-shot
-       deprecation warning when used)
+       per-process deprecation warning when used)
     3. Default: ``file://`` at :data:`_DEFAULT_KV_STORE_DIR`
 
     The returned store is wrapped in
@@ -69,33 +81,40 @@ def build_kv_store(
     same one.
 
     Args:
-        env_prefix: Env-var prefix of the consuming project. Currently
-            unused but reserved for future per-project defaults
-            (e.g. ``{prefix}_KV_STORE_DIR``).
         config: A :class:`ServerConfig` whose ``kv_store_url`` /
             ``event_store_url`` field selects the backend.
         namespace: Logical subsystem name used as the
             ``PrefixCollectionsWrapper`` prefix (a domain hook —
-            callers pick a name unique to their subsystem).
+            callers pick a name unique to their subsystem). Must be a
+            non-empty string.
 
     Returns:
         A configured ``AsyncKeyValue`` wrapped for namespace isolation.
 
     Raises:
-        ValueError: If the URL scheme is unrecognised.
+        ValueError: If ``namespace`` is empty, or the URL scheme is
+            unrecognised, or a ``file://`` URL is malformed.
         ImportError: If a backend-specific extra is required but not
             installed; the message names the extra to install.
     """
-    del env_prefix  # reserved for future per-project defaults
+    if not namespace:
+        raise ValueError(
+            "namespace must be a non-empty string — it is the "
+            "PrefixCollectionsWrapper prefix that isolates subsystems "
+            "sharing the same backend."
+        )
 
     url = config.kv_store_url
     if url is None and config.event_store_url is not None:
         url = config.event_store_url
-        logger.warning(
-            "kv_store_url=<unset>; falling back to legacy "
-            "event_store_url=%s. Set <PREFIX>_KV_STORE_URL to migrate.",
-            url,
-        )
+        global _legacy_url_warned
+        if not _legacy_url_warned:
+            logger.warning(
+                "kv_store_url=<unset>; falling back to legacy "
+                "event_store_url=%s. Set <PREFIX>_KV_STORE_URL to migrate.",
+                url,
+            )
+            _legacy_url_warned = True
     if not url:
         url = f"file://{_DEFAULT_KV_STORE_DIR}"
 
@@ -122,9 +141,22 @@ def _build_backend(url: str) -> AsyncKeyValue:
         return MemoryStore()
 
     if scheme == "file":
-        directory = parsed.path or _DEFAULT_KV_STORE_DIR
-        Path(directory).mkdir(parents=True, exist_ok=True)
-        logger.info("kv_store backend=file directory=%s", directory)
+        # `file://host/path` (non-empty netloc) is technically valid URL
+        # syntax but operators almost always meant the three-slash form;
+        # reject explicitly rather than silently routing the netloc-as-
+        # host away from the intended path.
+        if parsed.netloc:
+            raise ValueError(
+                f"file:// URL {url!r} has a host component "
+                f"({parsed.netloc!r}). Use the three-slash form, "
+                f"e.g. 'file:///{parsed.netloc}{parsed.path}'."
+            )
+        if not parsed.path:
+            raise ValueError(
+                f"file:// URL {url!r} is missing a path. Use 'file:///absolute/path'."
+            )
+        # Verify the backend is importable BEFORE creating the directory,
+        # so a missing extra does not leave an orphan directory behind.
         try:
             from key_value.aio.stores.filetree import FileTreeStore
         except ImportError as exc:  # pragma: no cover — fastmcp pulls this in
@@ -133,6 +165,9 @@ def _build_backend(url: str) -> AsyncKeyValue:
                 "fastmcp pulls this in transitively; reinstall fastmcp "
                 "or add 'py-key-value-aio[filetree]' to your dependencies."
             ) from exc
+        directory = parsed.path
+        Path(directory).mkdir(parents=True, exist_ok=True)
+        logger.info("kv_store backend=file directory=%s", directory)
         return FileTreeStore(data_directory=directory)
 
     if scheme == "redis":
@@ -156,6 +191,9 @@ def _build_backend(url: str) -> AsyncKeyValue:
                 "with `pip install 'fastmcp-pvl-core[dynamodb]'` or "
                 "add 'py-key-value-aio[dynamodb]' to your dependencies."
             ) from exc
+        # DynamoDB table names live in netloc; there is no host:port
+        # convention. Tolerate (and discard) a stray ":..." for URL-
+        # grammar consistency rather than failing on a benign extra.
         table_name = parsed.netloc.split(":")[0]
         if not table_name:
             raise ValueError(

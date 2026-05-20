@@ -83,6 +83,23 @@ class TestBuildEventStore:
             store = build_event_store("MY_APP", config)
             assert store is not None
 
+    def test_uses_events_namespace(self):
+        # The "events" namespace is the load-bearing contract that
+        # prevents collision with future subsystems (oauth-state,
+        # file-exchange) sharing the same backend. Pin it so a future
+        # rename surfaces here, not in production.
+        from unittest.mock import MagicMock, patch
+
+        sentinel_storage = MagicMock()
+        with patch(
+            "fastmcp_pvl_core._kv_store.build_kv_store",
+            return_value=sentinel_storage,
+        ) as mock_build:
+            config = ServerConfig(kv_store_url="memory://")
+            build_event_store("MY_APP", config)
+        mock_build.assert_called_once()
+        assert mock_build.call_args.kwargs["namespace"] == "events"
+
 
 class TestComputeAppDomain:
     def test_override_wins(self):

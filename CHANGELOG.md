@@ -21,11 +21,6 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   collide on collection names. (#121)
 - `ServerConfig.kv_store_url` field, loaded from
   `<PREFIX>_KV_STORE_URL`.
-- `build_oidc_proxy_auth` now accepts a `client_storage`
-  keyword argument and forwards it to `OIDCProxy`. Downstream
-  servers that want unified persistent OAuth state pass
-  `build_kv_store(env_prefix, config, namespace="oauth-state")`
-  (typically wrapped in `FernetEncryptionWrapper`).
 
 ### Changed
 
