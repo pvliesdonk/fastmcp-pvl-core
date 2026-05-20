@@ -85,6 +85,19 @@ class TestBuildKvStoreFileBackend:
         with pytest.raises(ValueError, match="missing a path"):
             build_kv_store(config, namespace="ns")
 
+    def test_file_url_value_error_does_not_leak_credentials(self):
+        # A malformed `file://` URL with credentials in userinfo
+        # (rare but possible operator misconfiguration) must not echo
+        # the raw URL into the ValueError text — that string ends up
+        # in process logs / Sentry. Parallel to the legacy-warning
+        # credential-redaction promise.
+        config = ServerConfig(kv_store_url="file://alice:hunter2@host/p")
+        with pytest.raises(ValueError) as exc_info:
+            build_kv_store(config, namespace="ns")
+        msg = str(exc_info.value)
+        assert "hunter2" not in msg
+        assert "alice" not in msg
+
 
 class TestBuildKvStoreNamespaceValidation:
     def test_empty_namespace_rejected(self):

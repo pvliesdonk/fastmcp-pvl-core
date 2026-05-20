@@ -150,15 +150,20 @@ def _build_backend(url: str) -> AsyncKeyValue:
         # syntax but operators almost always meant the three-slash form;
         # reject explicitly rather than silently routing the netloc-as-
         # host away from the intended path.
+        #
+        # Error messages name the SCHEME only, never the raw URL — an
+        # operator may have typed credentials into a misconfigured URL
+        # (e.g. file://user:pass@host/path), and ValueError text ends
+        # up in process logs / Sentry alongside the legacy-warning
+        # path that's already redacted.
         if parsed.netloc:
             raise ValueError(
-                f"file:// URL {url!r} has a host component "
-                f"({parsed.netloc!r}). Use the three-slash form, "
-                f"e.g. 'file:///{parsed.netloc}{parsed.path}'."
+                "file:// URL has a host component. Use the three-slash "
+                "form: 'file:///absolute/path'."
             )
         if not parsed.path:
             raise ValueError(
-                f"file:// URL {url!r} is missing a path. Use 'file:///absolute/path'."
+                "file:// URL is missing a path. Use 'file:///absolute/path'."
             )
         # Verify the backend is importable BEFORE creating the directory,
         # so a missing extra does not leave an orphan directory behind.
