@@ -5,6 +5,41 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [3.0.0] - UNRELEASED
 
+### Added
+
+- **Unified key-value storage factory** (`build_kv_store`). One
+  `<PREFIX>_KV_STORE_URL` selects a backend for every pvl-core
+  subsystem that needs persistent state — event store today, OAuth
+  proxy client storage and the cleanroom file-exchange token store
+  going forward. URL-scheme dispatch covers `memory://`,
+  `file:///path`, `redis://...`, `dynamodb://<table>?region=...`,
+  and `mongodb://...`; the redis / dynamodb / mongodb backends are
+  optional extras (`fastmcp-pvl-core[redis]` etc.) with lazy
+  imports so memory/file deployments do not pull in client
+  libraries. Returned stores are namespaced with
+  `PrefixCollectionsWrapper` so subsystems sharing a backend cannot
+  collide on collection names. (#121)
+- `ServerConfig.kv_store_url` field, loaded from
+  `<PREFIX>_KV_STORE_URL`.
+- `build_oidc_proxy_auth` now accepts a `client_storage`
+  keyword argument and forwards it to `OIDCProxy`. Downstream
+  servers that want unified persistent OAuth state pass
+  `build_kv_store(env_prefix, config, namespace="oauth-state")`
+  (typically wrapped in `FernetEncryptionWrapper`).
+
+### Changed
+
+- `build_event_store` now delegates backend selection to
+  `build_kv_store` (`namespace="events"`). The legacy
+  `EVENT_STORE_URL` is honoured as a fallback when `KV_STORE_URL`
+  is unset and logs a one-shot warning pointing operators at the
+  new variable. The new default directory is `/data/state` (the
+  previous per-subsystem default was `/data/state/events`); on-disk
+  layout for file-backed event stores changes accordingly — set
+  `EVENT_STORE_URL=file:///data/state/events` explicitly during the
+  migration window to preserve the previous path, or accept the new
+  layout (event entries TTL at 1h so functional impact is bounded).
+
 ### Removed
 
 - **The file-exchange spec and implementation have been removed in

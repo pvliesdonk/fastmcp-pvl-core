@@ -34,6 +34,7 @@ if TYPE_CHECKING:
         StaticTokenVerifier,
     )
     from fastmcp.server.auth.oidc_proxy import OIDCProxy
+    from key_value.aio.protocols.key_value import AsyncKeyValue
 
 logger = logging.getLogger(__name__)
 
@@ -255,7 +256,11 @@ def build_bearer_auth(config: ServerConfig) -> StaticTokenVerifier | None:
     )
 
 
-def build_oidc_proxy_auth(config: ServerConfig) -> OIDCProxy | None:
+def build_oidc_proxy_auth(
+    config: ServerConfig,
+    *,
+    client_storage: AsyncKeyValue | None = None,
+) -> OIDCProxy | None:
     """Build an :class:`OIDCProxy` provider, or return ``None``.
 
     Requires all four of ``base_url``, ``oidc_config_url``,
@@ -272,6 +277,16 @@ def build_oidc_proxy_auth(config: ServerConfig) -> OIDCProxy | None:
 
     Args:
         config: Populated server configuration.
+        client_storage: Optional ``AsyncKeyValue`` for OAuth state
+            (client registrations, encrypted tokens). When omitted,
+            :class:`OIDCProxy` falls back to its built-in
+            ``MemoryStore`` default — fine for single-process
+            deployments, but not durable across restarts. Downstream
+            servers that want unified persistent storage pass
+            ``build_kv_store(env_prefix, config, namespace="oauth-state")``
+            (typically wrapped in
+            :class:`~key_value.aio.wrappers.encryption.FernetEncryptionWrapper`
+            for token confidentiality).
 
     Returns:
         A configured :class:`OIDCProxy`, or ``None`` when any of the
@@ -332,6 +347,7 @@ def build_oidc_proxy_auth(config: ServerConfig) -> OIDCProxy | None:
         jwt_signing_key=config.oidc_jwt_signing_key,
         verify_id_token=verify_id_token,
         require_authorization_consent=False,
+        client_storage=client_storage,
     )
 
 

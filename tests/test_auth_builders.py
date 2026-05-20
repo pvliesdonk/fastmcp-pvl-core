@@ -110,6 +110,19 @@ class TestBuildOIDCProxyAuth:
             build_oidc_proxy_auth(_oidc_config(oidc_verify_access_token=True))
         assert mock_cls.call_args.kwargs["verify_id_token"] is False
 
+    def test_client_storage_defaults_to_none(self):
+        mock_cls = MagicMock()
+        with patch("fastmcp.server.auth.oidc_proxy.OIDCProxy", mock_cls):
+            build_oidc_proxy_auth(_oidc_config())
+        assert mock_cls.call_args.kwargs["client_storage"] is None
+
+    def test_client_storage_passed_through(self):
+        mock_cls = MagicMock()
+        sentinel = MagicMock(name="kv-store-sentinel")
+        with patch("fastmcp.server.auth.oidc_proxy.OIDCProxy", mock_cls):
+            build_oidc_proxy_auth(_oidc_config(), client_storage=sentinel)
+        assert mock_cls.call_args.kwargs["client_storage"] is sentinel
+
     def test_scope_warning_when_verify_id_token_without_openid(
         self, caplog: pytest.LogCaptureFixture
     ):

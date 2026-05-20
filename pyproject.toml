@@ -32,6 +32,12 @@ remote-auth = []
 # bind a listener on ``DEBUG_PORT``. Containerised consumers add this
 # extra to images that need attach-from-IDE debugging.
 debug = ["debugpy>=1.8"]
+# Storage backends for ``build_kv_store``. Memory and file are always
+# available (fastmcp pulls ``py-key-value-aio[filetree]`` transitively);
+# these extras add the optional network-backed stores.
+redis = ["py-key-value-aio[redis]"]
+dynamodb = ["py-key-value-aio[dynamodb]"]
+mongodb = ["py-key-value-aio[mongodb]"]
 
 [project.urls]
 Homepage = "https://github.com/pvliesdonk/fastmcp-pvl-core"

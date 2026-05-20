@@ -9,8 +9,8 @@ Three orthogonal helpers live here:
 - :func:`build_instructions` — read-only/read-write-aware MCP instructions
   template parameterized by environment-variable prefix and a
   domain-describing sentence.
-- :func:`build_event_store` — construct an MCP event store (in-memory or
-  file-tree-backed) from a :class:`~fastmcp_pvl_core.ServerConfig`.
+- :func:`build_event_store` — construct an MCP event store backed by
+  the unified storage selected by :func:`build_kv_store`.
 - :func:`compute_app_domain` — derive the MCP Apps iframe domain for CSP
   sandboxing from either an explicit override or the host portion of the
   public ``base_url``.
@@ -19,7 +19,6 @@ Three orthogonal helpers live here:
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
@@ -29,15 +28,6 @@ if TYPE_CHECKING:
     from fastmcp.server.event_store import EventStore
 
 logger = logging.getLogger(__name__)
-
-
-_DEFAULT_EVENT_STORE_DIR = "/data/state/events"
-"""Fallback directory for the file-tree event store when no URL is given.
-
-Downstream Docker images typically mount a persistent volume at
-``/data/state``.  Tests monkey-patch this module attribute to redirect the
-default to a tmp path rather than touching the real ``/data/state``.
-"""
 
 
 def build_instructions(
@@ -81,68 +71,41 @@ def build_instructions(
 
 
 def build_event_store(env_prefix: str, config: ServerConfig) -> EventStore:
-    """Construct an MCP event store based on ``config.event_store_url``.
+    """Construct an MCP event store backed by the unified KV factory.
 
-    Parses the URL scheme to select a backend:
+    Delegates backend selection to :func:`build_kv_store` with
+    ``namespace="events"``. URL resolution priority (handled by the
+    KV factory):
 
-    - ``None`` or empty → file-tree store at :data:`_DEFAULT_EVENT_STORE_DIR`
-    - ``file:///path`` → file-tree store at the given path
-    - ``memory://`` → in-memory (lost on restart, for development)
+    1. ``config.kv_store_url`` (recommended)
+    2. ``config.event_store_url`` (legacy override)
+    3. Default: ``file://`` at the package default directory
 
     Args:
-        env_prefix: Env-var prefix of the consuming project.  Currently
-            unused but reserved for future per-project defaults (e.g.
-            ``{prefix}_EVENT_STORE_DIR``).
+        env_prefix: Env-var prefix of the consuming project. Forwarded
+            to :func:`build_kv_store` so future per-project defaults
+            apply consistently.
         config: A :class:`~fastmcp_pvl_core.ServerConfig` whose
-            ``event_store_url`` field selects the backend.
+            ``kv_store_url`` (or legacy ``event_store_url``) field
+            selects the backend.
 
     Returns:
-        A configured :class:`~fastmcp.server.event_store.EventStore`.
+        A configured :class:`~fastmcp.server.event_store.EventStore`
+        whose storage is namespaced under ``"events"``.
 
     Raises:
-        ValueError: If the URL scheme is neither ``file`` nor ``memory``.
-        ImportError: If the file-tree backend is requested but
-            ``key_value.aio.stores.filetree`` is not installed.
+        ValueError: If the URL scheme is unsupported.
+        ImportError: If a backend-specific extra is required but not
+            installed.
     """
-    # Local imports so importing ``fastmcp_pvl_core`` stays light.
+    # Local imports keep package import light for downstream that do not
+    # use this helper.
     from fastmcp.server.event_store import EventStore as _EventStore
 
-    del env_prefix  # currently unused; reserved for future per-project config
+    from fastmcp_pvl_core._kv_store import build_kv_store
 
-    url = config.event_store_url
-    if not url:
-        url = f"file://{_DEFAULT_EVENT_STORE_DIR}"
-
-    parsed = urlparse(url)
-
-    if parsed.scheme == "memory":
-        logger.info("event_store backend=memory lost_on_restart=true")
-        return _EventStore(max_events_per_stream=100, ttl=3600)
-
-    if parsed.scheme == "file":
-        directory = parsed.path or _DEFAULT_EVENT_STORE_DIR
-        Path(directory).mkdir(parents=True, exist_ok=True)
-        logger.info("event_store backend=file directory=%s", directory)
-
-        # py-key-value-aio[filetree] is a transitive of fastmcp today, so
-        # this guard is defensive — if a future fastmcp release drops the
-        # extra, the message points operators at the right package.
-        try:
-            from key_value.aio.stores.filetree import FileTreeStore
-        except ImportError as exc:
-            raise ImportError(
-                "FileTreeStore requires 'py-key-value-aio[filetree]'. "
-                "Install with `pip install 'py-key-value-aio[filetree]'` "
-                "or switch to EVENT_STORE_URL='memory://'."
-            ) from exc
-
-        storage = FileTreeStore(data_directory=directory)
-        return _EventStore(storage=storage, max_events_per_stream=100, ttl=3600)
-
-    raise ValueError(
-        f"Unsupported event store URL scheme {parsed.scheme!r}. "
-        "Use 'file:///path' or 'memory://'."
-    )
+    storage = build_kv_store(env_prefix, config, namespace="events")
+    return _EventStore(storage=storage, max_events_per_stream=100, ttl=3600)
 
 
 def compute_app_domain(config: ServerConfig) -> str | None:
