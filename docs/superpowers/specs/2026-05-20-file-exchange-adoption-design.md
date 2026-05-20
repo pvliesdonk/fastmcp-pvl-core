@@ -52,11 +52,12 @@ def register_file_exchange_capability(
     roles: Sequence[FileExchangeRole] = ("provider", "fetcher", "receiver", "sender"),
     kv_store: AsyncKeyValue,        # from build_kv_store(env_prefix, config, namespace="file-exchange")
     digests: Sequence[str] = ("sha-256",),
-    max_artifact_size: int | None = None,
 ) -> None
 ```
 
 The downstream declares which **roles** it wants to play (a domain decision — does this server export, ingest, both?). pvl-core **derives the transport set per role** from what the deployment can actually satisfy. The advertised capability mirrors reality, never a declaration that runtime selection has to reject.
+
+`maxArtifactSize` is operator-side configuration, not a kwarg — pvl-core reads `config.file_exchange_max_artifact_size` and emits it on the capability block when set. `digests` is the one shape kwarg with a near-universal default; downstream stays explicit so that the family can converge on stronger digests later without an API change.
 
 #### Transport-availability gating (the load-bearing detail)
 
@@ -78,7 +79,13 @@ Algorithm:
 4. Otherwise, write the gated `{role: [transports…]}` map into the `nl.liesdonk.file-exchange` block exactly as the spec requires (§5).
 5. Auto-mount HTTP routes iff `provider+download` or `receiver+upload` survives the gate (the stdio-only case skips this).
 
-This makes the call effectively zero-config for downstream — `register_file_exchange_capability(server, config, kv_store=…)` does the right thing in every deployment. A stdio server with volumes configured advertises filesystem-only. An HTTP server without volumes advertises HTTPS-only. An HTTP server with volumes advertises both, role-by-role. A stdio server with no volumes advertises nothing.
+This makes the call effectively zero-config for downstream — `register_file_exchange_capability(server, config, kv_store=…)` does the right thing in every deployment. Concretely:
+
+- **stdio + no volumes** → only the consumer roles survive (`fetcher: ["download"]`, `sender: ["upload"]`) because outbound HTTPS is always available; the producer-side roles drop. The capability block IS advertised.
+- **stdio + volumes** → all four roles advertised with `filesystem` (and consumer roles also keep `download`/`upload` for non-MCP peers).
+- **http + no volumes** → all four roles advertised with HTTPS only.
+- **http + volumes** → all four roles advertised with both transports.
+- **Empty post-gate role set** (e.g. downstream passes `roles=("provider", "receiver")` on a stdio + no-volumes deployment) → capability is not advertised at all. This is the safety-net step 3, not the common case.
 
 #### Other behaviour
 
@@ -88,13 +95,27 @@ This makes the call effectively zero-config for downstream — `register_file_ex
 ### Descriptor minting (producer side)
 
 ```python
-def make_filesystem_source(volume: str, relative_path: str) -> SourceDescriptor
-def make_filesystem_sink(volume: str, relative_path: str, *, artifact_id: str, kv_store: AsyncKeyValue) -> SinkDescriptor
+def make_filesystem_source(
+    volume: str,
+    relative_path: str,
+    *,
+    config: ServerConfig,
+) -> SourceDescriptor
+
+async def make_filesystem_sink(
+    volume: str,
+    relative_path: str,
+    *,
+    artifact_id: str,
+    config: ServerConfig,
+    kv_store: AsyncKeyValue,
+) -> SinkDescriptor
 
 async def mint_download_source(
     *,
     bytes_path: Path,
     server: FastMCP,
+    config: ServerConfig,
     kv_store: AsyncKeyValue,
     expires_in_s: int | None = None,
     single_use: bool = True,
@@ -105,13 +126,14 @@ async def mint_upload_sink(
     intake_path: Path,
     artifact_id: str,
     server: FastMCP,
+    config: ServerConfig,
     kv_store: AsyncKeyValue,
     expires_in_s: int | None = None,
     expected: ExpectedConstraints | None = None,
 ) -> SinkDescriptor
 ```
 
-`make_filesystem_sink` and `mint_upload_sink` both register the `(artifact_id → resolved_intake_path)` mapping in the kv_store, so `resolve_intake` can find it later regardless of which transport was used.
+Both sink-side minters (`make_filesystem_sink` and `mint_upload_sink`) record the `(artifact_id → resolved_intake_path)` mapping in `kv_store` at mint time — that single seam lets `resolve_intake` find the bytes after a successful transfer regardless of which transport was used. `config` supplies the volume map, the capability-URL TTL default, and (for HTTPS minters) the optional public-base-URL override. The trio `(server, config, kv_store)` is sufficient context for any helper in this section; no separate `volumes`/`ssrf`/`base_url` kwargs leak through.
 
 ### Role helpers
 
@@ -130,6 +152,7 @@ async def pull_artifact(
     handle: TransferHandle | dict,
     *,
     dest: Path | BinaryIO,
+    config: ServerConfig,
     supported_transports: Sequence[FileExchangeTransport] | None = None,
 ) -> ArtifactMetadata
 
@@ -159,8 +182,11 @@ async def push_artifact(
     ticket: IntakeTicket | dict,
     *,
     source: Path | BinaryIO,
+    config: ServerConfig,
     supported_transports: Sequence[FileExchangeTransport] | None = None,
     artifact_digest: str | None = None,
+    artifact_mime: str | None = None,
+    artifact_size: int | None = None,
 ) -> None
 
 # Error -> envelope
@@ -168,6 +194,10 @@ def as_tool_error_result(exc: FileExchangeError) -> CallToolResult
 ```
 
 Each helper validates inputs against the vendored JSON Schema, applies §17.3 version-skew + §17.4 must-understand checks, runs the §9 selection algorithm where applicable, and surfaces failures as `FileExchangeError` with one of the §13 codes.
+
+`pull_artifact` and `push_artifact` take `config` so they can derive the volume map (`config.file_exchange_volumes`), the SSRF guard (`config.file_exchange_https_allow_loopback`/`allow_private`), and any other operator-side concern. No standalone `volumes`/`ssrf` kwargs — those are deployment state, not domain hooks. `open_intake` is pure construction: the `(artifact_id → resolved_intake_path)` mapping was already recorded by the sink-minter that produced its `sinks`, so it needs neither `config` nor `kv_store`.
+
+`resolve_intake` always returns a `Path`. If `kv_store` has no recorded mapping for `artifact_id` (the transfer never completed, or `artifact_id` is wrong), it raises `FileExchangeError(code=NOT_ACCESSIBLE)` so the caller's tool body can convert via `as_tool_error_result`. The `-> Path | None` shape was considered but creates a quiet-failure trap: callers forget the `None` branch and operate on the wrong path.
 
 When `summary` is omitted on `build_pull_response` or `build_intake_response`, pvl-core auto-synthesises a short human-readable line of the form `"file-exchange: <artifact.name or artifact.id> (<size_human>, <mime_type>)"`, falling back gracefully when fields are missing. The intent is that the model sees enough to reason about the chain without ever seeing the bytes (spec §11.1).
 
@@ -217,10 +247,10 @@ The volumes parser in `_transport_filesystem.py` is the single source of truth f
 
 A deployment can rotate its file-exchange surface without code changes — just env-vars:
 
-- Set `_FILE_EXCHANGE_VOLUMES=` (empty) + `_TRANSPORT=stdio` → no file-exchange capability advertised at all.
-- Set `_FILE_EXCHANGE_VOLUMES=vault-export=/mnt/exchange/vault` + `_TRANSPORT=stdio` → file-exchange advertised, filesystem-only.
-- Set `_FILE_EXCHANGE_VOLUMES=` (empty) + `_TRANSPORT=http` → file-exchange advertised, HTTPS-only (download for provider+fetcher, upload for receiver+sender).
-- Both set → both transports per role.
+- **`_FILE_EXCHANGE_VOLUMES=` (empty) + `_TRANSPORT=stdio`** → only the consumer roles are advertised (`fetcher: ["download"]`, `sender: ["upload"]`). The producer-side roles (`provider`, `receiver`) drop because they need an HTTP app to host endpoints. Outbound HTTPS works regardless.
+- **`_FILE_EXCHANGE_VOLUMES=vault-export=/mnt/exchange/vault` + `_TRANSPORT=stdio`** → all four roles advertised; consumer roles get both `filesystem` and outbound HTTPS, producer roles get `filesystem` only.
+- **`_FILE_EXCHANGE_VOLUMES=` (empty) + `_TRANSPORT=http`** → all four roles advertised, HTTPS-only.
+- **Both set + `_TRANSPORT=http`** → all four roles, both transports per role.
 
 ## 6. Transport mechanics
 
@@ -243,11 +273,20 @@ A deployment can rotate its file-exchange surface without code changes — just 
 
 **Producer side** (token store + sibling routes):
 
-- 128-bit URL-safe random tokens stored in the namespaced `kv_store` under `tokens:<token>` (download) or under `tokens:<token>` (upload, with additional fields for `expected` constraints + `artifact_id` correlation).
-- `GET /file-exchange/d/<token>` — looks up; sets `Content-Type`/`Content-Length` from stored metadata; supports `Range`; on full-bytes-served success **atomically** flips `consumed_flag` (so the single-use semantics hold under concurrent retrieval attempts); returns 404 for expired/unknown/consumed-single-use.
-- `PUT|POST /file-exchange/u/<token>` — looks up; enforces `maxSize` / `acceptMimeTypes` / `Content-Digest`; streams the request body into a temp file via the `atomic_write` context manager (same helper as the filesystem transport, so partial uploads can't be observed by a concurrent reader); on body-fully-received-and-validated success, the context manager renames the temp file onto the intake path and the route handler atomically marks the token consumed and writes `intake:<artifact_id> → resolved_intake_path`. Validation failure or partial body causes the temp file to be discarded.
+- 128-bit URL-safe random tokens stored in the namespaced `kv_store` under `tokens:<token>` (a single keyspace for both download and upload records, discriminated by a `kind` field; the upload record carries the `expected` constraints + `artifact_id` correlation).
+- `GET /file-exchange/d/<token>` — looks up; sets `Content-Type`/`Content-Length` from stored metadata; supports `Range`; on full-bytes-served success marks the token consumed; returns 404 for expired/unknown/consumed-single-use.
+
+  **Single-use concurrency posture**: pvl-core uses a per-key get-then-delete pattern (`kv_store.delete()` is atomic per key on every supported backend; a racing second consumer finds the key already gone and returns 404). This holds under high concurrency for Memory, FileTree, Redis, DynamoDB, and MongoDB backends. **It is best-effort if the kv_store backend lacks atomic-delete semantics**; a custom adapter must document this clearly. A future enhancement can introduce a `CompareAndSwap` primitive on the storage layer if a backend without atomic delete becomes load-bearing.
+
+- `PUT|POST /file-exchange/u/<token>` — looks up; **streams** the request body chunk-by-chunk into a temp file via the `atomic_write` context manager (same helper as the filesystem transport). Each chunk is digested with `hashlib.sha256` (incremental), counted against `expected.maxSize` (fail-fast with HTTP 413 the moment cumulative bytes exceed the cap — never buffer beyond one chunk), and matched against `expected.acceptMimeTypes` via the request `Content-Type` header (HTTP 415 on mismatch). On body-fully-received success: verify the running digest matches any `Content-Digest` header (HTTP 422 / `digest-mismatch` on mismatch), then commit via `atomic_write`'s rename and mark the token consumed (atomic per-key `delete`). Validation failure or partial body causes the temp file to be discarded (no rename happens). The `intake:<artifact_id> → resolved_intake_path` mapping was recorded by `mint_upload_sink` at *mint* time — the route does not write it again; bytes simply arrive at the path the mapping already points to.
+
+- All synchronous file I/O inside async handlers (chunk writes, the final fsync) is dispatched via `asyncio.to_thread` so the event loop is never blocked on disk latency. The pull route uses the same discipline for `Content-Length`-bounded streams.
+
 - Public base URL: `compute_app_domain` (existing pvl-core helper) plus the literal `/file-exchange/{d,u}/` prefix. Overridable via `_FILE_EXCHANGE_HTTPS_PUBLIC_BASE_URL`.
+
 - Background sweeper deletes expired tokens (default interval: 60s) to keep the store bounded.
+
+**Logging discipline** (`_url_store.py`, `_routes.py`): capability URLs are bearer credentials per spec §12; pvl-core never logs them in full at any level. Debug logs use a token fingerprint of the form `tok=<first-8-chars>...` derived from the token's URL-safe base64 representation; the full URL or the full token never enters stdout, stderr, or any structured-log field. The `_meta` mirror under `nl.liesdonk.file-exchange/handles` / `tickets` (spec §11.1) embeds the URLs verbatim and is therefore *also* never logged. A unit test in Task E asserts that `caplog` contains no full-token substring during mint, consume, or sweep flows.
 
 ## 7. Schema vendoring & conformance
 

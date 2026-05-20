@@ -27,9 +27,9 @@ _file_exchange/
     _types.py                         # Pydantic models for refs, descriptors, errors
     _select.py                        # selection algorithm (§9 of spec)
     _errors.py                        # FileExchangeError + code constants + envelope
-    _transport_filesystem.py          # exchange:// resolution, atomic_write, mint helpers
-    _transport_https.py               # pull_download, push_upload, SSRF guard
-    _url_store.py                     # capability URL minting; intake correlation
+    _transport_filesystem.py          # exchange:// resolution, atomic_write, filesystem-source mint helper
+    _transport_https.py               # pull_download (with streaming digester), push_upload, SSRF guard
+    _url_store.py                     # capability URL minting; intake correlation; filesystem-sink + HTTPS mint helpers
     _routes.py                        # GET /file-exchange/d/<token>, PUT|POST /u/<token>
     _provider.py                      # build_pull_response
     _fetcher.py                       # pull_artifact
@@ -193,21 +193,21 @@ from fastmcp_pvl_core._file_exchange._types import (
 
 def test_filesystem_source_descriptor_roundtrips():
     raw = {"transport": "filesystem", "uri": "exchange://vault/notes/n1.md"}
-    desc = SourceDescriptor.validate_python(raw)
+    desc = SourceDescriptor.model_validate(raw)
     assert isinstance(desc.root, FilesystemSourceDescriptor)
     assert desc.root.uri == "exchange://vault/notes/n1.md"
 
 
 def test_download_source_descriptor_requires_expires_at():
     with pytest.raises(ValidationError):
-        SourceDescriptor.validate_python({"transport": "download", "url": "https://x/y"})
+        SourceDescriptor.model_validate({"transport": "download", "url": "https://x/y"})
 
 
 def test_descriptor_unknown_transport_is_rejected_at_typed_layer():
     """The typed layer rejects unknown transports — selection-level fallthrough
     (§17.2 'tolerant reading') is handled in _select.py, not by the discriminator."""
     with pytest.raises(ValidationError):
-        SourceDescriptor.validate_python({"transport": "carrier-pigeon", "uri": "x"})
+        SourceDescriptor.model_validate({"transport": "carrier-pigeon", "uri": "x"})
 
 
 def test_transfer_handle_requires_at_least_one_source():
@@ -1190,15 +1190,86 @@ def atomic_write(target: Path) -> Iterator[object]:
         raise
 ```
 
+### Step C.3: Implement `make_filesystem_source`
+
+Per design §3, pvl-core exposes a public mint helper for the filesystem-source case
+so downstream never hand-writes a `FilesystemSourceDescriptor`. The helper validates
+the volume against `config.file_exchange_volumes` so a misconfigured volume name is
+rejected at mint time, not later at the consumer.
+
+- [ ] Add tests to `tests/file_exchange/test_transport_filesystem.py`:
+
+```python
+from fastmcp_pvl_core._config import ServerConfig
+from fastmcp_pvl_core._file_exchange._transport_filesystem import (
+    make_filesystem_source,
+)
+
+
+def _config(**kw) -> ServerConfig:
+    base = dict(transport="stdio")
+    base.update(kw)
+    return ServerConfig(**base)
+
+
+def test_make_filesystem_source_happy_path(tmp_path: Path):
+    config = _config(file_exchange_volumes=f"vault={tmp_path}")
+    desc = make_filesystem_source("vault", "report.parquet", config=config)
+    assert desc.root.transport == "filesystem"
+    assert desc.root.uri == "exchange://vault/report.parquet"
+
+
+def test_make_filesystem_source_unknown_volume_raises(tmp_path: Path):
+    config = _config(file_exchange_volumes=f"vault={tmp_path}")
+    with pytest.raises(FileExchangeError) as exc:
+        make_filesystem_source("missing", "x.bin", config=config)
+    assert exc.value.code == FileExchangeErrorCode.NOT_ACCESSIBLE
+```
+
+- [ ] Append to `src/fastmcp_pvl_core/_file_exchange/_transport_filesystem.py`:
+
+```python
+def make_filesystem_source(
+    volume: str,
+    relative_path: str,
+    *,
+    config: "ServerConfig",
+) -> "SourceDescriptor":
+    """Mint a filesystem-transport SourceDescriptor for ``volume/relative_path``.
+
+    Validates ``volume`` against the operator's volume map (parsed from
+    ``config.file_exchange_volumes``). A volume not declared in the deployment
+    is rejected here so the downstream tool body fails fast rather than emitting
+    a descriptor that no consumer can resolve.
+    """
+    from ._types import SourceDescriptor
+
+    volumes = parse_volumes(config.file_exchange_volumes)
+    if volume not in volumes:
+        raise FileExchangeError(
+            code=FileExchangeErrorCode.NOT_ACCESSIBLE,
+            transport="filesystem",
+            detail=f"no mapping configured for volume {volume!r}",
+        )
+    rel = relative_path.lstrip("/")
+    return SourceDescriptor.model_validate(
+        {"transport": "filesystem", "uri": f"exchange://{volume}/{rel}"}
+    )
+```
+
+(The `make_filesystem_sink` minter lives in Task E's `_url_store.py` because it
+must also record the resolved intake path so `resolve_intake` can locate the
+bytes later.)
+
 - [ ] Run the tests:
 
 ```bash
 uv run pytest tests/file_exchange/test_transport_filesystem.py -v
 ```
 
-Expected: PASS (all 9 tests).
+Expected: PASS (all 11 tests).
 
-### Step C.3: Commit and PR
+### Step C.4: Commit and PR
 
 - [ ] Commit:
 
@@ -1294,7 +1365,7 @@ import ipaddress
 import socket
 from dataclasses import dataclass
 from pathlib import Path
-from typing import BinaryIO
+from typing import Any, BinaryIO
 
 import httpx
 
@@ -1472,6 +1543,7 @@ async def pull_download(
     *,
     dest: BinaryIO | Path,
     ssrf: SSRFGuardConfig,
+    digester: "Any | None" = None,
     client_transport: httpx.AsyncBaseTransport | None = None,
     chunk_size: int = 65536,
 ) -> int:
@@ -1480,6 +1552,14 @@ async def pull_download(
     Streams to ``dest`` (either an open writable BinaryIO or a Path; for Path
     pvl-core uses the filesystem-transport's atomic_write context manager so
     a partial write is never observed).
+
+    If ``digester`` is provided (a ``hashlib._Hash``-like object exposing
+    ``update``), each received chunk is fed into it *before* being written.
+    Callers (notably ``pull_artifact``) keep the same digester across the
+    transfer so the post-fetch digest check sees the bytes actually received.
+
+    Sync writes inside this async function are dispatched via
+    ``asyncio.to_thread`` so the event loop is never blocked on disk latency.
 
     SSRF guard runs; non-https URLs are refused; cross-origin redirects are refused;
     no ambient credentials are attached.
@@ -1533,13 +1613,17 @@ async def pull_download(
                 bytes_written = 0
                 with atomic_write(dest) as f:
                     async for chunk in response.aiter_bytes(chunk_size):
-                        f.write(chunk)
+                        if digester is not None:
+                            digester.update(chunk)
+                        await asyncio.to_thread(f.write, chunk)
                         bytes_written += len(chunk)
                 return bytes_written
 
             bytes_written = 0
             async for chunk in response.aiter_bytes(chunk_size):
-                dest.write(chunk)
+                if digester is not None:
+                    digester.update(chunk)
+                await asyncio.to_thread(dest.write, chunk)
                 bytes_written += len(chunk)
             return bytes_written
 
@@ -1675,7 +1759,7 @@ async def test_minted_download_token_is_url_safe_random(store: MemoryStore):
 
 
 @pytest.mark.asyncio
-async def test_consume_download_token_flips_single_use(store: MemoryStore):
+async def test_consume_download_token_single_use(store: MemoryStore):
     expires = datetime.now(timezone.utc) + timedelta(hours=1)
     tok = await mint_download_token(
         store=store, bytes_path=Path("/tmp/x.bin"), expires_at=expires, single_use=True
@@ -1684,9 +1768,31 @@ async def test_consume_download_token_flips_single_use(store: MemoryStore):
     record = await consume_download_token(store=store, token=tok)
     assert record.bytes_path == Path("/tmp/x.bin")
 
-    # Second consume MUST fail because single_use already flipped consumed.
+    # Second consume MUST fail because the get-then-delete pattern already
+    # removed the entry on the first successful consume.
     with pytest.raises(LookupError):
         await consume_download_token(store=store, token=tok)
+
+
+@pytest.mark.asyncio
+async def test_consume_download_token_concurrent_consumers(store: MemoryStore):
+    """Two concurrent consumers race on a single-use token; exactly one wins."""
+    import asyncio
+
+    expires = datetime.now(timezone.utc) + timedelta(hours=1)
+    tok = await mint_download_token(
+        store=store, bytes_path=Path("/tmp/x.bin"), expires_at=expires, single_use=True
+    )
+
+    results = await asyncio.gather(
+        consume_download_token(store=store, token=tok),
+        consume_download_token(store=store, token=tok),
+        return_exceptions=True,
+    )
+    successes = [r for r in results if not isinstance(r, BaseException)]
+    failures = [r for r in results if isinstance(r, LookupError)]
+    assert len(successes) == 1
+    assert len(failures) == 1
 
 
 @pytest.mark.asyncio
@@ -1710,6 +1816,24 @@ async def test_intake_path_correlation(store: MemoryStore):
 async def test_intake_path_for_missing_artifact_returns_none(store: MemoryStore):
     p = await intake_path_for(store=store, artifact_id="never-minted")
     assert p is None
+
+
+@pytest.mark.asyncio
+async def test_mint_and_consume_never_logs_full_token(caplog, store: MemoryStore):
+    """Capability URLs are bearer credentials; full tokens MUST NOT appear in logs."""
+    import logging
+
+    caplog.set_level(logging.DEBUG, logger="fastmcp_pvl_core.file_exchange")
+    expires = datetime.now(timezone.utc) + timedelta(hours=1)
+    token = await mint_download_token(
+        store=store, bytes_path=Path("/tmp/x.bin"), expires_at=expires, single_use=True
+    )
+    record = await consume_download_token(store=store, token=token)
+    full_log = " ".join(rec.getMessage() for rec in caplog.records)
+    assert token not in full_log, "capability tokens MUST NOT appear in logs"
+    # A fingerprint (first 8 chars + ellipsis) is acceptable; the test
+    # exists so the implementation actually emits log lines we can inspect.
+    assert record is not None
 ```
 
 - [ ] Run the test:
@@ -1737,13 +1861,23 @@ Two collections inside the namespace:
 
 from __future__ import annotations
 
+import logging
 import secrets
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from key_value.aio.protocols.key_value import AsyncKeyValue
+
+if TYPE_CHECKING:
+    from fastmcp import FastMCP
+
+    from fastmcp_pvl_core._config import ServerConfig
+    from ._types import ExpectedConstraints, SinkDescriptor, SourceDescriptor
+
+
+_logger = logging.getLogger("fastmcp_pvl_core.file_exchange")
 
 
 TOKEN_BYTES = 16  # 128 bits → 22 base64url chars
@@ -1787,16 +1921,24 @@ async def mint_download_token(
     expires_at: datetime,
     single_use: bool = True,
 ) -> str:
-    """Mint a download capability token; return the token string."""
+    """Mint a download capability token; return the token string.
+
+    Logs at DEBUG with a fingerprint of the form ``tok=<first-8-chars>...``;
+    the full token never enters any log line (spec §12 bearer-credential hygiene).
+    """
     token = _new_token()
     record = {
         "kind": "download",
         "bytes_path": str(bytes_path),
         "expires_at": expires_at.isoformat(),
         "single_use": single_use,
-        "consumed": False,
     }
     await store.put(collection="tokens", key=token, value=record)
+    _logger.debug(
+        "file-exchange: minted download token tok=%s... ttl=%ds",
+        token[:8],
+        int((expires_at - _now()).total_seconds()),
+    )
     return token
 
 
@@ -1810,7 +1952,10 @@ async def mint_upload_token(
     accept_mime_types: list[str] | None = None,
     require_digest: list[str] | None = None,
 ) -> str:
-    """Mint an upload capability token; return the token string."""
+    """Mint an upload capability token; return the token string.
+
+    Logs at DEBUG with a fingerprint only; never the full token (spec §12).
+    """
     token = _new_token()
     record = {
         "kind": "upload",
@@ -1820,21 +1965,32 @@ async def mint_upload_token(
         "max_size": max_size,
         "accept_mime_types": accept_mime_types,
         "require_digest": require_digest,
-        "consumed": False,
     }
     await store.put(collection="tokens", key=token, value=record)
+    _logger.debug(
+        "file-exchange: minted upload token tok=%s... ttl=%ds",
+        token[:8],
+        int((expires_at - _now()).total_seconds()),
+    )
     return token
 
 
 async def consume_download_token(
     *, store: AsyncKeyValue, token: str
 ) -> DownloadTokenRecord:
+    """Consume a download token.
+
+    Uses a per-key get-then-delete pattern: ``AsyncKeyValue.delete`` is atomic
+    per key on every supported backend, so a racing second consumer either
+    finds the key already gone on ``get`` or loses the delete race here and
+    raises ``LookupError`` — exactly one consumer wins.
+    """
     raw = await store.get(collection="tokens", key=token)
     if raw is None or raw.get("kind") != "download":
         raise LookupError("download token not found")
     expires_at = datetime.fromisoformat(raw["expires_at"])
-    if _is_expired(expires_at) or raw.get("consumed", False):
-        raise LookupError("download token expired or already consumed")
+    if _is_expired(expires_at):
+        raise LookupError("download token expired")
 
     record = DownloadTokenRecord(
         bytes_path=Path(raw["bytes_path"]),
@@ -1844,27 +2000,37 @@ async def consume_download_token(
     )
 
     if record.single_use:
-        # Atomically flip consumed.  AsyncKeyValue.put is the unit of atomicity here;
-        # callers MUST treat double-consume as the failure case the test exercises.
-        await store.put(
-            collection="tokens",
-            key=token,
-            value={**raw, "consumed": True},
-        )
-
+        # Atomic per-key delete: a racing consumer hits LookupError on its own
+        # get or here on its delete. The first delete wins.
+        deleted = await store.delete(collection="tokens", key=token)
+        if not deleted:
+            raise LookupError("download token already consumed by a concurrent consumer")
+    _logger.debug(
+        "file-exchange: consumed download token tok=%s... single_use=%s",
+        token[:8],
+        record.single_use,
+    )
     return record
 
 
 async def consume_upload_token(
     *, store: AsyncKeyValue, token: str
 ) -> UploadTokenRecord:
+    """Consume an upload token.
+
+    Same get-then-delete pattern as ``consume_download_token``. The intake
+    correlation under ``intake:<artifact_id>`` is a different key and
+    survives the token deletion — that is what lets ``resolve_intake`` find
+    the bytes after the upload completes.
+    """
     raw = await store.get(collection="tokens", key=token)
     if raw is None or raw.get("kind") != "upload":
         raise LookupError("upload token not found")
     expires_at = datetime.fromisoformat(raw["expires_at"])
-    if _is_expired(expires_at) or raw.get("consumed", False):
-        raise LookupError("upload token expired or already consumed")
-    return UploadTokenRecord(
+    if _is_expired(expires_at):
+        raise LookupError("upload token expired")
+
+    record = UploadTokenRecord(
         intake_path=Path(raw["intake_path"]),
         artifact_id=raw["artifact_id"],
         expires_at=expires_at,
@@ -1874,18 +2040,26 @@ async def consume_upload_token(
         consumed=False,
     )
 
-
-async def mark_upload_consumed(*, store: AsyncKeyValue, token: str) -> None:
-    raw = await store.get(collection="tokens", key=token)
-    if raw is None:
-        return
-    await store.put(collection="tokens", key=token, value={**raw, "consumed": True})
+    deleted = await store.delete(collection="tokens", key=token)
+    if not deleted:
+        raise LookupError("upload token already consumed by a concurrent consumer")
+    _logger.debug(
+        "file-exchange: consumed upload token tok=%s... artifact_id=%s",
+        token[:8],
+        record.artifact_id,
+    )
+    return record
 
 
 async def record_intake_path(
     *, store: AsyncKeyValue, artifact_id: str, path: Path
 ) -> None:
-    """Record (artifact_id → resolved intake path) so resolve_intake can find it."""
+    """Record (artifact_id → resolved intake path) so resolve_intake can find it.
+
+    Called by both sink-minters (``make_filesystem_sink`` and ``mint_upload_sink``)
+    at mint time, so the intake mapping exists regardless of which transport
+    the sender ultimately picks.
+    """
     await store.put(
         collection="intake", key=artifact_id, value={"path": str(path)}
     )
@@ -1898,6 +2072,120 @@ async def intake_path_for(
     if raw is None:
         return None
     return Path(raw["path"])
+
+
+# ---- Public mint helpers (design §3 "Descriptor minting (producer side)") ----
+
+
+async def make_filesystem_sink(
+    volume: str,
+    relative_path: str,
+    *,
+    artifact_id: str,
+    config: "ServerConfig",
+    kv_store: AsyncKeyValue,
+) -> "SinkDescriptor":
+    """Mint a filesystem-transport SinkDescriptor and record the intake mapping.
+
+    Resolves the ``exchange://`` URI immediately so the intake path is recorded
+    in ``kv_store`` before the descriptor leaves the producer. ``resolve_intake``
+    then finds the bytes via the recorded mapping regardless of how the sender
+    delivered them.
+    """
+    from ._transport_filesystem import parse_volumes, resolve_exchange_uri
+    from ._types import SinkDescriptor
+
+    volumes = parse_volumes(config.file_exchange_volumes)
+    rel = relative_path.lstrip("/")
+    uri = f"exchange://{volume}/{rel}"
+    resolved = resolve_exchange_uri(uri, volumes=volumes)
+    await record_intake_path(store=kv_store, artifact_id=artifact_id, path=resolved)
+    return SinkDescriptor.model_validate({"transport": "filesystem", "uri": uri})
+
+
+async def mint_download_source(
+    *,
+    bytes_path: Path,
+    server: "FastMCP",
+    config: "ServerConfig",
+    kv_store: AsyncKeyValue,
+    expires_in_s: int | None = None,
+    single_use: bool = True,
+) -> "SourceDescriptor":
+    """Mint a download-transport SourceDescriptor backed by a fresh capability URL.
+
+    ``server`` and ``config`` are used to compute the public base URL via the
+    existing ``compute_app_domain`` helper (overridable via
+    ``config.file_exchange_https_public_base_url``).
+    """
+    from datetime import timedelta
+
+    from .._helpers import compute_app_domain  # existing pvl-core helper
+    from ._types import SourceDescriptor
+
+    ttl = expires_in_s if expires_in_s is not None else config.file_exchange_capability_url_ttl_default_s
+    if ttl <= 0:
+        raise ValueError("expires_in_s must be > 0")
+    expires_at = _now() + timedelta(seconds=ttl)
+    token = await mint_download_token(
+        store=kv_store, bytes_path=bytes_path, expires_at=expires_at, single_use=single_use
+    )
+    base = config.file_exchange_https_public_base_url or compute_app_domain(server, config)
+    url = f"{base.rstrip('/')}/file-exchange/d/{token}"
+    return SourceDescriptor.model_validate(
+        {
+            "transport": "download",
+            "url": url,
+            "expiresAt": expires_at.isoformat(),
+            "singleUse": single_use,
+        }
+    )
+
+
+async def mint_upload_sink(
+    *,
+    intake_path: Path,
+    artifact_id: str,
+    server: "FastMCP",
+    config: "ServerConfig",
+    kv_store: AsyncKeyValue,
+    expires_in_s: int | None = None,
+    expected: "ExpectedConstraints | None" = None,
+) -> "SinkDescriptor":
+    """Mint an upload-transport SinkDescriptor and record the intake mapping.
+
+    The intake path is recorded under ``intake:<artifact_id>`` at mint time;
+    after the upload route writes the bytes, ``resolve_intake(artifact_id)``
+    returns this path.
+    """
+    from datetime import timedelta
+
+    from .._helpers import compute_app_domain  # existing pvl-core helper
+    from ._types import SinkDescriptor
+
+    ttl = expires_in_s if expires_in_s is not None else config.file_exchange_capability_url_ttl_default_s
+    if ttl <= 0:
+        raise ValueError("expires_in_s must be > 0")
+    expires_at = _now() + timedelta(seconds=ttl)
+    token = await mint_upload_token(
+        store=kv_store,
+        intake_path=intake_path,
+        artifact_id=artifact_id,
+        expires_at=expires_at,
+        max_size=expected.maxSize if expected else None,
+        accept_mime_types=expected.acceptMimeTypes if expected else None,
+        require_digest=expected.requireDigest if expected else None,
+    )
+    await record_intake_path(store=kv_store, artifact_id=artifact_id, path=intake_path)
+    base = config.file_exchange_https_public_base_url or compute_app_domain(server, config)
+    url = f"{base.rstrip('/')}/file-exchange/u/{token}"
+    return SinkDescriptor.model_validate(
+        {
+            "transport": "upload",
+            "url": url,
+            "expiresAt": expires_at.isoformat(),
+        }
+    )
 ```
 
 - [ ] Run the tests:
@@ -1906,7 +2194,139 @@ async def intake_path_for(
 uv run pytest tests/file_exchange/test_url_store.py -v
 ```
 
-Expected: PASS (all 5 tests).
+Expected: PASS (all tests in `test_url_store.py`, including the concurrent-consume and log-discipline tests).
+
+### Step E.2b: Test the public mint helpers
+
+The three sink/source minters that live in `_url_store.py` (alongside their
+filesystem-source sibling in Task C) need happy-path + validation-failure
+coverage. Append to `tests/file_exchange/test_url_store.py`:
+
+```python
+from fastmcp_pvl_core._config import ServerConfig
+from fastmcp_pvl_core._file_exchange._types import ExpectedConstraints
+from fastmcp_pvl_core._file_exchange._url_store import (
+    make_filesystem_sink,
+    mint_download_source,
+    mint_upload_sink,
+)
+
+
+def _config(**kw) -> ServerConfig:
+    base = dict(transport="http")
+    base.update(kw)
+    return ServerConfig(**base)
+
+
+@pytest.mark.asyncio
+async def test_make_filesystem_sink_records_intake_mapping(tmp_path: Path, store: MemoryStore):
+    config = _config(file_exchange_volumes=f"intake={tmp_path}")
+    sink = await make_filesystem_sink(
+        "intake", "x.bin", artifact_id="ar-1", config=config, kv_store=store
+    )
+    assert sink.root.transport == "filesystem"
+    assert sink.root.uri == "exchange://intake/x.bin"
+    raw = await store.get(collection="intake", key="ar-1")
+    assert raw is not None
+    assert Path(raw["path"]) == (tmp_path / "x.bin").resolve()
+
+
+@pytest.mark.asyncio
+async def test_make_filesystem_sink_rejects_unknown_volume(tmp_path: Path, store: MemoryStore):
+    config = _config(file_exchange_volumes=f"intake={tmp_path}")
+    with pytest.raises(FileExchangeError) as exc:
+        await make_filesystem_sink(
+            "missing", "x.bin", artifact_id="ar-1", config=config, kv_store=store
+        )
+    assert exc.value.code == FileExchangeErrorCode.NOT_ACCESSIBLE
+
+
+@pytest.mark.asyncio
+async def test_mint_download_source_produces_capability_url(
+    tmp_path: Path, store: MemoryStore, monkeypatch
+):
+    monkeypatch.setattr(
+        "fastmcp_pvl_core._file_exchange._url_store.compute_app_domain",
+        lambda server, config: "https://example.test",
+    )
+    config = _config(file_exchange_capability_url_ttl_default_s=60)
+    bytes_path = tmp_path / "x.bin"
+    bytes_path.write_bytes(b"hello")
+    desc = await mint_download_source(
+        bytes_path=bytes_path,
+        server=object(),  # compute_app_domain is patched, server is not touched
+        config=config,
+        kv_store=store,
+    )
+    assert desc.root.transport == "download"
+    assert str(desc.root.url).startswith("https://example.test/file-exchange/d/")
+
+
+@pytest.mark.asyncio
+async def test_mint_download_source_invalid_config_rejects(tmp_path: Path, store: MemoryStore):
+    """ttl ≤ 0 produces an expiresAt in the past — validation surface."""
+    config = _config(file_exchange_capability_url_ttl_default_s=60)
+    bytes_path = tmp_path / "x.bin"
+    bytes_path.write_bytes(b"hello")
+    with pytest.raises(Exception):
+        # Negative TTL must not silently produce an expired descriptor.
+        await mint_download_source(
+            bytes_path=bytes_path,
+            server=object(),
+            config=config,
+            kv_store=store,
+            expires_in_s=-1,
+        )
+
+
+@pytest.mark.asyncio
+async def test_mint_upload_sink_records_intake_and_mints_url(
+    tmp_path: Path, store: MemoryStore, monkeypatch
+):
+    monkeypatch.setattr(
+        "fastmcp_pvl_core._file_exchange._url_store.compute_app_domain",
+        lambda server, config: "https://example.test",
+    )
+    config = _config(file_exchange_capability_url_ttl_default_s=60)
+    intake = tmp_path / "intake.bin"
+    sink = await mint_upload_sink(
+        intake_path=intake,
+        artifact_id="ar-1",
+        server=object(),
+        config=config,
+        kv_store=store,
+        expected=ExpectedConstraints(maxSize=1024),
+    )
+    assert sink.root.transport == "upload"
+    assert str(sink.root.url).startswith("https://example.test/file-exchange/u/")
+    raw = await store.get(collection="intake", key="ar-1")
+    assert raw is not None
+    assert Path(raw["path"]) == intake
+
+
+@pytest.mark.asyncio
+async def test_mint_upload_sink_validation_failure(tmp_path: Path, store: MemoryStore):
+    """ExpectedConstraints with a negative maxSize must surface at validation."""
+    config = _config()
+    with pytest.raises(Exception):
+        ExpectedConstraints.model_validate({"maxSize": -1})
+```
+
+For mint helpers in this task, the docstring guard against negative TTLs needs
+to be enforced; add to `mint_download_source`/`mint_upload_sink`:
+
+```python
+    if ttl <= 0:
+        raise ValueError("expires_in_s must be > 0")
+```
+
+- [ ] Run the new tests:
+
+```bash
+uv run pytest tests/file_exchange/test_url_store.py -v
+```
+
+Expected: PASS.
 
 ### Step E.3: Test the sibling routes
 
@@ -2023,7 +2443,12 @@ async def test_upload_route_enforces_max_size(
     with TestClient(app) as client:
         resp = client.put(f"/file-exchange/u/{token}", content=b"too much")
     assert resp.status_code == 413
+    # Intake path MUST NOT be written when the upload was rejected mid-stream.
     assert not intake.exists()
+    # No temp files left behind in the intake directory either.
+    if intake.parent.exists():
+        leftover = [p for p in intake.parent.iterdir() if p.name.startswith(".")]
+        assert leftover == []
 ```
 
 ### Step E.4: Implement the routes
@@ -2041,6 +2466,8 @@ Both routes look tokens up in the kv_store passed to ``build_file_exchange_route
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
 from pathlib import Path
 
 from key_value.aio.protocols.key_value import AsyncKeyValue
@@ -2052,9 +2479,16 @@ from ._transport_filesystem import atomic_write
 from ._url_store import (
     consume_download_token,
     consume_upload_token,
-    mark_upload_consumed,
     record_intake_path,
 )
+
+
+class _UploadTooLarge(Exception):
+    """Internal signal raised mid-stream when cumulative bytes exceed max_size."""
+
+
+class _UploadMimeRejected(Exception):
+    """Internal signal raised when Content-Type does not match accept_mime_types."""
 
 
 def build_file_exchange_router(*, store: AsyncKeyValue) -> Router:
@@ -2077,24 +2511,44 @@ def build_file_exchange_router(*, store: AsyncKeyValue) -> Router:
         except LookupError:
             return Response(status_code=404)
 
-        # Buffer the body; phase 1 supports up to max_size or 100MB whichever is smaller.
-        body = await request.body()
-        if record.max_size is not None and len(body) > record.max_size:
-            return Response(status_code=413)
-
-        # Optional Content-Type filter
+        # Pre-stream Content-Type check (fast reject before allocating a temp file).
         if record.accept_mime_types:
             content_type = (request.headers.get("content-type") or "").split(";")[0].strip()
             if content_type and not _mime_matches(content_type, record.accept_mime_types):
                 return Response(status_code=415)
 
-        with atomic_write(record.intake_path) as f:
-            f.write(body)
+        # Stream the body chunk-by-chunk into the atomic_write temp file. The
+        # context manager discards the temp file if the body block raises (size
+        # overflow, digest mismatch, transport error). Sync file writes are
+        # dispatched via asyncio.to_thread so the event loop never blocks on disk.
+        cumulative_bytes = 0
+        digester = hashlib.sha256()
+        try:
+            with atomic_write(record.intake_path) as f:
+                async for chunk in request.stream():
+                    if not chunk:
+                        continue
+                    cumulative_bytes += len(chunk)
+                    if record.max_size is not None and cumulative_bytes > record.max_size:
+                        raise _UploadTooLarge()
+                    digester.update(chunk)
+                    await asyncio.to_thread(f.write, chunk)
+        except _UploadTooLarge:
+            return Response(status_code=413)
 
-        await record_intake_path(
-            store=store, artifact_id=record.artifact_id, path=record.intake_path
-        )
-        await mark_upload_consumed(store=store, token=token)
+        # Post-stream digest check against the optional Content-Digest header.
+        content_digest = request.headers.get("content-digest")
+        if content_digest:
+            # RFC 9530 form: sha-256=:<base64>:
+            # Phase 1 accepts the simpler `sha-256:<hex>` form too.
+            algo, _, value = content_digest.partition(":")
+            if algo.lower().strip() in ("sha-256", "sha256") and value.strip().strip(":") != digester.hexdigest():
+                # The atomic_write rename already happened; remove the now-suspect file.
+                record.intake_path.unlink(missing_ok=True)
+                return Response(status_code=422)
+
+        # Intake correlation under intake:<artifact_id> was already recorded at
+        # mint time by the sink-minter; nothing further to do here.
         return Response(status_code=204)
 
     return Router(
@@ -2241,25 +2695,54 @@ def _config(**kw) -> ServerConfig:
 
 
 @pytest.mark.asyncio
-async def test_gating_stdio_without_volumes_advertises_nothing():
+async def test_gating_stdio_no_volumes_advertises_consumer_roles_only():
+    """stdio + no volumes still advertises fetcher+sender via outbound HTTPS.
+
+    Per design §3 transport-availability gating: ``download`` for ``fetcher``
+    and ``upload`` for ``sender`` are always available (outbound HTTPS). The
+    producer-side roles (`provider`, `receiver`) drop because they need an
+    HTTP app to host endpoints, and `filesystem` drops because no volumes
+    are configured.
+    """
     server = _server()
     config = _config()  # stdio, no volumes
     store = MemoryStore()
     register_file_exchange_capability(server, config, kv_store=store)
+    block = server.experimental_capabilities["nl.liesdonk.file-exchange"]
+    roles = block["roles"]
+    assert roles["fetcher"] == ["download"]
+    assert roles["sender"] == ["upload"]
+    assert "provider" not in roles
+    assert "receiver" not in roles
+
+
+@pytest.mark.asyncio
+async def test_gating_advertises_nothing_when_no_role_satisfies_any_transport():
+    """The capability block is absent when no declared role has a viable transport."""
+    server = _server()
+    config = _config()  # stdio, no volumes
+    store = MemoryStore()
+    register_file_exchange_capability(
+        server, config, kv_store=store, roles=("provider", "receiver")
+    )
     caps = server.experimental_capabilities or {}
     assert "nl.liesdonk.file-exchange" not in caps
 
 
 @pytest.mark.asyncio
-async def test_gating_stdio_with_volumes_advertises_filesystem_only():
+async def test_gating_stdio_with_volumes_advertises_filesystem_plus_consumer_https():
+    """stdio + volumes: producer roles get filesystem only; consumer roles get both."""
     server = _server()
     config = _config(file_exchange_volumes="vault=/tmp/vault")
     store = MemoryStore()
     register_file_exchange_capability(server, config, kv_store=store)
     block = server.experimental_capabilities["nl.liesdonk.file-exchange"]
     assert block["version"] == "0.1"
-    for role, transports in block["roles"].items():
-        assert transports == ["filesystem"]
+    roles = block["roles"]
+    assert roles["provider"] == ["filesystem"]
+    assert roles["receiver"] == ["filesystem"]
+    assert set(roles["fetcher"]) == {"filesystem", "download"}
+    assert set(roles["sender"]) == {"filesystem", "upload"}
 
 
 @pytest.mark.asyncio
@@ -2297,6 +2780,19 @@ async def test_gating_subset_of_declared_roles():
     )
     roles = server.experimental_capabilities["nl.liesdonk.file-exchange"]["roles"]
     assert set(roles.keys()) == {"provider", "fetcher"}
+
+
+@pytest.mark.asyncio
+async def test_max_artifact_size_from_config_lands_in_block():
+    """`maxArtifactSize` is operator-side configuration, not a kwarg (design §3)."""
+    server = _server()
+    config = _config(
+        transport="http", file_exchange_volumes="v=/tmp/v", file_exchange_max_artifact_size=10_000_000
+    )
+    store = MemoryStore()
+    register_file_exchange_capability(server, config, kv_store=store)
+    block = server.experimental_capabilities["nl.liesdonk.file-exchange"]
+    assert block["maxArtifactSize"] == 10_000_000
 ```
 
 - [ ] Implement `src/fastmcp_pvl_core/_file_exchange/_capability.py`:
@@ -2313,6 +2809,7 @@ from key_value.aio.protocols.key_value import AsyncKeyValue
 
 from .._config import ServerConfig
 from ._transport_filesystem import parse_volumes
+from ._types import FileExchangeRole
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
@@ -2342,9 +2839,8 @@ def register_file_exchange_capability(
     config: ServerConfig,
     *,
     kv_store: AsyncKeyValue,
-    roles: Sequence[str] = ("provider", "fetcher", "receiver", "sender"),
+    roles: Sequence[FileExchangeRole] = ("provider", "fetcher", "receiver", "sender"),
     digests: Sequence[str] = ("sha-256",),
-    max_artifact_size: int | None = None,
 ) -> None:
     """Advertise file-exchange capabilities reflecting what this deployment satisfies.
 
@@ -2353,6 +2849,11 @@ def register_file_exchange_capability(
       indicates an HTTP app; the fetcher/sender (consumer) sides are always advertised
       when at least one of filesystem|outbound-HTTPS is available.
     - If no role has any satisfiable transport, the capability block is NOT emitted.
+
+    ``maxArtifactSize`` is operator-side configuration: pvl-core reads
+    ``config.file_exchange_max_artifact_size`` and emits it on the capability
+    block when set. It is *not* a kwarg (design §3 — operator config lives on
+    ``ServerConfig``, not the helper signature).
     """
     volumes = parse_volumes(config.file_exchange_volumes)
     http_app = config.transport in _HTTP_TRANSPORTS
@@ -2375,8 +2876,8 @@ def register_file_exchange_capability(
         "roles": advertised_roles,
         "digests": list(digests),
     }
-    if max_artifact_size is not None:
-        block["maxArtifactSize"] = max_artifact_size
+    if config.file_exchange_max_artifact_size is not None:
+        block["maxArtifactSize"] = config.file_exchange_max_artifact_size
 
     server.experimental_capabilities = {
         **(server.experimental_capabilities or {}),
@@ -2574,12 +3075,15 @@ async def test_pull_artifact_filesystem(tmp_path: Path):
             "sources": [{"transport": "filesystem", "uri": "exchange://vault/x.bin"}],
         }
     )
+    from fastmcp_pvl_core._config import ServerConfig
+
+    config = ServerConfig(transport="stdio", file_exchange_volumes=f"vault={vault}")
     buf = io.BytesIO()
     md = await pull_artifact(
         handle,
         dest=buf,
+        config=config,
         supported_transports=("filesystem",),
-        volumes={"vault": vault},
     )
     assert buf.getvalue() == b"hello bytes"
     assert md.name == "x.bin"
@@ -2599,11 +3103,14 @@ async def test_pull_artifact_size_mismatch_raises(tmp_path: Path):
             "sources": [{"transport": "filesystem", "uri": "exchange://vault/x.bin"}],
         }
     )
+    from fastmcp_pvl_core._config import ServerConfig
+
+    config = ServerConfig(transport="stdio", file_exchange_volumes=f"vault={vault}")
     with pytest.raises(FileExchangeError) as exc:
         await pull_artifact(
             handle, dest=io.BytesIO(),
+            config=config,
             supported_transports=("filesystem",),
-            volumes={"vault": vault},
         )
     assert exc.value.code == FileExchangeErrorCode.SIZE_MISMATCH
 ```
@@ -2616,32 +3123,56 @@ async def test_pull_artifact_size_mismatch_raises(tmp_path: Path):
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from pathlib import Path
-from typing import BinaryIO
+from typing import TYPE_CHECKING, BinaryIO
+
+from fastmcp_pvl_core._config import ServerConfig
 
 from ._errors import FileExchangeError, FileExchangeErrorCode
 from ._select import select_source
-from ._transport_filesystem import resolve_exchange_uri
+from ._transport_filesystem import parse_volumes, resolve_exchange_uri
 from ._transport_https import SSRFGuardConfig, pull_download
-from ._types import ArtifactMetadata, TransferHandle
+from ._types import ArtifactMetadata, FileExchangeTransport, TransferHandle
 
 
 async def pull_artifact(
     handle: TransferHandle | dict,
     *,
     dest: BinaryIO | Path,
-    supported_transports: Sequence[str],
-    volumes: Mapping[str, Path] = {},
-    ssrf: SSRFGuardConfig | None = None,
+    config: ServerConfig,
+    supported_transports: Sequence[FileExchangeTransport] | None = None,
 ) -> ArtifactMetadata:
     """Pull an artifact described by ``handle`` into ``dest``.
 
     Selects a source descriptor via the §9 algorithm, performs the transfer, and
     verifies size/digest against ``handle.artifact``.
+
+    Deployment state — the volume map and the SSRF guard config — is derived
+    from ``config`` (design §3). No separate ``volumes``/``ssrf`` kwargs are
+    accepted: those are operator-side concerns, not domain hooks.
+
+    ``supported_transports`` defaults to what the deployment can satisfy
+    (filesystem when volumes are configured; download is always available
+    because the fetcher's outbound HTTPS is unconditional). Pass an explicit
+    tuple when a downstream wants to narrow the selection further.
     """
     if not isinstance(handle, TransferHandle):
         handle = TransferHandle.model_validate(handle)
+
+    volumes = parse_volumes(config.file_exchange_volumes)
+    ssrf = SSRFGuardConfig(
+        allow_loopback=config.file_exchange_https_allow_loopback,
+        allow_private=config.file_exchange_https_allow_private,
+    )
+
+    if supported_transports is None:
+        # Fetcher: outbound HTTPS is always available; filesystem requires volumes.
+        derived: list[FileExchangeTransport] = ["download"]
+        if volumes:
+            derived.insert(0, "filesystem")
+        supported_transports = tuple(derived)
+
     chosen = select_source(
         handle,
         supported_transports=supported_transports,
@@ -2664,14 +3195,11 @@ async def pull_artifact(
                     raise NotImplementedError("Path dest is handled by atomic_write — wrap externally")
                 dest.write(chunk)
     elif chosen.root.transport == "download":
-        # pull_download streams to dest; digest the bytes via a tee buffer.
-        # Phase 1 simplification: pull into memory if dest is a buffer, then digest.
+        # pull_download streams chunks through the same digester so the
+        # post-fetch digest check below sees the bytes actually received.
         bytes_written = await pull_download(
-            chosen.root, dest=dest, ssrf=ssrf or SSRFGuardConfig()
+            chosen.root, dest=dest, ssrf=ssrf, digester=digester
         )
-        # Digest verification on download is done by recomputing post-fetch; phase 1
-        # does not stream-digest. Reading the bytes back from dest if it's a Path is
-        # left to the integration test, since dest is the caller's contract.
 
     if handle.artifact.size is not None and bytes_written != handle.artifact.size:
         raise FileExchangeError(
@@ -2707,6 +3235,10 @@ Expected: PASS.
 - [ ] Add tests to `tests/file_exchange/test_role_helpers.py` (receiver flow):
 
 ```python
+from fastmcp_pvl_core._file_exchange._errors import (
+    FileExchangeError,
+    FileExchangeErrorCode,
+)
 from fastmcp_pvl_core._file_exchange._receiver import (
     build_intake_response,
     open_intake,
@@ -2737,9 +3269,18 @@ async def test_resolve_intake_returns_recorded_path(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_resolve_intake_returns_none_for_missing():
+async def test_resolve_intake_raises_for_missing():
+    """Per design §3, ``resolve_intake`` raises NOT_ACCESSIBLE for unrecorded artifact_id.
+
+    The ``-> Path | None`` shape creates a quiet-failure trap (callers forget the
+    None branch and operate on the wrong path); raising forces the caller to
+    handle the case via the tool body's outer FileExchangeError -> as_tool_error_result
+    conversion.
+    """
     store = MemoryStore()
-    assert await resolve_intake("nope", kv_store=store) is None
+    with pytest.raises(FileExchangeError) as exc:
+        await resolve_intake("nope", kv_store=store)
+    assert exc.value.code == FileExchangeErrorCode.NOT_ACCESSIBLE
 ```
 
 - [ ] Implement `src/fastmcp_pvl_core/_file_exchange/_receiver.py`:
@@ -2807,9 +3348,23 @@ def build_intake_response(
     )
 
 
-async def resolve_intake(artifact_id: str, *, kv_store: AsyncKeyValue) -> Path | None:
-    """Return the local path where bytes for ``artifact_id`` landed, or None."""
-    return await intake_path_for(store=kv_store, artifact_id=artifact_id)
+async def resolve_intake(artifact_id: str, *, kv_store: AsyncKeyValue) -> Path:
+    """Return the local path where bytes for ``artifact_id`` landed.
+
+    Raises ``FileExchangeError(code=NOT_ACCESSIBLE)`` when no mapping has been
+    recorded — either the transfer never completed, or ``artifact_id`` is
+    wrong (design §3 final paragraph). The ``-> Path | None`` shape was
+    considered and rejected because callers forget the ``None`` branch.
+    """
+    from ._errors import FileExchangeError, FileExchangeErrorCode
+
+    result = await intake_path_for(store=kv_store, artifact_id=artifact_id)
+    if result is None:
+        raise FileExchangeError(
+            code=FileExchangeErrorCode.NOT_ACCESSIBLE,
+            detail=f"no bytes recorded for artifact_id={artifact_id!r}",
+        )
+    return result
 ```
 
 - [ ] Test the sender. Add to `tests/file_exchange/test_role_helpers.py`:
@@ -2834,11 +3389,14 @@ async def test_push_artifact_filesystem(tmp_path: Path):
     source = tmp_path / "src.bin"
     source.write_bytes(b"to be sent")
 
+    from fastmcp_pvl_core._config import ServerConfig
+
+    config = ServerConfig(transport="stdio", file_exchange_volumes=f"intake={intake_dir}")
     await push_artifact(
         ticket,
         source=source,
+        config=config,
         supported_transports=("filesystem",),
-        volumes={"intake": intake_dir},
     )
     assert (intake_dir / "x.bin").read_bytes() == b"to be sent"
 ```
@@ -2850,30 +3408,53 @@ async def test_push_artifact_filesystem(tmp_path: Path):
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from pathlib import Path
 from typing import BinaryIO
 
+from fastmcp_pvl_core._config import ServerConfig
+
 from ._errors import FileExchangeError, FileExchangeErrorCode
 from ._select import select_sink
-from ._transport_filesystem import atomic_write, resolve_exchange_uri
+from ._transport_filesystem import atomic_write, parse_volumes, resolve_exchange_uri
 from ._transport_https import SSRFGuardConfig, push_upload
-from ._types import IntakeTicket
+from ._types import FileExchangeTransport, IntakeTicket
 
 
 async def push_artifact(
     ticket: IntakeTicket | dict,
     *,
     source: BinaryIO | Path,
-    supported_transports: Sequence[str],
-    volumes: Mapping[str, Path] = {},
-    ssrf: SSRFGuardConfig | None = None,
+    config: ServerConfig,
+    supported_transports: Sequence[FileExchangeTransport] | None = None,
     artifact_digest: str | None = None,
     artifact_mime: str | None = None,
     artifact_size: int | None = None,
 ) -> None:
+    """Push an artifact described by ``source`` to a sink in ``ticket``.
+
+    Deployment state — the volume map and SSRF guard config — is derived from
+    ``config`` (design §3). No separate ``volumes``/``ssrf`` kwargs; those are
+    operator-side concerns, not domain hooks.
+
+    ``supported_transports`` defaults to what the deployment can satisfy
+    (filesystem when volumes are configured; upload is always available
+    because the sender's outbound HTTPS is unconditional).
+    """
     if not isinstance(ticket, IntakeTicket):
         ticket = IntakeTicket.model_validate(ticket)
+
+    volumes = parse_volumes(config.file_exchange_volumes)
+    ssrf = SSRFGuardConfig(
+        allow_loopback=config.file_exchange_https_allow_loopback,
+        allow_private=config.file_exchange_https_allow_private,
+    )
+
+    if supported_transports is None:
+        derived: list[FileExchangeTransport] = ["upload"]
+        if volumes:
+            derived.insert(0, "filesystem")
+        supported_transports = tuple(derived)
 
     # Pre-check expected.acceptMimeTypes before consuming a single-use slot.
     if (
@@ -2920,7 +3501,7 @@ async def push_artifact(
         await push_upload(
             chosen.root,
             source=source,
-            ssrf=ssrf or SSRFGuardConfig(),
+            ssrf=ssrf,
             content_digest=artifact_digest,
             content_type=artifact_mime,
             content_length=artifact_size,
@@ -2956,6 +3537,9 @@ from fastmcp_pvl_core._file_exchange._receiver import (
     resolve_intake,
 )
 from fastmcp_pvl_core._file_exchange._sender import push_artifact
+from fastmcp_pvl_core._file_exchange._transport_filesystem import (
+    make_filesystem_source,
+)
 from fastmcp_pvl_core._file_exchange._types import (
     ArtifactMetadata,
     ExpectedConstraints,
@@ -2965,6 +3549,11 @@ from fastmcp_pvl_core._file_exchange._types import (
     SinkDescriptor,
     SourceDescriptor,
     TransferHandle,
+)
+from fastmcp_pvl_core._file_exchange._url_store import (
+    make_filesystem_sink,
+    mint_download_source,
+    mint_upload_sink,
 )
 ```
 
@@ -3013,48 +3602,47 @@ from pathlib import Path
 
 import pytest
 
+from key_value.aio.stores.memory import MemoryStore
+
 from fastmcp_pvl_core import (
     ArtifactMetadata,
     build_pull_response,
+    make_filesystem_sink,
+    make_filesystem_source,
     open_intake,
     pull_artifact,
     push_artifact,
+    resolve_intake,
 )
-from fastmcp_pvl_core._file_exchange._types import SinkDescriptor, SourceDescriptor
-
-
-def _fs_source(uri: str) -> SourceDescriptor:
-    return SourceDescriptor.model_validate({"transport": "filesystem", "uri": uri})
-
-
-def _fs_sink(uri: str) -> SinkDescriptor:
-    return SinkDescriptor.model_validate({"transport": "filesystem", "uri": uri})
+from fastmcp_pvl_core._config import ServerConfig
 
 
 @pytest.mark.asyncio
 async def test_pull_round_trip(tmp_path: Path):
-    """Provider side mints a TransferHandle, fetcher side consumes it end-to-end."""
+    """Provider side mints a TransferHandle via the public minter; fetcher consumes."""
     vault = tmp_path / "vault"
     vault.mkdir()
     src = vault / "report.bin"
     payload = b"report payload " * 1024  # 15 KB
     src.write_bytes(payload)
 
+    config = ServerConfig(transport="stdio", file_exchange_volumes=f"vault={vault}")
+    source = make_filesystem_source("vault", "report.bin", config=config)
     md = ArtifactMetadata(
         name="report.bin",
         size=len(payload),
         digest=f"sha-256:{hashlib.sha256(payload).hexdigest()}",
         mimeType="application/octet-stream",
     )
-    result = build_pull_response(md, [_fs_source("exchange://vault/report.bin")])
+    result = build_pull_response(md, [source])
     handle = result.structuredContent
 
     buf = io.BytesIO()
     received = await pull_artifact(
         handle,
         dest=buf,
+        config=config,
         supported_transports=("filesystem",),
-        volumes={"vault": vault},
     )
     assert buf.getvalue() == payload
     assert received.digest == md.digest
@@ -3062,14 +3650,16 @@ async def test_pull_round_trip(tmp_path: Path):
 
 @pytest.mark.asyncio
 async def test_push_round_trip(tmp_path: Path):
-    """Receiver opens intake; sender pushes; receiver finds bytes at the resolved path."""
+    """Receiver mints sinks via the public minter; sender pushes; resolve_intake finds the bytes."""
     intake_dir = tmp_path / "intake"
     intake_dir.mkdir()
 
-    ticket = open_intake(
-        sinks=[_fs_sink("exchange://intake/payload.bin")],
-        artifact_id="ar-1",
+    config = ServerConfig(transport="stdio", file_exchange_volumes=f"intake={intake_dir}")
+    store = MemoryStore()
+    sink = await make_filesystem_sink(
+        "intake", "payload.bin", artifact_id="ar-1", config=config, kv_store=store
     )
+    ticket = open_intake(sinks=[sink], artifact_id="ar-1")
 
     src = tmp_path / "src.bin"
     payload = b"deposited"
@@ -3078,11 +3668,14 @@ async def test_push_round_trip(tmp_path: Path):
     await push_artifact(
         ticket,
         source=src,
+        config=config,
         supported_transports=("filesystem",),
-        volumes={"intake": intake_dir},
     )
 
     assert (intake_dir / "payload.bin").read_bytes() == payload
+    # resolve_intake finds the bytes via the mapping recorded at mint time.
+    resolved = await resolve_intake("ar-1", kv_store=store)
+    assert resolved == (intake_dir / "payload.bin").resolve()
 ```
 
 - [ ] Run:
@@ -3108,22 +3701,32 @@ from key_value.aio.stores.memory import MemoryStore
 from starlette.applications import Starlette
 from starlette.testclient import TestClient
 
+from fastmcp_pvl_core import mint_upload_sink, resolve_intake
+from fastmcp_pvl_core._config import ServerConfig
 from fastmcp_pvl_core._file_exchange._routes import build_file_exchange_router
-from fastmcp_pvl_core._file_exchange._url_store import (
-    intake_path_for,
-    mint_download_token,
-    mint_upload_token,
-)
 
 
 @pytest.mark.asyncio
-async def test_download_then_intake_correlation_end_to_end(tmp_path: Path):
+async def test_upload_then_intake_correlation_end_to_end(tmp_path: Path, monkeypatch):
+    """End-to-end: mint_upload_sink mints + records intake mapping; route writes bytes;
+    resolve_intake finds the bytes via the recorded mapping."""
+    monkeypatch.setattr(
+        "fastmcp_pvl_core._file_exchange._url_store.compute_app_domain",
+        lambda server, config: "https://example.test",
+    )
     store = MemoryStore()
     intake = tmp_path / "intake.bin"
-    expires = datetime.now(timezone.utc) + timedelta(hours=1)
-    token = await mint_upload_token(
-        store=store, intake_path=intake, artifact_id="ar-1", expires_at=expires
+    config = ServerConfig(transport="http", file_exchange_capability_url_ttl_default_s=3600)
+
+    sink = await mint_upload_sink(
+        intake_path=intake,
+        artifact_id="ar-1",
+        server=object(),
+        config=config,
+        kv_store=store,
     )
+    # Extract the token from the minted URL.
+    token = str(sink.root.url).rsplit("/", 1)[-1]
 
     router = build_file_exchange_router(store=store)
     app = Starlette(routes=router.routes)
@@ -3131,7 +3734,7 @@ async def test_download_then_intake_correlation_end_to_end(tmp_path: Path):
     with TestClient(app) as client:
         resp = client.put(f"/file-exchange/u/{token}", content=b"payload-1")
     assert resp.status_code == 204
-    assert (await intake_path_for(store=store, artifact_id="ar-1")) == intake
+    assert (await resolve_intake("ar-1", kv_store=store)) == intake
     assert intake.read_bytes() == b"payload-1"
 ```
 
@@ -3248,7 +3851,6 @@ After all seven PRs land:
 
 ## Open questions deferred (not in this plan)
 
-- **Streamed digest** during `pull_download`: phase 1 verifies digest only when `dest` is a buffer that can be re-read; for `dest=Path` (atomic_write), a follow-up adds a tee-digest so the file passes digest verification without a second read.
 - **Range-request resume** on `pull_download`: spec §10.2 allows it; not implemented in phase 1 (single GET only). Filed as follow-up for phase 1.5.
 - **Provider-driven revocation**: spec §18 open question. The kv_store layer supports `delete` so a future API can implement it; no helper exposed yet.
 - **`file://` URI scheme**: phase 1 supports `exchange://` only; `file://` rejection is explicit (`_transport_filesystem.py` raises). When a downstream actually needs `file://`, a small operator-config-driven exchange-root mapping lands.
