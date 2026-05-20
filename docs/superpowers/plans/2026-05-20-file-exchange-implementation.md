@@ -542,7 +542,7 @@ def test_as_tool_error_result_emits_isError_envelope() -> None:
     # Text content carries human-readable message
     assert any("size-exceeded" in block.text for block in result.content if hasattr(block, "text"))
     # Structured _meta carries the machine-readable envelope
-    meta = result._meta or {}
+    meta = result.meta or {}
     fe_meta = meta.get("nl.liesdonk.file-exchange") or {}
     assert fe_meta.get("error", {}).get("code") == "size-exceeded"
     assert "1024" in fe_meta["error"]["detail"]
@@ -579,7 +579,7 @@ from __future__ import annotations
 from enum import StrEnum
 
 from mcp.types import TextContent
-from fastmcp.tools.tool import ToolResult as CallToolResult
+from mcp.types import CallToolResult, TextContent
 
 CAPABILITY_KEY = "nl.liesdonk.file-exchange"
 
@@ -632,7 +632,7 @@ def as_tool_error_result(exc: FileExchangeError) -> CallToolResult:
 uv run pytest tests/file_exchange/test_errors.py -v
 ```
 
-Expected: 5 passing. (If the FastMCP `CallToolResult` constructor differs from what this code uses, check the installed version's signature with `uv run python -c "from fastmcp.tools.tool import ToolResult; import inspect; print(inspect.signature(ToolResult))"` and adjust the constructor call here only — do not change the test expectations.)
+Expected: 5 passing. The code imports `CallToolResult` from `mcp.types` (the MCP-protocol class, which has `isError` and `meta` fields). The FastMCP-wrapper `fastmcp.tools.tool.ToolResult` is a different shape and is NOT used here — confirm via `uv run python -c "from mcp.types import CallToolResult; import inspect; print(inspect.signature(CallToolResult))"`.
 
 ### Step B.3 — Commit error module
 
@@ -1588,15 +1588,46 @@ def enforce_ssrf(url: str, *, config: SSRFGuardConfig) -> str:
     return str(ip)
 
 
-async def _stream_get(url: str, *, headers: dict[str, str] | None = None) -> Any:
+def _pinned_transport(host: str, pinned_ip: str) -> httpx.AsyncHTTPTransport:
+    """Return an httpx transport that dials ``pinned_ip`` instead of resolving
+    ``host`` again. Defeats DNS rebinding: the SSRF check resolves once, the
+    connect uses the pinned literal — and TLS/SNI still sees the original host.
+    """
+    return httpx.AsyncHTTPTransport(
+        retries=0,
+        # httpx >=0.27: ``local_address`` configures source IP, not destination.
+        # Destination pinning is via the ``transport``'s connection pool. We
+        # rewrite the URL host to the IP and set the Host header to the original
+        # name; TLS SNI is taken from the URL host so we also need to keep the
+        # original hostname for cert validation. The httpx idiom for that is
+        # ``client.get(url_with_ip, extensions={"sni_hostname": host})``.
+    )
+
+
+async def _stream_get(
+    url: str,
+    *,
+    pinned_ip: str,
+    host: str,
+    headers: dict[str, str] | None = None,
+) -> Any:
     """Production GET seam — monkeypatched in unit tests.
 
-    Returns an object with ``.aiter_bytes(chunk_size)``, ``.headers``,
-    ``.status_code``, and ``.raise_for_status()`` (matches httpx response).
+    Connects to ``pinned_ip`` (defeats DNS rebinding) with TLS SNI / Host header
+    set to the original ``host``. Returns an object with ``.aiter_bytes(chunk_size)``,
+    ``.headers``, ``.status_code``, and ``.raise_for_status()`` (httpx-shaped).
     """
-    client = httpx.AsyncClient()
+    parts = urlsplit(url)
+    pinned_url = url.replace(f"//{host}", f"//{pinned_ip}", 1)
+    merged_headers = {"Host": host, **(headers or {})}
+    client = httpx.AsyncClient(transport=_pinned_transport(host, pinned_ip))
     try:
-        resp = await client.get(url, headers=headers or {}, follow_redirects=False)
+        resp = await client.get(
+            pinned_url,
+            headers=merged_headers,
+            follow_redirects=False,
+            extensions={"sni_hostname": host},
+        )
         resp.raise_for_status()
         return resp
     finally:
@@ -1606,17 +1637,27 @@ async def _stream_get(url: str, *, headers: dict[str, str] | None = None) -> Any
 async def _stream_put(
     url: str,
     *,
+    pinned_ip: str,
+    host: str,
     content: Any,
     headers: dict[str, str],
 ) -> Any:
     """Production PUT seam — monkeypatched in unit tests.
 
-    Accepts either a file-like opened in ``"rb"`` or an async-iterator of
-    bytes chunks (httpx supports both via the ``content=`` kwarg).
+    Same SNI/Host pinning posture as ``_stream_get``. Accepts either a file-like
+    opened in ``"rb"`` or an async-iterator of bytes chunks.
     """
-    client = httpx.AsyncClient()
+    pinned_url = url.replace(f"//{host}", f"//{pinned_ip}", 1)
+    merged_headers = {"Host": host, **headers}
+    client = httpx.AsyncClient(transport=_pinned_transport(host, pinned_ip))
     try:
-        resp = await client.put(url, content=content, headers=headers, follow_redirects=False)
+        resp = await client.put(
+            pinned_url,
+            content=content,
+            headers=merged_headers,
+            follow_redirects=False,
+            extensions={"sni_hostname": host},
+        )
         resp.raise_for_status()
         return resp
     finally:
@@ -1638,8 +1679,9 @@ async def pull_download(
     blocked on disk latency. Caller verifies the final digest against
     artifact.digest after this returns.
     """
-    enforce_ssrf(url, config=ssrf)
-    resp = await _stream_get(url)
+    pinned_ip = enforce_ssrf(url, config=ssrf)
+    host = urlsplit(url).hostname or ""
+    resp = await _stream_get(url, pinned_ip=pinned_ip, host=host)
     if isinstance(dest, Path):
         # Lazy import to avoid a circular cycle in the package layout.
         from ._transport_filesystem import async_atomic_write
@@ -1671,7 +1713,8 @@ async def push_upload(
     httpx (httpx streams it). For a ``BinaryIO``, passes directly. Never
     assembles a ``bytes`` blob.
     """
-    enforce_ssrf(url, config=ssrf)
+    pinned_ip = enforce_ssrf(url, config=ssrf)
+    host = urlsplit(url).hostname or ""
     headers: dict[str, str] = {"Content-Type": content_type}
     if content_digest is not None:
         headers["Content-Digest"] = content_digest
@@ -1682,11 +1725,11 @@ async def push_upload(
         # opens can block on filesystem metadata lookups.
         fh = await asyncio.to_thread(open, source, "rb")
         try:
-            await _stream_put(url, content=fh, headers=headers)
+            await _stream_put(url, pinned_ip=pinned_ip, host=host, content=fh, headers=headers)
         finally:
             await asyncio.to_thread(fh.close)
     else:
-        await _stream_put(url, content=source, headers=headers)
+        await _stream_put(url, pinned_ip=pinned_ip, host=host, content=source, headers=headers)
 ```
 
 - [ ] **Run to verify pass:**
@@ -2179,14 +2222,32 @@ async def make_filesystem_sink(
             detail=f"file-exchange volume {volume!r} is not configured on this party",
         )
     uri = f"exchange://{volume}/{relative_path.lstrip('/')}"
-    resolved = resolve_exchange_uri.__wrapped__(uri, volumes=volumes) if hasattr(resolve_exchange_uri, "__wrapped__") else _resolve_for_mint(volumes, volume, relative_path)
+    resolved = _resolve_for_mint(volumes, volume, relative_path)
     await mint_intake_mapping(artifact_id=artifact_id, intake_path=resolved, kv_store=kv_store)
     return SinkDescriptor.model_validate({"transport": "filesystem", "uri": uri})
 
 
 def _resolve_for_mint(volumes: dict[str, Path], volume: str, relative_path: str) -> Path:
-    # mint-time resolution: the path doesn't have to exist yet (sender will create it).
-    return (volumes[volume] / relative_path.lstrip("/")).resolve()
+    """Mint-time resolution with confinement check.
+
+    The path does not have to exist yet (the sender will write to it),
+    but the resolved location MUST lie inside the configured volume
+    root — otherwise a ``..``-bearing relative path would let the
+    receiver mint a sink that escapes its own volume. Path confinement
+    is identical to what ``resolve_exchange_uri`` enforces at read-time
+    (spec §10.1.3); refusing escapes at *mint* time means the sender's
+    push-attempt cannot land bytes outside the volume.
+    """
+    root = volumes[volume].resolve()
+    candidate = (root / relative_path.lstrip("/")).resolve()
+    try:
+        candidate.relative_to(root)
+    except ValueError as exc:
+        raise FileExchangeError(
+            code=FileExchangeErrorCode.NOT_ACCESSIBLE,
+            detail=f"file-exchange relative_path {relative_path!r} escapes volume {volume!r}",
+        ) from exc
+    return candidate
 
 
 async def mint_intake_mapping(
@@ -2297,15 +2358,22 @@ async def sweep_expired_tokens(*, store: AsyncKeyValue) -> int:
     """Iterate the ``tokens`` collection and delete expired records.
 
     Returns the count of removed records. Best-effort: if the backend
-    does not expose ``.list_keys`` or equivalent, falls back to a no-op
-    (operators can rely on per-key expiry from the backend instead).
+    does not expose a key-listing primitive, returns 0 (operators can
+    rely on per-key expiry from the backend instead — Redis TTL, etc.).
+
+    The ``AsyncKeyValue`` ``keys`` method (verify against the installed
+    ``py-key-value-aio``) returns ``list[str]`` as an awaitable coroutine,
+    not an async iterator. Verify with::
+
+        uv run python -c "from key_value.aio.stores.memory import MemoryStore; import inspect; print(inspect.signature(MemoryStore.keys))"
     """
     now = datetime.now(timezone.utc)
     removed = 0
-    keys_fn = getattr(store, "keys", None) or getattr(store, "list_keys", None)
+    keys_fn = getattr(store, "keys", None)
     if keys_fn is None:
         return 0
-    async for key in keys_fn(collection="tokens"):
+    keys = await keys_fn(collection="tokens")
+    for key in keys:
         raw = await store.get(collection="tokens", key=key)
         if raw is None:
             continue
@@ -2952,7 +3020,7 @@ logger = logging.getLogger("fastmcp_pvl_core.file_exchange")
 # pvl-core owns shape decisions). Not a kwarg.
 _ADVERTISED_DIGESTS: tuple[str, ...] = ("sha-256",)
 
-_HTTP_TRANSPORTS = ("http", "sse")
+_HTTP_TRANSPORTS = ("http", "sse")  # FastMCP serves an HTTP app under both transports
 
 
 def _transports_for_role(
@@ -3116,7 +3184,7 @@ def test_build_pull_response_emits_handle_in_meta() -> None:
     src = SourceDescriptor.model_validate({"transport": "filesystem", "uri": "exchange://v/x.txt"})
     result = build_pull_response(artifact, sources=[src])
     assert result.isError in (False, None)
-    meta = result._meta or {}
+    meta = result.meta or {}
     handle = meta["nl.liesdonk.file-exchange"]["handle"]
     assert handle["artifact"]["id"] == "a1"
     assert handle["sources"][0]["transport"] == "filesystem"
@@ -3144,7 +3212,7 @@ def test_build_intake_response_emits_ticket_in_meta() -> None:
     sink = SinkDescriptor.model_validate({"transport": "filesystem", "uri": "exchange://v/a1.bin"})
     ticket = open_intake(sinks=[sink], artifact_id="a1")
     result = build_intake_response(ticket)
-    meta = result._meta or {}
+    meta = result.meta or {}
     out = meta["nl.liesdonk.file-exchange"]["ticket"]
     assert out["artifactId"] == "a1"
 
@@ -3239,7 +3307,7 @@ from collections.abc import Sequence
 from typing import Any
 
 from mcp.types import TextContent
-from fastmcp.tools.tool import ToolResult as CallToolResult
+from mcp.types import CallToolResult, TextContent
 
 from ._errors import CAPABILITY_KEY
 from ._types import ArtifactMetadata, SourceDescriptor, TransferHandle
@@ -3342,11 +3410,19 @@ async def pull_artifact(
         )
         await pull_download(chosen.root.url, dest=dest, ssrf=ssrf, digester=digester)
     if digester is not None and h.artifact.digest:
-        expected = h.artifact.digest.split("=", 1)[-1]
-        if digester.hexdigest() != expected.lower().lstrip(":"):
+        # Per spec §7.1, artifact.digest is `<algorithm>:<lowercase-hex>`,
+        # e.g. ``sha-256:9f86d0...``. We only support sha-256 in v0.1.
+        algo, _, expected_hex = h.artifact.digest.partition(":")
+        if algo == "sha-256":
+            if digester.hexdigest() != expected_hex.lower():
+                raise FileExchangeError(
+                    code=FileExchangeErrorCode.DIGEST_MISMATCH,
+                    detail=f"computed digest does not match artifact.digest for {h.artifact.id!r}",
+                )
+        else:
             raise FileExchangeError(
                 code=FileExchangeErrorCode.DIGEST_MISMATCH,
-                detail=f"computed digest does not match artifact.digest for {h.artifact.id!r}",
+                detail=f"artifact.digest algorithm {algo!r} is not supported (v0.1 supports sha-256 only)",
             )
     return h.artifact
 
@@ -3400,7 +3476,7 @@ from collections.abc import Sequence
 from typing import Any
 
 from mcp.types import TextContent
-from fastmcp.tools.tool import ToolResult as CallToolResult
+from mcp.types import CallToolResult, TextContent
 
 from ._errors import CAPABILITY_KEY
 from ._provider import _auto_summary
@@ -3843,7 +3919,7 @@ async def test_provider_to_fetcher_filesystem_round_trip(
     source = make_filesystem_source("shared", "report.md", config=p_cfg)
     artifact = ArtifactMetadata.model_validate({"id": "r1", "name": "report.md", "size": 5, "mimeType": "text/markdown"})
     result = build_pull_response(artifact, sources=[source])
-    handle_json = (result._meta or {})["nl.liesdonk.file-exchange"]["handle"]
+    handle_json = (result.meta or {})["nl.liesdonk.file-exchange"]["handle"]
     # Fetcher consumes
     out = tmp_path / "fetched.bin"
     fetched = await pull_artifact(handle_json, dest=out, config=f_cfg)
@@ -4028,7 +4104,7 @@ async def test_fetcher_prefers_filesystem_when_provider_offers_both(
         {"id": "n1", "name": "note.md", "size": len(payload), "mimeType": "text/markdown"}
     )
     result = build_pull_response(artifact, sources=[dl_src, fs_src])   # download first; selection picks filesystem
-    handle_json = (result._meta or {})["nl.liesdonk.file-exchange"]["handle"]
+    handle_json = (result.meta or {})["nl.liesdonk.file-exchange"]["handle"]
     # Fetcher: configured for filesystem
     f_cfg = ServerConfig(transport="stdio", file_exchange_volumes=f"shared={vol}")
     out = tmp_path / "out.bin"
