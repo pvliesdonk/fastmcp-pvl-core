@@ -480,7 +480,7 @@ FileExchangeTransport = Literal["filesystem", "download", "upload"]
 git add src/fastmcp_pvl_core/_file_exchange/ tests/file_exchange/
 git commit -m "feat(file-exchange): vendor v0.1 schema and Pydantic types
 
-Closes <issue-A-number>"
+Closes #124"
 ```
 
 ### Step A.6: Local circus + PR
@@ -932,7 +932,7 @@ Expected: PASS (all 7 select tests + earlier error tests).
 git add src/fastmcp_pvl_core/_file_exchange/_errors.py src/fastmcp_pvl_core/_file_exchange/_select.py tests/file_exchange/test_errors.py tests/file_exchange/test_select.py
 git commit -m "feat(file-exchange): error envelope + descriptor selection algorithm
 
-Closes <issue-B-number>"
+Closes #125"
 ```
 
 - [ ] Run `preflight-circus`; open draft PR; flip to ready when bots+CI green.
@@ -1206,7 +1206,7 @@ Expected: PASS (all 9 tests).
 git add src/fastmcp_pvl_core/_file_exchange/_transport_filesystem.py tests/file_exchange/test_transport_filesystem.py
 git commit -m "feat(file-exchange): filesystem transport with exchange:// resolution and atomic writes
 
-Closes <issue-C-number>"
+Closes #126"
 ```
 
 - [ ] Run `preflight-circus`; open draft PR; flip to ready when bots+CI green.
@@ -1616,7 +1616,7 @@ Expected: PASS (all 9 tests).
 git add src/fastmcp_pvl_core/_file_exchange/_transport_https.py tests/file_exchange/test_transport_https.py
 git commit -m "feat(file-exchange): HTTPS consumer transport (pull/push) with SSRF guard
 
-Closes <issue-D-number>"
+Closes #127"
 ```
 
 - [ ] Run `preflight-circus`; open draft PR; flip to ready when bots+CI green.
@@ -2137,7 +2137,7 @@ Expected: PASS (all 5 tests).
 git add src/fastmcp_pvl_core/_file_exchange/_url_store.py src/fastmcp_pvl_core/_file_exchange/_routes.py tests/file_exchange/test_url_store.py tests/file_exchange/test_routes.py
 git commit -m "feat(file-exchange): capability-URL token store + sibling HTTP routes
 
-Closes <issue-E-number>"
+Closes #128"
 ```
 
 - [ ] Run `preflight-circus`; open draft PR; flip to ready when bots+CI green.
@@ -2986,7 +2986,7 @@ Expected: every test in the repo passes.
 git add src/fastmcp_pvl_core/ tests/file_exchange/
 git commit -m "feat(file-exchange): capability declaration, role helpers, top-level public API
 
-Closes <issue-F-number>"
+Closes #129"
 ```
 
 - [ ] Run `preflight-circus`; open draft PR; flip to ready when bots+CI green.
@@ -3228,7 +3228,7 @@ Expected: PASS for every vendored fixture.
 git add tests/file_exchange/ CHANGELOG.md
 git commit -m "test(file-exchange): integration suite + spec-repo conformance fixtures
 
-Closes <issue-G-number>"
+Closes #130"
 ```
 
 - [ ] Run `preflight-circus`; open draft PR; flip to ready when bots+CI green.
