@@ -93,6 +93,14 @@ class TestServerConfigFromEnv:
         config = ServerConfig.from_env("MYAPP")
         assert config.event_store_url == "file:///data/events"
 
+    def test_reads_kv_store_url(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setenv("MYAPP_KV_STORE_URL", "redis://localhost:6379/0")
+        config = ServerConfig.from_env("MYAPP")
+        assert config.kv_store_url == "redis://localhost:6379/0"
+
+    def test_kv_store_url_defaults_to_none(self):
+        assert ServerConfig().kv_store_url is None
+
     def test_reads_app_domain(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setenv("MYAPP_APP_DOMAIN", "mcp.example.com")
         assert ServerConfig.from_env("MYAPP").app_domain == "mcp.example.com"

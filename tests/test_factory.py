@@ -46,36 +46,57 @@ class TestBuildInstructions:
 
 class TestBuildEventStore:
     def test_memory_url(self):
-        config = ServerConfig(event_store_url="memory://")
+        config = ServerConfig(kv_store_url="memory://")
         store = build_event_store("MY_APP", config)
         assert store is not None
 
     def test_file_url(self):
         with tempfile.TemporaryDirectory() as td:
-            config = ServerConfig(event_store_url=f"file://{td}/events")
+            config = ServerConfig(kv_store_url=f"file://{td}/state")
             store = build_event_store("MY_APP", config)
             assert store is not None
 
-    def test_default_when_unset(self, tmp_path):
-        config = ServerConfig(event_store_url=f"file://{tmp_path}/default-events")
-        store = build_event_store("MY_APP", config)
-        assert store is not None
-
     def test_unknown_scheme_raises(self):
-        config = ServerConfig(event_store_url="redis://localhost:6379/0")
-        with pytest.raises(ValueError, match="Unsupported"):
+        # The unified factory raises with its own message; the
+        # event-store wrapper does not add a second one.
+        config = ServerConfig(kv_store_url="postgres://localhost/db")
+        with pytest.raises(ValueError, match="Unsupported kv_store URL scheme"):
             build_event_store("MY_APP", config)
 
     def test_none_url_uses_default_path(self, tmp_path, monkeypatch):
-        """When event_store_url is None, falls back to a file-backed default."""
-        # Redirect the default path so the test doesn't touch /data/state/events.
+        """When kv_store_url is None, falls back to a file-backed default."""
+        # Redirect the default path so the test doesn't touch /data/state.
         monkeypatch.setattr(
-            "fastmcp_pvl_core._factory._DEFAULT_EVENT_STORE_DIR",
-            str(tmp_path / "events-default"),
+            "fastmcp_pvl_core._kv_store._DEFAULT_KV_STORE_DIR",
+            str(tmp_path / "state-default"),
         )
-        config = ServerConfig(event_store_url=None)
+        config = ServerConfig(kv_store_url=None)
         store = build_event_store("MY_APP", config)
         assert store is not None
+
+    def test_legacy_event_store_url_still_works(self):
+        # Existing deployments that set EVENT_STORE_URL must continue
+        # to work when KV_STORE_URL is unset — that is the load-bearing
+        # backwards-compatibility contract.
+        with tempfile.TemporaryDirectory() as td:
+            config = ServerConfig(event_store_url=f"file://{td}/legacy-events")
+            store = build_event_store("MY_APP", config)
+            assert store is not None
+
+    def test_uses_events_namespace(self):
+        # The "events" namespace is the load-bearing contract that
+        # prevents collision with future subsystems (oauth-state,
+        # file-exchange) sharing the same backend. Pin the runtime
+        # contract — read the wrapper prefix off the constructed
+        # EventStore, not the kwarg of a mocked call — so a future
+        # refactor that inlines storage construction (bypassing
+        # build_kv_store) still gets caught here.
+        config = ServerConfig(kv_store_url="memory://")
+        event_store = build_event_store("MY_APP", config)
+        # ``_storage`` is fastmcp.server.event_store.EventStore's
+        # private slot for the wrapped backend; reading it here is a
+        # deliberate cross-package introspection to pin the namespace.
+        assert event_store._storage.prefix == "events"  # noqa: SLF001
 
 
 class TestComputeAppDomain:

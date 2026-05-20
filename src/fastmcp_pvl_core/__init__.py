@@ -32,6 +32,7 @@ from fastmcp_pvl_core._factory import (
     compute_app_domain,
 )
 from fastmcp_pvl_core._icons import IconSpec, make_icon, register_tool_icons
+from fastmcp_pvl_core._kv_store import build_kv_store
 from fastmcp_pvl_core._logging import SecretMaskFilter, configure_logging_from_env
 from fastmcp_pvl_core._middleware import wire_middleware_stack
 from fastmcp_pvl_core._server_info import (
@@ -59,6 +60,7 @@ __all__ = [
     "build_bearer_auth",
     "build_event_store",
     "build_instructions",
+    "build_kv_store",
     "build_oidc_proxy_auth",
     "build_remote_auth",
     "check_authorization",

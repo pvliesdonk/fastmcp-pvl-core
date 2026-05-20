@@ -47,6 +47,11 @@ class ServerConfig:
     oidc_jwt_signing_key: str | None = None
     oidc_verify_access_token: bool = False
 
+    kv_store_url: str | None = None
+    # Legacy override, honoured by build_event_store and build_kv_store
+    # when ``kv_store_url`` is unset. Set ``kv_store_url`` instead for
+    # new deployments — a single URL drives every pvl-core subsystem
+    # that needs persistent state.
     event_store_url: str | None = None
     app_domain: str | None = None
 
@@ -139,6 +144,7 @@ class ServerConfig:
             oidc_required_scopes=scopes,
             oidc_jwt_signing_key=env(env_prefix, "OIDC_JWT_SIGNING_KEY"),
             oidc_verify_access_token=verify_access_token,
+            kv_store_url=env(env_prefix, "KV_STORE_URL"),
             event_store_url=env(env_prefix, "EVENT_STORE_URL"),
             app_domain=env(env_prefix, "APP_DOMAIN"),
             auth_mode=env(env_prefix, "AUTH_MODE"),

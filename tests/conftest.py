@@ -68,3 +68,17 @@ def clean_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
         if key.startswith(prefixes):
             monkeypatch.delenv(key, raising=False)
     yield
+
+
+@pytest.fixture(autouse=True)
+def _reset_legacy_url_warning_flag(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Reset the module-level one-shot warning flag between tests.
+
+    ``build_kv_store`` suppresses the legacy ``event_store_url`` warning
+    after its first emission per-process. Without this reset, any test
+    (here or in another file — e.g. ``test_factory.py``) that exercises
+    the legacy fallback after another test already triggered the
+    warning would see an unexpectedly silent path. Lifted suite-wide
+    so the fixture protects every test that touches ``build_kv_store``.
+    """
+    monkeypatch.setattr("fastmcp_pvl_core._kv_store._legacy_url_warned", False)
