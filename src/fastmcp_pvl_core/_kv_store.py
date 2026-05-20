@@ -109,10 +109,15 @@ def build_kv_store(
         url = config.event_store_url
         global _legacy_url_warned
         if not _legacy_url_warned:
+            # Log only the scheme — operator-set URLs may carry
+            # credentials in userinfo (redis://user:pass@host/0,
+            # mongodb://user:pass@host/db). The rest of the dispatch
+            # paths log only parsed.hostname for the same reason.
             logger.warning(
                 "kv_store_url=<unset>; falling back to legacy "
-                "event_store_url=%s. Set <PREFIX>_KV_STORE_URL to migrate.",
-                url,
+                "event_store_url (scheme=%r). Set <PREFIX>_KV_STORE_URL "
+                "to migrate.",
+                urlparse(url).scheme,
             )
             _legacy_url_warned = True
     if not url:

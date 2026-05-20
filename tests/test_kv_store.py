@@ -94,6 +94,13 @@ class TestBuildKvStoreNamespaceValidation:
         with pytest.raises(ValueError, match="non-empty"):
             build_kv_store(config, namespace="")
 
+    def test_whitespace_only_namespace_rejected(self):
+        # The guard uses `.strip()` so whitespace-only is also caught;
+        # an empty-after-strip prefix is the same isolation defeat.
+        config = ServerConfig(kv_store_url="memory://")
+        with pytest.raises(ValueError, match="non-empty"):
+            build_kv_store(config, namespace="   ")
+
 
 class TestBuildKvStoreUrlPrecedence:
     def test_kv_store_url_wins_over_event_store_url(self):
@@ -115,6 +122,25 @@ class TestBuildKvStoreUrlPrecedence:
         with caplog.at_level(logging.WARNING, logger="fastmcp_pvl_core._kv_store"):
             build_kv_store(config, namespace="ns")
         assert any("legacy" in record.message.lower() for record in caplog.records)
+
+    def test_legacy_warning_does_not_leak_credentials(self, caplog):
+        # Operator-set URLs may carry secrets in userinfo
+        # (redis://user:pass@host/0, mongodb://user:pass@host/db).
+        # The legacy-fallback warning must log only the scheme, not
+        # the full URL — a regression here would page security.
+        config = ServerConfig(event_store_url="redis://carol:hunter2@redis.example/0")
+        with caplog.at_level(logging.WARNING, logger="fastmcp_pvl_core._kv_store"):
+            try:
+                build_kv_store(config, namespace="ns")
+            except ImportError:
+                # The redis backend may not be installed in this env;
+                # we only care about the log line emitted before
+                # backend construction is attempted.
+                pass
+        messages = " ".join(record.getMessage() for record in caplog.records)
+        assert "hunter2" not in messages
+        assert "carol" not in messages
+        assert "redis.example" not in messages
 
     def test_kv_store_url_does_not_warn(self, caplog):
         config = ServerConfig(kv_store_url="memory://")
