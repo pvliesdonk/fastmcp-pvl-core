@@ -36,10 +36,10 @@ that #140's error envelope needs to dispatch on.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from datetime import datetime
 from typing import Annotated, Any, Literal, cast
 
 from pydantic import (
+    AwareDatetime,
     BaseModel,
     ConfigDict,
     Discriminator,
@@ -99,9 +99,9 @@ class ArtifactMetadata(_WireBase):
     digest: str | None = Field(default=None, pattern=_DIGEST_PATTERN)
     description: str | None = None
     # ISO 8601 string deliberately kept as `str` — descriptor timestamps
-    # (`expiresAt`) are parsed to `datetime` because selection (§9) does
-    # arithmetic on them; `createdAt` is informational metadata, kept
-    # byte-stable to avoid timezone-normalisation drift on round-trip.
+    # (`expiresAt`) are parsed to a tz-aware `datetime` because selection
+    # (§9) does arithmetic on them; `createdAt` is informational metadata,
+    # kept byte-stable to avoid timezone-normalisation drift on round-trip.
     createdAt: str | None = None  # noqa: N815  # wire-format name
 
     @model_validator(mode="after")
@@ -136,8 +136,17 @@ class DownloadSource(_DescriptorBase):
 
     transport: Literal["download"]
     url: str = Field(pattern=_HTTPS_URL_PATTERN)
-    # Parsed to datetime — §9 selection compares against `now`.
-    expiresAt: datetime  # noqa: N815
+    # Parsed to a tz-aware datetime — §9 selection compares against
+    # ``datetime.now(timezone.utc)``. ``AwareDatetime`` is the Pydantic
+    # v2 type that rejects naive datetimes at validation time; the
+    # schema layer's ``format: date-time`` enforces this on the wire
+    # path (every ISO 8601 ``date-time`` literal carries an offset),
+    # but ``AwareDatetime`` also blocks direct Python construction with
+    # a naive value (``DownloadSource(expiresAt=datetime.now())``).
+    # Without that guard, selection's comparison would raise
+    # ``TypeError: can't compare offset-naive and offset-aware
+    # datetimes`` at runtime in a future selection PR.
+    expiresAt: AwareDatetime  # noqa: N815
     singleUse: bool = True  # noqa: N815
 
 
@@ -154,7 +163,9 @@ class UploadSink(_DescriptorBase):
     transport: Literal["upload"]
     url: str = Field(pattern=_HTTPS_URL_PATTERN)
     method: Literal["PUT", "POST"] = "PUT"
-    expiresAt: datetime  # noqa: N815
+    # See :class:`DownloadSource.expiresAt` for the ``AwareDatetime``
+    # rationale — selection (§9) compares against tz-aware ``now``.
+    expiresAt: AwareDatetime  # noqa: N815
 
 
 # Known transport sets per direction. _ALL_KNOWN_DESCRIPTOR_TRANSPORTS

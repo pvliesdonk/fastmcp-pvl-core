@@ -117,6 +117,17 @@ unions. The discriminator returns the transport name when known, else
 descriptor (e.g. `filesystem` with an extra field) routes to its closed
 branch and fails there — it does not silently match the fallthrough.
 
+`DownloadSource.expiresAt` and `UploadSink.expiresAt` are typed as
+`pydantic.AwareDatetime` (not bare `datetime`) so direct Python
+construction with a naive value raises `ValidationError` at the model
+layer. The schema-layer `format: date-time` already enforces this on
+every wire-deserialized payload (every ISO 8601 `date-time` literal
+carries an offset), but `AwareDatetime` closes the bypass route a
+caller building a descriptor in-process could otherwise take. Without
+that guard, selection (§9) — which will compare against
+`datetime.now(timezone.utc)` — would raise `TypeError` at runtime
+rather than `ValidationError` at construction.
+
 `TransferHandle` and `IntakeTicket` carry the §17.4 `requires` invariants
 (non-empty entries, unique, v0.1-must-be-empty) as a Pydantic
 `model_validator`. They also expose a `from_wire(raw)` classmethod that

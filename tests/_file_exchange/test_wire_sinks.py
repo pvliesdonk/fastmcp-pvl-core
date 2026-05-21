@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+
 import pytest
 from pydantic import ValidationError
 
@@ -87,3 +89,19 @@ def test_upload_sink_is_frozen():
     )
     with pytest.raises(ValidationError):
         s.url = "https://other"  # type: ignore[misc]
+
+
+def test_upload_sink_rejects_naive_expires_at():
+    """``AwareDatetime`` blocks direct construction with a naive datetime.
+
+    See :func:`test_download_source_rejects_naive_expires_at` in
+    ``test_wire_sources.py`` for the rationale — selection (§9)
+    compares against tz-aware ``now``.
+    """
+    naive = datetime(2026, 5, 18, 12, 30, 0)  # no tzinfo
+    with pytest.raises(ValidationError):
+        UploadSink(
+            transport="upload",
+            url="https://intake.example.com/u/Lm",
+            expiresAt=naive,
+        )

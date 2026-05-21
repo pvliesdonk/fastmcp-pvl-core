@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 import pytest
 from pydantic import ValidationError
 
@@ -93,3 +95,31 @@ def test_download_source_is_frozen():
     )
     with pytest.raises(ValidationError):
         s.url = "https://other"  # type: ignore[misc]
+
+
+def test_download_source_rejects_naive_expires_at():
+    """``AwareDatetime`` blocks direct construction with a naive datetime.
+
+    Selection (§9) will compare against ``datetime.now(timezone.utc)``;
+    a naive ``expiresAt`` would raise ``TypeError`` at comparison time.
+    Catching it at validation gives the caller a clean
+    ``ValidationError`` instead.
+    """
+    naive = datetime(2026, 5, 18, 12, 30, 0)  # no tzinfo
+    with pytest.raises(ValidationError):
+        DownloadSource(
+            transport="download",
+            url="https://example.com/d/Yk2p",
+            expiresAt=naive,
+        )
+
+
+def test_download_source_accepts_aware_expires_at_object():
+    """A tz-aware ``datetime`` instance is accepted directly."""
+    aware = datetime(2026, 5, 18, 12, 30, 0, tzinfo=timezone.utc)
+    s = DownloadSource(
+        transport="download",
+        url="https://example.com/d/Yk2p",
+        expiresAt=aware,
+    )
+    assert s.expiresAt.tzinfo is not None
