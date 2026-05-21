@@ -60,9 +60,11 @@ def select_source(
             For HTTPS sources the callback is not consulted (URL
             reachability is checked at transfer time, not selection
             time).
-        now: Reference time for expiry checks. Defaults to the wall
-            clock when ``None``; pass an explicit value only from
-            tests.
+        now: Reference time for expiry checks. Defaults to
+            ``datetime.now(timezone.utc)`` when ``None``; pass an
+            explicit value only from tests. Must be timezone-aware —
+            ``expiresAt`` is ``AwareDatetime``, so a naive ``now``
+            raises ``TypeError`` at the comparison.
 
     Returns:
         The first descriptor that survives the §9 checks, or ``None``
@@ -107,9 +109,11 @@ def select_sink(
             :class:`FilesystemSink` to confirm the resolved location
             is writable. ``None`` means the party does not support
             filesystem at all.
-        now: Reference time for expiry checks. Defaults to the wall
-            clock when ``None``; pass an explicit value only from
-            tests.
+        now: Reference time for expiry checks. Defaults to
+            ``datetime.now(timezone.utc)`` when ``None``; pass an
+            explicit value only from tests. Must be timezone-aware —
+            ``expiresAt`` is ``AwareDatetime``, so a naive ``now``
+            raises ``TypeError`` at the comparison.
 
     Returns:
         The first descriptor that survives the §9 checks, or ``None``.

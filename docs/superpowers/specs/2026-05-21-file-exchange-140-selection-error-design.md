@@ -286,78 +286,65 @@ then. YAGNI now.
 
 ## Tests
 
-Three new test files under `tests/_file_exchange/`.
+Three new test files under `tests/_file_exchange/`. The descriptions
+below state the *behaviors* covered, not exact test-function names —
+the shipped tests are the source of truth for naming (this is a
+pre-implementation design record).
 
 ### `test_codes.py`
 
 - Each `TransferErrorCode` member's value matches the §13 spec table
-  verbatim (`NO_SUPPORTED_TRANSPORT.value == "no-supported-transport"`,
-  …, `TRANSFER_FAILED.value == "transfer-failed"`).
+  verbatim.
 - `KNOWN_CODES` equals exactly the 9 spec-defined codes (frozenset
   equality against a hand-written set — catches drift if a member is
-  added without updating the test).
-- `str` mixin behaviour holds: `TransferErrorCode.DIGEST_MISMATCH ==
-  "digest-mismatch"` is True on all supported Python versions.
-- `TransferErrorCode.DIGEST_MISMATCH in KNOWN_CODES` is True; a typo
-  (`"digestmismatch"`) is False.
+  added without updating the test) and covers every enum member.
+- `str` mixin behaviour holds (`TransferErrorCode.DIGEST_MISMATCH ==
+  "digest-mismatch"`) on all supported Python versions.
+- Membership: a known code is in `KNOWN_CODES`; a typo is not.
 
 ### `test_selection.py`
 
-Covers every §9 rule the issue requires plus the symmetry between
-source and sink directions:
+Covers every §9 rule, applied **symmetrically to both `select_source`
+and `select_sink`** (the two are independent function bodies, so each
+behavior is pinned on both sides rather than assumed-by-symmetry):
 
-- `test_select_source_skips_unknown_transport` — handle with only an
-  `UnknownTransportDescriptor` source returns `None`.
-- `test_select_source_skips_expired_download` — `expiresAt` 60s in the
-  past, no other sources → `None`.
-- `test_select_source_selects_download_within_tolerance` — `expiresAt`
-  5s in the past (inside 30s tolerance) → selected.
-- `test_select_source_skips_download_past_tolerance` — `expiresAt` 35s
-  in the past (past 30s tolerance) → skipped, falls to next descriptor.
-- `test_select_source_skips_filesystem_when_callback_returns_false` —
-  `is_accessible` returns False → skipped.
-- `test_select_source_selects_filesystem_when_callback_returns_true` —
-  `is_accessible` returns True → selected.
-- `test_select_source_skips_all_filesystem_when_callback_is_none` —
-  `is_accessible=None`, handle has filesystem source → `None`.
-- `test_select_source_returns_first_surviving_in_array_order` — handle
-  with `[expired-download, valid-filesystem, valid-download]` and
-  callback returning True → filesystem is selected (first survivor in
-  array order, not the last).
-- `test_select_source_empty_when_no_descriptor_survives` — handle with
-  only expired downloads → `None`.
-- `test_select_source_now_parameter_overrides_wall_clock` — pass an
-  explicit `now`, assert tolerance arithmetic is computed relative to
-  it (defends against a refactor that reads the wall clock inside the
-  loop instead of once at entry).
-
-Symmetric mirror tests on `select_sink` (`IntakeTicket.sinks`) cover
-one happy path plus the 30s tolerance ladder via a parametrise — the
-algorithm is structurally identical to the source side, so a full
-ten-test mirror would just duplicate coverage. The two-direction
-parametrise catches accidental direction-specific divergence (e.g.
-the sink branch silently drops the tolerance window).
+- Unknown-transport-only reference → `None` (forward-compat skip),
+  covered for both directions via a parametrise.
+- Expiry ladder: descriptor inside the 30s tolerance is selected; just
+  past it is skipped; well past is skipped; a future descriptor is
+  selected; **and the exact boundary (`expiresAt == now - 30s`) is
+  selected** — pinning the strict-`<` choice so a `<=` refactor is
+  caught. Mirrored on the upload (sink) branch.
+- Filesystem accessibility: callback returns False → skipped; True →
+  selected; `is_accessible=None` (party doesn't support filesystem) →
+  all filesystem descriptors skipped. The callback is **not** consulted
+  for HTTPS descriptors. Mirrored on both directions.
+- First-survivor-in-array-order selection.
+- Empty result when no descriptor survives.
+- `now` is the reference point for tolerance arithmetic (override
+  test); a tz-naive `now` raises `TypeError` against the aware
+  `expiresAt` (pins the documented "must be timezone-aware" contract),
+  parametrised across both directions.
 
 ### `test_errors.py`
 
-- `build_file_exchange_error(NO_SUPPORTED_TRANSPORT)` returns
-  `CallToolResult` with `isError=True`, `_meta` key
-  `"nl.liesdonk.file-exchange/error"` containing `{"code":
-  "no-supported-transport"}`, content has one `TextContent` with the
-  default text from `_DEFAULT_TEXT`.
-- Passing `transport="download"` adds `"transport": "download"` to
-  `_meta` AND appends `" (transport: download)"` to the default text.
-- Passing `detail="..."` adds it to `_meta` but does NOT appear in
-  the text (the log-leak guard).
-- Passing explicit `text="custom"` uses that string verbatim;
-  `_DEFAULT_TEXT` is bypassed; the transport-suffix is not appended.
-- An unknown code (`"future-spec-code"`) renders text `"File transfer
-  failed: future-spec-code"` and emits the literal code string in
-  `_meta`.
-- Every `TransferErrorCode` member has a default-text mapping — loop
-  through the enum and assert `code in _DEFAULT_TEXT`.
-- `_meta` does NOT include `transport` or `detail` keys when those
-  args are `None` (no JSON nulls in the envelope).
+- Returns `CallToolResult` with `isError=True` and `_meta` key
+  `"nl.liesdonk.file-exchange/error"` carrying `{"code": ...}`; content
+  is one `TextContent` with the default text from `_DEFAULT_TEXT`.
+- `transport` adds `"transport"` to `_meta` AND appends
+  `" (transport: X)"` to a known-code default text.
+- `detail` lands in `_meta` but never in the text (log-leak guard).
+- Explicit non-empty `text` is used verbatim (default + transport
+  suffix bypassed); an empty `text` falls back to the default (an
+  error result is never empty).
+- Unknown code renders the generic `"File transfer failed: <code>"`
+  (no transport suffix) while the literal code still lands in `_meta`.
+- Every `TransferErrorCode` member has a `_DEFAULT_TEXT` mapping
+  (drift guard).
+- `_meta` omits `transport`/`detail` keys when those args are `None`
+  (no JSON nulls), verified at the wire level via
+  `model_dump(by_alias=True)` (the `_meta` alias, not the python
+  `meta` attribute).
 
 ### What is not tested here
 

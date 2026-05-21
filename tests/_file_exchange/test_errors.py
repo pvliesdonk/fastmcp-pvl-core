@@ -82,6 +82,21 @@ def test_explicit_text_overrides_default_and_skips_transport_suffix():
     assert result.meta[_NAMESPACE_KEY]["transport"] == "filesystem"
 
 
+def test_empty_text_falls_back_to_default():
+    """``text=""`` is treated as no-override — an error result is never empty.
+
+    Guards the ``if text:`` check (vs ``if text is not None``): an
+    explicitly-empty string must not produce an empty TextContent block.
+    """
+    result = build_file_exchange_error(
+        TransferErrorCode.NO_SUPPORTED_TRANSPORT, text=""
+    )
+    assert (
+        result.content[0].text
+        == _DEFAULT_TEXT[TransferErrorCode.NO_SUPPORTED_TRANSPORT]
+    )
+
+
 def test_unknown_code_renders_generic_text_and_passes_through():
     """§13: consumers SHOULD treat unrecognized codes as generic failures."""
     result = build_file_exchange_error("future-spec-code")

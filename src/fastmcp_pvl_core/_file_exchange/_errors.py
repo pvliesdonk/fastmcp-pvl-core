@@ -72,12 +72,15 @@ def _render_text(code_str: str, transport: str | None, text: str | None) -> str:
 
     Exactly three cases, checked in order:
 
-    1. ``text`` (caller-supplied): used verbatim. No transport suffix
-       (the caller already framed the message as they want).
-    2. Known code (in ``KNOWN_CODES``), ``text`` is None: the
+    1. ``text`` (caller-supplied, non-empty): used verbatim. No
+       transport suffix (the caller already framed the message as they
+       want). An empty string is treated as "no override" and falls
+       through to the default — an error result must never have an
+       empty human-readable block.
+    2. Known code (in ``KNOWN_CODES``), no caller text: the
        ``_DEFAULT_TEXT`` entry, with ``" (transport: X)"`` appended
        when ``transport`` is set.
-    3. Unknown code (not in ``KNOWN_CODES``), ``text`` is None: the
+    3. Unknown code (not in ``KNOWN_CODES``), no caller text: the
        generic ``"File transfer failed: <code>"``. The transport
        suffix is NOT appended here even when ``transport`` is set —
        the generic fallback is intentionally terse, and ``transport``
@@ -88,7 +91,7 @@ def _render_text(code_str: str, transport: str | None, text: str | None) -> str:
     ``_meta``; operators who want it in the text pass ``text=``
     explicitly.
     """
-    if text is not None:
+    if text:
         return text
     if code_str in KNOWN_CODES:
         default = _DEFAULT_TEXT[TransferErrorCode(code_str)]
@@ -124,8 +127,10 @@ def build_file_exchange_error(
             sha-256:1b..."``). Populates ``_meta[..., "detail"]``.
             **Never** appears in the human-readable text block — pass
             ``text=`` explicitly if you want it there.
-        text: Optional caller-supplied text block content. Overrides
-            the default text and suppresses the transport suffix.
+        text: Optional caller-supplied text block content. A non-empty
+            value overrides the default text and suppresses the
+            transport suffix. ``None`` or an empty string falls back to
+            the default text (an error result never has an empty block).
 
     Returns:
         A ``CallToolResult`` with ``isError=True``, one

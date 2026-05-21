@@ -363,3 +363,35 @@ def test_unknown_transport_always_skipped(
     """Forward-compat fallthrough: party never selects an unknown transport."""
     ref = reference_fn(unknown_descriptor)
     assert selector_fn(ref) is None
+
+
+@pytest.mark.parametrize(
+    "selector_fn,reference_fn,descriptor",
+    [
+        (
+            select_source,
+            _handle,
+            {"transport": "download", "url": "https://x/y"},
+        ),
+        (
+            select_sink,
+            _ticket,
+            {"transport": "upload", "url": "https://x/y"},
+        ),
+    ],
+)
+def test_naive_now_raises_on_timestamped_descriptor(
+    selector_fn, reference_fn, descriptor
+):
+    """A tz-naive ``now`` raises ``TypeError`` against the aware ``expiresAt``.
+
+    ``expiresAt`` is ``AwareDatetime`` (always tz-aware); the docstrings
+    require ``now`` to be aware too. This pins the documented contract so
+    a future change (e.g. silently normalising ``now``) is a deliberate
+    decision rather than an accidental behavior shift.
+    """
+    aware_future = (_NOW + timedelta(minutes=5)).isoformat()
+    ref = reference_fn({**descriptor, "expiresAt": aware_future})
+    naive_now = datetime(2026, 5, 21, 19, 0, 0)  # no tzinfo
+    with pytest.raises(TypeError):
+        selector_fn(ref, now=naive_now)
