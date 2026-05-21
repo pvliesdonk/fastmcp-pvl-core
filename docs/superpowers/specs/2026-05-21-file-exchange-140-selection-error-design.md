@@ -202,7 +202,7 @@ string is used verbatim. Otherwise the helper looks the code up in a
 private `_DEFAULT_TEXT` dict:
 
 ```python
-_DEFAULT_TEXT: dict[str, str] = {
+_DEFAULT_TEXT: dict[TransferErrorCode, str] = {
     TransferErrorCode.NO_SUPPORTED_TRANSPORT:
         "No supported transport found in transfer reference.",
     TransferErrorCode.DESCRIPTOR_EXPIRED:
@@ -240,11 +240,28 @@ sha-256:1b..."`), and inlining it into operator-facing text would
 invite log-leak issues (per the URL-redaction pattern from PR #122).
 Callers who want detail in the text pass `text=` explicitly.
 
-**Return type is `mcp.types.CallToolResult` directly.** The caller's
-tool function returns this verbatim and fastmcp's `tools/call` handler
-passes it through. A `dict` return would force every caller to know
-the CallToolResult shape; the typed object is what the framework
-expects.
+**Return type is `mcp.types.CallToolResult` directly** — the §13 error
+in its Python-object shape. A `dict` return would force every caller
+to know the CallToolResult shape; the typed object is self-describing.
+
+**Wire-integration caveat (verified against fastmcp 3.3.1).** A plain
+`@mcp.tool` function cannot just `return build_file_exchange_error(...)`
+and get the §13 contract on the wire. fastmcp's `tools/call` handler
+only special-cases `fastmcp.tools.ToolResult` (no `isError` field);
+any returned `mcp.types.CallToolResult` is serialised into a text
+block, so the wire response is `isError: false` with the envelope
+buried in content. `raise ToolError(...)` sets wire `isError: true`
+but drops `_meta`. Neither path natively carries both halves.
+
+Producing a true wire-level §13 error (wire `isError: true` + wire
+`_meta`) requires a fastmcp middleware that intercepts a role helper's
+failure and maps it onto the response. That middleware is **out of
+scope for #140** and ships with the `register_file_exchange_*` helpers
+in #148. Within #140, `build_file_exchange_error` is the building
+block: consumed by tests and by whatever wire-response-controlling
+code (#148's middleware, custom handlers) emits the envelope. The
+end-to-end wire assertion (`FastMCP` + `Client`, asserting wire
+`isError`/`_meta`) belongs to #148 alongside the middleware it tests.
 
 **No exception variant ships in this PR.** No `FileExchangeError`
 class, no `build_file_exchange_error_from_exc` dispatcher. The wire

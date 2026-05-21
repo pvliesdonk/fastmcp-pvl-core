@@ -6,9 +6,25 @@ formed ``CallToolResult`` with ``isError=True``, a human-readable
 ``"nl.liesdonk.file-exchange/error"`` carrying the structured
 ``{code, [transport], [detail]}`` payload.
 
-The caller's tool function returns the resulting ``CallToolResult``
-verbatim — fastmcp's ``tools/call`` handler passes it through with the
-``isError`` flag and ``_meta`` intact.
+This builds the §13 error in its ``CallToolResult`` *Python* shape.
+**It is not a tool return value you can hand back from a plain
+``@mcp.tool`` function and expect on the wire.** fastmcp 3.3.1's
+``tools/call`` handler only special-cases ``fastmcp.tools.ToolResult``
+(which carries no ``isError`` field); a tool that returns an
+``mcp.types.CallToolResult`` has it serialised into a text block, so
+the wire response ends up ``isError: false`` with the envelope buried
+in content. Conversely ``raise ToolError(...)`` sets wire
+``isError: true`` but drops ``_meta``. Neither path natively carries
+both halves of the §13 contract.
+
+Emitting this envelope as a true wire-level tool-execution error
+therefore requires a fastmcp middleware that intercepts a role
+helper's failure and maps it onto the response (setting wire
+``isError`` and wire ``_meta`` together). That middleware ships with
+the ``register_file_exchange_*`` helpers in #148. Until then this
+builder is consumed by code that already controls the wire response
+(middleware, custom request handlers) and by tests that assert the
+Python-object shape.
 """
 
 from __future__ import annotations
@@ -54,12 +70,18 @@ _DEFAULT_TEXT: dict[TransferErrorCode, str] = {
 def _render_text(code_str: str, transport: str | None, text: str | None) -> str:
     """Pick the text block content.
 
-    - ``text`` (caller-supplied): used verbatim, transport suffix NOT
-      appended (caller already framed the message as they want).
-    - Otherwise look up ``_DEFAULT_TEXT`` by code, append
-      ``(transport: X)`` when ``transport`` is set.
-    - Unknown code (not in ``KNOWN_CODES``): generic
-      ``"File transfer failed: <code>"``.
+    Exactly three cases, checked in order:
+
+    1. ``text`` (caller-supplied): used verbatim. No transport suffix
+       (the caller already framed the message as they want).
+    2. Known code (in ``KNOWN_CODES``), ``text`` is None: the
+       ``_DEFAULT_TEXT`` entry, with ``" (transport: X)"`` appended
+       when ``transport`` is set.
+    3. Unknown code (not in ``KNOWN_CODES``), ``text`` is None: the
+       generic ``"File transfer failed: <code>"``. The transport
+       suffix is NOT appended here even when ``transport`` is set —
+       the generic fallback is intentionally terse, and ``transport``
+       still lands in ``_meta`` regardless.
 
     ``detail`` is never rendered into the text — log-leak guard. The
     structured ``detail`` field is for machine consumption via
@@ -93,8 +115,10 @@ def build_file_exchange_error(
             ``_meta[..., "code"]``.
         transport: Optional transport name (``"filesystem"``,
             ``"download"``, ``"upload"``, etc.). When set, populates
-            ``_meta[..., "transport"]`` and (if ``text`` is None)
-            appends ``" (transport: X)"`` to the default text.
+            ``_meta[..., "transport"]``. Additionally, when ``text``
+            is None *and* ``code`` is a known code, appends
+            ``" (transport: X)"`` to the default text; the suffix is
+            not appended to the generic unknown-code fallback.
         detail: Optional structured detail string for machine
             consumers (e.g. ``"expected sha-256:9f..., got
             sha-256:1b..."``). Populates ``_meta[..., "detail"]``.

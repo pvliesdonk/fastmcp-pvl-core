@@ -108,3 +108,27 @@ def test_known_codes_dont_render_generic_fallback_text():
     for code in KNOWN_CODES:
         result = build_file_exchange_error(code)
         assert not result.content[0].text.startswith("File transfer failed: ")
+
+
+def test_meta_serialises_under_underscore_meta_alias_on_wire():
+    """§13 mandates the envelope under the JSON key ``_meta`` (alias).
+
+    Pins the *wire* shape, not just the Python attribute: ``meta`` has
+    JSON alias ``_meta``, so a refactor that emitted a plain ``meta``
+    key (or dropped the alias) would break the §13 contract while the
+    in-memory ``result.meta`` assertions still passed.
+    """
+    result = build_file_exchange_error(
+        TransferErrorCode.DIGEST_MISMATCH,
+        transport="download",
+        detail="expected sha-256:9f..., got sha-256:1b...",
+    )
+    dumped = result.model_dump(by_alias=True, exclude_none=True)
+    assert "_meta" in dumped
+    assert "meta" not in dumped
+    assert dumped["_meta"][_NAMESPACE_KEY] == {
+        "code": "digest-mismatch",
+        "transport": "download",
+        "detail": "expected sha-256:9f..., got sha-256:1b...",
+    }
+    assert dumped["isError"] is True
