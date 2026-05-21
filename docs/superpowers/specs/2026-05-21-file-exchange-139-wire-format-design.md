@@ -145,11 +145,24 @@ advisory; consumers SHOULD treat unknown codes as generic failures).
 `_validation.validate_wire(raw, *, kind)` loads the vendored schema once
 (`@lru_cache`), builds a Draft 2020-12 validator per kind scoped to
 `#/$defs/<KIND>` (`@lru_cache(maxsize=4)`), and raises
-`WireFormatError` on `ValidationError`. The error carries a `json_pointer`
-attribute — an RFC 6901 pointer to the offending field, with `~` escaped
-*first* (then `/`) so a literal `/` doesn't round-trip into a literal `~`.
-Dedicated tests exercise both escape characters individually and in the
-order-sensitive combined case.
+`WireFormatError` on `ValidationError`. The validator is constructed
+with `format_checker=Draft202012Validator.FORMAT_CHECKER` so the schema's
+`format: date-time` (on `expiresAt`) and `format: uri` (on `url`)
+constraints are enforced at layer 1 — without it, jsonschema treats
+those keywords as advisory and a malformed value would fall through to
+Pydantic, defeating the layered pipeline. The
+`jsonschema[format-nongpl]>=4.18` dependency declared in
+`pyproject.toml` provides the non-GPL validators that back those two
+formats.
+
+The error carries a `json_pointer` attribute — an RFC 6901 pointer to
+the offending field, with `~` escaped *first* (then `/`) so a literal
+`/` doesn't round-trip into a literal `~`. A root-level failure (empty
+`absolute_path`) yields the empty string `""` per RFC 6901 §5; `"/"`
+is a different pointer (the property with the empty-string name) and
+would mislead a consumer. Dedicated tests exercise both escape
+characters individually, in the order-sensitive combined case, and the
+empty-path root case.
 
 ## Version skew + must-understand
 
@@ -230,13 +243,19 @@ Network handling:
   urlopen's built-in non-2xx raising.
 - Empty-body and non-list-response guards for the same reason.
 - `_NETWORK_ERRORS` is a specific tuple (`URLError`, `HTTPError`,
-  `TimeoutError`, `OSError`, `json.JSONDecodeError`, `RuntimeError`) —
-  not a bare `Exception` — so a parsing bug or API-shape drift
-  surfaces with its real traceback rather than being misreported as a
-  fetch failure. `RuntimeError` is included because `_fetch` and
-  `_list_remote_dir` raise it deliberately on HTTP non-200, empty
-  bodies, and non-list directory listings (the rate-limit-with-200
-  case that slips past urlopen's built-in raising).
+  `TimeoutError`, `OSError`, `json.JSONDecodeError`, `RuntimeError`,
+  `http.client.HTTPException`) — not a bare `Exception` — so a parsing
+  bug or API-shape drift surfaces with its real traceback rather than
+  being misreported as a fetch failure. `RuntimeError` is included
+  because `_fetch` and `_list_remote_dir` raise it deliberately on
+  HTTP non-200, empty bodies, and non-list directory listings (the
+  rate-limit-with-200 case that slips past urlopen's built-in
+  raising). `http.client.HTTPException` covers truncated chunked
+  reads (`IncompleteRead`) and HTTP/1.1 keep-alive races
+  (`BadStatusLine`) that `urlopen` / `resp.read()` can raise — neither
+  is an `OSError` subclass, so without it those network failures would
+  surface as raw tracebacks rather than the documented clean exit
+  messages.
 - Failure messages name the path + the exception class, so an operator
   can distinguish a transient network blip from a real upstream change.
 

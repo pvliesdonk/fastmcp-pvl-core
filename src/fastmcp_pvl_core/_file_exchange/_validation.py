@@ -54,11 +54,19 @@ class WireFormatError(ValueError):
         into a literal ``~``. Future maintainers reordering these will
         silently break round-tripping; the dedicated tests exist to
         catch that regression.
+
+        An empty ``absolute_path`` (root-level failure — e.g. a
+        ``required`` property missing at the document root) yields the
+        empty pointer ``""``, which RFC 6901 §5 defines as the
+        whole-document reference. ``"/"`` is a *different* pointer (a
+        property with the empty-string name); the join-with-prefix
+        idiom below collapses to ``""`` when there are no parts and so
+        avoids that confusion.
         """
-        parts = [
-            str(p).replace("~", "~0").replace("/", "~1") for p in exc.absolute_path
-        ]
-        pointer = "/" + "/".join(parts)
+        pointer = "".join(
+            f"/{str(p).replace('~', '~0').replace('/', '~1')}"
+            for p in exc.absolute_path
+        )
         return cls(exc.message, json_pointer=pointer)
 
 
@@ -70,13 +78,26 @@ def _load_schema() -> dict[str, Any]:
 
 @lru_cache(maxsize=4)
 def _validator_for(kind: Kind) -> Draft202012Validator:
-    """Return a cached Draft 2020-12 validator scoped to ``kind``'s ``$defs`` entry."""
+    """Return a cached Draft 2020-12 validator scoped to ``kind``'s ``$defs`` entry.
+
+    Enables the class-level ``FORMAT_CHECKER`` so the schema's
+    ``format: date-time`` and ``format: uri`` constraints (on
+    ``expiresAt`` and ``url``) are actually enforced. Without it,
+    jsonschema treats those constraints as advisory and a malformed
+    value would fall through to Pydantic — defeating the layered
+    pipeline's goal of surfacing wire-format errors with a JSON
+    Pointer at the schema layer. The ``[format-nongpl]`` extras
+    declared in ``pyproject.toml`` install the non-GPL validators
+    that back ``date-time`` and ``uri``.
+    """
     schema = _load_schema()
     sub_schema = {
         "$ref": f"#/$defs/{_KIND_TO_DEF[kind]}",
         "$defs": schema["$defs"],
     }
-    return Draft202012Validator(sub_schema)
+    return Draft202012Validator(
+        sub_schema, format_checker=Draft202012Validator.FORMAT_CHECKER
+    )
 
 
 def validate_wire(raw: Mapping[str, Any], *, kind: Kind) -> None:

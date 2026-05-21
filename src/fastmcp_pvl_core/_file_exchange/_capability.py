@@ -15,6 +15,7 @@ from typing import Any, Literal
 from pydantic import Field
 
 from fastmcp_pvl_core._file_exchange._spec import (
+    _IMPLEMENTED_MAJOR,
     NAMESPACE,
     SPEC_VERSION,
     VERSION_PATTERN,
@@ -75,8 +76,6 @@ class FileExchangeCapability(_WireBase):
         validate_wire(raw, kind="capability")
         cap = cls.model_validate(raw)
         if not check_version_skew(cap.version, kind="capability"):
-            from fastmcp_pvl_core._file_exchange._spec import _IMPLEMENTED_MAJOR
-
             logger.warning(
                 "file-exchange peer declares major-incompatible version %r "
                 "(this implementation: major %d, namespace %r); treating "

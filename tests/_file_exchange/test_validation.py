@@ -98,3 +98,63 @@ def test_wire_format_error_escapes_both_in_correct_order():
     err = WireFormatError.from_jsonschema(fake)
     # `~/` → `~0` first → `~0/` → then `/` → `~1` → `~0~1`
     assert err.json_pointer == "/a~0~1b"
+
+
+def test_wire_format_error_root_pointer_is_empty_string():
+    """RFC 6901 §5: the whole-document pointer is ``""``, not ``"/"``."""
+    fake = JSEValidationError("synthetic", path=[])
+    err = WireFormatError.from_jsonschema(fake)
+    assert err.json_pointer == ""
+
+
+def test_root_level_required_failure_yields_empty_pointer():
+    """Realistic root-level failure path: missing top-level ``type`` field."""
+    bad = dict(_VALID_HANDLE)
+    del bad["type"]
+    with pytest.raises(WireFormatError) as exc_info:
+        validate_wire(bad, kind="handle")
+    assert exc_info.value.json_pointer == ""
+
+
+# --- format-checker (date-time / uri) ---
+
+
+def test_invalid_expires_at_format_raises_wire_format_error():
+    """Enforce ``format: date-time`` on ``DownloadSource.expiresAt`` at schema layer.
+
+    Without an active ``format_checker`` jsonschema treats the format
+    keyword as advisory and lets the value through to Pydantic — defeating
+    the layered-validation design. The pointer stops at the offending
+    source's index rather than drilling into ``/expiresAt`` because the
+    ``sources`` array uses a ``oneOf`` discriminator and we don't yet
+    consume ``jsonschema.exceptions.best_match`` — that's the depth
+    work deferred to #140's error envelope.
+    """
+    bad = dict(_VALID_HANDLE)
+    bad["sources"] = [
+        {
+            "transport": "download",
+            "url": "https://example.invalid/x.bin",
+            "expiresAt": "tomorrow",
+        }
+    ]
+    with pytest.raises(WireFormatError) as exc_info:
+        validate_wire(bad, kind="handle")
+    assert exc_info.value.json_pointer == "/sources/0"
+
+
+def test_invalid_download_url_format_raises_wire_format_error():
+    """``format: uri`` on ``DownloadSource.url`` is enforced at the schema layer."""
+    bad = dict(_VALID_HANDLE)
+    bad["sources"] = [
+        {
+            "transport": "download",
+            "url": "not a uri",
+            "expiresAt": "2026-12-31T00:00:00Z",
+        }
+    ]
+    with pytest.raises(WireFormatError) as exc_info:
+        validate_wire(bad, kind="handle")
+    # Pointer stops at /sources/0 for the same oneOf reason — see the
+    # docstring on test_invalid_expires_at_format_raises_wire_format_error.
+    assert exc_info.value.json_pointer == "/sources/0"

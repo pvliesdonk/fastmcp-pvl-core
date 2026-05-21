@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import http.client
 import json
 import os
 import re
@@ -46,12 +47,15 @@ BUCKETS = ("valid", "invalid")
 # Network/parse failures the script knows how to convert into a clean
 # sys.exit message. Listed explicitly rather than catching `Exception`
 # — that breadth would hide parsing bugs (KeyError, AttributeError)
-# behind misleading "failed to fetch" messages. RuntimeError is in the
-# tuple because _fetch and _list_remote_dir raise it deliberately on
-# HTTP non-200, empty bodies, and non-list directory listings (the
-# rate-limit-with-200-body case the comment in _fetch explains);
-# leaving it out would let those documented failure modes surface as
-# raw tracebacks instead of clean exit messages.
+# behind misleading "failed to fetch" messages. `RuntimeError` is in
+# the tuple because _fetch and _list_remote_dir raise it deliberately
+# on HTTP non-200, empty bodies, and non-list directory listings (the
+# rate-limit-with-200-body case the comment in _fetch explains).
+# `http.client.HTTPException` covers truncated-chunk reads
+# (`IncompleteRead`) and HTTP/1.1 keep-alive races (`BadStatusLine`)
+# that `urlopen` / `resp.read()` can surface — neither is an
+# `OSError` subclass, so leaving them out would let those network
+# failures surface as raw tracebacks instead of clean exit messages.
 _NETWORK_ERRORS = (
     URLError,
     HTTPError,
@@ -59,6 +63,7 @@ _NETWORK_ERRORS = (
     OSError,
     json.JSONDecodeError,
     RuntimeError,
+    http.client.HTTPException,
 )
 
 

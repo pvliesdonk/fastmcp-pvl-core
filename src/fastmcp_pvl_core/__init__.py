@@ -70,6 +70,7 @@ __all__ = [
     "compute_app_domain",
     "configure_logging_from_env",
     "env",
+    "file_exchange",
     "get_subject",
     "load_acl",
     "make_acl_authorizer",

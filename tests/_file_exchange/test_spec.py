@@ -29,9 +29,13 @@ def test_type_constants_compose_namespace_and_suffix():
 
 
 def test_spec_source_sha_is_pinned_full_sha():
+    # Format-only check: a full 40-char lowercase hex SHA. The actual
+    # value is enforced by the ``file-exchange-spec-sync`` CI job (it
+    # diffs the pinned constant's vendored artifacts against upstream
+    # at that SHA), so pinning the value here too would add friction
+    # to legitimate ``--bump`` PRs without strengthening the guard.
     assert len(_spec.SPEC_SOURCE_SHA) == 40
     assert all(c in "0123456789abcdef" for c in _spec.SPEC_SOURCE_SHA)
-    assert _spec.SPEC_SOURCE_SHA == "5f50a4e16a33a6bbc0888c142baec7fdfe858cb6"
 
 
 def test_implemented_major_is_zero():
