@@ -108,7 +108,8 @@ def select_sink(
             is writable. ``None`` means the party does not support
             filesystem at all.
         now: Reference time for expiry checks. Defaults to the wall
-            clock when ``None``.
+            clock when ``None``; pass an explicit value only from
+            tests.
 
     Returns:
         The first descriptor that survives the §9 checks, or ``None``.
