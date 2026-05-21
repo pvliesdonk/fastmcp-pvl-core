@@ -56,5 +56,5 @@ def test_membership_test_works_for_known_and_rejects_typo():
 
 
 def test_known_codes_is_frozenset():
-    """Type matters: callers may use it as a dict key set."""
+    """Module-level constant must be immutable — frozenset not set."""
     assert isinstance(KNOWN_CODES, frozenset)
