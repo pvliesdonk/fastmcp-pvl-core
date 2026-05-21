@@ -1,0 +1,9 @@
+{
+  "type": "nl.liesdonk.file-exchange/intake-ticket",
+  "version": "0.2",
+  "artifactId": "i1",
+  "sinks": [
+    { "transport": "filesystem", "uri": "exchange://v/inbox/i1" },
+    { "transport": "webdav", "endpoint": "https://dav.example.com/i1" }
+  ]
+}

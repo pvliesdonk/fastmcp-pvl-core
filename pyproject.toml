@@ -16,6 +16,14 @@ dependencies = [
   # OIDC discovery document at startup. Kept as a hard dependency; the
   # `remote-auth` extra is retained as a backwards-compat no-op.
   "httpx>=0.27",
+  # ``[format-nongpl]`` extras pull in non-GPL validators for the
+  # ``date-time`` and ``uri`` formats the file-exchange schema uses on
+  # ``expiresAt`` and ``url``. Without the extras, jsonschema treats
+  # those constraints as advisory (silently ignored), and a malformed
+  # value would fall through to Pydantic instead of surfacing at the
+  # wire-format layer as the layered-validation design requires.
+  "jsonschema[format-nongpl]>=4.18",
+  "pydantic>=2.7",
   # tomli is the 3.10 backport of stdlib tomllib (3.11+); the bearer
   # tokens-file loader uses it transparently via a sys.version_info
   # gate. Drop this dep once ``requires-python`` is bumped to >=3.11.
@@ -81,6 +89,9 @@ warn_unused_ignores = true
 asyncio_mode = "auto"
 addopts = "-ra"
 testpaths = ["tests"]
+markers = [
+    "network: tests that hit the public network (skip with `-m 'not network'`).",
+]
 
 [tool.pyright]
 venvPath = "."

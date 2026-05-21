@@ -1,0 +1,6 @@
+{
+  "type": "nl.liesdonk.file-exchange/transfer-handle",
+  "version": "0.1",
+  "artifact": { "name": "x", "size": 1 },
+  "sources": [ { "transport": "upload", "url": "https://x.example.com/u/abc", "expiresAt": "2027-01-01T00:00:00Z" } ]
+}
