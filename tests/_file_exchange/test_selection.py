@@ -291,6 +291,62 @@ def test_select_sink_callback_receives_typed_filesystem_sink():
     assert isinstance(seen[0], FilesystemSink)
 
 
+def test_select_sink_selects_upload_at_exact_tolerance_boundary():
+    """``expiresAt`` exactly ``now - 30s`` is selected (strict ``<`` boundary).
+
+    Sink mirror of
+    ``test_select_source_selects_download_at_exact_tolerance_boundary``.
+    ``select_sink`` is an independent function body, so a ``<``→``<=``
+    refactor of its upload branch would only be caught here.
+    """
+    at_boundary = (_NOW - timedelta(seconds=30)).isoformat()
+    ticket = _ticket(
+        {
+            "transport": "upload",
+            "url": "https://x/y",
+            "expiresAt": at_boundary,
+        }
+    )
+    assert isinstance(select_sink(ticket, now=_NOW), UploadSink)
+
+
+def test_select_sink_does_not_consult_callback_for_upload():
+    """The accessibility callback is only for filesystem descriptors."""
+    calls: list[object] = []
+    future = (_NOW + timedelta(minutes=5)).isoformat()
+    ticket = _ticket({"transport": "upload", "url": "https://x/y", "expiresAt": future})
+    select_sink(ticket, is_accessible=lambda d: calls.append(d) or True, now=_NOW)
+    assert calls == []
+
+
+def test_select_sink_skips_filesystem_when_callback_returns_false():
+    ticket = _ticket({"transport": "filesystem", "uri": "exchange://v/in"})
+    assert select_sink(ticket, is_accessible=lambda d: False) is None
+
+
+def test_select_sink_now_overrides_wall_clock():
+    """The ``now`` parameter is the reference point for tolerance arithmetic."""
+    far_future = datetime(2099, 1, 1, tzinfo=timezone.utc)
+    ticket = _ticket(
+        {
+            "transport": "upload",
+            "url": "https://x/y",
+            "expiresAt": _NOW.isoformat(),  # in 2026
+        }
+    )
+    assert select_sink(ticket, now=far_future) is None
+
+
+def test_select_sink_empty_when_no_descriptor_survives():
+    """Mix of expired + filesystem-without-callback returns None."""
+    expired = (_NOW - timedelta(minutes=1)).isoformat()
+    ticket = _ticket(
+        {"transport": "upload", "url": "https://x/y", "expiresAt": expired},
+        {"transport": "filesystem", "uri": "exchange://v/in"},
+    )
+    assert select_sink(ticket, now=_NOW) is None
+
+
 # --- shared structural ---
 
 
