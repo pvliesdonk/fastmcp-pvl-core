@@ -1,0 +1,9 @@
+{
+  "type": "nl.liesdonk.file-exchange/transfer-handle",
+  "version": "0.2",
+  "artifact": { "name": "x", "size": 1 },
+  "sources": [
+    { "transport": "filesystem", "uri": "exchange://v/x" },
+    { "transport": "s3", "bucket": "b", "key": "k" }
+  ]
+}

@@ -29,3 +29,22 @@ jobs:
         run: uv run mypy src/
       - name: Test
         run: uv run pytest -x -q --cov=fastmcp_pvl_core --cov-report=xml
+
+  file-exchange-spec-sync:
+    name: file-exchange spec sync (against pinned SHA)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+      - name: Set up Python
+        run: uv python install 3.12
+      - name: Install deps
+        run: uv sync --all-extras
+      - name: Verify vendored spec ≡ upstream @ pinned SHA
+        env:
+          # 5000 req/hr vs 60 req/hr anonymous — required for the
+          # GitHub API calls _list_remote_dir makes (8× per run).
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: uv run python scripts/sync_file_exchange_spec.py --check

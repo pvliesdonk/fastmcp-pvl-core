@@ -1,0 +1,8 @@
+{
+  "type": "nl.liesdonk.file-exchange/intake-ticket",
+  "version": "0.1",
+  "artifactId": "intake-1",
+  "sinks": [
+    { "transport": "filesystem", "uri": "exchange://vol-b/inbox/intake-1.bin" }
+  ]
+}

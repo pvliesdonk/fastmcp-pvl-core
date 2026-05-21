@@ -5,6 +5,9 @@ middleware wiring, logging setup, config helpers, and server
 factory building blocks without duplicating them per repo.
 """
 
+from fastmcp_pvl_core import (
+    file_exchange as file_exchange,  # noqa: PLC0414  # public namespace re-export
+)
 from fastmcp_pvl_core._auth import (
     AuthMode,
     build_auth,

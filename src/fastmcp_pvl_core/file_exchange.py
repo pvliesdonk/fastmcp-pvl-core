@@ -1,0 +1,76 @@
+"""Public namespace for the file-exchange extension.
+
+Downstream code imports from here::
+
+    from fastmcp_pvl_core import file_exchange
+    handle = file_exchange.TransferHandle.from_wire(raw_dict)
+    cap = file_exchange.capability_declaration(roles={"provider": ["filesystem"]})
+
+The implementation lives in :mod:`fastmcp_pvl_core._file_exchange`;
+this module re-exports the public surface explicitly so static
+analyzers (Pyright, mypy in strict mode, IDE autocomplete) can
+resolve ``file_exchange.SomeName`` without running the import at
+type-check time. Wildcard re-export was tried first and silently
+broke downstream type checking — explicit imports are the right
+default for a public namespace module.
+"""
+
+from fastmcp_pvl_core._file_exchange import (
+    HANDLE_TYPE,
+    NAMESPACE,
+    SPEC_SOURCE_SHA,
+    SPEC_VERSION,
+    TICKET_TYPE,
+    VERSION_PATTERN,
+    ArtifactConstraints,
+    ArtifactMetadata,
+    DownloadSource,
+    FileExchangeCapability,
+    FilesystemSink,
+    FilesystemSource,
+    IntakeTicket,
+    Role,
+    TransferError,
+    TransferHandle,
+    TransferSink,
+    TransferSource,
+    UnknownTransportDescriptor,
+    UnsupportedRequirementError,
+    UnsupportedVersionError,
+    UploadSink,
+    WireFormatError,
+    capability_declaration,
+    check_requires,
+    check_version_skew,
+    validate_wire,
+)
+
+__all__ = [
+    "ArtifactConstraints",
+    "ArtifactMetadata",
+    "DownloadSource",
+    "FileExchangeCapability",
+    "FilesystemSink",
+    "FilesystemSource",
+    "HANDLE_TYPE",
+    "IntakeTicket",
+    "NAMESPACE",
+    "Role",
+    "SPEC_SOURCE_SHA",
+    "SPEC_VERSION",
+    "TICKET_TYPE",
+    "TransferError",
+    "TransferHandle",
+    "TransferSink",
+    "TransferSource",
+    "UnknownTransportDescriptor",
+    "UnsupportedRequirementError",
+    "UnsupportedVersionError",
+    "UploadSink",
+    "VERSION_PATTERN",
+    "WireFormatError",
+    "capability_declaration",
+    "check_requires",
+    "check_version_skew",
+    "validate_wire",
+]

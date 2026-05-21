@@ -1,0 +1,339 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://liesdonk.nl/schema/mcp-file-exchange/0.1/file-exchange.json",
+  "title": "MCP File Exchange Extension",
+  "description": "Normative wire schema for the MCP File Exchange Extension, version 0.1. Targets MCP revision 2025-11-25. schema/file-exchange.ts is an informative TypeScript companion.",
+  "$defs": {
+    "FileExchangeCapability": {
+      "type": "object",
+      "description": "Value placed at capabilities.experimental[\"nl.liesdonk.file-exchange\"]. Open to unknown fields for forward compatibility (spec section 17.2).",
+      "properties": {
+        "version": {
+          "type": "string",
+          "pattern": "^[0-9]+\\.[0-9]+$",
+          "description": "Extension version implemented by the server."
+        },
+        "roles": {
+          "type": "object",
+          "description": "Transports supported per role. A role not played is omitted.",
+          "properties": {
+            "provider": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/PullTransport" }
+            },
+            "fetcher": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/PullTransport" }
+            },
+            "receiver": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/PushTransport" }
+            },
+            "sender": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/PushTransport" }
+            }
+          },
+          "additionalProperties": true
+        },
+        "digests": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": ["sha-256"],
+          "description": "Digest algorithms supported. Defaults to [\"sha-256\"] when absent."
+        },
+        "maxArtifactSize": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Largest artifact in bytes the server will produce or accept. Advisory."
+        }
+      },
+      "required": ["version", "roles"],
+      "additionalProperties": true
+    },
+    "PullTransport": {
+      "type": "string",
+      "description": "A transport for the provider/fetcher (pull) roles. Defined values: \"filesystem\", \"download\". The set is open (spec section 17.5); an unrecognized value is permitted so a later version can add transports."
+    },
+    "PushTransport": {
+      "type": "string",
+      "description": "A transport for the receiver/sender (push) roles. Defined values: \"filesystem\", \"upload\". The set is open (spec section 17.5); an unrecognized value is permitted so a later version can add transports."
+    },
+    "ArtifactMetadata": {
+      "type": "object",
+      "description": "Describes an artifact independently of how it is transferred. Open to unknown fields for forward compatibility (spec section 17.2).",
+      "minProperties": 1,
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Stable identifier for the artifact, opaque to consumers."
+        },
+        "name": {
+          "type": "string",
+          "description": "Human-readable name. For display only; not a filesystem path."
+        },
+        "mimeType": {
+          "type": "string",
+          "description": "RFC 6838 media type."
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Exact size in bytes."
+        },
+        "digest": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9-]*:[0-9a-f]+$",
+          "description": "Content digest as \"<algorithm>:<lowercase-hex>\"."
+        },
+        "description": {
+          "type": "string",
+          "description": "Human-readable description."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "ISO 8601 timestamp of artifact creation."
+        }
+      },
+      "additionalProperties": true
+    },
+    "ArtifactConstraints": {
+      "type": "object",
+      "description": "Constraints a receiver imposes on an artifact it will accept. Open to unknown fields for forward compatibility (spec section 17.2).",
+      "properties": {
+        "maxSize": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Maximum acceptable artifact size in bytes."
+        },
+        "acceptMimeTypes": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Acceptable media types; entries may be \"type/*\" patterns."
+        },
+        "requireDigest": {
+          "type": "array",
+          "items": { "type": "string" },
+          "minItems": 1,
+          "description": "Digest algorithms the receiver requires; if present the sender MUST send a matching Content-Digest header (RFC 9530). When present this array MUST be non-empty."
+        }
+      },
+      "additionalProperties": true
+    },
+    "FilesystemSource": {
+      "type": "object",
+      "description": "Source descriptor: read an artifact from a shared filesystem location.",
+      "properties": {
+        "transport": { "const": "filesystem" },
+        "uri": {
+          "type": "string",
+          "pattern": "^(exchange://[^/]+/.+|file:///[^/].*)$",
+          "description": "Locator URI: exchange://<volume>/<path> (volume-anchored, resolved per-party; non-empty volume and path required) or a file:///<absolute-path> URI (empty authority — no remote host — identical-mount-namespace only). Consumers MUST canonicalize and confine the resolved path at runtime (spec section 10.1.3)."
+        }
+      },
+      "required": ["transport", "uri"],
+      "additionalProperties": false
+    },
+    "DownloadSource": {
+      "type": "object",
+      "description": "Source descriptor: read an artifact via a one-time HTTPS download URL.",
+      "properties": {
+        "transport": { "const": "download" },
+        "url": {
+          "type": "string",
+          "format": "uri",
+          "pattern": "^https://",
+          "description": "https:// capability URL retrievable with an unauthenticated GET."
+        },
+        "expiresAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "ISO 8601 timestamp after which the URL must be rejected."
+        },
+        "singleUse": {
+          "type": "boolean",
+          "default": true,
+          "description": "If true, the URL is invalidated after a complete retrieval."
+        }
+      },
+      "required": ["transport", "url", "expiresAt"],
+      "additionalProperties": false
+    },
+    "UnknownTransportDescriptor": {
+      "type": "object",
+      "description": "Fallthrough branch for a transport this schema version does not define. Requires only a transport name; a consumer skips such a descriptor during selection (spec section 9). The known transport names are excluded so a known-but-malformed descriptor still fails against its own branch.",
+      "$comment": "The not/enum exclusion list must name every transport used as a `transport` const by a defined descriptor (FilesystemSource, DownloadSource, FilesystemSink, UploadSink). A future version that adds a transport descriptor must add that transport name here, or a malformed instance of the new descriptor could match this fallthrough branch.",
+      "properties": {
+        "transport": {
+          "type": "string",
+          "not": { "enum": ["filesystem", "download", "upload"] }
+        }
+      },
+      "required": ["transport"],
+      "additionalProperties": true
+    },
+    "TransferSource": {
+      "description": "A descriptor for reading an artifact's bytes. The transport set is open (spec section 17.5): a descriptor with an unrecognized transport validates via the unknown-transport branch and is skipped during selection (spec section 9).",
+      "oneOf": [
+        { "$ref": "#/$defs/FilesystemSource" },
+        { "$ref": "#/$defs/DownloadSource" },
+        { "$ref": "#/$defs/UnknownTransportDescriptor" }
+      ]
+    },
+    "FilesystemSink": {
+      "type": "object",
+      "description": "Sink descriptor: write an artifact to a shared filesystem location.",
+      "properties": {
+        "transport": { "const": "filesystem" },
+        "uri": {
+          "type": "string",
+          "pattern": "^(exchange://[^/]+/.+|file:///[^/].*)$",
+          "description": "Locator URI at which the artifact is to be written: exchange://<volume>/<path> (non-empty volume and path required) or a file:///<absolute-path> URI (empty authority — no remote host). Consumers MUST canonicalize and confine the resolved path at runtime (spec section 10.1.3)."
+        }
+      },
+      "required": ["transport", "uri"],
+      "additionalProperties": false
+    },
+    "UploadSink": {
+      "type": "object",
+      "description": "Sink descriptor: write an artifact via an HTTPS upload URL. Upload URLs are implicitly single-use (spec section 10.3); unlike DownloadSource there is no singleUse flag.",
+      "properties": {
+        "transport": { "const": "upload" },
+        "url": {
+          "type": "string",
+          "format": "uri",
+          "pattern": "^https://",
+          "description": "https:// capability URL the artifact is sent to."
+        },
+        "method": {
+          "type": "string",
+          "enum": ["PUT", "POST"],
+          "default": "PUT",
+          "description": "HTTP method used to upload."
+        },
+        "expiresAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "ISO 8601 timestamp after which the URL must be rejected."
+        }
+      },
+      "required": ["transport", "url", "expiresAt"],
+      "additionalProperties": false
+    },
+    "TransferSink": {
+      "description": "A descriptor for writing an artifact's bytes. The transport set is open (spec section 17.5): a descriptor with an unrecognized transport validates via the unknown-transport branch and is skipped during selection (spec section 9).",
+      "oneOf": [
+        { "$ref": "#/$defs/FilesystemSink" },
+        { "$ref": "#/$defs/UploadSink" },
+        { "$ref": "#/$defs/UnknownTransportDescriptor" }
+      ]
+    },
+    "TransferHandle": {
+      "type": "object",
+      "description": "A pull token: an artifact plus one or more ways to read it. Open to unknown fields for forward compatibility (spec section 17.2).",
+      "properties": {
+        "type": {
+          "const": "nl.liesdonk.file-exchange/transfer-handle"
+        },
+        "version": {
+          "type": "string",
+          "pattern": "^[0-9]+\\.[0-9]+$",
+          "description": "Extension version, e.g. \"0.1\"."
+        },
+        "artifact": { "$ref": "#/$defs/ArtifactMetadata" },
+        "sources": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/TransferSource" },
+          "description": "Source descriptors, ordered by provider preference."
+        },
+        "requires": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true,
+          "description": "Feature identifiers a consumer MUST understand to process this reference (spec section 17.4). A consumer that does not recognize every entry MUST reject the reference with an unsupported-requirement error. A reference whose `version` is `0.1` MUST omit this field or leave it empty; this schema enforces that."
+        },
+        "_meta": {
+          "type": "object",
+          "description": "Reserved, per the MCP _meta rules."
+        }
+      },
+      "required": ["type", "version", "artifact", "sources"],
+      "additionalProperties": true,
+      "if": {
+        "required": ["version"],
+        "properties": { "version": { "const": "0.1" } }
+      },
+      "then": {
+        "properties": { "requires": { "maxItems": 0 } }
+      }
+    },
+    "IntakeTicket": {
+      "type": "object",
+      "description": "A push token: one or more ways to write an artifact to a receiver. Open to unknown fields for forward compatibility (spec section 17.2).",
+      "properties": {
+        "type": {
+          "const": "nl.liesdonk.file-exchange/intake-ticket"
+        },
+        "version": {
+          "type": "string",
+          "pattern": "^[0-9]+\\.[0-9]+$",
+          "description": "Extension version, e.g. \"0.1\"."
+        },
+        "artifactId": {
+          "type": "string",
+          "description": "Receiver-chosen correlation identifier for the pushed artifact."
+        },
+        "expected": { "$ref": "#/$defs/ArtifactConstraints" },
+        "sinks": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/TransferSink" },
+          "description": "Sink descriptors, ordered by receiver preference."
+        },
+        "requires": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true,
+          "description": "Feature identifiers a consumer MUST understand to process this reference (spec section 17.4). A consumer that does not recognize every entry MUST reject the reference with an unsupported-requirement error. A reference whose `version` is `0.1` MUST omit this field or leave it empty; this schema enforces that."
+        },
+        "_meta": {
+          "type": "object",
+          "description": "Reserved, per the MCP _meta rules."
+        }
+      },
+      "required": ["type", "version", "artifactId", "sinks"],
+      "additionalProperties": true,
+      "if": {
+        "required": ["version"],
+        "properties": { "version": { "const": "0.1" } }
+      },
+      "then": {
+        "properties": { "requires": { "maxItems": 0 } }
+      }
+    },
+    "TransferErrorCode": {
+      "type": "string",
+      "description": "Machine-readable transfer failure reason. Defined values: no-supported-transport, descriptor-expired, not-accessible, digest-mismatch, size-mismatch, too-large, mime-type-rejected, unsupported-requirement, transfer-failed. The set is open (spec section 13); an unrecognized code is treated as a generic failure."
+    },
+    "TransferError": {
+      "type": "object",
+      "description": "Placed at _meta[\"nl.liesdonk.file-exchange/error\"] of a failed transfer's CallToolResult. Open to unknown fields for forward compatibility (spec section 17.2).",
+      "properties": {
+        "code": { "$ref": "#/$defs/TransferErrorCode" },
+        "transport": {
+          "type": "string",
+          "description": "The transport that was attempted, when applicable. Defined values: filesystem, download, upload. Open for forward compatibility."
+        },
+        "detail": { "type": "string" }
+      },
+      "required": ["code"],
+      "additionalProperties": true
+    }
+  },
+  "oneOf": [
+    { "$ref": "#/$defs/TransferHandle" },
+    { "$ref": "#/$defs/IntakeTicket" }
+  ]
+}

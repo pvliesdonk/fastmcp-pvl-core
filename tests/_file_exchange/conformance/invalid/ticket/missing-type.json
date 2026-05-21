@@ -1,0 +1,5 @@
+{
+  "version": "0.1",
+  "artifactId": "intake-1",
+  "sinks": [ { "transport": "filesystem", "uri": "exchange://v/inbox/intake-1" } ]
+}

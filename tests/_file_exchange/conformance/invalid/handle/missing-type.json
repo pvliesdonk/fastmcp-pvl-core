@@ -1,0 +1,5 @@
+{
+  "version": "0.1",
+  "artifact": { "name": "x" },
+  "sources": [ { "transport": "filesystem", "uri": "exchange://v/x" } ]
+}

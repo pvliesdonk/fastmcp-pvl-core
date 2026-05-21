@@ -1,0 +1,6 @@
+{
+  "type": "nl.liesdonk.file-exchange/transfer-handle",
+  "version": "0.1",
+  "artifact": {},
+  "sources": [ { "transport": "filesystem", "uri": "exchange://v/x" } ]
+}

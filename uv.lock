@@ -822,6 +822,8 @@ source = { editable = "." }
 dependencies = [
     { name = "fastmcp" },
     { name = "httpx" },
+    { name = "jsonschema" },
+    { name = "pydantic" },
     { name = "tomli", marker = "python_full_version < '3.11'" },
     { name = "typing-extensions", marker = "python_full_version < '3.11'" },
 ]
@@ -856,9 +858,11 @@ requires-dist = [
     { name = "debugpy", marker = "extra == 'debug'", specifier = ">=1.8" },
     { name = "fastmcp", specifier = ">=3.3.1,<4" },
     { name = "httpx", specifier = ">=0.27" },
+    { name = "jsonschema", specifier = ">=4.18" },
     { name = "py-key-value-aio", extras = ["dynamodb"], marker = "extra == 'dynamodb'" },
     { name = "py-key-value-aio", extras = ["mongodb"], marker = "extra == 'mongodb'" },
     { name = "py-key-value-aio", extras = ["redis"], marker = "extra == 'redis'" },
+    { name = "pydantic", specifier = ">=2.7" },
     { name = "tomli", marker = "python_full_version < '3.11'", specifier = ">=2.0" },
     { name = "typing-extensions", marker = "python_full_version < '3.11'", specifier = ">=4.7" },
 ]

@@ -1,0 +1,6 @@
+{
+  "type": "nl.liesdonk.file-exchange/intake-ticket",
+  "version": "0.1",
+  "artifactId": "i1",
+  "sinks": [ { "transport": "download", "url": "https://x.example.com/d/abc", "expiresAt": "2027-01-01T00:00:00Z" } ]
+}

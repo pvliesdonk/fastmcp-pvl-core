@@ -1,0 +1,5 @@
+{
+  "version": "0.2",
+  "roles": { "provider": ["filesystem"] },
+  "futureField": true
+}
