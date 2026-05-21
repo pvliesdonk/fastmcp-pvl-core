@@ -110,6 +110,19 @@ def test_known_codes_dont_render_generic_fallback_text():
         assert not result.content[0].text.startswith("File transfer failed: ")
 
 
+def test_unknown_code_with_transport_omits_suffix_keeps_meta():
+    """Unknown code: transport lands in ``_meta`` but no text suffix.
+
+    Pins the documented asymmetry — the generic ``"File transfer
+    failed: <code>"`` fallback is intentionally terse and does NOT get
+    the ``(transport: X)`` suffix, while ``transport`` still appears in
+    the structured envelope.
+    """
+    result = build_file_exchange_error("future-spec-code", transport="download")
+    assert result.meta[_NAMESPACE_KEY]["transport"] == "download"
+    assert result.content[0].text == "File transfer failed: future-spec-code"
+
+
 def test_meta_serialises_under_underscore_meta_alias_on_wire():
     """§13 mandates the envelope under the JSON key ``_meta`` (alias).
 

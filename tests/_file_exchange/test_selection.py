@@ -95,6 +95,40 @@ def test_select_source_skips_download_just_past_tolerance():
     assert select_source(handle, now=_NOW) is None
 
 
+def test_select_source_selects_download_at_exact_tolerance_boundary():
+    """``expiresAt`` exactly ``now - 30s`` is selected (strict ``<`` boundary).
+
+    Pins the inclusive/exclusive choice: the check is
+    ``expiresAt < now - tolerance``, so a descriptor at exactly the 30s
+    mark is NOT skipped. A refactor to ``<=`` would flip this and only
+    this test would catch it.
+    """
+    at_boundary = (_NOW - timedelta(seconds=30)).isoformat()
+    handle = _handle(
+        {
+            "transport": "download",
+            "url": "https://x/y",
+            "expiresAt": at_boundary,
+        }
+    )
+    assert isinstance(select_source(handle, now=_NOW), DownloadSource)
+
+
+def test_select_source_does_not_consult_callback_for_download():
+    """The accessibility callback is only for filesystem descriptors.
+
+    A download-only handle must never invoke ``is_accessible`` (HTTPS
+    reachability is a transfer-time concern, not selection-time).
+    """
+    calls: list[object] = []
+    future = (_NOW + timedelta(minutes=5)).isoformat()
+    handle = _handle(
+        {"transport": "download", "url": "https://x/y", "expiresAt": future}
+    )
+    select_source(handle, is_accessible=lambda d: calls.append(d) or True, now=_NOW)
+    assert calls == []
+
+
 def test_select_source_selects_future_download():
     """``expiresAt`` in the future — selected."""
     future = (_NOW + timedelta(minutes=5)).isoformat()
