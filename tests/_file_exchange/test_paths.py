@@ -93,6 +93,19 @@ def test_confine_rejects_symlink_escape(tmp_path):
     assert canonicalize_and_confine(root / "link" / "secret", root) is None
 
 
+def test_confine_rejects_sibling_with_shared_prefix(tmp_path):
+    """A sibling dir whose name shares a string prefix with root must be
+    rejected — pins the is_relative_to (component-wise) choice against a
+    naive str.startswith confinement that would treat /vol-data as inside
+    /vol and silently bypass confinement."""
+    root = tmp_path / "vol"
+    root.mkdir()
+    sibling = tmp_path / "vol-data"  # shares the "vol" string prefix
+    sibling.mkdir()
+    (sibling / "secret").write_text("x")
+    assert canonicalize_and_confine(sibling / "secret", root) is None
+
+
 def test_confine_rejects_symlink_in_intermediate_component(tmp_path):
     root = tmp_path / "vol"
     (root / "real").mkdir(parents=True)
@@ -484,3 +497,16 @@ def test_resolve_file_two_volume_map_matches_second_volume(tmp_path):
     uri = "file://" + str(second / "target.bin")
     result = resolve_filesystem_uri(uri, volume_map=vm)
     assert result == (second / "target.bin").resolve()
+
+
+def test_resolve_file_sibling_with_shared_prefix_returns_none(tmp_path):
+    """A file:// path in a sibling dir sharing a string prefix with a volume
+    root must return None — pins the resolver's is_relative_to confinement
+    against a str.startswith regression (docs vs docs-archive bypass)."""
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    archive = tmp_path / "docs-archive"  # shares the "docs" string prefix
+    archive.mkdir()
+    (archive / "secret").write_text("x")
+    uri = "file://" + str(archive / "secret")
+    assert resolve_filesystem_uri(uri, volume_map={"docs": docs}) is None

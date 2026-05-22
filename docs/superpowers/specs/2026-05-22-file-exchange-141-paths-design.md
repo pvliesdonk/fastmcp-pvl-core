@@ -98,11 +98,16 @@ catches.) Rejected (→ `None`):
 - any query, fragment, userinfo, or port component,
 - a non-lowercase scheme (`urlsplit` lowercases it, but the wire pattern
   is case-sensitive, so `EXCHANGE://…` must be rejected),
-- embedded ASCII control characters (`\x00`, `\t`, `\n`, `\r`):
-  `urlsplit` silently strips tab/newline/CR (WHATWG) and `Path.resolve()`
-  raises on a null byte, so the post-strip parse would otherwise accept a
-  URI the newline-anchored wire pattern refuses — making the parser more
-  permissive than the wire.
+- embedded ASCII control characters (`\x00`, `\t`, `\n`, `\r`): `urlsplit`
+  silently strips tab/newline/CR (WHATWG), so without an up-front guard the
+  parser would act on a string the descriptor never carried. Rejected for
+  three distinct reasons: **newline** — the wire pattern rejects the
+  un-stripped URI, so honouring the stripped form would make the parser
+  more permissive than the wire; **null byte** — `Path.resolve()` raises on
+  it downstream, so rejecting here keeps the never-raise contract;
+  **tab/CR** — the wire regex's `.` actually matches these (the wire
+  accepts them), but we reject anyway so the parser is strictly stricter
+  than the wire rather than silently acting on a mutated string.
 
 `file:///<abs>` — `urlsplit("file:///mnt/x")` yields scheme `file`,
 netloc `""`, path `/mnt/x`. Returns `("file", "", "/mnt/x")`. Rejected:
