@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
 from pathlib import Path
 
@@ -369,3 +370,78 @@ def test_resolve_file_empty_volume_map_returns_none_no_warn(tmp_path, caplog):
         result = resolve_filesystem_uri("file:///mnt/x", volume_map={})
     assert result is None
     assert caplog.records == []
+
+
+# --- symlink-loop safety (Finding 1 / Finding 2) ---
+# CPython <=3.12: Path.resolve() raises RuntimeError on a symlink cycle;
+# 3.13 returns the lexical path. In all versions the result must be None,
+# never a raise.
+
+
+def test_confine_symlink_self_loop_returns_none_not_raise(tmp_path):
+    """A self-referential symlink inside root must return None, not raise."""
+    root = tmp_path / "vol"
+    root.mkdir()
+    os.symlink(root / "a", root / "a")  # a -> a (self-loop)
+    assert canonicalize_and_confine(root / "a" / "x", root) is None
+
+
+def test_confine_symlink_mutual_loop_returns_none_not_raise(tmp_path):
+    """A mutual symlink cycle inside root must return None, not raise."""
+    root = tmp_path / "vol"
+    root.mkdir()
+    os.symlink(root / "b", root / "a")  # a -> b
+    os.symlink(root / "a", root / "b")  # b -> a (mutual loop)
+    assert canonicalize_and_confine(root / "a" / "x", root) is None
+
+
+def test_resolve_exchange_symlink_loop_returns_none_not_raise(tmp_path):
+    """exchange:// resolver must return None (not raise) on a symlink loop."""
+    root = tmp_path / "docs"
+    root.mkdir()
+    os.symlink(root / "a", root / "a")  # self-loop inside the volume
+    vm = {"docs": root}
+    assert resolve_filesystem_uri("exchange://docs/a/x", volume_map=vm) is None
+
+
+def test_resolve_file_symlink_loop_returns_none_not_raise(tmp_path):
+    """file:// resolver must return None (not raise) on a symlink loop."""
+    root = tmp_path / "docs"
+    root.mkdir()
+    os.symlink(root / "a", root / "a")  # self-loop inside the volume
+    vm = {"docs": root}
+    assert (
+        resolve_filesystem_uri("file://" + str(root / "a" / "x"), volume_map=vm) is None
+    )
+
+
+# --- file:// confinement via resolver (Finding 3) ---
+
+
+def test_resolve_file_symlink_escape_through_resolver_returns_none(tmp_path):
+    """A file:// path lexically inside a volume that symlinks out must
+    return None — catches a future refactor that swaps canonicalize_and_confine
+    for a lexical startswith check."""
+    root = tmp_path / "docs"
+    root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret").write_text("x")
+    (root / "link").symlink_to(outside)
+    # Lexically inside root, but resolves outside via the symlink.
+    uri = "file://" + str(root / "link" / "secret")
+    assert resolve_filesystem_uri(uri, volume_map={"docs": root}) is None
+
+
+def test_resolve_file_two_volume_map_matches_second_volume(tmp_path):
+    """A file:// path inside the SECOND volume entry resolves correctly —
+    pins the 'try each volume, accept on first match' loop."""
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    (second / "target.bin").write_text("data")
+    vm = {"first": first, "second": second}
+    uri = "file://" + str(second / "target.bin")
+    result = resolve_filesystem_uri(uri, volume_map=vm)
+    assert result == (second / "target.bin").resolve()

@@ -101,9 +101,12 @@ def canonicalize_and_confine(candidate: Path | str, root: Path | str) -> Path | 
     try:
         resolved_root = Path(root).resolve()
         resolved_candidate = Path(candidate).resolve()
-    except ValueError:
-        # Untrusted input: a null byte (or other path-illegal value)
-        # must yield the reject signal, not propagate ValueError.
+    except (ValueError, OSError, RuntimeError):
+        # Untrusted input or untrusted filesystem state must yield the
+        # reject signal, never propagate. Path.resolve() raises ValueError
+        # on an embedded null byte or bad surrogate, RuntimeError on a
+        # symlink loop (CPython <=3.12; 3.13 returns the lexical path), and
+        # OSError on other errno-based resolution failures.
         return None
     if resolved_candidate.is_relative_to(resolved_root):
         return resolved_candidate
