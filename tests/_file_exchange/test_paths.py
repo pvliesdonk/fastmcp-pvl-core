@@ -301,6 +301,7 @@ def test_parse_volume_map_splits_on_first_equals():
         "docs=",  # empty path
         "docs=relative/x",  # non-absolute path
         "docs=/a,docs=/b",  # duplicate name
+        "docs/extra=/mnt/x",  # name contains '/' (unreachable: wire is [^/]+)
     ],
 )
 def test_parse_volume_map_rejects(raw):
@@ -462,26 +463,39 @@ def test_confine_symlink_mutual_loop_confined_or_none_never_raises(tmp_path):
     assert result is None or result.is_relative_to(root.resolve())
 
 
-def test_resolve_exchange_symlink_loop_confined_or_none_never_raises(tmp_path):
+def test_resolve_exchange_symlink_loop_confined_or_none_never_raises(tmp_path, caplog):
     """exchange:// resolver must never raise on a symlink loop; any returned
-    path stays within the volume root."""
+    path stays within the volume root, and any warning uses the honest
+    'could not be confined' wording (never a false 'escaped' claim)."""
     root = tmp_path / "docs"
     root.mkdir()
     os.symlink(root / "a", root / "a")  # self-loop inside the volume
     vm = {"docs": root}
-    result = resolve_filesystem_uri("exchange://docs/a/x", volume_map=vm)
+    with caplog.at_level(logging.WARNING):
+        result = resolve_filesystem_uri("exchange://docs/a/x", volume_map=vm)
     assert result is None or result.is_relative_to(root.resolve())
+    # Version-dependent: <=3.12 warns (loop -> None), 3.13 returns the path
+    # silently. Either way, no warning may falsely claim an escape.
+    for r in caplog.records:
+        assert "escaped" not in r.getMessage()
+        assert "could not be confined to its volume root" in r.getMessage()
 
 
-def test_resolve_file_symlink_loop_confined_or_none_never_raises(tmp_path):
+def test_resolve_file_symlink_loop_confined_or_none_never_raises(tmp_path, caplog):
     """file:// resolver must never raise on a symlink loop; any returned path
-    stays within the volume root."""
+    stays within the volume root, and any warning uses the honest 'could not
+    be confined' wording (never a false 'not within any volume' claim)."""
     root = tmp_path / "docs"
     root.mkdir()
     os.symlink(root / "a", root / "a")  # self-loop inside the volume
     vm = {"docs": root}
-    result = resolve_filesystem_uri("file://" + str(root / "a" / "x"), volume_map=vm)
+    with caplog.at_level(logging.WARNING):
+        result = resolve_filesystem_uri(
+            "file://" + str(root / "a" / "x"), volume_map=vm
+        )
     assert result is None or result.is_relative_to(root.resolve())
+    for r in caplog.records:
+        assert "could not be confined to any configured volume" in r.getMessage()
 
 
 # --- file:// confinement via resolver (Finding 3) ---

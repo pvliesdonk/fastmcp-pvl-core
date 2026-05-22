@@ -39,10 +39,11 @@ def _parse_volume_map(raw: str, var_name: str) -> dict[str, Path]:
     operator knows which variable to fix.
 
     Raises:
-        ConfigurationError: an entry has no ``=``, an empty name, an
-            empty path, a non-absolute path, or a duplicate volume name
-            — operator misconfiguration that must fail loudly at startup
-            rather than silently make ``exchange://`` URIs unresolvable.
+        ConfigurationError: an entry has no ``=``, an empty name, a name
+            containing ``/``, an empty path, a non-absolute path, or a
+            duplicate volume name — operator misconfiguration that must fail
+            loudly at startup rather than silently make ``exchange://`` URIs
+            unresolvable.
     """
     out: dict[str, Path] = {}
     for entry in raw.split(","):
@@ -54,6 +55,13 @@ def _parse_volume_map(raw: str, var_name: str) -> dict[str, Path]:
         path = path.strip()
         if not sep or not name or not path:
             raise ConfigurationError(f"{var_name} entry must be 'name=path': {entry!r}")
+        if "/" in name:
+            # The wire grammar is exchange://[^/]+/… — a "/" terminates the
+            # netloc, so a volume name containing "/" can never match any
+            # incoming URI. Fail loudly rather than leave dead config.
+            raise ConfigurationError(
+                f"{var_name} volume name must not contain '/': {name!r}"
+            )
         if not path.startswith("/"):
             raise ConfigurationError(
                 f"{var_name} mount path must be absolute: {path!r}"
