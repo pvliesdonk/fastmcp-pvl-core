@@ -82,7 +82,11 @@ def _parse_fs_uri(
         if parts.netloc:
             return None
         path = parts.path
-        if not path.startswith("/"):
+        # Match _FS_URI_PATTERN's ``file:///[^/].*``: an absolute path
+        # whose first segment char is not itself a slash. Rejects the
+        # root-only ``file:///`` (path ``/``) and ``file:////x`` (path
+        # ``//x``), keeping the parser no more permissive than the wire.
+        if len(path) < 2 or path[0] != "/" or path[1] == "/":
             return None
         return ("file", "", path)
     return None

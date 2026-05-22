@@ -159,6 +159,8 @@ def test_parse_fs_uri_valid(uri, expected):
         "exchange://docs/a#f",  # fragment
         "file://host/x",  # non-empty authority
         "file://x",  # not absolute (authority 'x', empty path)
+        "file:///",  # root-only path
+        "file:////x",  # double slash after authority
         "https://example/x",  # unknown scheme
         "not-a-uri",  # no scheme
         "",  # empty
@@ -181,6 +183,12 @@ def test_parse_agrees_with_wire_pattern_on_valid():
 
 def test_parse_agrees_with_wire_pattern_on_invalid():
     """URIs the wire pattern rejects must also fail to parse."""
-    for uri in ("exchange:///x", "exchange://docs/", "file://host/x"):
+    for uri in (
+        "exchange:///x",
+        "exchange://docs/",
+        "file://host/x",
+        "file:///",
+        "file:////x",
+    ):
         assert not re.match(_FS_URI_PATTERN, uri), uri
         assert _parse_fs_uri(uri) is None, uri
