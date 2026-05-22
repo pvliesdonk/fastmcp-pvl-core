@@ -60,6 +60,7 @@ dev = [
   "mypy>=1.11",
   "diff-cover>=9",
   "httpx>=0.27",
+  "hypothesis>=6",
 ]
 
 [tool.hatch.build.targets.wheel]
