@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from pathlib import Path
 
@@ -15,6 +16,7 @@ from fastmcp_pvl_core._file_exchange._paths import (
     _parse_volume_map,
     canonicalize_and_confine,
     load_volume_map,
+    resolve_filesystem_uri,
 )
 from fastmcp_pvl_core._file_exchange._wire import _FS_URI_PATTERN
 
@@ -256,3 +258,69 @@ def test_load_volume_map_custom_prefix(monkeypatch):
 def test_load_volume_map_blank_env_returns_empty(monkeypatch):
     monkeypatch.setenv("FILE_EXCHANGE_VOLUMES", "   ")
     assert load_volume_map() == {}
+
+
+# --- resolve_filesystem_uri ---
+
+
+def test_resolve_exchange_confined(tmp_path):
+    root = tmp_path / "docs"
+    root.mkdir()
+    (root / "a.bin").write_text("x")
+    vm = {"docs": root}
+    assert (
+        resolve_filesystem_uri("exchange://docs/a.bin", volume_map=vm)
+        == (root / "a.bin").resolve()
+    )
+
+
+def test_resolve_exchange_unknown_volume_returns_none(tmp_path):
+    vm = {"docs": tmp_path / "docs"}
+    assert resolve_filesystem_uri("exchange://other/a.bin", volume_map=vm) is None
+
+
+def test_resolve_exchange_escape_returns_none_and_warns(tmp_path, caplog):
+    root = tmp_path / "docs"
+    root.mkdir()
+    (tmp_path / "outside").mkdir()
+    vm = {"docs": root}
+    with caplog.at_level(logging.WARNING):
+        result = resolve_filesystem_uri("exchange://docs/../outside", volume_map=vm)
+    assert result is None
+    assert any("escaped its volume root" in r.message for r in caplog.records)
+    # The raw path is never logged — only the volume id.
+    assert not any("outside" in r.getMessage() for r in caplog.records)
+
+
+def test_resolve_exchange_unknown_volume_does_not_warn(tmp_path, caplog):
+    vm = {"docs": tmp_path / "docs"}
+    with caplog.at_level(logging.WARNING):
+        resolve_filesystem_uri("exchange://other/a.bin", volume_map=vm)
+    assert caplog.records == []
+
+
+def test_resolve_file_within_a_volume(tmp_path):
+    root = tmp_path / "docs"
+    root.mkdir()
+    (root / "a.bin").write_text("x")
+    vm = {"docs": root}
+    uri = f"file://{(root / 'a.bin')}"  # file:///<abs>
+    assert resolve_filesystem_uri(uri, volume_map=vm) == (root / "a.bin").resolve()
+
+
+def test_resolve_file_outside_all_volumes_returns_none_and_warns(tmp_path, caplog):
+    root = tmp_path / "docs"
+    root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret").write_text("x")
+    vm = {"docs": root}
+    with caplog.at_level(logging.WARNING):
+        result = resolve_filesystem_uri(f"file://{(outside / 'secret')}", volume_map=vm)
+    assert result is None
+    assert any("not within any configured volume" in r.message for r in caplog.records)
+
+
+def test_resolve_malformed_uri_returns_none(tmp_path):
+    vm = {"docs": tmp_path / "docs"}
+    assert resolve_filesystem_uri("https://example/x", volume_map=vm) is None

@@ -105,6 +105,48 @@ def canonicalize_and_confine(candidate: Path | str, root: Path | str) -> Path | 
     return None
 
 
+def resolve_filesystem_uri(uri: str, *, volume_map: VolumeMap) -> Path | None:
+    """Resolve a filesystem-descriptor URI to a confined local path.
+
+    Returns the confined path, or ``None`` when the URI is malformed,
+    names an unmapped volume, or escapes confinement. An escape logs a
+    ``WARNING`` (with only the volume id — never the raw path/URI);
+    benign no-mapping does not log.
+
+    Args:
+        uri: The descriptor ``uri`` (``exchange://`` or ``file://``).
+        volume_map: Volume id → mount point. The mount points are also
+            the universe of exchange directories a ``file://`` path may
+            lie within.
+    """
+    parsed = _parse_fs_uri(uri)
+    if parsed is None:
+        return None
+    scheme, volume, path = parsed
+
+    if scheme == "exchange":
+        root = volume_map.get(volume)
+        if root is None:
+            return None
+        confined = canonicalize_and_confine(root / path, root)
+        if confined is None:
+            logger.warning(
+                "file-exchange: exchange:// path escaped its volume root; "
+                "rejecting (volume=%r)",
+                volume,
+            )
+        return confined
+
+    for root in volume_map.values():
+        confined = canonicalize_and_confine(path, root)
+        if confined is not None:
+            return confined
+    logger.warning(
+        "file-exchange: file:// path is not within any configured volume; rejecting"
+    )
+    return None
+
+
 def _parse_fs_uri(
     uri: str,
 ) -> tuple[Literal["exchange", "file"], str, str] | None:
