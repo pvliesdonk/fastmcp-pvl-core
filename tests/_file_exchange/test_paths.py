@@ -161,6 +161,8 @@ def test_confine_invariant_accepted_paths_are_within_root(_confine_root, segment
         ("exchange://docs/a/b.bin", ("exchange", "docs", "a/b.bin")),
         ("exchange://v/single", ("exchange", "v", "single")),
         ("exchange://docs/a/../etc", ("exchange", "docs", "a/../etc")),
+        # leading double-slash collapses (lstrip), same path as single-slash
+        ("exchange://docs//a/b", ("exchange", "docs", "a/b")),
         ("file:///mnt/x", ("file", "", "/mnt/x")),
         ("file:///mnt/../etc", ("file", "", "/mnt/../etc")),
     ],
@@ -424,47 +426,57 @@ def test_resolve_file_empty_volume_map_returns_none_no_warn(tmp_path, caplog):
     assert caplog.records == []
 
 
-# --- symlink-loop safety (Finding 1 / Finding 2) ---
-# CPython <=3.12: Path.resolve() raises RuntimeError on a symlink cycle;
-# 3.13 returns the lexical path. In all versions the result must be None,
-# never a raise.
+# --- symlink-loop safety ---
+# A symlink loop must NEVER raise. CPython <=3.12 raises RuntimeError on a
+# loop (caught -> None); 3.13+ returns the lexical path instead. For a loop
+# that stays WITHIN root, that 3.13 lexical path is itself within root, so
+# the function returns it — confinement still holds; the broken link is a
+# data-plane concern open() rejects with ELOOP, not a confinement escape.
+# The version-independent contract these pin: never raises, and any returned
+# path is confined within root (None on <=3.12, the within-root path on
+# 3.13+).
 
 
-def test_confine_symlink_self_loop_returns_none_not_raise(tmp_path):
-    """A self-referential symlink inside root must return None, not raise."""
+def test_confine_symlink_self_loop_confined_or_none_never_raises(tmp_path):
+    """A self-referential symlink must never raise; any returned path is
+    confined (None on CPython <=3.12, the within-root lexical path on 3.13+)."""
     root = tmp_path / "vol"
     root.mkdir()
     os.symlink(root / "a", root / "a")  # a -> a (self-loop)
-    assert canonicalize_and_confine(root / "a" / "x", root) is None
+    result = canonicalize_and_confine(root / "a" / "x", root)  # must not raise
+    assert result is None or result.is_relative_to(root.resolve())
 
 
-def test_confine_symlink_mutual_loop_returns_none_not_raise(tmp_path):
-    """A mutual symlink cycle inside root must return None, not raise."""
+def test_confine_symlink_mutual_loop_confined_or_none_never_raises(tmp_path):
+    """A mutual symlink cycle must never raise; any returned path is confined."""
     root = tmp_path / "vol"
     root.mkdir()
     os.symlink(root / "b", root / "a")  # a -> b
     os.symlink(root / "a", root / "b")  # b -> a (mutual loop)
-    assert canonicalize_and_confine(root / "a" / "x", root) is None
+    result = canonicalize_and_confine(root / "a" / "x", root)  # must not raise
+    assert result is None or result.is_relative_to(root.resolve())
 
 
-def test_resolve_exchange_symlink_loop_returns_none_not_raise(tmp_path):
-    """exchange:// resolver must return None (not raise) on a symlink loop."""
+def test_resolve_exchange_symlink_loop_confined_or_none_never_raises(tmp_path):
+    """exchange:// resolver must never raise on a symlink loop; any returned
+    path stays within the volume root."""
     root = tmp_path / "docs"
     root.mkdir()
     os.symlink(root / "a", root / "a")  # self-loop inside the volume
     vm = {"docs": root}
-    assert resolve_filesystem_uri("exchange://docs/a/x", volume_map=vm) is None
+    result = resolve_filesystem_uri("exchange://docs/a/x", volume_map=vm)
+    assert result is None or result.is_relative_to(root.resolve())
 
 
-def test_resolve_file_symlink_loop_returns_none_not_raise(tmp_path):
-    """file:// resolver must return None (not raise) on a symlink loop."""
+def test_resolve_file_symlink_loop_confined_or_none_never_raises(tmp_path):
+    """file:// resolver must never raise on a symlink loop; any returned path
+    stays within the volume root."""
     root = tmp_path / "docs"
     root.mkdir()
     os.symlink(root / "a", root / "a")  # self-loop inside the volume
     vm = {"docs": root}
-    assert (
-        resolve_filesystem_uri("file://" + str(root / "a" / "x"), volume_map=vm) is None
-    )
+    result = resolve_filesystem_uri("file://" + str(root / "a" / "x"), volume_map=vm)
+    assert result is None or result.is_relative_to(root.resolve())
 
 
 # --- file:// confinement via resolver (Finding 3) ---

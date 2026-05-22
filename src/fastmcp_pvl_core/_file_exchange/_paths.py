@@ -208,6 +208,10 @@ def _parse_fs_uri(
                 None  # urlsplit lowercased the scheme; wire pattern is case-sensitive
             )
         volume = parts.netloc
+        # lstrip (not [1:]) intentionally collapses leading slashes, so
+        # exchange://docs//a and exchange://docs/a normalise to the same
+        # relative path. Both forms match the wire pattern's `.+`, and
+        # confinement is component-wise downstream, so the collapse is safe.
         path = parts.path.lstrip("/")
         if not volume or not path:
             return None
