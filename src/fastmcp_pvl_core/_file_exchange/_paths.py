@@ -143,9 +143,12 @@ def resolve_filesystem_uri(uri: str, *, volume_map: VolumeMap) -> Path | None:
             return None
         confined = canonicalize_and_confine(root / path, root)
         if confined is None:
+            # None covers a genuine escape, a symlink loop (RuntimeError on
+            # CPython <=3.12), and an OSError — so the wording stays honest
+            # rather than asserting "escaped" for what may be a broken link.
             logger.warning(
-                "file-exchange: exchange:// path escaped its volume root; "
-                "rejecting (volume=%r)",
+                "file-exchange: exchange:// path could not be confined to its "
+                "volume root; rejecting (volume=%r)",
                 volume,
             )
         return confined
@@ -153,12 +156,19 @@ def resolve_filesystem_uri(uri: str, *, volume_map: VolumeMap) -> Path | None:
     if not volume_map:
         return None  # party doesn't do filesystem — benign, no warning
         # (symmetric with the exchange:// unknown-volume case)
+    # First lexical-confinement match wins (insertion order). With nested
+    # volumes (e.g. /data and /data/uploads) a path under the child also
+    # confines under the parent; confinement holds either way, but the caller
+    # owns non-overlap if it attributes access policy/quota/audit to a volume.
     for root in volume_map.values():
         confined = canonicalize_and_confine(path, root)
         if confined is not None:
             return confined
+    # As above, None may be escape, symlink loop, or OSError — not strictly
+    # "outside every volume" — so the message says "could not be confined".
     logger.warning(
-        "file-exchange: file:// path is not within any configured volume; rejecting"
+        "file-exchange: file:// path could not be confined to any configured "
+        "volume; rejecting"
     )
     return None
 

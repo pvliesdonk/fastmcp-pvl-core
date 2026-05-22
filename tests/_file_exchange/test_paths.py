@@ -361,7 +361,9 @@ def test_resolve_exchange_escape_returns_none_and_warns(tmp_path, caplog):
     with caplog.at_level(logging.WARNING):
         result = resolve_filesystem_uri("exchange://docs/../outside", volume_map=vm)
     assert result is None
-    assert any("escaped its volume root" in r.message for r in caplog.records)
+    assert any(
+        "could not be confined to its volume root" in r.message for r in caplog.records
+    )
     # The raw path is never logged — only the volume id.
     assert not any("outside" in r.getMessage() for r in caplog.records)
 
@@ -392,7 +394,10 @@ def test_resolve_file_outside_all_volumes_returns_none_and_warns(tmp_path, caplo
     with caplog.at_level(logging.WARNING):
         result = resolve_filesystem_uri(f"file://{(outside / 'secret')}", volume_map=vm)
     assert result is None
-    assert any("not within any configured volume" in r.message for r in caplog.records)
+    assert any(
+        "could not be confined to any configured volume" in r.message
+        for r in caplog.records
+    )
 
 
 def test_resolve_malformed_uri_returns_none(tmp_path):
@@ -509,6 +514,20 @@ def test_resolve_file_two_volume_map_matches_second_volume(tmp_path):
     uri = "file://" + str(second / "target.bin")
     result = resolve_filesystem_uri(uri, volume_map=vm)
     assert result == (second / "target.bin").resolve()
+
+
+def test_resolve_file_nested_volumes_resolve_within_confinement(tmp_path):
+    """With nested volumes (/data and /data/uploads), a path under the child
+    still resolves — confinement holds whichever volume the first-match loop
+    credits. Pins that nested volumes are not a failure; attribution is
+    first-match (insertion order), the caller's concern, not confinement's."""
+    parent = tmp_path / "data"
+    child = parent / "uploads"
+    child.mkdir(parents=True)
+    (child / "f.bin").write_text("x")
+    vm = {"data": parent, "uploads": child}  # parent inserted first
+    uri = "file://" + str(child / "f.bin")
+    assert resolve_filesystem_uri(uri, volume_map=vm) == (child / "f.bin").resolve()
 
 
 def test_resolve_file_sibling_with_shared_prefix_returns_none(tmp_path):
