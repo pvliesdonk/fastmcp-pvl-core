@@ -74,3 +74,35 @@ def test_handle_from_wire_via_namespace():
     }
     handle = file_exchange.TransferHandle.from_wire(raw)
     assert handle.version == "0.1"
+
+
+def test_error_codes_exposed():
+    from fastmcp_pvl_core import file_exchange
+
+    assert hasattr(file_exchange, "TransferErrorCode")
+    assert hasattr(file_exchange, "KNOWN_CODES")
+    # Spot-check one member end-to-end (full coverage is in test_codes.py).
+    assert file_exchange.TransferErrorCode.NO_SUPPORTED_TRANSPORT == (
+        "no-supported-transport"
+    )
+    assert "transfer-failed" in file_exchange.KNOWN_CODES
+
+
+def test_selection_helpers_exposed():
+    from fastmcp_pvl_core import file_exchange
+
+    assert callable(file_exchange.select_source)
+    assert callable(file_exchange.select_sink)
+
+
+def test_error_envelope_helper_exposed():
+    from fastmcp_pvl_core import file_exchange
+
+    assert callable(file_exchange.build_file_exchange_error)
+    # End-to-end smoke through the namespace import path.
+    result = file_exchange.build_file_exchange_error(
+        file_exchange.TransferErrorCode.NO_SUPPORTED_TRANSPORT,
+    )
+    assert result.isError is True
+    inner = result.meta["nl.liesdonk.file-exchange/error"]
+    assert inner == {"code": "no-supported-transport"}

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 import pytest
 from pydantic import ValidationError
@@ -105,3 +105,20 @@ def test_upload_sink_rejects_naive_expires_at():
             url="https://intake.example.com/u/Lm",
             expiresAt=naive,
         )
+
+
+def test_upload_sink_accepts_aware_expires_at_object():
+    """A tz-aware ``datetime`` instance is accepted directly.
+
+    Symmetric with ``test_download_source_accepts_aware_expires_at_object``
+    in ``test_wire_sources.py`` — the acceptance half of the
+    ``AwareDatetime`` guard. (Deferred from #150 to the selection PR
+    that exercises ``expiresAt``; #140.)
+    """
+    aware = datetime(2026, 5, 18, 12, 30, 0, tzinfo=timezone.utc)
+    s = UploadSink(
+        transport="upload",
+        url="https://intake.example.com/u/Lm",
+        expiresAt=aware,
+    )
+    assert s.expiresAt.tzinfo is not None

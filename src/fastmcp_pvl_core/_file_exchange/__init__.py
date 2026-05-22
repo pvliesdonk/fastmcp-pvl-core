@@ -12,6 +12,17 @@ from fastmcp_pvl_core._file_exchange._capability import (
     Role,
     capability_declaration,
 )
+from fastmcp_pvl_core._file_exchange._codes import (
+    KNOWN_CODES,
+    TransferErrorCode,
+)
+from fastmcp_pvl_core._file_exchange._errors import (
+    build_file_exchange_error,
+)
+from fastmcp_pvl_core._file_exchange._selection import (
+    select_sink,
+    select_source,
+)
 from fastmcp_pvl_core._file_exchange._spec import (
     HANDLE_TYPE,
     NAMESPACE,
@@ -52,12 +63,14 @@ __all__ = [
     "FilesystemSource",
     "HANDLE_TYPE",
     "IntakeTicket",
+    "KNOWN_CODES",
     "NAMESPACE",
     "Role",
     "SPEC_SOURCE_SHA",
     "SPEC_VERSION",
     "TICKET_TYPE",
     "TransferError",
+    "TransferErrorCode",
     "TransferHandle",
     "TransferSink",
     "TransferSource",
@@ -67,8 +80,11 @@ __all__ = [
     "UploadSink",
     "VERSION_PATTERN",
     "WireFormatError",
+    "build_file_exchange_error",
     "capability_declaration",
     "check_requires",
     "check_version_skew",
+    "select_sink",
+    "select_source",
     "validate_wire",
 ]
