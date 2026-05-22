@@ -95,16 +95,18 @@ catches.) Rejected (→ `None`):
 
 - empty volume / netloc (`exchange:///x`),
 - empty path or bare `/` (`exchange://docs`, `exchange://docs/`),
-- any query, fragment, userinfo, or port component,
+- any query or fragment component (userinfo/port in the netloc are *not*
+  rejected — the wire's `[^/]+` accepts them, so they are absorbed into the
+  volume id, which then fails the volume lookup and is skipped benignly),
 - a non-lowercase scheme (`urlsplit` lowercases it, but the wire pattern
   is case-sensitive, so `EXCHANGE://…` must be rejected),
 - embedded ASCII control characters (`\x00`, `\t`, `\n`, `\r`): `urlsplit`
   silently strips tab/newline/CR (WHATWG), so without an up-front guard the
-  parser would act on a string the descriptor never carried. Since the wire
-  validator rejects any newline, honouring the stripped form would make the
-  parser more permissive than the wire; the null byte is rejected because
-  `Path.resolve()` raises on it (the never-raise contract). Net effect: the
-  parser is never more permissive than the wire.
+  parser would act on a `urlsplit`-mutated string the descriptor never
+  carried. The parser rejects all four so it only acts on the exact bytes
+  received; the null byte additionally must go because `Path.resolve()`
+  raises on it (the never-raise contract). The drift-guard tests pin that
+  the parser never accepts a URI the wire rejects.
 
 `file:///<abs>` — `urlsplit("file:///mnt/x")` yields scheme `file`,
 netloc `""`, path `/mnt/x`. Returns `("file", "", "/mnt/x")`. Rejected:

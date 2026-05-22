@@ -201,14 +201,14 @@ def _parse_fs_uri(
     drift-guard test keeps the two in agreement.
     """
     if any(c in uri for c in "\x00\t\n\r"):
-        # Reject control chars up front. urlsplit silently strips ASCII
-        # tab/newline/CR (WHATWG, a CPython security fix), so without this
-        # guard the parser would act on a string the descriptor never
-        # carried; since the wire validator rejects any newline, honouring
-        # the stripped form would make the parser more permissive than the
-        # wire. The null byte is rejected because Path.resolve() raises on
-        # it (the never-raise contract). Net effect: the parser is never
-        # more permissive than the wire.
+        # urlsplit silently strips ASCII tab/newline/CR (WHATWG, a CPython
+        # security fix), so without this guard the parser would parse a
+        # string the descriptor never carried — a urlsplit-mutated input.
+        # Reject all four up front so the parser only ever acts on the exact
+        # bytes received; the null byte additionally must go because
+        # Path.resolve() raises ValueError on it (the never-raise contract).
+        # The drift-guard tests pin that the parser never accepts a URI the
+        # wire rejects.
         return None
     try:
         parts = urlsplit(uri)
