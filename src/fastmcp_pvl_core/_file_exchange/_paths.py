@@ -98,8 +98,13 @@ def canonicalize_and_confine(candidate: Path | str, root: Path | str) -> Path | 
         here; the data-plane caller must re-confine at open time or use
         ``O_NOFOLLOW`` / ``openat`` (tracked in #143).
     """
-    resolved_root = Path(root).resolve()
-    resolved_candidate = Path(candidate).resolve()
+    try:
+        resolved_root = Path(root).resolve()
+        resolved_candidate = Path(candidate).resolve()
+    except ValueError:
+        # Untrusted input: a null byte (or other path-illegal value)
+        # must yield the reject signal, not propagate ValueError.
+        return None
     if resolved_candidate.is_relative_to(resolved_root):
         return resolved_candidate
     return None
@@ -137,6 +142,9 @@ def resolve_filesystem_uri(uri: str, *, volume_map: VolumeMap) -> Path | None:
             )
         return confined
 
+    if not volume_map:
+        return None  # party doesn't do filesystem — benign, no warning
+        # (symmetric with the exchange:// unknown-volume case)
     for root in volume_map.values():
         confined = canonicalize_and_confine(path, root)
         if confined is not None:
@@ -166,6 +174,8 @@ def _parse_fs_uri(
     callers and to honour ``file://``'s empty-authority rule. A
     drift-guard test keeps the two in agreement.
     """
+    if "\x00" in uri:
+        return None
     parts = urlsplit(uri)
     if parts.query or parts.fragment:
         return None

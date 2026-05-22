@@ -324,3 +324,29 @@ def test_resolve_file_outside_all_volumes_returns_none_and_warns(tmp_path, caplo
 def test_resolve_malformed_uri_returns_none(tmp_path):
     vm = {"docs": tmp_path / "docs"}
     assert resolve_filesystem_uri("https://example/x", volume_map=vm) is None
+
+
+def test_parse_fs_uri_rejects_null_byte():
+    assert _parse_fs_uri("exchange://docs/foo\x00bar") is None
+    assert _parse_fs_uri("file:///foo\x00bar") is None
+
+
+def test_canonicalize_and_confine_null_byte_returns_none(tmp_path):
+    root = tmp_path / "vol"
+    root.mkdir()
+    assert canonicalize_and_confine(root / "foo\x00bar", root) is None
+
+
+def test_resolve_null_byte_uri_returns_none_not_raise(tmp_path):
+    root = tmp_path / "docs"
+    root.mkdir()
+    vm = {"docs": root}
+    assert resolve_filesystem_uri("exchange://docs/foo\x00bar", volume_map=vm) is None
+    assert resolve_filesystem_uri("file:///foo\x00bar", volume_map=vm) is None
+
+
+def test_resolve_file_empty_volume_map_returns_none_no_warn(tmp_path, caplog):
+    with caplog.at_level(logging.WARNING):
+        result = resolve_filesystem_uri("file:///mnt/x", volume_map={})
+    assert result is None
+    assert caplog.records == []
