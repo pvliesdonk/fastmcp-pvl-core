@@ -3,14 +3,18 @@
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
+from fastmcp_pvl_core import ConfigurationError
 from fastmcp_pvl_core._file_exchange._paths import (
     _parse_fs_uri,
+    _parse_volume_map,
     canonicalize_and_confine,
+    load_volume_map,
 )
 from fastmcp_pvl_core._file_exchange._wire import _FS_URI_PATTERN
 
@@ -192,3 +196,50 @@ def test_parse_agrees_with_wire_pattern_on_invalid():
     ):
         assert not re.match(_FS_URI_PATTERN, uri), uri
         assert _parse_fs_uri(uri) is None, uri
+
+
+# --- _parse_volume_map and load_volume_map ---
+
+
+def test_parse_volume_map_basic():
+    result = _parse_volume_map("docs=/mnt/docs,scratch=/mnt/scratch")
+    assert result == {
+        "docs": Path("/mnt/docs"),
+        "scratch": Path("/mnt/scratch"),
+    }
+
+
+def test_parse_volume_map_trims_and_drops_empty():
+    result = _parse_volume_map(" docs = /mnt/docs , , scratch=/mnt/s ")
+    assert result == {"docs": Path("/mnt/docs"), "scratch": Path("/mnt/s")}
+
+
+def test_parse_volume_map_splits_on_first_equals():
+    # A path containing '=' (contrived) keeps everything after the first '='.
+    result = _parse_volume_map("v=/mnt/a=b")
+    assert result == {"v": Path("/mnt/a=b")}
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "docs",  # no '='
+        "=/mnt/docs",  # empty name
+        "docs=",  # empty path
+        "docs=relative/x",  # non-absolute path
+        "docs=/a,docs=/b",  # duplicate name
+    ],
+)
+def test_parse_volume_map_rejects(raw):
+    with pytest.raises(ConfigurationError):
+        _parse_volume_map(raw)
+
+
+def test_load_volume_map_unset_returns_empty(monkeypatch):
+    monkeypatch.delenv("FILE_EXCHANGE_VOLUMES", raising=False)
+    assert load_volume_map() == {}
+
+
+def test_load_volume_map_reads_env(monkeypatch):
+    monkeypatch.setenv("FILE_EXCHANGE_VOLUMES", "docs=/mnt/docs")
+    assert load_volume_map() == {"docs": Path("/mnt/docs")}
