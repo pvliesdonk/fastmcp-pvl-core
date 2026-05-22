@@ -104,6 +104,28 @@ def test_unknown_code_renders_generic_text_and_passes_through():
     assert result.content[0].text == "File transfer failed: future-spec-code"
 
 
+def test_known_code_missing_default_text_degrades_gracefully(monkeypatch):
+    """A known code absent from ``_DEFAULT_TEXT`` falls back, not ``KeyError``.
+
+    ``KNOWN_CODES`` is auto-derived from the enum while ``_DEFAULT_TEXT``
+    is hand-maintained, so a future enum member could pass the
+    ``in KNOWN_CODES`` gate while missing its text entry. The lookup
+    uses ``.get`` so that degrades to the generic fallback at runtime
+    rather than raising. (``test_every_known_code_has_a_default_text_mapping``
+    still guards the real invariant; this pins the defensive path.)
+    """
+    from fastmcp_pvl_core._file_exchange import _errors
+
+    patched = dict(_DEFAULT_TEXT)
+    del patched[TransferErrorCode.DIGEST_MISMATCH]
+    monkeypatch.setattr(_errors, "_DEFAULT_TEXT", patched)
+
+    result = build_file_exchange_error(TransferErrorCode.DIGEST_MISMATCH)
+    assert result.isError is True
+    assert result.meta[_NAMESPACE_KEY]["code"] == "digest-mismatch"
+    assert result.content[0].text == "File transfer failed: digest-mismatch"
+
+
 def test_every_known_code_has_a_default_text_mapping():
     """Drift guard: adding a TransferErrorCode without updating _DEFAULT_TEXT fails."""
     for member in TransferErrorCode:

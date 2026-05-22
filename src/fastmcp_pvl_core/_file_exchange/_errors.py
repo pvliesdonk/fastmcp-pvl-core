@@ -80,11 +80,14 @@ def _render_text(code_str: str, transport: str | None, text: str | None) -> str:
     2. Known code (in ``KNOWN_CODES``), no caller text: the
        ``_DEFAULT_TEXT`` entry, with ``" (transport: X)"`` appended
        when ``transport`` is set.
-    3. Unknown code (not in ``KNOWN_CODES``), no caller text: the
-       generic ``"File transfer failed: <code>"``. The transport
-       suffix is NOT appended here even when ``transport`` is set —
-       the generic fallback is intentionally terse, and ``transport``
-       still lands in ``_meta`` regardless.
+    3. No default text available, no caller text: the generic
+       ``"File transfer failed: <code>"``. This covers both an unknown
+       code (not in ``KNOWN_CODES``) and the defensive case of a known
+       code whose ``_DEFAULT_TEXT`` entry is missing — e.g. a new enum
+       member added without updating the table. The transport suffix is
+       NOT appended here even when ``transport`` is set — the generic
+       fallback is intentionally terse, and ``transport`` still lands
+       in ``_meta`` regardless.
 
     ``detail`` is never rendered into the text — log-leak guard. The
     structured ``detail`` field is for machine consumption via
@@ -93,9 +96,17 @@ def _render_text(code_str: str, transport: str | None, text: str | None) -> str:
     """
     if text:
         return text
-    if code_str in KNOWN_CODES:
-        default = _DEFAULT_TEXT[TransferErrorCode(code_str)]
-    else:
+    # ``.get`` (not a bare subscript) so a known code whose
+    # ``_DEFAULT_TEXT`` entry is missing degrades to the generic
+    # fallback below rather than raising ``KeyError`` at runtime. The
+    # ``in KNOWN_CODES`` gate keeps ``TransferErrorCode(code_str)`` from
+    # raising ``ValueError`` on an unknown code.
+    default = (
+        _DEFAULT_TEXT.get(TransferErrorCode(code_str))
+        if code_str in KNOWN_CODES
+        else None
+    )
+    if default is None:
         return f"File transfer failed: {code_str}"
     if transport is not None:
         return f"{default} (transport: {transport})"
