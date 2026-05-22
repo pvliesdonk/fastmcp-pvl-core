@@ -176,16 +176,31 @@ def _parse_fs_uri(
     """
     if "\x00" in uri:
         return None
-    parts = urlsplit(uri)
+    try:
+        parts = urlsplit(uri)
+    except ValueError:
+        # urlsplit raises ValueError on a malformed authority (e.g. an
+        # invalid bracketed IPv6 literal). Untrusted input must yield the
+        # reject signal, not propagate — symmetric with the null-byte
+        # guard and canonicalize_and_confine's reject-on-ValueError.
+        return None
     if parts.query or parts.fragment:
         return None
     if parts.scheme == "exchange":
+        if not uri.startswith("exchange://"):
+            return (
+                None  # urlsplit lowercased the scheme; wire pattern is case-sensitive
+            )
         volume = parts.netloc
         path = parts.path.lstrip("/")
         if not volume or not path:
             return None
         return ("exchange", volume, path)
     if parts.scheme == "file":
+        if not uri.startswith("file://"):
+            return (
+                None  # urlsplit lowercased the scheme; wire pattern is case-sensitive
+            )
         if parts.netloc:
             return None
         path = parts.path

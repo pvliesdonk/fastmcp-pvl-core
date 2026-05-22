@@ -170,34 +170,53 @@ def test_parse_fs_uri_valid(uri, expected):
         "https://example/x",  # unknown scheme
         "not-a-uri",  # no scheme
         "",  # empty
+        "EXCHANGE://docs/a",  # uppercase scheme — wire pattern is case-sensitive
+        "FILE:///mnt/x",  # uppercase scheme
+        "exchange://[::1/x",  # malformed IPv6 authority — must not raise
+        "file://[bad/x",  # malformed IPv6 authority
     ],
 )
 def test_parse_fs_uri_rejects(uri):
     assert _parse_fs_uri(uri) is None
 
 
-def test_parse_agrees_with_wire_pattern_on_valid():
-    """Every URI _parse_fs_uri accepts must also match the wire pattern."""
-    for uri in (
-        "exchange://docs/a/b.bin",
-        "exchange://v/single",
-        "file:///mnt/x",
-    ):
-        assert re.match(_FS_URI_PATTERN, uri), uri
-        assert _parse_fs_uri(uri) is not None, uri
+_DRIFT_URIS = [
+    # valid (parser accepts, wire matches)
+    "exchange://docs/a/b.bin",
+    "exchange://v/single",
+    "file:///mnt/x",
+    # parser rejects these — wire may or may not match; the invariant is
+    # only "accepted => wire matches", so rejected ones can't violate it,
+    # but we include them to document the cases.
+    "exchange:///x",
+    "exchange://docs/",
+    "file://host/x",
+    "file:///",
+    "file:////x",
+    "EXCHANGE://docs/a",  # uppercase scheme — wire rejects, parser must too
+    "FILE:///mnt/x",  # uppercase scheme
+    "exchange://[::1/x",  # malformed IPv6 authority — must not raise
+    "file://[bad/x",  # malformed IPv6 authority
+    "exchange://docs/a?q=1",  # query — parser stricter than wire (safe)
+    "https://example/x",  # unknown scheme
+]
 
 
-def test_parse_agrees_with_wire_pattern_on_invalid():
-    """URIs the wire pattern rejects must also fail to parse."""
-    for uri in (
-        "exchange:///x",
-        "exchange://docs/",
-        "file://host/x",
-        "file:///",
-        "file:////x",
-    ):
-        assert not re.match(_FS_URI_PATTERN, uri), uri
-        assert _parse_fs_uri(uri) is None, uri
+def test_parse_never_more_permissive_than_wire_pattern():
+    """The load-bearing drift invariant: any URI the parser accepts must
+    also match _FS_URI_PATTERN. (The reverse is not required — the parser
+    may be stricter, e.g. rejecting query/fragment or malformed IPv6.)"""
+    for uri in _DRIFT_URIS:
+        if _parse_fs_uri(uri) is not None:
+            assert re.match(_FS_URI_PATTERN, uri), (
+                f"parser accepted {uri!r} but wire pattern rejects it"
+            )
+
+
+def test_parse_never_raises_on_drift_uris():
+    """No URI in the corpus may raise — every non-usable input returns None."""
+    for uri in _DRIFT_URIS:
+        _parse_fs_uri(uri)  # must not raise
 
 
 # --- _parse_volume_map and load_volume_map ---
