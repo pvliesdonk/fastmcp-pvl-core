@@ -100,14 +100,11 @@ catches.) Rejected (→ `None`):
   is case-sensitive, so `EXCHANGE://…` must be rejected),
 - embedded ASCII control characters (`\x00`, `\t`, `\n`, `\r`): `urlsplit`
   silently strips tab/newline/CR (WHATWG), so without an up-front guard the
-  parser would act on a string the descriptor never carried. Rejected for
-  three distinct reasons: **newline** — the wire pattern rejects the
-  un-stripped URI, so honouring the stripped form would make the parser
-  more permissive than the wire; **null byte** — `Path.resolve()` raises on
-  it downstream, so rejecting here keeps the never-raise contract;
-  **tab/CR** — the wire regex's `.` actually matches these (the wire
-  accepts them), but we reject anyway so the parser is strictly stricter
-  than the wire rather than silently acting on a mutated string.
+  parser would act on a string the descriptor never carried. Since the wire
+  validator rejects any newline, honouring the stripped form would make the
+  parser more permissive than the wire; the null byte is rejected because
+  `Path.resolve()` raises on it (the never-raise contract). Net effect: the
+  parser is never more permissive than the wire.
 
 `file:///<abs>` — `urlsplit("file:///mnt/x")` yields scheme `file`,
 netloc `""`, path `/mnt/x`. Returns `("file", "", "/mnt/x")`. Rejected:
