@@ -10,8 +10,9 @@ Security-critical. Turns an untrusted ``filesystem`` descriptor ``uri``
 - :func:`load_volume_map` — env-driven volume-to-mount-point config.
 
 All non-usable outcomes return ``None`` (the §9 "skip this descriptor"
-signal); a confinement escape additionally logs a ``WARNING`` carrying
-only the volume id, never the attacker-controlled raw path/URI.
+signal); a confinement failure additionally logs a ``WARNING`` carrying
+only the volume id (``exchange://``) or nothing identifying (``file://``)
+— never the attacker-controlled raw path/URI.
 """
 
 from __future__ import annotations

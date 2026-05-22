@@ -231,10 +231,17 @@ _DRIFT_URIS = [
 def test_parse_never_more_permissive_than_wire_pattern():
     """The load-bearing drift invariant: any URI the parser accepts must
     also match _FS_URI_PATTERN. (The reverse is not required — the parser
-    may be stricter, e.g. rejecting query/fragment or malformed IPv6.)"""
+    may be stricter, e.g. rejecting query/fragment or malformed IPv6.)
+
+    Uses re.fullmatch, not re.match: the real wire validator is pydantic's
+    anchored Field(pattern=...), which rejects e.g. a trailing newline that
+    re.match would accept (re's $ matches before a final \\n). fullmatch
+    mirrors the genuine wire surface, so a future regression making the
+    parser accept such an input would be caught here, not just by CI's
+    pydantic layer."""
     for uri in _DRIFT_URIS:
         if _parse_fs_uri(uri) is not None:
-            assert re.match(_FS_URI_PATTERN, uri), (
+            assert re.fullmatch(_FS_URI_PATTERN, uri), (
                 f"parser accepted {uri!r} but wire pattern rejects it"
             )
 
@@ -263,7 +270,9 @@ def test_parse_never_more_permissive_than_wire_pattern_fuzzed(prefix, body):
     uri = prefix + body
     result = _parse_fs_uri(uri)  # must not raise
     if result is not None:
-        assert re.match(_FS_URI_PATTERN, uri), (
+        # fullmatch (not match) to mirror pydantic's anchored wire validator
+        # — see test_parse_never_more_permissive_than_wire_pattern.
+        assert re.fullmatch(_FS_URI_PATTERN, uri), (
             f"parser accepted {uri!r} but wire pattern rejects it"
         )
 
