@@ -243,3 +243,16 @@ def test_load_volume_map_unset_returns_empty(monkeypatch):
 def test_load_volume_map_reads_env(monkeypatch):
     monkeypatch.setenv("FILE_EXCHANGE_VOLUMES", "docs=/mnt/docs")
     assert load_volume_map() == {"docs": Path("/mnt/docs")}
+
+
+def test_load_volume_map_custom_prefix(monkeypatch):
+    monkeypatch.setenv("MY_SERVER_VOLUMES", "uploads=/mnt/uploads")
+    # Default var absent — confirms the prefix is actually threaded through
+    # (a hardcoded "FILE_EXCHANGE" would not read MY_SERVER_VOLUMES).
+    monkeypatch.delenv("FILE_EXCHANGE_VOLUMES", raising=False)
+    assert load_volume_map(prefix="MY_SERVER") == {"uploads": Path("/mnt/uploads")}
+
+
+def test_load_volume_map_blank_env_returns_empty(monkeypatch):
+    monkeypatch.setenv("FILE_EXCHANGE_VOLUMES", "   ")
+    assert load_volume_map() == {}
