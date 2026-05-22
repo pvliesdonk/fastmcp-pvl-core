@@ -34,6 +34,12 @@ def canonicalize_and_confine(candidate: Path | str, root: Path | str) -> Path | 
     appended lexically (so a sink target need not exist). Existence /
     readability / writability is a separate concern (the caller's
     ``os.access`` check), not confinement.
+
+    .. note::
+        This is a resolution-time check. A symlink swapped between this
+        call and a subsequent ``open()`` (a TOCTOU race) is not defended
+        here; the data-plane caller must re-confine at open time or use
+        ``O_NOFOLLOW`` / ``openat`` (tracked in #143).
     """
     resolved_root = Path(root).resolve()
     resolved_candidate = Path(candidate).resolve()
