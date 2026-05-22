@@ -507,6 +507,36 @@ def test_resolve_file_symlink_loop_confined_or_none_never_raises(tmp_path, caplo
         assert "could not be confined to any configured volume" in r.getMessage()
 
 
+# --- absent-root (lazy mount): confinement holds before the mount exists ---
+# A volume may mount lazily, so the root can be absent at resolution time and
+# resolve() then takes a fully-lexical path. These pin that confinement still
+# rejects escapes (and a within-root path is still usable) when root does not
+# exist — guarding against a future strict-resolve / root.is_dir() refactor.
+
+
+def test_confine_escape_rejected_when_root_absent(tmp_path):
+    root = tmp_path / "docs"  # intentionally not created
+    assert canonicalize_and_confine(root / ".." / "outside", root) is None
+
+
+def test_confine_within_root_when_root_absent(tmp_path):
+    root = tmp_path / "docs"  # intentionally not created
+    target = root / "a.bin"
+    assert canonicalize_and_confine(target, root) == target.resolve()
+
+
+def test_resolve_exchange_escape_rejected_when_root_absent(tmp_path, caplog):
+    root = tmp_path / "docs"  # intentionally not created
+    vm = {"docs": root}
+    with caplog.at_level(logging.WARNING):
+        result = resolve_filesystem_uri("exchange://docs/../outside", volume_map=vm)
+    assert result is None
+    assert any(
+        "could not be confined to its volume root" in r.getMessage()
+        for r in caplog.records
+    )
+
+
 # --- file:// confinement via resolver (Finding 3) ---
 
 
