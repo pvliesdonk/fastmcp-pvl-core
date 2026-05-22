@@ -39,7 +39,7 @@ mirrored in the subpackage `__init__.py`, both `__all__` lists updated):
 
 - `canonicalize_and_confine(candidate, root) -> Path | None`
 - `resolve_filesystem_uri(uri, *, volume_map) -> Path | None`
-- `load_volume_map(prefix="FILE_EXCHANGE") -> dict[str, Path]`
+- `load_volume_map(env_prefix) -> dict[str, Path]`
 - `VolumeMap` type alias (`Mapping[str, Path]`)
 
 The URI parser (`_parse_fs_uri`) and the volume-map string parser
@@ -95,7 +95,14 @@ catches.) Rejected (→ `None`):
 
 - empty volume / netloc (`exchange:///x`),
 - empty path or bare `/` (`exchange://docs`, `exchange://docs/`),
-- any query, fragment, userinfo, or port component.
+- any query, fragment, userinfo, or port component,
+- a non-lowercase scheme (`urlsplit` lowercases it, but the wire pattern
+  is case-sensitive, so `EXCHANGE://…` must be rejected),
+- embedded ASCII control characters (`\x00`, `\t`, `\n`, `\r`):
+  `urlsplit` silently strips tab/newline/CR (WHATWG) and `Path.resolve()`
+  raises on a null byte, so the post-strip parse would otherwise accept a
+  URI the newline-anchored wire pattern refuses — making the parser more
+  permissive than the wire.
 
 `file:///<abs>` — `urlsplit("file:///mnt/x")` yields scheme `file`,
 netloc `""`, path `/mnt/x`. Returns `("file", "", "/mnt/x")`. Rejected:
@@ -114,17 +121,18 @@ caught.
 
 ## Volume-map config
 
-Env var `FILE_EXCHANGE_VOLUMES`, read via `env("FILE_EXCHANGE",
-"VOLUMES")`. Format: comma-separated `name=path`:
+Env var `{env_prefix}_FILE_EXCHANGE_VOLUMES`, read via
+`env(env_prefix, "FILE_EXCHANGE_VOLUMES")`. Format: comma-separated
+`name=path`:
 
 ```
-FILE_EXCHANGE_VOLUMES="docs=/mnt/docs,scratch=/mnt/scratch"
+SCHOLAR_FILE_EXCHANGE_VOLUMES="docs=/mnt/docs,scratch=/mnt/scratch"
 ```
 
 Pure parser (testable without env):
 
 ```python
-def _parse_volume_map(raw: str) -> dict[str, Path]: ...
+def _parse_volume_map(raw: str, var_name: str) -> dict[str, Path]: ...
 ```
 
 - split on `,`, drop empty entries (the `parse_list` discipline);
@@ -132,13 +140,16 @@ def _parse_volume_map(raw: str) -> dict[str, Path]: ...
 - strip `name`; strip `path` and wrap in `Path`;
 - raise `ConfigurationError` on: an entry with no `=`, empty name,
   empty path, duplicate volume name, or a non-absolute mount path.
+  `var_name` is the resolved env var name, interpolated into the error
+  message so the operator knows which variable to fix.
 
 Public loader:
 
 ```python
-def load_volume_map(prefix: str = "FILE_EXCHANGE") -> dict[str, Path]:
-    raw = env(prefix, "VOLUMES")
-    return _parse_volume_map(raw) if raw else {}
+def load_volume_map(env_prefix: str) -> dict[str, Path]:
+    var_name = f"{env_prefix.rstrip('_')}_FILE_EXCHANGE_VOLUMES"
+    raw = env(env_prefix, "FILE_EXCHANGE_VOLUMES")
+    return _parse_volume_map(raw, var_name) if raw else {}
 ```
 
 Unset/empty var → `{}`: a server with no volume mappings resolves no
@@ -147,10 +158,16 @@ either), so all filesystem descriptors are skipped during §9 selection
 — the correct "this party doesn't do filesystem" posture, consistent
 with #140's `is_accessible=None`.
 
-`prefix` defaults to the canonical `FILE_EXCHANGE` (pvl-core owns the
-env contract; downstream conforms). It is a parameter only so tests and
-any multi-instance downstream can override the *namespace*; it does not
-change the contract's *shape*. Mount paths are validated absolute at
+`env_prefix` is **required** and threaded from the downstream server's
+own env prefix (e.g. `SCHOLAR`), exactly as for every other pvl-core env
+reader (`ServerConfig.from_env`, `build_event_store`,
+`build_instructions`, `maybe_start_debugpy`). pvl-core owns the
+`_FILE_EXCHANGE_VOLUMES` suffix (the contract's *shape*); the prefix is
+the operator's per-server *namespace*, so two pvl servers on one host
+never collide on a single shared variable. There is deliberately no
+default — a baked-in default that downstream could override would be the
+forbidden "default but overridable" kwarg bucket, and the per-server
+prefix is not pvl-core's to guess. Mount paths are validated absolute at
 load; existence is **not** checked (a volume may mount lazily) —
 non-existence surfaces later as a confinement/accessibility failure.
 

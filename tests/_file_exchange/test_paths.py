@@ -175,6 +175,10 @@ def test_parse_fs_uri_valid(uri, expected):
         "FILE:///mnt/x",  # uppercase scheme
         "exchange://[::1/x",  # malformed IPv6 authority — must not raise
         "file://[bad/x",  # malformed IPv6 authority
+        "exchange://docs/a\nb",  # embedded newline — urlsplit strips, wire rejects
+        "file:///mnt/a\nb",  # embedded newline
+        "exchange://docs/a\tb",  # embedded tab — urlsplit strips it
+        "exchange://docs/a\rb",  # embedded CR — urlsplit strips it
     ],
 )
 def test_parse_fs_uri_rejects(uri):
@@ -200,6 +204,12 @@ _DRIFT_URIS = [
     "file://[bad/x",  # malformed IPv6 authority
     "exchange://docs/a?q=1",  # query — parser stricter than wire (safe)
     "https://example/x",  # unknown scheme
+    # control chars urlsplit silently strips (WHATWG) — parser must reject
+    # so it never accepts a URI the newline-anchored wire pattern refuses.
+    "exchange://docs/a\nb",
+    "file:///mnt/a\nb",
+    "exchange://docs/a\tb",
+    "exchange://docs/a\rb",
 ]
 
 
@@ -220,11 +230,37 @@ def test_parse_never_raises_on_drift_uris():
         _parse_fs_uri(uri)  # must not raise
 
 
+@given(
+    prefix=st.sampled_from(["exchange://", "file://", "EXCHANGE://", "FILE://", ""]),
+    # Single-char alphabet mixing URI structure chars with the chars urlsplit
+    # normalizes (control chars) and IPv6-bracket triggers, so the fuzzer
+    # probes the parser-vs-wire boundary rather than random noise.
+    body=st.text(
+        alphabet=st.sampled_from(list("docsab/:.[]?#@") + ["\n", "\t", "\r", "\x00"]),
+        max_size=20,
+    ),
+)
+def test_parse_never_more_permissive_than_wire_pattern_fuzzed(prefix, body):
+    """Property form of the drift invariant: for ANY input, parser-accepted
+    ⇒ wire-matches. Backs the fixed corpus against unforeseen normalization
+    rings (the fixed-list-only guard is how embedded-newline drift slipped
+    in originally). Also asserts the parser never raises."""
+    uri = prefix + body
+    result = _parse_fs_uri(uri)  # must not raise
+    if result is not None:
+        assert re.match(_FS_URI_PATTERN, uri), (
+            f"parser accepted {uri!r} but wire pattern rejects it"
+        )
+
+
 # --- _parse_volume_map and load_volume_map ---
 
 
+_VAR = "SCHOLAR_FILE_EXCHANGE_VOLUMES"
+
+
 def test_parse_volume_map_basic():
-    result = _parse_volume_map("docs=/mnt/docs,scratch=/mnt/scratch")
+    result = _parse_volume_map("docs=/mnt/docs,scratch=/mnt/scratch", _VAR)
     assert result == {
         "docs": Path("/mnt/docs"),
         "scratch": Path("/mnt/scratch"),
@@ -232,13 +268,13 @@ def test_parse_volume_map_basic():
 
 
 def test_parse_volume_map_trims_and_drops_empty():
-    result = _parse_volume_map(" docs = /mnt/docs , , scratch=/mnt/s ")
+    result = _parse_volume_map(" docs = /mnt/docs , , scratch=/mnt/s ", _VAR)
     assert result == {"docs": Path("/mnt/docs"), "scratch": Path("/mnt/s")}
 
 
 def test_parse_volume_map_splits_on_first_equals():
     # A path containing '=' (contrived) keeps everything after the first '='.
-    result = _parse_volume_map("v=/mnt/a=b")
+    result = _parse_volume_map("v=/mnt/a=b", _VAR)
     assert result == {"v": Path("/mnt/a=b")}
 
 
@@ -253,31 +289,34 @@ def test_parse_volume_map_splits_on_first_equals():
     ],
 )
 def test_parse_volume_map_rejects(raw):
-    with pytest.raises(ConfigurationError):
-        _parse_volume_map(raw)
+    with pytest.raises(ConfigurationError) as exc_info:
+        _parse_volume_map(raw, _VAR)
+    # The error names the actual env var so the operator knows what to fix.
+    assert _VAR in str(exc_info.value)
 
 
 def test_load_volume_map_unset_returns_empty(monkeypatch):
-    monkeypatch.delenv("FILE_EXCHANGE_VOLUMES", raising=False)
-    assert load_volume_map() == {}
+    monkeypatch.delenv("SCHOLAR_FILE_EXCHANGE_VOLUMES", raising=False)
+    assert load_volume_map("SCHOLAR") == {}
 
 
 def test_load_volume_map_reads_env(monkeypatch):
-    monkeypatch.setenv("FILE_EXCHANGE_VOLUMES", "docs=/mnt/docs")
-    assert load_volume_map() == {"docs": Path("/mnt/docs")}
+    monkeypatch.setenv("SCHOLAR_FILE_EXCHANGE_VOLUMES", "docs=/mnt/docs")
+    assert load_volume_map("SCHOLAR") == {"docs": Path("/mnt/docs")}
 
 
-def test_load_volume_map_custom_prefix(monkeypatch):
-    monkeypatch.setenv("MY_SERVER_VOLUMES", "uploads=/mnt/uploads")
-    # Default var absent — confirms the prefix is actually threaded through
-    # (a hardcoded "FILE_EXCHANGE" would not read MY_SERVER_VOLUMES).
-    monkeypatch.delenv("FILE_EXCHANGE_VOLUMES", raising=False)
-    assert load_volume_map(prefix="MY_SERVER") == {"uploads": Path("/mnt/uploads")}
+def test_load_volume_map_prefix_is_threaded(monkeypatch):
+    # A different prefix reads a different variable — confirms env_prefix is
+    # actually threaded through, not a hardcoded name.
+    monkeypatch.setenv("MARKDOWN_VAULT_FILE_EXCHANGE_VOLUMES", "uploads=/mnt/uploads")
+    monkeypatch.delenv("SCHOLAR_FILE_EXCHANGE_VOLUMES", raising=False)
+    assert load_volume_map("MARKDOWN_VAULT") == {"uploads": Path("/mnt/uploads")}
+    assert load_volume_map("SCHOLAR") == {}
 
 
 def test_load_volume_map_blank_env_returns_empty(monkeypatch):
-    monkeypatch.setenv("FILE_EXCHANGE_VOLUMES", "   ")
-    assert load_volume_map() == {}
+    monkeypatch.setenv("SCHOLAR_FILE_EXCHANGE_VOLUMES", "   ")
+    assert load_volume_map("SCHOLAR") == {}
 
 
 # --- resolve_filesystem_uri ---

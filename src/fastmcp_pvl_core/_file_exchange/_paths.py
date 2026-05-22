@@ -31,8 +31,12 @@ VolumeMap = Mapping[str, Path]
 """A mapping from volume identifier to local mount-point path."""
 
 
-def _parse_volume_map(raw: str) -> dict[str, Path]:
+def _parse_volume_map(raw: str, var_name: str) -> dict[str, Path]:
     """Parse ``name=path`` comma-separated pairs into a volume map.
+
+    ``var_name`` is the full environment variable name (e.g.
+    ``SCHOLAR_FILE_EXCHANGE_VOLUMES``), used only in error messages so the
+    operator knows which variable to fix.
 
     Raises:
         ConfigurationError: an entry has no ``=``, an empty name, an
@@ -49,34 +53,35 @@ def _parse_volume_map(raw: str) -> dict[str, Path]:
         name = name.strip()
         path = path.strip()
         if not sep or not name or not path:
-            raise ConfigurationError(
-                f"FILE_EXCHANGE_VOLUMES entry must be 'name=path': {entry!r}"
-            )
+            raise ConfigurationError(f"{var_name} entry must be 'name=path': {entry!r}")
         if not path.startswith("/"):
             raise ConfigurationError(
-                f"FILE_EXCHANGE_VOLUMES mount path must be absolute: {path!r}"
+                f"{var_name} mount path must be absolute: {path!r}"
             )
         if name in out:
-            raise ConfigurationError(
-                f"FILE_EXCHANGE_VOLUMES duplicate volume name: {name!r}"
-            )
+            raise ConfigurationError(f"{var_name} duplicate volume name: {name!r}")
         out[name] = Path(path)
     return out
 
 
-def load_volume_map(prefix: str = "FILE_EXCHANGE") -> dict[str, Path]:
-    """Load the volume map from ``{prefix}_VOLUMES`` in the environment.
+def load_volume_map(env_prefix: str) -> dict[str, Path]:
+    """Load the volume map from ``{env_prefix}_FILE_EXCHANGE_VOLUMES``.
 
-    Returns an empty map when the variable is unset/blank — a party with
-    no volume mappings resolves no filesystem URIs and skips every
-    filesystem descriptor during §9 selection.
+    ``env_prefix`` is the downstream server's env prefix (e.g. ``SCHOLAR``),
+    threaded from its server config exactly as for every other pvl-core env
+    reader (:func:`~fastmcp_pvl_core.ServerConfig.from_env`,
+    :func:`~fastmcp_pvl_core.build_event_store`, …). pvl-core owns the
+    ``_FILE_EXCHANGE_VOLUMES`` suffix; the prefix is the operator's
+    per-server namespace, so two pvl servers on one host never collide on a
+    single shared variable.
 
-    ``prefix`` defaults to the canonical ``FILE_EXCHANGE`` (pvl-core owns
-    the env contract); it is overridable only to namespace a multi-server
-    deployment, not to change the contract's shape.
+    Returns an empty map when the variable is unset/blank — a party with no
+    volume mappings resolves no filesystem URIs and skips every filesystem
+    descriptor during §9 selection.
     """
-    raw = env(prefix, "VOLUMES")
-    return _parse_volume_map(raw) if raw else {}
+    var_name = f"{env_prefix.rstrip('_')}_FILE_EXCHANGE_VOLUMES"
+    raw = env(env_prefix, "FILE_EXCHANGE_VOLUMES")
+    return _parse_volume_map(raw, var_name) if raw else {}
 
 
 def canonicalize_and_confine(candidate: Path | str, root: Path | str) -> Path | None:
@@ -177,14 +182,20 @@ def _parse_fs_uri(
     callers and to honour ``file://``'s empty-authority rule. A
     drift-guard test keeps the two in agreement.
     """
-    if "\x00" in uri:
+    if any(c in uri for c in "\x00\t\n\r"):
+        # urlsplit silently strips ASCII tab/newline/CR (WHATWG, a CPython
+        # security fix) and Path.resolve() raises ValueError on a null byte.
+        # Either way the post-strip parse would accept a URI the
+        # newline-rejecting wire pattern (_FS_URI_PATTERN) refuses — making
+        # the parser MORE permissive than the wire. Reject all four up front
+        # to keep the "no more permissive than the wire" invariant.
         return None
     try:
         parts = urlsplit(uri)
     except ValueError:
         # urlsplit raises ValueError on a malformed authority (e.g. an
         # invalid bracketed IPv6 literal). Untrusted input must yield the
-        # reject signal, not propagate — symmetric with the null-byte
+        # reject signal, not propagate — symmetric with the control-char
         # guard and canonicalize_and_confine's reject-on-ValueError.
         return None
     if parts.query or parts.fragment:
