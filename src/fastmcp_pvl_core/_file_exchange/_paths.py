@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from typing import Literal
+from urllib.parse import urlsplit
 
 logger = logging.getLogger(__name__)
 
@@ -45,4 +47,42 @@ def canonicalize_and_confine(candidate: Path | str, root: Path | str) -> Path | 
     resolved_candidate = Path(candidate).resolve()
     if resolved_candidate.is_relative_to(resolved_root):
         return resolved_candidate
+    return None
+
+
+def _parse_fs_uri(
+    uri: str,
+) -> tuple[Literal["exchange", "file"], str, str] | None:
+    """Decode a filesystem-descriptor URI into ``(scheme, volume, path)``.
+
+    - ``exchange://<volume>/<path>`` → ``("exchange", volume, path)``
+      with the path's leading ``/`` stripped (so it joins under a mount;
+      ``pathlib`` would discard the mount if the right operand were
+      absolute). Volume and a non-empty path are required.
+    - ``file:///<abs>`` → ``("file", "", abs_path)``; the authority MUST
+      be empty (§10.1.2) and the path absolute.
+    - Anything else (query/fragment present, unknown scheme, malformed)
+      → ``None``.
+
+    The wire layer (``_FS_URI_PATTERN``) already validates shape at model
+    construction; this re-derives validity structurally for direct
+    callers and to honour ``file://``'s empty-authority rule. A
+    drift-guard test keeps the two in agreement.
+    """
+    parts = urlsplit(uri)
+    if parts.query or parts.fragment:
+        return None
+    if parts.scheme == "exchange":
+        volume = parts.netloc
+        path = parts.path.lstrip("/")
+        if not volume or not path:
+            return None
+        return ("exchange", volume, path)
+    if parts.scheme == "file":
+        if parts.netloc:
+            return None
+        path = parts.path
+        if not path.startswith("/"):
+            return None
+        return ("file", "", path)
     return None
