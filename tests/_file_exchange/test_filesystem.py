@@ -286,3 +286,4 @@ async def test_fetcher_consume_sink_failure_is_transfer_failed(tmp_path):
             handle, source, _BoomSink(), volume_map={"vol": tmp_path}
         )
     assert ei.value.code is TransferErrorCode.TRANSFER_FAILED
+    assert isinstance(ei.value.__cause__, RuntimeError)
