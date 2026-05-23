@@ -100,10 +100,10 @@ def _open_confined_readonly(path: Path) -> BinaryIO:
                 transport="filesystem",
                 detail="source is not a regular file",
             )
+        return os.fdopen(fd, "rb")
     except BaseException:
         os.close(fd)
         raise
-    return os.fdopen(fd, "rb")
 
 
 def _verify_stream(stream: SupportsRead[bytes], artifact: ArtifactMetadata) -> None:
@@ -114,11 +114,11 @@ def _verify_stream(stream: SupportsRead[bytes], artifact: ArtifactMetadata) -> N
     (cannot verify -> ``digest-mismatch``), not a silent skip (§15). ``detail``
     is generic — no raw bytes/paths leak to the wire.
     """
-    label = expected_hex = None
+    expected_hex = None
     hashlib_name = None
     if artifact.digest is not None:
         label, _, expected_hex = artifact.digest.partition(":")
-        hashlib_name = _HASHLIB_BY_LABEL.get(label)
+        hashlib_name = _HASHLIB_BY_LABEL.get(label.lower())
     hasher = hashlib.new(hashlib_name) if hashlib_name is not None else None
 
     size = 0

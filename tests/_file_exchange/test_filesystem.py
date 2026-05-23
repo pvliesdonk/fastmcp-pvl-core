@@ -157,3 +157,12 @@ def test_verify_stream_unsupported_algorithm_is_digest_mismatch():
     with pytest.raises(_filesystem.FileExchangeTransferError) as ei:
         _filesystem._verify_stream(io.BytesIO(b"data"), artifact)
     assert ei.value.code is TransferErrorCode.DIGEST_MISMATCH
+
+
+def test_verify_stream_accepts_uppercase_algorithm_label():
+    payload = b"verify-me"
+    artifact = ArtifactMetadata(
+        size=len(payload),
+        digest=f"SHA-256:{hashlib.sha256(payload).hexdigest()}",
+    )
+    _filesystem._verify_stream(io.BytesIO(payload), artifact)  # no raise
