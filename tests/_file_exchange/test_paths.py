@@ -402,17 +402,26 @@ def test_resolve_exchange_unknown_volume_does_not_warn(tmp_path, caplog):
     assert caplog.records == []
 
 
-def test_resolve_exchange_userinfo_or_port_is_unmapped_volume(tmp_path):
+def test_resolve_exchange_userinfo_or_port_is_unmapped_volume(tmp_path, caplog):
     """userinfo/port make the netloc a distinct opaque volume id, so
     exchange://user@docs/x does NOT resolve under a configured 'docs' volume
-    — it's an unmapped volume, skipped (None). Pins the §10.1.1 opaque-
-    authority decision against a parts.hostname refactor (mcp-file-exchange-ext#15)."""
+    — it's an unmapped volume, skipped (None) and silently (no warning, like
+    any unknown volume). Pins the §10.1.1 opaque-authority decision against a
+    parts.hostname refactor (mcp-file-exchange-ext#15)."""
     root = tmp_path / "docs"
     root.mkdir()
     (root / "a.bin").write_text("x")
     vm = {"docs": root}
-    assert resolve_filesystem_uri("exchange://user@docs/a.bin", volume_map=vm) is None
-    assert resolve_filesystem_uri("exchange://docs:8080/a.bin", volume_map=vm) is None
+    with caplog.at_level(logging.WARNING):
+        assert (
+            resolve_filesystem_uri("exchange://user@docs/a.bin", volume_map=vm) is None
+        )
+        assert (
+            resolve_filesystem_uri("exchange://docs:8080/a.bin", volume_map=vm) is None
+        )
+    # Unmapped volume is a benign skip — no warning (parts.hostname aliasing
+    # to the real 'docs' volume would change both resolution and this assert).
+    assert caplog.records == []
 
 
 def test_resolve_file_within_a_volume(tmp_path):
