@@ -80,6 +80,8 @@ async def test_provider_mint_builds_handle_with_computed_size_and_digest(tmp_pat
     )
 
     assert handle.artifact.id == "rep-1"
+    assert handle.artifact.name == "r.bin"
+    assert handle.artifact.mimeType == "application/octet-stream"
     assert handle.artifact.size == len(payload)
     assert handle.artifact.digest == f"sha-256:{hashlib.sha256(payload).hexdigest()}"
     assert len(handle.sources) == 1

@@ -17,6 +17,9 @@ from typing import Literal
 
 SPEC_VERSION = "0.1"
 NAMESPACE = "nl.liesdonk.file-exchange"
+# These are the NAMESPACE-prefixed type tags as Literals (a Literal can't be
+# built from an f-string); keep their values consistent with NAMESPACE above.
+# Pinned by tests/_file_exchange/test_spec.py and the wire models' `type` fields.
 HANDLE_TYPE: Literal["nl.liesdonk.file-exchange/transfer-handle"] = (
     "nl.liesdonk.file-exchange/transfer-handle"
 )
