@@ -17,10 +17,14 @@ only the volume id (``exchange://``) or nothing identifying (``file://``)
 
 from __future__ import annotations
 
+import contextlib
 import logging
+import os
+import shutil
+import tempfile
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Literal
+from typing import BinaryIO, Literal
 from urllib.parse import urlsplit
 
 from fastmcp_pvl_core._env import env
@@ -125,6 +129,36 @@ def canonicalize_and_confine(candidate: Path | str, root: Path | str) -> Path | 
     if resolved_candidate.is_relative_to(resolved_root):
         return resolved_candidate
     return None
+
+
+def atomic_write(target: Path, source: BinaryIO) -> None:
+    """Write ``source``'s bytes to ``target`` atomically.
+
+    Streams into a temp file in ``target``'s own directory (so the final
+    ``os.replace`` is a same-filesystem atomic rename), flushes + fsyncs it,
+    then ``os.replace``s it into place — a concurrent reader never observes
+    a partial file (§10.1.3 "made visible atomically: write to a temporary
+    path, then rename into place"). The parent directory must already exist.
+    On any error the temp file is removed, leaving ``target`` untouched.
+
+    Sync (pure file I/O); an async transport hook runs it via
+    ``asyncio.to_thread`` so it never blocks the event loop.
+    """
+    target = Path(target)
+    fd, tmp_name = tempfile.mkstemp(dir=target.parent)
+    try:
+        with os.fdopen(fd, "wb") as tmp:
+            shutil.copyfileobj(source, tmp)
+            tmp.flush()
+            os.fsync(tmp.fileno())
+        os.replace(tmp_name, target)
+    except BaseException:
+        # copy/fsync/replace failed — the temp may still exist (it is only
+        # gone after a successful os.replace). Remove it so no partial
+        # deposit and no orphan temp is left; target is untouched.
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(tmp_name)
+        raise
 
 
 def resolve_filesystem_uri(uri: str, *, volume_map: VolumeMap) -> Path | None:

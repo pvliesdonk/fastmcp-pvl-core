@@ -15,6 +15,7 @@ from fastmcp_pvl_core import ConfigurationError
 from fastmcp_pvl_core._file_exchange._paths import (
     _parse_fs_uri,
     _parse_volume_map,
+    atomic_write,
     canonicalize_and_confine,
     load_volume_map,
     resolve_filesystem_uri,
@@ -638,3 +639,57 @@ def test_resolve_file_sibling_with_shared_prefix_returns_none(tmp_path):
     (archive / "secret").write_text("x")
     uri = "file://" + str(archive / "secret")
     assert resolve_filesystem_uri(uri, volume_map={"docs": docs}) is None
+
+
+# --- atomic_write ---
+
+
+def test_atomic_write_writes_content(tmp_path):
+    from io import BytesIO
+
+    target = tmp_path / "out.bin"
+    atomic_write(target, BytesIO(b"hello"))
+    assert target.read_bytes() == b"hello"
+
+
+def test_atomic_write_overwrites_existing(tmp_path):
+    from io import BytesIO
+
+    target = tmp_path / "out.bin"
+    target.write_bytes(b"old")
+    atomic_write(target, BytesIO(b"new"))
+    assert target.read_bytes() == b"new"
+
+
+def test_atomic_write_cleans_up_and_leaves_target_absent_on_source_error(tmp_path):
+    class _Boom:
+        def read(self, *_a):
+            raise RuntimeError("boom")
+
+    target = tmp_path / "out.bin"
+    with pytest.raises(RuntimeError, match="boom"):
+        atomic_write(target, _Boom())
+    assert not target.exists()
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_atomic_write_does_not_clobber_existing_on_source_error(tmp_path):
+    target = tmp_path / "out.bin"
+    target.write_bytes(b"keep")
+
+    class _Boom:
+        def read(self, *_a):
+            raise RuntimeError("boom")
+
+    with pytest.raises(RuntimeError, match="boom"):
+        atomic_write(target, _Boom())
+    assert target.read_bytes() == b"keep"
+    assert list(tmp_path.iterdir()) == [target]
+
+
+def test_atomic_write_requires_existing_parent(tmp_path):
+    from io import BytesIO
+
+    target = tmp_path / "missing" / "out.bin"
+    with pytest.raises(FileNotFoundError):
+        atomic_write(target, BytesIO(b"x"))
