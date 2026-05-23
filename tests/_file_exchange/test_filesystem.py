@@ -48,10 +48,6 @@ class _DummySource:
 
 
 async def test_stage_writes_bytes_size_digest_and_mode(tmp_path):
-    import hashlib
-
-    from fastmcp_pvl_core._file_exchange import _filesystem
-
     payload = b"staged-bytes"
     meta = ArtifactMetadata(name="f.bin", mimeType="application/octet-stream")
     source = _DummySource(payload, meta)
