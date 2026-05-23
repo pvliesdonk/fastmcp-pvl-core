@@ -18,10 +18,10 @@ from typing import Literal
 SPEC_VERSION = "0.1"
 NAMESPACE = "nl.liesdonk.file-exchange"
 HANDLE_TYPE: Literal["nl.liesdonk.file-exchange/transfer-handle"] = (
-    f"{NAMESPACE}/transfer-handle"  # type: ignore[assignment]
+    "nl.liesdonk.file-exchange/transfer-handle"
 )
 TICKET_TYPE: Literal["nl.liesdonk.file-exchange/intake-ticket"] = (
-    f"{NAMESPACE}/intake-ticket"  # type: ignore[assignment]
+    "nl.liesdonk.file-exchange/intake-ticket"
 )
 
 # Upstream pin. Bumped only via the sync script's --bump mode (see
