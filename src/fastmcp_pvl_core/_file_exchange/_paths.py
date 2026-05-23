@@ -135,6 +135,12 @@ def canonicalize_and_confine(candidate: Path | str, root: Path | str) -> Path | 
 def atomic_write(target: Path, source: BinaryIO) -> None:
     """Write ``source``'s bytes to ``target`` atomically.
 
+    Reads ``source`` from its *current* position to EOF — it does not seek, so
+    a non-zero start position transfers only the bytes from there on (and an
+    already-exhausted stream writes an empty file). Callers pass a stream
+    positioned at the first byte to write; this keeps non-seekable streams
+    (pipes, sockets) usable.
+
     Streams into a temp file in ``target``'s own directory (so the final
     ``os.replace`` is a same-filesystem atomic rename), flushes + fsyncs it,
     then ``os.replace``s it into place — a concurrent reader never observes

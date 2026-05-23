@@ -103,7 +103,11 @@ def test_hook_protocols_discovered():
 
 @pytest.mark.parametrize("proto", _HOOK_PROTOCOLS, ids=lambda p: p.__name__)
 def test_no_transport_name_in_hook_signatures(proto):
-    for method in _public_methods(proto):
+    methods = _public_methods(proto)
+    # Guard the guard: a protocol with zero discovered methods would make the
+    # token scan below iterate zero times and pass vacuously.
+    assert methods, f"{proto.__name__}: no public methods found; guard is toothless"
+    for method in methods:
         for token in _signature_tokens(method):
             low = token.lower()
             for forbidden in _FORBIDDEN_TOKENS:

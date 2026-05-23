@@ -726,3 +726,14 @@ def test_atomic_write_closes_fd_when_fdopen_fails(tmp_path, monkeypatch):
         os.fstat(captured["fd"])
     assert not target.exists()
     assert list(tmp_path.iterdir()) == []
+
+
+def test_atomic_write_reads_from_current_position(tmp_path):
+    # atomic_write must NOT seek to 0 — it transfers from the stream's current
+    # position so non-seekable streams stay usable and partial transfers work.
+    from io import BytesIO
+
+    src = BytesIO(b"skip" + b"keep")
+    src.seek(4)  # past "skip"
+    atomic_write(tmp_path / "out.bin", src)
+    assert (tmp_path / "out.bin").read_bytes() == b"keep"

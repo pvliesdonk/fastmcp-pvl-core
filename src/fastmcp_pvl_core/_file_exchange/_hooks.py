@@ -26,8 +26,10 @@ class ArtifactSource(Protocol):
         """Return a readable byte stream plus the metadata the server knows.
 
         ``key`` is the server's own opaque identifier for the artifact it is
-        offering (a domain key, not a wire field). The caller (pvl-core)
-        reads the stream to completion and closes it, and computes/records
+        offering (a domain key, not a wire field). The returned stream MUST be
+        positioned at the first byte to transfer (typically the start): the
+        caller reads it from its *current* position to completion and does not
+        seek. The caller (pvl-core) closes the stream and computes/records
         size + digest itself — so the returned ``ArtifactMetadata`` need
         only carry what the server knows (e.g. name, mimeType). Raise on
         failure.
