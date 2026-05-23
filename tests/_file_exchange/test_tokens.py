@@ -113,6 +113,12 @@ async def test_consume_absent_token_returns_false(store):
     assert await store.consume("nope") is False
 
 
+async def test_consume_returns_false_after_expiry(store):
+    minted = await store.mint({"k": "v"}, ttl=0.05, single_use=True)
+    await asyncio.sleep(0.12)
+    assert await store.consume(minted.token) is False
+
+
 async def test_multi_use_consume_is_noop(store):
     minted = await store.mint({"k": "v"}, ttl=60.0, single_use=False)
     assert await store.consume(minted.token) is True
