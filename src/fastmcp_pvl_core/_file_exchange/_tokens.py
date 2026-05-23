@@ -24,6 +24,8 @@ if TYPE_CHECKING:
 
     from key_value.aio.protocols.key_value import AsyncKeyValue
 
+    from fastmcp_pvl_core._config import ServerConfig
+
 # Token byte length: 32 bytes = 256 bits, well above §12's ≥128-bit floor.
 _TOKEN_BYTES = 32
 
@@ -130,6 +132,20 @@ class CapabilityTokenStore:
         Idempotent — revoking an absent/expired token is a no-op.
         """
         await self._store.delete(token, collection=_COLLECTION)
+
+
+def build_capability_token_store(config: ServerConfig) -> CapabilityTokenStore:
+    """Build a :class:`CapabilityTokenStore` from operator config.
+
+    Resolves the backend via :func:`~fastmcp_pvl_core.build_kv_store` under
+    ``namespace="file-exchange-tokens"`` (sharing the operator's chosen KV
+    backend with an isolated keyspace) and threads the TTL ceiling from
+    ``config.file_exchange_token_ttl``. Mirrors ``build_event_store``.
+    """
+    from fastmcp_pvl_core._kv_store import build_kv_store
+
+    store = build_kv_store(config, namespace="file-exchange-tokens")
+    return CapabilityTokenStore(store, ttl_ceiling=config.file_exchange_token_ttl)
 
 
 def capability_url(base_url: str, path: str, token: str) -> str:

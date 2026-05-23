@@ -136,3 +136,17 @@ async def test_revoke_single_use_token(store):
     minted = await store.mint({"k": "v"}, ttl=60.0, single_use=True)
     await store.revoke(minted.token)
     assert await store.lookup(minted.token) is None
+
+
+async def test_build_capability_token_store_from_config():
+    from fastmcp_pvl_core import ServerConfig
+
+    config = ServerConfig(kv_store_url="memory://", file_exchange_token_ttl=120.0)
+    built = _tokens.build_capability_token_store(config)
+    assert isinstance(built, _tokens.CapabilityTokenStore)
+    # ceiling threaded from config: a 9999s request clamps to ~120s
+    minted = await built.mint({"k": "v"}, ttl=9999.0)
+    delta = (minted.expires_at - datetime.now(timezone.utc)).total_seconds()
+    assert 115 <= delta <= 121
+    # round-trips through the built store
+    assert (await built.lookup(minted.token)) is not None
