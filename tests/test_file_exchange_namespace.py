@@ -142,3 +142,17 @@ def test_filesystem_transport_names_reexported():
     ):
         assert hasattr(file_exchange, name), name
         assert name in file_exchange.__all__, name
+
+
+def test_capability_token_names_reexported():
+    from fastmcp_pvl_core import file_exchange
+
+    for name in (
+        "CapabilityTokenStore",
+        "MintedToken",
+        "TokenRecord",
+        "build_capability_token_store",
+        "capability_url",
+    ):
+        assert hasattr(file_exchange, name), name
+        assert name in file_exchange.__all__, name
