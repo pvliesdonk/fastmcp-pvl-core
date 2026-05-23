@@ -59,9 +59,9 @@ from fastmcp_pvl_core._file_exchange import (
 
 __all__ = [
     "ArtifactConstraints",
+    "ArtifactMetadata",
     "ArtifactSink",
     "ArtifactSource",
-    "ArtifactMetadata",
     "DownloadSource",
     "FileExchangeCapability",
     "FilesystemSink",
