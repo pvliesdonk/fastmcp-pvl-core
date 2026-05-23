@@ -101,8 +101,11 @@ catches.) Rejected (→ `None`):
 - empty volume / netloc (`exchange:///x`),
 - empty path or bare `/` (`exchange://docs`, `exchange://docs/`),
 - any query or fragment component (userinfo/port in the netloc are *not*
-  rejected — the wire's `[^/]+` accepts them, so they are absorbed into the
-  volume id, which then fails the volume lookup and is skipped benignly),
+  rejected — per §10.1.1's "the URI authority is an opaque identifier", the
+  full netloc *is* the volume id, so `user@docs` / `docs:8080` are simply
+  unmapped volumes that fail the lookup and are skipped benignly. Whether
+  the spec intends the opaque authority to include userinfo/port is tracked
+  in mcp-file-exchange-ext#15),
 - a non-lowercase scheme (`urlsplit` lowercases it, but the wire pattern
   is case-sensitive, so `EXCHANGE://…` must be rejected),
 - embedded ASCII control characters (`\x00`, `\t`, `\n`, `\r`): `urlsplit`

@@ -223,6 +223,13 @@ _DRIFT_URIS = [
     "file://[bad/x",  # malformed IPv6 authority
     "exchange://docs/a?q=1",  # query — parser stricter than wire (safe)
     "https://example/x",  # unknown scheme
+    # bare query/fragment delimiters: wire's `.+` accepts them, parser must
+    # reject. Pinned here so a refactor of the raw-string guard back to
+    # parts.query/parts.fragment (falsy for empty) would surface as drift.
+    "exchange://docs/a?",
+    "exchange://docs/a#",
+    "file:///mnt/x?",
+    "file:///mnt/x#",
     # control chars urlsplit silently strips (WHATWG) — parser must reject
     # so it never accepts a URI the newline-anchored wire pattern refuses.
     "exchange://docs/a\nb",
