@@ -19,8 +19,13 @@ from fastmcp_pvl_core._file_exchange._codes import (
 from fastmcp_pvl_core._file_exchange._errors import (
     build_file_exchange_error,
 )
+from fastmcp_pvl_core._file_exchange._hooks import (
+    ArtifactSink,
+    ArtifactSource,
+)
 from fastmcp_pvl_core._file_exchange._paths import (
     VolumeMap,
+    atomic_write,
     canonicalize_and_confine,
     load_volume_map,
     resolve_filesystem_uri,
@@ -63,6 +68,8 @@ from fastmcp_pvl_core._file_exchange._wire import (
 __all__ = [
     "ArtifactConstraints",
     "ArtifactMetadata",
+    "ArtifactSink",
+    "ArtifactSource",
     "DownloadSource",
     "FileExchangeCapability",
     "FilesystemSink",
@@ -87,6 +94,7 @@ __all__ = [
     "VERSION_PATTERN",
     "VolumeMap",
     "WireFormatError",
+    "atomic_write",
     "build_file_exchange_error",
     "canonicalize_and_confine",
     "capability_declaration",

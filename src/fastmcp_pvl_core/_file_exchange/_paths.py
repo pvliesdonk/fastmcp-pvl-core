@@ -8,6 +8,7 @@ Security-critical. Turns an untrusted ``filesystem`` descriptor ``uri``
 - :func:`resolve_filesystem_uri` — parse ``exchange://`` / ``file://``,
   look up the volume, confine.
 - :func:`load_volume_map` — env-driven volume-to-mount-point config.
+- :func:`atomic_write` — atomic write-then-rename of a stream to a local path.
 
 All non-usable outcomes return ``None`` (the §9 "skip this descriptor"
 signal); a confinement failure additionally logs a ``WARNING`` carrying
@@ -17,10 +18,14 @@ only the volume id (``exchange://``) or nothing identifying (``file://``)
 
 from __future__ import annotations
 
+import contextlib
 import logging
+import os
+import shutil
+import tempfile
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Literal
+from typing import BinaryIO, Literal
 from urllib.parse import urlsplit
 
 from fastmcp_pvl_core._env import env
@@ -125,6 +130,58 @@ def canonicalize_and_confine(candidate: Path | str, root: Path | str) -> Path | 
     if resolved_candidate.is_relative_to(resolved_root):
         return resolved_candidate
     return None
+
+
+def atomic_write(target: Path | str, source: BinaryIO) -> None:
+    """Write ``source``'s bytes to ``target`` atomically.
+
+    Reads ``source`` from its *current* position to EOF — it does not seek, so
+    a non-zero start position transfers only the bytes from there on (and an
+    already-exhausted stream writes an empty file). Callers pass a stream
+    positioned at the first byte to write; this keeps non-seekable streams
+    (pipes, sockets) usable.
+
+    Streams into a temp file in ``target``'s own directory (so the final
+    ``os.replace`` is a same-filesystem atomic rename), flushes + fsyncs it,
+    then ``os.replace``s it into place — a concurrent reader never observes
+    a partial file (§10.1.3 "made visible atomically: write to a temporary
+    path, then rename into place"). The parent directory must already exist.
+    On any error the temp file is removed, leaving ``target`` untouched.
+
+    The deposited file carries ``tempfile.mkstemp``'s ``0o600`` (owner-only)
+    mode, which ``os.replace`` preserves — overwriting an existing ``target``
+    also resets it to ``0o600``. A caller needing broader access (e.g. a
+    different-uid reader on a shared volume) must ``chmod`` ``target`` itself;
+    the deposit-permission policy for the filesystem sink is the consumer's to
+    define (#143, tracked in #155), not this primitive's.
+
+    Sync, blocking file I/O — async callers should run it via
+    ``asyncio.to_thread`` so it does not block the event loop.
+    """
+    target = Path(target)
+    fd, tmp_name = tempfile.mkstemp(dir=target.parent)
+    try:
+        with os.fdopen(fd, "wb") as tmp:
+            fd = -1  # fdopen took ownership; its __exit__ closes the fd now
+            shutil.copyfileobj(source, tmp)
+            tmp.flush()
+            os.fsync(tmp.fileno())
+        os.replace(tmp_name, target)
+    except BaseException:
+        # fdopen/copy/fsync/replace failed. If os.fdopen itself raised, the raw
+        # fd was never wrapped, so close it here (fd != -1); once fdopen
+        # succeeded the with-block already closed it, so closing again would
+        # risk killing an unrelated fd that reused the number. The temp may
+        # still exist (only gone after a successful os.replace), so remove it —
+        # no partial deposit, no orphan temp; target is untouched. Suppress
+        # OSError on each cleanup step so a cleanup failure can't mask the
+        # original error.
+        if fd != -1:
+            with contextlib.suppress(OSError):
+                os.close(fd)
+        with contextlib.suppress(OSError):
+            os.unlink(tmp_name)
+        raise
 
 
 def resolve_filesystem_uri(uri: str, *, volume_map: VolumeMap) -> Path | None:

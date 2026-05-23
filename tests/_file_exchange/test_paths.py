@@ -15,6 +15,7 @@ from fastmcp_pvl_core import ConfigurationError
 from fastmcp_pvl_core._file_exchange._paths import (
     _parse_fs_uri,
     _parse_volume_map,
+    atomic_write,
     canonicalize_and_confine,
     load_volume_map,
     resolve_filesystem_uri,
@@ -638,3 +639,123 @@ def test_resolve_file_sibling_with_shared_prefix_returns_none(tmp_path):
     (archive / "secret").write_text("x")
     uri = "file://" + str(archive / "secret")
     assert resolve_filesystem_uri(uri, volume_map={"docs": docs}) is None
+
+
+# --- atomic_write ---
+
+
+def test_atomic_write_writes_content(tmp_path):
+    from io import BytesIO
+
+    target = tmp_path / "out.bin"
+    atomic_write(target, BytesIO(b"hello"))
+    assert target.read_bytes() == b"hello"
+
+
+def test_atomic_write_overwrites_existing(tmp_path):
+    from io import BytesIO
+
+    target = tmp_path / "out.bin"
+    target.write_bytes(b"old")
+    atomic_write(target, BytesIO(b"new"))
+    assert target.read_bytes() == b"new"
+
+
+def test_atomic_write_cleans_up_and_leaves_target_absent_on_source_error(tmp_path):
+    class _Boom:
+        def read(self, *_a):
+            raise RuntimeError("boom")
+
+    target = tmp_path / "out.bin"
+    with pytest.raises(RuntimeError, match="boom"):
+        atomic_write(target, _Boom())
+    assert not target.exists()
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_atomic_write_does_not_clobber_existing_on_source_error(tmp_path):
+    target = tmp_path / "out.bin"
+    target.write_bytes(b"keep")
+
+    class _Boom:
+        def read(self, *_a):
+            raise RuntimeError("boom")
+
+    with pytest.raises(RuntimeError, match="boom"):
+        atomic_write(target, _Boom())
+    assert target.read_bytes() == b"keep"
+    assert list(tmp_path.iterdir()) == [target]
+
+
+def test_atomic_write_requires_existing_parent(tmp_path):
+    from io import BytesIO
+
+    target = tmp_path / "missing" / "out.bin"
+    with pytest.raises(FileNotFoundError):
+        atomic_write(target, BytesIO(b"x"))
+
+
+def test_atomic_write_closes_fd_when_fdopen_fails(tmp_path, monkeypatch):
+    # If os.fdopen raises, the raw fd from mkstemp must still be closed (and the
+    # temp removed) — otherwise it leaks for the life of the process.
+    import tempfile as _tempfile
+    from io import BytesIO
+
+    captured: dict[str, int] = {}
+    real_mkstemp = _tempfile.mkstemp
+
+    def spy_mkstemp(*args, **kwargs):
+        fd, name = real_mkstemp(*args, **kwargs)
+        captured["fd"] = fd
+        return fd, name
+
+    monkeypatch.setattr(_tempfile, "mkstemp", spy_mkstemp)
+
+    def boom_fdopen(*_a, **_k):
+        raise OSError("fdopen failed")
+
+    monkeypatch.setattr(os, "fdopen", boom_fdopen)
+
+    target = tmp_path / "out.bin"
+    with pytest.raises(OSError, match="fdopen failed"):
+        atomic_write(target, BytesIO(b"x"))
+
+    # The captured fd must no longer be open (fstat raises on a closed fd),
+    # and no temp file or target may be left behind.
+    with pytest.raises(OSError):
+        os.fstat(captured["fd"])
+    assert not target.exists()
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_atomic_write_reads_from_current_position(tmp_path):
+    # atomic_write must NOT seek to 0 — it transfers from the stream's current
+    # position so non-seekable streams stay usable and partial transfers work.
+    from io import BytesIO
+
+    src = BytesIO(b"skip" + b"keep")
+    src.seek(4)  # past "skip"
+    atomic_write(tmp_path / "out.bin", src)
+    assert (tmp_path / "out.bin").read_bytes() == b"keep"
+
+
+def test_atomic_write_accepts_str_target(tmp_path):
+    # Pins the widened Path | str contract — the body coerces via Path(target).
+    from io import BytesIO
+
+    target = tmp_path / "out.bin"
+    atomic_write(str(target), BytesIO(b"hi"))
+    assert target.read_bytes() == b"hi"
+
+
+def test_atomic_write_deposits_owner_only_mode(tmp_path):
+    # Pins the documented current behavior: deposits inherit mkstemp's 0o600,
+    # preserved by os.replace, on both create and overwrite. The deposit
+    # permission policy is the filesystem sink's to define (#143, tracked #155).
+    from io import BytesIO
+
+    target = tmp_path / "out.bin"
+    target.write_bytes(b"old")
+    target.chmod(0o644)
+    atomic_write(target, BytesIO(b"new"))
+    assert target.stat().st_mode & 0o777 == 0o600
