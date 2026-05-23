@@ -1,8 +1,11 @@
 import hashlib
 import io
 
+import pytest
+
+from fastmcp_pvl_core._errors import ConfigurationError
 from fastmcp_pvl_core._file_exchange import _filesystem
-from fastmcp_pvl_core._file_exchange._wire import ArtifactMetadata
+from fastmcp_pvl_core._file_exchange._wire import ArtifactMetadata, FilesystemSource
 
 
 def test_hashing_reader_tracks_size_and_digest():
@@ -62,3 +65,34 @@ async def test_stage_writes_bytes_size_digest_and_mode(tmp_path):
     assert target.stat().st_mode & 0o777 == 0o664
     assert returned_meta is meta
     assert source.closed is True
+
+
+async def test_provider_mint_builds_handle_with_computed_size_and_digest(tmp_path):
+    payload = b"report-bytes"
+    meta = ArtifactMetadata(
+        id="rep-1", name="r.bin", mimeType="application/octet-stream"
+    )
+    source = _DummySource(payload, meta)
+    volume_map = {"vol": tmp_path}
+
+    handle = await _filesystem.filesystem_provider_mint(
+        source, "k", volume="vol", volume_map=volume_map
+    )
+
+    assert handle.artifact.id == "rep-1"
+    assert handle.artifact.size == len(payload)
+    assert handle.artifact.digest == f"sha-256:{hashlib.sha256(payload).hexdigest()}"
+    assert len(handle.sources) == 1
+    descriptor = handle.sources[0]
+    assert isinstance(descriptor, FilesystemSource)
+    assert descriptor.uri.startswith("exchange://vol/")
+    relpath = descriptor.uri.removeprefix("exchange://vol/")
+    assert (tmp_path / relpath).read_bytes() == payload
+
+
+async def test_provider_mint_unknown_volume_raises_configuration_error(tmp_path):
+    source = _DummySource(b"x", ArtifactMetadata(name="x"))
+    with pytest.raises(ConfigurationError):
+        await _filesystem.filesystem_provider_mint(
+            source, "k", volume="missing", volume_map={"vol": tmp_path}
+        )

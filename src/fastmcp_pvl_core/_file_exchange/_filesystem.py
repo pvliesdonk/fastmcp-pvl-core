@@ -12,9 +12,13 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import uuid
 from typing import TYPE_CHECKING
 
+from fastmcp_pvl_core._errors import ConfigurationError
 from fastmcp_pvl_core._file_exchange._paths import atomic_write
+from fastmcp_pvl_core._file_exchange._spec import HANDLE_TYPE, SPEC_VERSION
+from fastmcp_pvl_core._file_exchange._wire import FilesystemSource, TransferHandle
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -22,6 +26,7 @@ if TYPE_CHECKING:
     from _typeshed import SupportsRead
 
     from fastmcp_pvl_core._file_exchange._hooks import ArtifactSource
+    from fastmcp_pvl_core._file_exchange._paths import VolumeMap
     from fastmcp_pvl_core._file_exchange._wire import ArtifactMetadata
 
 
@@ -86,3 +91,48 @@ async def _stage(
     finally:
         stream.close()
     return size, digest, meta
+
+
+def _require_volume(volume: str, volume_map: VolumeMap) -> Path:
+    """Return the mount root for ``volume`` or fail loudly.
+
+    A mint op naming a volume the server has no mapping for is a caller/config
+    mistake (not a per-transfer §13 failure), so it raises
+    :class:`ConfigurationError` rather than ``FileExchangeTransferError``.
+    """
+    root = volume_map.get(volume)
+    if root is None:
+        raise ConfigurationError(
+            f"file-exchange: mint volume {volume!r} is not in the volume map"
+        )
+    return root
+
+
+async def filesystem_provider_mint(
+    source: ArtifactSource,
+    key: str,
+    *,
+    volume: str,
+    volume_map: VolumeMap,
+) -> TransferHandle:
+    """Provider role (pull): stage ``key``'s bytes onto ``volume`` and mint a handle.
+
+    The returned :class:`TransferHandle` has a single ``filesystem`` source
+    pointing at the staged file, with computed ``size`` + ``digest`` folded into
+    the metadata. ``volume`` names which mapped volume to stage into; how a
+    server picks it is #148's concern. The staged file's lifecycle/cleanup is
+    the provider's (§10.1.3) and out of scope here.
+    """
+    root = _require_volume(volume, volume_map)
+    relpath = uuid.uuid4().hex
+    size, digest, meta = await _stage(source, key, root / relpath)
+    artifact = meta.model_copy(update={"size": size, "digest": digest})
+    descriptor = FilesystemSource(
+        transport="filesystem", uri=f"exchange://{volume}/{relpath}"
+    )
+    return TransferHandle(
+        type=HANDLE_TYPE,
+        version=SPEC_VERSION,
+        artifact=artifact,
+        sources=[descriptor],
+    )
