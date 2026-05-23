@@ -1,4 +1,5 @@
 import pytest
+from key_value.aio.stores.memory import MemoryStore
 
 from fastmcp_pvl_core._errors import ConfigurationError
 from fastmcp_pvl_core._file_exchange import _tokens
@@ -35,3 +36,52 @@ def test_capability_url_requires_https():
 def test_capability_url_requires_nonempty_token():
     with pytest.raises(ValueError):
         _tokens.capability_url("https://x.example.com", "/d", "")
+
+
+@pytest.fixture
+def store() -> _tokens.CapabilityTokenStore:
+    return _tokens.CapabilityTokenStore(MemoryStore(), ttl_ceiling=3600.0)
+
+
+async def test_mint_returns_urlsafe_token_and_expiry(store):
+    minted = await store.mint({"k": "v"}, ttl=60.0)
+    assert isinstance(minted.token, str)
+    assert len(minted.token) >= 43
+    assert all(c.isalnum() or c in "-_" for c in minted.token)
+    from datetime import datetime, timezone
+
+    delta = (minted.expires_at - datetime.now(timezone.utc)).total_seconds()
+    assert 55 <= delta <= 61
+
+
+async def test_mint_clamps_ttl_to_ceiling(store):
+    minted = await store.mint({"k": "v"}, ttl=10_000.0)
+    from datetime import datetime, timezone
+
+    delta = (minted.expires_at - datetime.now(timezone.utc)).total_seconds()
+    assert 3595 <= delta <= 3601
+
+
+async def test_mint_rejects_nonpositive_ttl(store):
+    with pytest.raises(ValueError):
+        await store.mint({"k": "v"}, ttl=0.0)
+
+
+async def test_lookup_round_trips_metadata_and_single_use(store):
+    minted = await store.mint({"artifact": "a1", "n": 7}, ttl=60.0, single_use=False)
+    record = await store.lookup(minted.token)
+    assert record is not None
+    assert record.metadata == {"artifact": "a1", "n": 7}
+    assert record.single_use is False
+
+
+async def test_lookup_absent_token_returns_none(store):
+    assert await store.lookup("nope") is None
+
+
+async def test_lookup_returns_none_after_expiry(store):
+    import asyncio
+
+    minted = await store.mint({"k": "v"}, ttl=0.05)
+    await asyncio.sleep(0.12)
+    assert await store.lookup(minted.token) is None

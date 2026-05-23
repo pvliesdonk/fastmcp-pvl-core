@@ -12,11 +12,17 @@ the routes, and the full-URL assembly. See
 
 from __future__ import annotations
 
+import secrets
 from dataclasses import dataclass
-from datetime import datetime
-from typing import Any
+from datetime import datetime, timedelta, timezone
+from typing import TYPE_CHECKING, Any
 
 from fastmcp_pvl_core._errors import ConfigurationError
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
+
+    from key_value.aio.protocols.key_value import AsyncKeyValue
 
 # Token byte length: 32 bytes = 256 bits, well above §12's ≥128-bit floor.
 _TOKEN_BYTES = 32
@@ -45,6 +51,57 @@ class TokenRecord:
 
     metadata: dict[str, Any]
     single_use: bool
+
+
+class CapabilityTokenStore:
+    """Mint/lookup/consume/revoke high-entropy capability tokens.
+
+    Wraps an ``AsyncKeyValue`` (from :func:`build_capability_token_store`'s
+    ``build_kv_store`` call) plus the operator TTL ceiling. Expiry rides on
+    the KV layer's TTL; single-use rides on an atomic ``delete``.
+    """
+
+    def __init__(self, store: AsyncKeyValue, *, ttl_ceiling: float) -> None:
+        self._store = store
+        self._ttl_ceiling = ttl_ceiling
+
+    async def mint(
+        self,
+        metadata: Mapping[str, Any],
+        *,
+        ttl: float,
+        single_use: bool = True,
+    ) -> MintedToken:
+        """Mint a token, store ``metadata`` under it with a clamped TTL.
+
+        ``ttl`` is clamped to the operator ceiling (§10.2 "shortest value").
+        ``metadata`` must be a JSON-serialisable mapping (it is persisted via
+        the KV backend). Returns a :class:`MintedToken` whose ``expires_at``
+        reflects the clamped TTL.
+        """
+        effective_ttl = min(ttl, self._ttl_ceiling)
+        if effective_ttl <= 0:
+            raise ValueError("ttl must be positive")
+        token = secrets.token_urlsafe(_TOKEN_BYTES)
+        await self._store.put(
+            token,
+            {"metadata": dict(metadata), "single_use": single_use},
+            collection=_COLLECTION,
+            ttl=effective_ttl,
+        )
+        expires_at = datetime.now(timezone.utc) + timedelta(seconds=effective_ttl)
+        return MintedToken(token=token, expires_at=expires_at)
+
+    async def lookup(self, token: str) -> TokenRecord | None:
+        """Return the token's record, or ``None`` if absent/expired.
+
+        Does not mutate. ``None`` covers an unknown token, an expired one
+        (KV TTL), and a consumed single-use one (deleted by ``consume``).
+        """
+        record = await self._store.get(token, collection=_COLLECTION)
+        if record is None:
+            return None
+        return TokenRecord(metadata=record["metadata"], single_use=record["single_use"])
 
 
 def capability_url(base_url: str, path: str, token: str) -> str:
