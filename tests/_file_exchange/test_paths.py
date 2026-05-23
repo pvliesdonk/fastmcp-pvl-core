@@ -215,6 +215,11 @@ _DRIFT_URIS = [
     "exchange://docs/a/b.bin",
     "exchange://v/single",
     "file:///mnt/x",
+    # userinfo/port are wire-valid (the [^/]+ netloc accepts @ and :) and
+    # parser-accepted as part of the opaque volume id, not split to a host
+    # (§10.1.1, mcp-file-exchange-ext#15) — so they satisfy the invariant.
+    "exchange://user@docs/a",
+    "exchange://docs:8080/a",
     # parser rejects these — wire may or may not match; the invariant is
     # only "accepted => wire matches", so rejected ones can't violate it,
     # but we include them to document the cases.
