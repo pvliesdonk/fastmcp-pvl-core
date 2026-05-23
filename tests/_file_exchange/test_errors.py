@@ -198,3 +198,13 @@ def test_transfer_error_carries_code_transport_detail():
     assert exc.detail == "bytes did not match declared digest"
     assert "digest-mismatch" in str(exc)
     assert isinstance(exc, Exception)
+
+
+def test_transfer_error_message_is_bare_code_when_no_detail():
+    from fastmcp_pvl_core._file_exchange._codes import TransferErrorCode
+    from fastmcp_pvl_core._file_exchange._errors import FileExchangeTransferError
+
+    exc = FileExchangeTransferError(TransferErrorCode.NOT_ACCESSIBLE)
+    assert str(exc) == "not-accessible"
+    assert exc.detail is None
+    assert exc.transport is None
