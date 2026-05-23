@@ -436,6 +436,59 @@ def test_open_confined_readonly_rejects_fifo(tmp_path):
     assert ei.value.code is TransferErrorCode.NOT_ACCESSIBLE
 
 
+async def test_fetcher_consume_size_mismatch_surfaces_size_code(tmp_path):
+    payload = b"fetch-bytes"
+    (tmp_path / "art").write_bytes(payload)
+    handle = TransferHandle(
+        type=HANDLE_TYPE,
+        version=SPEC_VERSION,
+        artifact=ArtifactMetadata(id="a1", size=len(payload) + 1),
+        sources=[FilesystemSource(transport="filesystem", uri="exchange://vol/art")],
+    )
+    source = handle.sources[0]
+    assert isinstance(source, FilesystemSource)
+    with pytest.raises(_filesystem.FileExchangeTransferError) as ei:
+        await _filesystem.filesystem_fetcher_consume(
+            handle, source, _RecordingSink(), volume_map={"vol": tmp_path}
+        )
+    assert ei.value.code is TransferErrorCode.SIZE_MISMATCH
+
+
+async def test_fetcher_consume_digest_mismatch_surfaces_digest_code(tmp_path):
+    payload = b"fetch-bytes"
+    (tmp_path / "art").write_bytes(payload)
+    handle = TransferHandle(
+        type=HANDLE_TYPE,
+        version=SPEC_VERSION,
+        artifact=ArtifactMetadata(id="a1", digest="sha-256:" + "0" * 64),
+        sources=[FilesystemSource(transport="filesystem", uri="exchange://vol/art")],
+    )
+    source = handle.sources[0]
+    assert isinstance(source, FilesystemSource)
+    with pytest.raises(_filesystem.FileExchangeTransferError) as ei:
+        await _filesystem.filesystem_fetcher_consume(
+            handle, source, _RecordingSink(), volume_map={"vol": tmp_path}
+        )
+    assert ei.value.code is TransferErrorCode.DIGEST_MISMATCH
+
+
+async def test_fetcher_consume_nonregular_source_surfaces_not_accessible(tmp_path):
+    os.mkfifo(tmp_path / "art")
+    handle = TransferHandle(
+        type=HANDLE_TYPE,
+        version=SPEC_VERSION,
+        artifact=ArtifactMetadata(id="a1", name="x"),
+        sources=[FilesystemSource(transport="filesystem", uri="exchange://vol/art")],
+    )
+    source = handle.sources[0]
+    assert isinstance(source, FilesystemSource)
+    with pytest.raises(_filesystem.FileExchangeTransferError) as ei:
+        await _filesystem.filesystem_fetcher_consume(
+            handle, source, _RecordingSink(), volume_map={"vol": tmp_path}
+        )
+    assert ei.value.code is TransferErrorCode.NOT_ACCESSIBLE
+
+
 def test_open_confined_readonly_closes_fd_when_fdopen_fails(tmp_path, monkeypatch):
     import os as _os
 

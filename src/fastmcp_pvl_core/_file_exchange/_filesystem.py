@@ -105,7 +105,10 @@ def _open_confined_readonly(path: Path) -> BinaryIO:
     blocking on a planted FIFO (a regular file ignores it for reads);
     ``fstat`` rejects any non-regular target. Prefix-component races and full
     per-component ``openat`` traversal are out of scope — see the design
-    doc's TOCTOU section. Any failure surfaces as ``not-accessible``.
+    doc's TOCTOU section. An ``os.open`` failure (including an ``O_NOFOLLOW``
+    symlink rejection) or a non-regular target surfaces as ``not-accessible``;
+    an unexpected ``os.fdopen`` failure after those checks propagates unwrapped
+    (the consuming op maps it to ``transfer-failed``).
     """
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
