@@ -60,7 +60,9 @@ class CapabilityTokenStore:
 
     Wraps an ``AsyncKeyValue`` (from :func:`build_capability_token_store`'s
     ``build_kv_store`` call) plus the operator TTL ceiling. Expiry rides on
-    the KV layer's TTL; single-use rides on an atomic ``delete``.
+    the KV layer's TTL; single-use rides on an atomic ``delete``. The
+    ``ttl_ceiling`` must be positive; construction raises :class:`ValueError`
+    otherwise.
     """
 
     def __init__(self, store: AsyncKeyValue, *, ttl_ceiling: float) -> None:
@@ -81,7 +83,8 @@ class CapabilityTokenStore:
         ``ttl`` is clamped to the operator ceiling (§10.2 "shortest value").
         ``metadata`` must be a JSON-serialisable mapping (it is persisted via
         the KV backend). Returns a :class:`MintedToken` whose ``expires_at``
-        reflects the clamped TTL.
+        reflects the clamped TTL. Raises :class:`ValueError` if the clamped
+        TTL is not positive (``ttl`` must be > 0).
         """
         effective_ttl = min(ttl, self._ttl_ceiling)
         if effective_ttl <= 0:
@@ -154,7 +157,8 @@ def capability_url(base_url: str, path: str, token: str) -> str:
     ``path`` is the route path supplied by the caller (#145/#146, which own
     their routes). Enforces §12's ``https`` requirement; raises
     :class:`ConfigurationError` (operator misconfiguration) when ``base_url``
-    is unset or not ``https``.
+    is unset or not ``https``. Raises :class:`ValueError` for an empty
+    ``token``.
     """
     if not base_url:
         raise ConfigurationError(
