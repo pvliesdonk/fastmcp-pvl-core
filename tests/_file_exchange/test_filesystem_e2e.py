@@ -10,12 +10,13 @@ import hashlib
 import io
 
 from fastmcp_pvl_core import file_exchange
-from fastmcp_pvl_core._file_exchange._wire import (
+from fastmcp_pvl_core.file_exchange import (
     ArtifactMetadata,
     FilesystemSink,
     FilesystemSource,
+    select_sink,
+    select_source,
 )
-from fastmcp_pvl_core.file_exchange import select_sink, select_source
 
 
 class _MockServer:
