@@ -392,3 +392,13 @@ def test_sink_writable_predicate(tmp_path):
         )
         is False
     )
+    # volume maps to a path that doesn't exist as a directory -> parent check fails
+    is_writable_bad = _filesystem.filesystem_sink_writable(
+        {"vol": tmp_path / "nonexistent"}
+    )
+    assert (
+        is_writable_bad(
+            FilesystemSink(transport="filesystem", uri="exchange://vol/deposit")
+        )
+        is False
+    )

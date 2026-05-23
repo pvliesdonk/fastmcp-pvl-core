@@ -357,7 +357,11 @@ def filesystem_source_readable(
 ) -> Callable[[FilesystemSource], bool]:
     """Build the ``is_accessible`` callback for ``select_source``.
 
-    Returns ``True`` when the resolved location exists and is readable.
+    Returns ``True`` when the resolved location exists and is readable at
+    selection time — a best-effort skip signal for §9 selection. The real
+    I/O safety gate is :func:`_open_confined_readonly`, which re-checks at
+    open time with ``O_NOFOLLOW``; a ``True`` here is not a transfer
+    guarantee.
     """
 
     def _readable(source: FilesystemSource) -> bool:
@@ -372,8 +376,11 @@ def filesystem_sink_writable(
 ) -> Callable[[FilesystemSink], bool]:
     """Build the ``is_accessible`` callback for ``select_sink``.
 
-    Returns ``True`` when the deposit's parent dir exists and is writable;
-    the target file itself need not exist yet.
+    Returns ``True`` when the deposit's parent dir exists and is writable at
+    selection time (the target file itself need not exist yet) — a best-effort
+    skip signal for §9 selection. The real atomicity guarantee is
+    :func:`atomic_write`'s temp-then-rename; a ``True`` here is not a write
+    guarantee.
     """
 
     def _writable(sink: FilesystemSink) -> bool:
