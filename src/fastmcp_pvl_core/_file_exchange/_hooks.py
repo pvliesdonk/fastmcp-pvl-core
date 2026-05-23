@@ -53,9 +53,10 @@ class ArtifactSink(Protocol):
         ``IntakeTicket.artifactId`` on the push side, or a
         ``TransferHandle.artifact.id`` on the pull side); ``None`` when the
         handle's ``artifact.id`` field is absent (§7.1 makes it optional).
-        The caller (pvl-core) owns ``stream`` — it may hand the sink a
-        counting/hashing wrapper so it can verify size + digest as the sink
-        reads — so the sink reads but does **not** close it. Return ``None``
-        on success; raise on failure.
+        The caller (pvl-core) owns ``stream`` and is responsible for
+        verifying the artifact's size + digest by its own means (before or
+        as the sink reads); the sink reads but does **not** close it, and
+        MUST NOT assume the stream's concrete type. Return ``None`` on
+        success; raise on failure.
         """
         ...

@@ -489,6 +489,31 @@ async def test_fetcher_consume_nonregular_source_surfaces_not_accessible(tmp_pat
     assert ei.value.code is TransferErrorCode.NOT_ACCESSIBLE
 
 
+async def test_sender_consume_write_failure_is_transfer_failed(tmp_path):
+    # parent dir "sub" does not exist -> atomic_write's mkstemp raises
+    # -> transfer-failed
+    source = _DummySource(b"pushed", ArtifactMetadata(name="p.bin"))
+    sink_desc = FilesystemSink(transport="filesystem", uri="exchange://vol/sub/deposit")
+    with pytest.raises(_filesystem.FileExchangeTransferError) as ei:
+        await _filesystem.filesystem_sender_consume(
+            sink_desc, source, "k", volume_map={"vol": tmp_path}
+        )
+    assert ei.value.code is TransferErrorCode.TRANSFER_FAILED
+    assert isinstance(ei.value.__cause__, OSError)
+
+
+async def test_provider_mint_write_failure_propagates_unwrapped(tmp_path):
+    # volume maps to a non-existent dir -> atomic_write's mkstemp raises -> raw OSError
+    # propagates (offering-side mint ops do NOT wrap into a §13 transfer error, §16)
+    source = _DummySource(b"x", ArtifactMetadata(name="x"))
+    volume_map = {"vol": tmp_path / "nonexistent"}
+    with pytest.raises(OSError) as ei:
+        await _filesystem.filesystem_provider_mint(
+            source, "k", volume="vol", volume_map=volume_map
+        )
+    assert not isinstance(ei.value, _filesystem.FileExchangeTransferError)
+
+
 def test_open_confined_readonly_closes_fd_when_fdopen_fails(tmp_path, monkeypatch):
     import os as _os
 
