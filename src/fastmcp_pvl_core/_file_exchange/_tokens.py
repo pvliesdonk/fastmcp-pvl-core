@@ -88,15 +88,18 @@ class CapabilityTokenStore:
         """
         effective_ttl = min(ttl, self._ttl_ceiling)
         if effective_ttl <= 0:
-            raise ValueError("ttl must be positive")
+            raise ValueError(f"ttl must be positive; got {ttl!r}")
         token = secrets.token_urlsafe(_TOKEN_BYTES)
+        # Snap expires_at from before the put: the KV backend starts its TTL
+        # clock on receipt, so a pre-put timestamp keeps the advertised expiry
+        # conservative (never later than the stored token's actual expiry).
+        expires_at = datetime.now(timezone.utc) + timedelta(seconds=effective_ttl)
         await self._store.put(
             token,
             {"metadata": dict(metadata), "single_use": single_use},
             collection=_COLLECTION,
             ttl=effective_ttl,
         )
-        expires_at = datetime.now(timezone.utc) + timedelta(seconds=effective_ttl)
         return MintedToken(token=token, expires_at=expires_at)
 
     async def lookup(self, token: str) -> TokenRecord | None:
@@ -126,6 +129,10 @@ class CapabilityTokenStore:
         if record is None:
             return False
         if record["single_use"]:
+            # At-most-once rests on the AsyncKeyValue.delete contract: delete
+            # returns True only when the key still existed, so under a
+            # concurrent race exactly one caller wins. The prior get is not
+            # the authority — delete is.
             return await self._store.delete(token, collection=_COLLECTION)
         return True
 
@@ -165,7 +172,7 @@ def capability_url(base_url: str, path: str, token: str) -> str:
             "base_url is required to build a capability URL; set "
             "<PREFIX>_BASE_URL to the server's public https origin."
         )
-    if not base_url.startswith("https://"):
+    if not base_url.lower().startswith("https://"):
         raise ConfigurationError(
             "capability URLs must use https (§12); base_url must start with 'https://'."
         )

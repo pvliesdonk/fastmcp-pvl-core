@@ -41,6 +41,15 @@ def test_capability_url_requires_nonempty_token():
         _tokens.capability_url("https://x.example.com", "/d", "")
 
 
+def test_capability_url_accepts_uppercase_https_scheme():
+    # URI schemes are case-insensitive (RFC 3986 §3.1); the original casing
+    # is preserved in the output.
+    assert (
+        _tokens.capability_url("HTTPS://x.example.com", "/d", "tok")
+        == "HTTPS://x.example.com/d/tok"
+    )
+
+
 @pytest.fixture
 def store() -> _tokens.CapabilityTokenStore:
     return _tokens.CapabilityTokenStore(MemoryStore(), ttl_ceiling=3600.0)
@@ -64,6 +73,12 @@ async def test_mint_clamps_ttl_to_ceiling(store):
 async def test_mint_rejects_nonpositive_ttl(store):
     with pytest.raises(ValueError):
         await store.mint({"k": "v"}, ttl=0.0)
+
+
+async def test_mint_rejects_negative_ttl(store):
+    # The error message surfaces the offending value for operator debugging.
+    with pytest.raises(ValueError, match="-5"):
+        await store.mint({"k": "v"}, ttl=-5.0)
 
 
 async def test_lookup_round_trips_metadata_and_single_use(store):
@@ -94,6 +109,11 @@ async def test_mint_default_single_use_is_true(store):
 def test_store_rejects_nonpositive_ttl_ceiling():
     with pytest.raises(ValueError):
         _tokens.CapabilityTokenStore(MemoryStore(), ttl_ceiling=0.0)
+
+
+def test_store_rejects_negative_ttl_ceiling():
+    with pytest.raises(ValueError):
+        _tokens.CapabilityTokenStore(MemoryStore(), ttl_ceiling=-5.0)
 
 
 async def test_single_use_consume_invalidates(store):
