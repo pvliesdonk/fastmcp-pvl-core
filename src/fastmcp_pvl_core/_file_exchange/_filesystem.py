@@ -21,8 +21,13 @@ from fastmcp_pvl_core._errors import ConfigurationError
 from fastmcp_pvl_core._file_exchange._codes import TransferErrorCode
 from fastmcp_pvl_core._file_exchange._errors import FileExchangeTransferError
 from fastmcp_pvl_core._file_exchange._paths import atomic_write, resolve_filesystem_uri
-from fastmcp_pvl_core._file_exchange._spec import HANDLE_TYPE, SPEC_VERSION
-from fastmcp_pvl_core._file_exchange._wire import FilesystemSource, TransferHandle
+from fastmcp_pvl_core._file_exchange._spec import HANDLE_TYPE, SPEC_VERSION, TICKET_TYPE
+from fastmcp_pvl_core._file_exchange._wire import (
+    FilesystemSink,
+    FilesystemSource,
+    IntakeTicket,
+    TransferHandle,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -32,7 +37,10 @@ if TYPE_CHECKING:
 
     from fastmcp_pvl_core._file_exchange._hooks import ArtifactSink, ArtifactSource
     from fastmcp_pvl_core._file_exchange._paths import VolumeMap
-    from fastmcp_pvl_core._file_exchange._wire import ArtifactMetadata
+    from fastmcp_pvl_core._file_exchange._wire import (
+        ArtifactConstraints,
+        ArtifactMetadata,
+    )
 
 
 class _HashingReader:
@@ -269,6 +277,68 @@ async def filesystem_fetcher_consume(
         )
     try:
         await _ingest(path, handle.artifact, sink, handle.artifact.id)
+    except FileExchangeTransferError:
+        raise
+    except Exception as exc:
+        raise FileExchangeTransferError(
+            TransferErrorCode.TRANSFER_FAILED,
+            transport="filesystem",
+            detail="artifact transfer failed",
+        ) from exc
+
+
+def filesystem_receiver_mint(
+    artifact_id: str,
+    *,
+    volume: str,
+    volume_map: VolumeMap,
+    expected: ArtifactConstraints | None = None,
+) -> IntakeTicket:
+    """Receiver role (push): allocate a deposit path and mint an IntakeTicket.
+
+    The ticket's single ``filesystem`` sink points at the allocated path on
+    ``volume``. Minting only — no hook is called and no bytes are written. The
+    sender deposits later; the receiver's lazy ingest of the deposit into its
+    own ``ArtifactSink`` (correlated by ``artifact_id``) is #144/#148, not here.
+    """
+    _require_volume(volume, volume_map)
+    relpath = uuid.uuid4().hex
+    descriptor = FilesystemSink(
+        transport="filesystem", uri=f"exchange://{volume}/{relpath}"
+    )
+    return IntakeTicket(
+        type=TICKET_TYPE,
+        version=SPEC_VERSION,
+        artifactId=artifact_id,
+        expected=expected,
+        sinks=[descriptor],
+    )
+
+
+async def filesystem_sender_consume(
+    sink: FilesystemSink,
+    source: ArtifactSource,
+    key: str,
+    *,
+    volume_map: VolumeMap,
+) -> None:
+    """Sender role (push): deposit ``key``'s bytes into ``sink``'s path.
+
+    The write is atomic at 0o664. Selection (``select_sink``) is the caller's
+    step. A descriptor that does not resolve/confine is ``not-accessible``; any
+    other failure (e.g. the source hook raising, or a missing ``file://`` parent
+    dir) is ``transfer-failed``. ``expected``-constraint enforcement is the
+    receiver's at ingest time (#144/#148), not the sender's.
+    """
+    path = resolve_filesystem_uri(sink.uri, volume_map=volume_map)
+    if path is None:
+        raise FileExchangeTransferError(
+            TransferErrorCode.NOT_ACCESSIBLE,
+            transport="filesystem",
+            detail="sink descriptor did not resolve within a configured volume",
+        )
+    try:
+        await _stage(source, key, path)
     except FileExchangeTransferError:
         raise
     except Exception as exc:

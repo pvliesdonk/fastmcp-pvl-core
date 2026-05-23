@@ -8,7 +8,9 @@ from fastmcp_pvl_core._file_exchange import _filesystem
 from fastmcp_pvl_core._file_exchange._codes import TransferErrorCode
 from fastmcp_pvl_core._file_exchange._spec import HANDLE_TYPE, SPEC_VERSION
 from fastmcp_pvl_core._file_exchange._wire import (
+    ArtifactConstraints,
     ArtifactMetadata,
+    FilesystemSink,
     FilesystemSource,
     TransferHandle,
 )
@@ -287,3 +289,66 @@ async def test_fetcher_consume_sink_failure_is_transfer_failed(tmp_path):
         )
     assert ei.value.code is TransferErrorCode.TRANSFER_FAILED
     assert isinstance(ei.value.__cause__, RuntimeError)
+
+
+def test_receiver_mint_builds_ticket_with_filesystem_sink(tmp_path):
+    ticket = _filesystem.filesystem_receiver_mint(
+        "intake-1",
+        volume="vol",
+        volume_map={"vol": tmp_path},
+        expected=ArtifactConstraints(maxSize=1024),
+    )
+
+    assert ticket.artifactId == "intake-1"
+    assert ticket.expected is not None and ticket.expected.maxSize == 1024
+    assert len(ticket.sinks) == 1
+    sink = ticket.sinks[0]
+    assert isinstance(sink, FilesystemSink)
+    assert sink.uri.startswith("exchange://vol/")
+
+
+def test_receiver_mint_unknown_volume_raises_configuration_error(tmp_path):
+    with pytest.raises(ConfigurationError):
+        _filesystem.filesystem_receiver_mint(
+            "intake-1", volume="missing", volume_map={"vol": tmp_path}
+        )
+
+
+async def test_sender_consume_writes_deposit_atomically_at_0664(tmp_path):
+    payload = b"pushed-bytes"
+    source = _DummySource(payload, ArtifactMetadata(name="p.bin"))
+    sink_desc = FilesystemSink(transport="filesystem", uri="exchange://vol/deposit")
+
+    await _filesystem.filesystem_sender_consume(
+        sink_desc, source, "k", volume_map={"vol": tmp_path}
+    )
+
+    deposit = tmp_path / "deposit"
+    assert deposit.read_bytes() == payload
+    assert deposit.stat().st_mode & 0o777 == 0o664
+    assert source.closed is True
+
+
+async def test_sender_consume_unresolvable_uri_is_not_accessible(tmp_path):
+    sink_desc = FilesystemSink(transport="filesystem", uri="exchange://other/deposit")
+    with pytest.raises(_filesystem.FileExchangeTransferError) as ei:
+        await _filesystem.filesystem_sender_consume(
+            sink_desc,
+            _DummySource(b"x", ArtifactMetadata(name="x")),
+            "k",
+            volume_map={"vol": tmp_path},
+        )
+    assert ei.value.code is TransferErrorCode.NOT_ACCESSIBLE
+
+
+async def test_sender_consume_source_failure_is_transfer_failed(tmp_path):
+    class _BoomSource:
+        async def open_artifact(self, key):
+            raise RuntimeError("cannot read domain artifact")
+
+    sink_desc = FilesystemSink(transport="filesystem", uri="exchange://vol/deposit")
+    with pytest.raises(_filesystem.FileExchangeTransferError) as ei:
+        await _filesystem.filesystem_sender_consume(
+            sink_desc, _BoomSource(), "k", volume_map={"vol": tmp_path}
+        )
+    assert ei.value.code is TransferErrorCode.TRANSFER_FAILED
