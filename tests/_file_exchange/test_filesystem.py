@@ -166,3 +166,42 @@ def test_verify_stream_accepts_uppercase_algorithm_label():
         digest=f"SHA-256:{hashlib.sha256(payload).hexdigest()}",
     )
     _filesystem._verify_stream(io.BytesIO(payload), artifact)  # no raise
+
+
+class _RecordingSink:
+    def __init__(self) -> None:
+        self.stored: dict[str, bytes] = {}
+        self.called = False
+
+    async def store_artifact(self, artifact_id, metadata, stream):
+        self.called = True
+        self.stored[artifact_id] = stream.read()
+
+
+async def test_ingest_verifies_then_hands_verified_bytes_to_sink(tmp_path):
+    payload = b"ingest-bytes"
+    p = tmp_path / "src.bin"
+    p.write_bytes(payload)
+    artifact = ArtifactMetadata(
+        id="a1",
+        size=len(payload),
+        digest=f"sha-256:{hashlib.sha256(payload).hexdigest()}",
+    )
+    sink = _RecordingSink()
+
+    await _filesystem._ingest(p, artifact, sink, "a1")
+
+    assert sink.stored["a1"] == payload
+
+
+async def test_ingest_does_not_call_sink_on_digest_mismatch(tmp_path):
+    p = tmp_path / "src.bin"
+    p.write_bytes(b"tampered")
+    artifact = ArtifactMetadata(id="a1", digest="sha-256:" + "0" * 64)
+    sink = _RecordingSink()
+
+    with pytest.raises(_filesystem.FileExchangeTransferError) as ei:
+        await _filesystem._ingest(p, artifact, sink, "a1")
+
+    assert ei.value.code is TransferErrorCode.DIGEST_MISMATCH
+    assert sink.called is False

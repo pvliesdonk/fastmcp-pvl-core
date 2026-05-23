@@ -30,7 +30,7 @@ if TYPE_CHECKING:
 
     from _typeshed import SupportsRead
 
-    from fastmcp_pvl_core._file_exchange._hooks import ArtifactSource
+    from fastmcp_pvl_core._file_exchange._hooks import ArtifactSink, ArtifactSource
     from fastmcp_pvl_core._file_exchange._paths import VolumeMap
     from fastmcp_pvl_core._file_exchange._wire import ArtifactMetadata
 
@@ -216,3 +216,26 @@ async def filesystem_provider_mint(
         artifact=artifact,
         sources=[descriptor],
     )
+
+
+async def _ingest(
+    path: Path,
+    artifact: ArtifactMetadata,
+    sink: ArtifactSink,
+    artifact_id: str | None,
+) -> None:
+    """Read a confined ``path``, verify, then deposit into ``sink``.
+
+    Two passes over one fd: pass 1 verifies size+digest (off-loop) so the
+    sink never receives unverified bytes (§15 "validate before use"); pass 2
+    rewinds and hands the stream to ``store_artifact`` (the sink reads, does
+    not close — #142). pvl-core closes the fd. ``artifact`` is the handle's
+    metadata, passed through to the sink.
+    """
+    f = await asyncio.to_thread(_open_confined_readonly, path)
+    try:
+        await asyncio.to_thread(_verify_stream, f, artifact)
+        await asyncio.to_thread(f.seek, 0)
+        await sink.store_artifact(artifact_id, artifact, f)
+    finally:
+        await asyncio.to_thread(f.close)
