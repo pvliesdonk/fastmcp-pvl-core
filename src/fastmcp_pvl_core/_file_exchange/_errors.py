@@ -1,10 +1,15 @@
-"""§13 error-envelope CallToolResult builder.
+"""§13 transfer-error type and error-envelope ``CallToolResult`` builder.
 
-Single helper :func:`build_file_exchange_error` that returns a fully
-formed ``CallToolResult`` with ``isError=True``, a human-readable
-``TextContent`` block, and the spec-mandated ``_meta`` key
-``"nl.liesdonk.file-exchange/error"`` carrying the structured
-``{code, [transport], [detail]}`` payload.
+Two public members:
+
+* :class:`FileExchangeTransferError` — a §13-coded exception raised by the
+  transport bindings (#143+) when a transfer fails; #148's middleware maps
+  it onto the wire response.
+* :func:`build_file_exchange_error` — returns a fully formed
+  ``CallToolResult`` with ``isError=True``, a human-readable ``TextContent``
+  block, and the spec-mandated ``_meta`` key
+  ``"nl.liesdonk.file-exchange/error"`` carrying the structured
+  ``{code, [transport], [detail]}`` payload.
 
 This builds the §13 error in its ``CallToolResult`` *Python* shape.
 **It is not a tool return value you can hand back from a plain
@@ -37,6 +42,39 @@ from fastmcp_pvl_core._file_exchange._codes import (
     KNOWN_CODES,
     TransferErrorCode,
 )
+
+
+class FileExchangeTransferError(Exception):
+    """A transport-level transfer failure carrying a §13 error code.
+
+    Raised by the transport bindings (#143+) when a transfer cannot
+    complete — confinement/access failure, size/digest mismatch, or an
+    underlying hook/IO error. #148's fastmcp middleware maps it onto the
+    wire response via :func:`build_file_exchange_error` (which needs that
+    middleware to set wire ``isError`` + ``_meta`` together — see this
+    module's docstring), so the bindings *raise* this rather than return an
+    envelope, exactly as ``_selection`` delegates ``no-supported-transport``
+    rendering to its caller.
+
+    ``detail`` is a generic, non-sensitive message safe for the wire
+    ``_meta``; the original cause is chained via ``raise ... from exc`` for
+    local logs, never echoed into ``detail`` (so untrusted URIs/paths do not
+    leak — see the URL/path redaction discipline).
+    """
+
+    def __init__(
+        self,
+        code: TransferErrorCode,
+        *,
+        transport: str | None = None,
+        detail: str | None = None,
+    ) -> None:
+        self.code = code
+        self.transport = transport
+        self.detail = detail
+        message = code.value if detail is None else f"{code.value}: {detail}"
+        super().__init__(message)
+
 
 _NAMESPACE_KEY = "nl.liesdonk.file-exchange/error"
 

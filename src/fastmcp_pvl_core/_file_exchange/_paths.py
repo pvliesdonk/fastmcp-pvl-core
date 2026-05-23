@@ -25,7 +25,11 @@ import shutil
 import tempfile
 from collections.abc import Mapping
 from pathlib import Path
-from typing import BinaryIO, Literal
+from typing import TYPE_CHECKING, Literal
+
+if TYPE_CHECKING:
+    from _typeshed import SupportsRead
+
 from urllib.parse import urlsplit
 
 from fastmcp_pvl_core._env import env
@@ -114,8 +118,8 @@ def canonicalize_and_confine(candidate: Path | str, root: Path | str) -> Path | 
     .. note::
         This is a resolution-time check. A symlink swapped between this
         call and a subsequent ``open()`` (a TOCTOU race) is not defended
-        here; the data-plane caller must re-confine at open time or use
-        ``O_NOFOLLOW`` / ``openat`` (tracked in #143).
+        here; the data-plane caller re-confines at open time with
+        ``O_NOFOLLOW`` (see ``_filesystem._open_confined_readonly``).
     """
     try:
         resolved_root = Path(root).resolve()
@@ -132,7 +136,9 @@ def canonicalize_and_confine(candidate: Path | str, root: Path | str) -> Path | 
     return None
 
 
-def atomic_write(target: Path | str, source: BinaryIO) -> None:
+def atomic_write(
+    target: Path | str, source: SupportsRead[bytes], *, mode: int | None = None
+) -> None:
     """Write ``source``'s bytes to ``target`` atomically.
 
     Reads ``source`` from its *current* position to EOF — it does not seek, so
@@ -148,12 +154,13 @@ def atomic_write(target: Path | str, source: BinaryIO) -> None:
     path, then rename into place"). The parent directory must already exist.
     On any error the temp file is removed, leaving ``target`` untouched.
 
-    The deposited file carries ``tempfile.mkstemp``'s ``0o600`` (owner-only)
-    mode, which ``os.replace`` preserves — overwriting an existing ``target``
-    also resets it to ``0o600``. A caller needing broader access (e.g. a
-    different-uid reader on a shared volume) must ``chmod`` ``target`` itself;
-    the deposit-permission policy for the filesystem sink is the consumer's to
-    define (#143, tracked in #155), not this primitive's.
+    By default (``mode=None``) the file carries ``tempfile.mkstemp``'s
+    ``0o600`` (owner-only) mode, which ``os.replace`` preserves. Pass an
+    explicit ``mode`` to ``os.fchmod`` the temp file before the rename — the
+    filesystem sink passes ``0o664`` so a different-uid party on a shared
+    volume can read the deposit (#155). ``fchmod`` sets the exact mode (umask
+    does not apply), avoiding the umask race that reading the process umask
+    under ``asyncio.to_thread`` would introduce.
 
     Sync, blocking file I/O — async callers should run it via
     ``asyncio.to_thread`` so it does not block the event loop.
@@ -165,6 +172,12 @@ def atomic_write(target: Path | str, source: BinaryIO) -> None:
             fd = -1  # fdopen took ownership; its __exit__ closes the fd now
             shutil.copyfileobj(source, tmp)
             tmp.flush()
+            if mode is not None:
+                # fchmod sets the exact mode (umask does not apply), so a
+                # caller gets a deterministic mode with no umask raciness —
+                # done before os.replace so the final file is never briefly
+                # 0o600 then widened. None preserves mkstemp's 0o600.
+                os.fchmod(tmp.fileno(), mode)
             os.fsync(tmp.fileno())
         os.replace(tmp_name, target)
     except BaseException:

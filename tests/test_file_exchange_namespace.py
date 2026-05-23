@@ -126,3 +126,19 @@ def test_hook_helpers_exposed():
     assert callable(file_exchange.atomic_write)
     for name in ("ArtifactSource", "ArtifactSink", "atomic_write"):
         assert name in file_exchange.__all__
+
+
+def test_filesystem_transport_names_reexported():
+    from fastmcp_pvl_core import file_exchange
+
+    for name in (
+        "filesystem_provider_mint",
+        "filesystem_fetcher_consume",
+        "filesystem_receiver_mint",
+        "filesystem_sender_consume",
+        "filesystem_source_readable",
+        "filesystem_sink_writable",
+        "FileExchangeTransferError",
+    ):
+        assert hasattr(file_exchange, name), name
+        assert name in file_exchange.__all__, name

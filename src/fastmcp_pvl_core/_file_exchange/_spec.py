@@ -17,8 +17,15 @@ from typing import Literal
 
 SPEC_VERSION = "0.1"
 NAMESPACE = "nl.liesdonk.file-exchange"
-HANDLE_TYPE = f"{NAMESPACE}/transfer-handle"
-TICKET_TYPE = f"{NAMESPACE}/intake-ticket"
+# These are the NAMESPACE-prefixed type tags as Literals (a Literal can't be
+# built from an f-string); keep their values consistent with NAMESPACE above.
+# Pinned by tests/_file_exchange/test_spec.py and the wire models' `type` fields.
+HANDLE_TYPE: Literal["nl.liesdonk.file-exchange/transfer-handle"] = (
+    "nl.liesdonk.file-exchange/transfer-handle"
+)
+TICKET_TYPE: Literal["nl.liesdonk.file-exchange/intake-ticket"] = (
+    "nl.liesdonk.file-exchange/intake-ticket"
+)
 
 # Upstream pin. Bumped only via the sync script's --bump mode (see
 # scripts/sync_file_exchange_spec.py); a PR review is the gate.

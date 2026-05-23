@@ -45,16 +45,18 @@ class ArtifactSink(Protocol):
     """
 
     async def store_artifact(
-        self, artifact_id: str, metadata: ArtifactMetadata, stream: BinaryIO
+        self, artifact_id: str | None, metadata: ArtifactMetadata, stream: BinaryIO
     ) -> None:
         """Read ``stream`` to completion and deposit its bytes durably.
 
         ``artifact_id`` is the wire id of the artifact being received (an
         ``IntakeTicket.artifactId`` on the push side, or a
-        ``TransferHandle.artifact.id`` on the pull side). The caller
-        (pvl-core) owns ``stream`` — it may hand the sink a counting/hashing
-        wrapper so it can verify size + digest as the sink reads — so the
-        sink reads but does **not** close it. Return ``None`` on success;
-        raise on failure.
+        ``TransferHandle.artifact.id`` on the pull side); ``None`` when the
+        handle's ``artifact.id`` field is absent (§7.1 makes it optional).
+        The caller (pvl-core) owns ``stream`` and is responsible for
+        verifying the artifact's size + digest by its own means (before or
+        as the sink reads); the sink reads but does **not** close it, and
+        MUST NOT assume the stream's concrete type. Return ``None`` on
+        success; raise on failure.
         """
         ...
