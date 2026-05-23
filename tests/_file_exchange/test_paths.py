@@ -693,3 +693,36 @@ def test_atomic_write_requires_existing_parent(tmp_path):
     target = tmp_path / "missing" / "out.bin"
     with pytest.raises(FileNotFoundError):
         atomic_write(target, BytesIO(b"x"))
+
+
+def test_atomic_write_closes_fd_when_fdopen_fails(tmp_path, monkeypatch):
+    # If os.fdopen raises, the raw fd from mkstemp must still be closed (and the
+    # temp removed) — otherwise it leaks for the life of the process.
+    import tempfile as _tempfile
+    from io import BytesIO
+
+    captured: dict[str, int] = {}
+    real_mkstemp = _tempfile.mkstemp
+
+    def spy_mkstemp(*args, **kwargs):
+        fd, name = real_mkstemp(*args, **kwargs)
+        captured["fd"] = fd
+        return fd, name
+
+    monkeypatch.setattr(_tempfile, "mkstemp", spy_mkstemp)
+
+    def boom_fdopen(*_a, **_k):
+        raise OSError("fdopen failed")
+
+    monkeypatch.setattr(os, "fdopen", boom_fdopen)
+
+    target = tmp_path / "out.bin"
+    with pytest.raises(OSError, match="fdopen failed"):
+        atomic_write(target, BytesIO(b"x"))
+
+    # The captured fd must no longer be open (fstat raises on a closed fd),
+    # and no temp file or target may be left behind.
+    with pytest.raises(OSError):
+        os.fstat(captured["fd"])
+    assert not target.exists()
+    assert list(tmp_path.iterdir()) == []

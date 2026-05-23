@@ -149,15 +149,23 @@ def atomic_write(target: Path, source: BinaryIO) -> None:
     fd, tmp_name = tempfile.mkstemp(dir=target.parent)
     try:
         with os.fdopen(fd, "wb") as tmp:
+            fd = -1  # fdopen took ownership; its __exit__ closes the fd now
             shutil.copyfileobj(source, tmp)
             tmp.flush()
             os.fsync(tmp.fileno())
         os.replace(tmp_name, target)
     except BaseException:
-        # copy/fsync/replace failed — the temp may still exist (it is only
-        # gone after a successful os.replace). Remove it so no partial
-        # deposit and no orphan temp is left; target is untouched.
-        # Suppress any OSError so a cleanup failure can't mask the original error.
+        # fdopen/copy/fsync/replace failed. If os.fdopen itself raised, the raw
+        # fd was never wrapped, so close it here (fd != -1); once fdopen
+        # succeeded the with-block already closed it, so closing again would
+        # risk killing an unrelated fd that reused the number. The temp may
+        # still exist (only gone after a successful os.replace), so remove it —
+        # no partial deposit, no orphan temp; target is untouched. Suppress
+        # OSError on each cleanup step so a cleanup failure can't mask the
+        # original error.
+        if fd != -1:
+            with contextlib.suppress(OSError):
+                os.close(fd)
         with contextlib.suppress(OSError):
             os.unlink(tmp_name)
         raise
