@@ -38,6 +38,39 @@ from fastmcp_pvl_core._file_exchange._codes import (
     TransferErrorCode,
 )
 
+
+class FileExchangeTransferError(Exception):
+    """A transport-level transfer failure carrying a §13 error code.
+
+    Raised by the transport bindings (#143+) when a transfer cannot
+    complete — confinement/access failure, size/digest mismatch, or an
+    underlying hook/IO error. #148's fastmcp middleware maps it onto the
+    wire response via :func:`build_file_exchange_error` (which needs that
+    middleware to set wire ``isError`` + ``_meta`` together — see this
+    module's docstring), so the bindings *raise* this rather than return an
+    envelope, exactly as ``_selection`` delegates ``no-supported-transport``
+    rendering to its caller.
+
+    ``detail`` is a generic, non-sensitive message safe for the wire
+    ``_meta``; the original cause is chained via ``raise ... from exc`` for
+    local logs, never echoed into ``detail`` (so untrusted URIs/paths do not
+    leak — see the URL/path redaction discipline).
+    """
+
+    def __init__(
+        self,
+        code: TransferErrorCode,
+        *,
+        transport: str | None = None,
+        detail: str | None = None,
+    ) -> None:
+        self.code = code
+        self.transport = transport
+        self.detail = detail
+        message = code.value if detail is None else f"{code.value}: {detail}"
+        super().__init__(message)
+
+
 _NAMESPACE_KEY = "nl.liesdonk.file-exchange/error"
 
 # Default human-readable text per spec-defined code. Keyed by the enum

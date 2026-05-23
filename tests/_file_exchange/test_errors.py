@@ -182,3 +182,19 @@ def test_meta_serialises_under_underscore_meta_alias_on_wire():
         "detail": "expected sha-256:9f..., got sha-256:1b...",
     }
     assert dumped["isError"] is True
+
+
+def test_transfer_error_carries_code_transport_detail():
+    from fastmcp_pvl_core._file_exchange._codes import TransferErrorCode
+    from fastmcp_pvl_core._file_exchange._errors import FileExchangeTransferError
+
+    exc = FileExchangeTransferError(
+        TransferErrorCode.DIGEST_MISMATCH,
+        transport="filesystem",
+        detail="bytes did not match declared digest",
+    )
+    assert exc.code is TransferErrorCode.DIGEST_MISMATCH
+    assert exc.transport == "filesystem"
+    assert exc.detail == "bytes did not match declared digest"
+    assert "digest-mismatch" in str(exc)
+    assert isinstance(exc, Exception)
