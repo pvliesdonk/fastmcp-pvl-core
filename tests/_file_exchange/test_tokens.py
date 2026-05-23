@@ -94,3 +94,36 @@ async def test_mint_default_single_use_is_true(store):
 def test_store_rejects_nonpositive_ttl_ceiling():
     with pytest.raises(ValueError):
         _tokens.CapabilityTokenStore(MemoryStore(), ttl_ceiling=0.0)
+
+
+async def test_single_use_consume_invalidates(store):
+    minted = await store.mint({"k": "v"}, ttl=60.0, single_use=True)
+    assert await store.lookup(minted.token) is not None
+    assert await store.consume(minted.token) is True
+    assert await store.lookup(minted.token) is None
+
+
+async def test_double_consume_returns_false(store):
+    minted = await store.mint({"k": "v"}, ttl=60.0, single_use=True)
+    assert await store.consume(minted.token) is True
+    assert await store.consume(minted.token) is False
+
+
+async def test_consume_absent_token_returns_false(store):
+    assert await store.consume("nope") is False
+
+
+async def test_multi_use_consume_is_noop(store):
+    minted = await store.mint({"k": "v"}, ttl=60.0, single_use=False)
+    assert await store.consume(minted.token) is True
+    assert await store.lookup(minted.token) is not None
+
+
+async def test_revoke_invalidates_unconditionally(store):
+    minted = await store.mint({"k": "v"}, ttl=60.0, single_use=False)
+    await store.revoke(minted.token)
+    assert await store.lookup(minted.token) is None
+
+
+async def test_revoke_absent_token_does_not_raise(store):
+    await store.revoke("nope")  # no exception

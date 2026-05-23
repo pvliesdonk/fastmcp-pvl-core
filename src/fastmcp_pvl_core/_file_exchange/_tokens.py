@@ -105,6 +105,32 @@ class CapabilityTokenStore:
             return None
         return TokenRecord(metadata=record["metadata"], single_use=record["single_use"])
 
+    async def consume(self, token: str) -> bool:
+        """Enforce single-use after a successful transfer.
+
+        For a single-use token, atomically invalidate it and return whether
+        this call won the race (the ``delete`` bool — at-most-once, §10.3).
+        For a multi-use token (``download`` ``singleUse: false``), this is a
+        no-op returning ``True`` (the token stays valid until its TTL).
+        Returns ``False`` for an absent/expired/already-consumed token.
+
+        Call this only on transfer completion — opening a connection alone
+        MUST NOT invalidate the descriptor (§10.2).
+        """
+        record = await self._store.get(token, collection=_COLLECTION)
+        if record is None:
+            return False
+        if record["single_use"]:
+            return await self._store.delete(token, collection=_COLLECTION)
+        return True
+
+    async def revoke(self, token: str) -> None:
+        """Unconditionally invalidate a token (§15 early invalidation).
+
+        Idempotent — revoking an absent/expired token is a no-op.
+        """
+        await self._store.delete(token, collection=_COLLECTION)
+
 
 def capability_url(base_url: str, path: str, token: str) -> str:
     """Join ``base_url`` + ``path`` + ``token`` into a §12 capability URL.
