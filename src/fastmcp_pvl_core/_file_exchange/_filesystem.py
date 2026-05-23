@@ -301,6 +301,8 @@ def filesystem_receiver_mint(
     sender deposits later; the receiver's lazy ingest of the deposit into its
     own ``ArtifactSink`` (correlated by ``artifact_id``) is #144/#148, not here.
     """
+    # Validate the volume is mapped now (fail loudly on misconfig); the deposit
+    # path is built into the URI and resolved lazily at sender/ingest time.
     _require_volume(volume, volume_map)
     relpath = uuid.uuid4().hex
     descriptor = FilesystemSink(

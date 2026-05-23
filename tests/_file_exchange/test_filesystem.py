@@ -305,6 +305,7 @@ def test_receiver_mint_builds_ticket_with_filesystem_sink(tmp_path):
     sink = ticket.sinks[0]
     assert isinstance(sink, FilesystemSink)
     assert sink.uri.startswith("exchange://vol/")
+    assert "intake-1" not in sink.uri
 
 
 def test_receiver_mint_unknown_volume_raises_configuration_error(tmp_path):
@@ -352,3 +353,4 @@ async def test_sender_consume_source_failure_is_transfer_failed(tmp_path):
             sink_desc, _BoomSource(), "k", volume_map={"vol": tmp_path}
         )
     assert ei.value.code is TransferErrorCode.TRANSFER_FAILED
+    assert isinstance(ei.value.__cause__, RuntimeError)
