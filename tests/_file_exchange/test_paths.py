@@ -737,3 +737,16 @@ def test_atomic_write_reads_from_current_position(tmp_path):
     src.seek(4)  # past "skip"
     atomic_write(tmp_path / "out.bin", src)
     assert (tmp_path / "out.bin").read_bytes() == b"keep"
+
+
+def test_atomic_write_deposits_owner_only_mode(tmp_path):
+    # Pins the documented current behavior: deposits inherit mkstemp's 0o600,
+    # preserved by os.replace, on both create and overwrite. The deposit
+    # permission policy is the filesystem sink's to define (#143, tracked #155).
+    from io import BytesIO
+
+    target = tmp_path / "out.bin"
+    target.write_bytes(b"old")
+    target.chmod(0o644)
+    atomic_write(target, BytesIO(b"new"))
+    assert target.stat().st_mode & 0o777 == 0o600

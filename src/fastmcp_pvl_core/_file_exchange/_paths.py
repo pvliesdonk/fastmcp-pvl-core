@@ -148,6 +148,13 @@ def atomic_write(target: Path, source: BinaryIO) -> None:
     path, then rename into place"). The parent directory must already exist.
     On any error the temp file is removed, leaving ``target`` untouched.
 
+    The deposited file carries ``tempfile.mkstemp``'s ``0o600`` (owner-only)
+    mode, which ``os.replace`` preserves — overwriting an existing ``target``
+    also resets it to ``0o600``. A caller needing broader access (e.g. a
+    different-uid reader on a shared volume) must ``chmod`` ``target`` itself;
+    the deposit-permission policy for the filesystem sink is the consumer's to
+    define (#143, tracked in #155), not this primitive's.
+
     Sync, blocking file I/O — async callers should run it via
     ``asyncio.to_thread`` so it does not block the event loop.
     """
