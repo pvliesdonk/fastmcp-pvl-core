@@ -157,12 +157,14 @@ fail").
 ### TOCTOU-safe open (resolves #141's deferral)
 
 The confinement check in #141 is resolution-time; the residual race is a
-symlink swapped on the final component between confine and open. Defence:
-`os.open(path, os.O_RDONLY | os.O_NOFOLLOW)`, then re-confine the opened path
-and assert via `os.fstat` that it is a regular file. This rejects the
-final-component symlink swap. Full per-component `openat` walking is
-deliberately **not** done — §10.1's own closing line ("sharing a volume
-already implies a trust boundary") makes it overkill for this transport.
+symlink swapped onto the final component between confine and open. Defence:
+`os.open(path, os.O_RDONLY | os.O_NOFOLLOW)`, then assert via `os.fstat` that
+the opened fd is a regular file. This rejects a final-component symlink swapped
+in after resolution. Two things are deliberately **out of scope**: a portable
+fd re-confinement (it would need Linux-only `/proc/self/fd`), and prefix-component
+races / full per-component `openat` traversal (a parent dir swapped to a symlink
+after confinement) — §10.1's own closing line ("sharing a volume already
+implies a trust boundary") makes both overkill for this transport.
 
 ## Error handling
 
