@@ -179,6 +179,10 @@ def test_parse_fs_uri_valid(uri, expected):
         "exchange://docs/",  # empty path
         "exchange://docs/a?q=1",  # query
         "exchange://docs/a#f",  # fragment
+        "exchange://docs/a?",  # bare query delimiter (empty query)
+        "exchange://docs/a#",  # bare fragment delimiter (empty fragment)
+        "file:///mnt/x?",  # bare query delimiter
+        "file:///mnt/x#",  # bare fragment delimiter
         "file://host/x",  # non-empty authority
         "file://x",  # not absolute (authority 'x', empty path)
         "file:///",  # root-only path

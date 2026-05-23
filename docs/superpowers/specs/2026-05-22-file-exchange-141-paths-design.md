@@ -117,6 +117,23 @@ netloc `""`, path `/mnt/x`. Returns `("file", "", "/mnt/x")`. Rejected:
 
 Unknown scheme or no scheme → `None`.
 
+**Query/fragment:** neither form carries a query or fragment, so any `?`
+or `#` — *including a bare delimiter* (`exchange://docs/a#`, which
+`urlsplit` yields as an empty/falsy fragment) — is rejected. The wire's
+`.+` matches these, so rejecting keeps the parser stricter than (never
+looser than) the wire.
+
+**Percent-encoding (deferred to the spec):** paths are taken **literally**
+— the parser does *not* percent-decode. §10.1 is silent on whether
+`<path>` is percent-encoded (RFC 3986/8089 would imply decoding), so
+pvl-core defers the decode-vs-literal decision to a spec clarification
+rather than baking one in ahead of the wire authority. A `%`-encoded URI
+therefore won't match a literal-named volume path — a safe `None`
+(skipped descriptor), not a confinement issue (decoding is confinement-safe
+either way: `resolve()` + `is_relative_to` still catch a decoded `..`/`/`,
+and a decoded null byte raises `ValueError` → `None`). Tracked in
+mcp-file-exchange-ext#14 (spec) and #153 (pvl-core).
+
 **Consistency with `_FS_URI_PATTERN`:** the parser re-derives validity
 structurally rather than reusing the regex (match and decompose are
 different jobs). A drift-guard test asserts the two agree on the key

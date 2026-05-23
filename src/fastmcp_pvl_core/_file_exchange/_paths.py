@@ -193,8 +193,13 @@ def _parse_fs_uri(
       absolute). Volume and a non-empty path are required.
     - ``file:///<abs>`` → ``("file", "", abs_path)``; the authority MUST
       be empty (§10.1.2) and the path absolute.
-    - Anything else (query/fragment present, unknown scheme, malformed)
-      → ``None``.
+    - Anything else (any query/fragment delimiter, unknown scheme,
+      malformed) → ``None``.
+
+    Paths are taken **literally** — not percent-decoded. §10.1 is silent on
+    percent-encoding, so pvl-core defers the decode-vs-literal choice to a
+    spec clarification (mcp-file-exchange-ext#14, tracked in #153);
+    confinement is safe either way.
 
     The wire layer (``_FS_URI_PATTERN``) already validates shape at model
     construction; this re-derives validity structurally for direct
@@ -219,7 +224,14 @@ def _parse_fs_uri(
         # reject signal, not propagate — symmetric with the control-char
         # guard and canonicalize_and_confine's reject-on-ValueError.
         return None
-    if parts.query or parts.fragment:
+    if "?" in uri or "#" in uri:
+        # No query or fragment component is part of the exchange://<volume>/
+        # <path> or file:/// forms (§10.1). A raw-character check (not
+        # parts.query/parts.fragment) is needed so a *bare* "?"/"#" — which
+        # urlsplit yields as an empty, falsy query/fragment — is also
+        # rejected, keeping "a#" consistent with the rejected "a#frag". The
+        # wire's `.+` matches these, so rejecting keeps the parser stricter
+        # than (never looser than) the wire.
         return None
     if parts.scheme == "exchange":
         if not uri.startswith("exchange://"):
