@@ -12,16 +12,21 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import os
+import stat
 import uuid
 from typing import TYPE_CHECKING
 
 from fastmcp_pvl_core._errors import ConfigurationError
+from fastmcp_pvl_core._file_exchange._codes import TransferErrorCode
+from fastmcp_pvl_core._file_exchange._errors import FileExchangeTransferError
 from fastmcp_pvl_core._file_exchange._paths import atomic_write
 from fastmcp_pvl_core._file_exchange._spec import HANDLE_TYPE, SPEC_VERSION
 from fastmcp_pvl_core._file_exchange._wire import FilesystemSource, TransferHandle
 
 if TYPE_CHECKING:
     from pathlib import Path
+    from typing import BinaryIO
 
     from _typeshed import SupportsRead
 
@@ -63,6 +68,81 @@ _DIGEST_LABEL = "sha-256"
 # Fixed deposit/staged-file mode (#155): owner rw, group rw, other r — so a
 # different-uid party on a shared volume can read what pvl-core writes.
 _DEPOSIT_MODE = 0o664
+
+# Verifier maps a declared `<label>:` to a hashlib name; an unsupported label
+# fails verification (cannot verify -> digest-mismatch), never silently skips.
+_HASHLIB_BY_LABEL = {"sha-256": "sha256", "sha-384": "sha384", "sha-512": "sha512"}
+
+_CHUNK = 1024 * 1024
+
+
+def _open_confined_readonly(path: Path) -> BinaryIO:
+    """Open an already-confined path read-only, TOCTOU-guarded.
+
+    ``O_NOFOLLOW`` rejects a final-component symlink swapped in between
+    resolution (#141) and this open; ``fstat`` rejects a non-regular target.
+    Prefix-component races and full per-component ``openat`` traversal are out
+    of scope — see the design doc's TOCTOU section. Any failure surfaces as
+    ``not-accessible``.
+    """
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    except OSError as exc:
+        raise FileExchangeTransferError(
+            TransferErrorCode.NOT_ACCESSIBLE,
+            transport="filesystem",
+            detail="source could not be opened read-only",
+        ) from exc
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise FileExchangeTransferError(
+                TransferErrorCode.NOT_ACCESSIBLE,
+                transport="filesystem",
+                detail="source is not a regular file",
+            )
+    except BaseException:
+        os.close(fd)
+        raise
+    return os.fdopen(fd, "rb")
+
+
+def _verify_stream(stream: SupportsRead[bytes], artifact: ArtifactMetadata) -> None:
+    """Read ``stream`` to EOF, checking size+digest against ``artifact``.
+
+    Verifies only the fields the metadata declares (§7.1: both optional). An
+    undecodable/unsupported digest algorithm is a verification failure
+    (cannot verify -> ``digest-mismatch``), not a silent skip (§15). ``detail``
+    is generic — no raw bytes/paths leak to the wire.
+    """
+    label = expected_hex = None
+    hashlib_name = None
+    if artifact.digest is not None:
+        label, _, expected_hex = artifact.digest.partition(":")
+        hashlib_name = _HASHLIB_BY_LABEL.get(label)
+    hasher = hashlib.new(hashlib_name) if hashlib_name is not None else None
+
+    size = 0
+    while True:
+        chunk = stream.read(_CHUNK)
+        if not chunk:
+            break
+        size += len(chunk)
+        if hasher is not None:
+            hasher.update(chunk)
+
+    if artifact.size is not None and size != artifact.size:
+        raise FileExchangeTransferError(
+            TransferErrorCode.SIZE_MISMATCH,
+            transport="filesystem",
+            detail="transferred byte count did not match declared size",
+        )
+    if artifact.digest is not None:
+        if hasher is None or hasher.hexdigest() != (expected_hex or "").lower():
+            raise FileExchangeTransferError(
+                TransferErrorCode.DIGEST_MISMATCH,
+                transport="filesystem",
+                detail="transferred bytes did not match declared digest",
+            )
 
 
 def _write_hashed(stream: SupportsRead[bytes], target: Path) -> tuple[int, str]:

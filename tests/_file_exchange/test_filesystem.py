@@ -5,6 +5,7 @@ import pytest
 
 from fastmcp_pvl_core._errors import ConfigurationError
 from fastmcp_pvl_core._file_exchange import _filesystem
+from fastmcp_pvl_core._file_exchange._codes import TransferErrorCode
 from fastmcp_pvl_core._file_exchange._wire import ArtifactMetadata, FilesystemSource
 
 
@@ -98,3 +99,61 @@ async def test_provider_mint_unknown_volume_raises_configuration_error(tmp_path)
         await _filesystem.filesystem_provider_mint(
             source, "k", volume="missing", volume_map={"vol": tmp_path}
         )
+
+
+def test_open_confined_readonly_opens_regular_file(tmp_path):
+    p = tmp_path / "f.bin"
+    p.write_bytes(b"abc")
+    f = _filesystem._open_confined_readonly(p)
+    try:
+        assert f.read() == b"abc"
+    finally:
+        f.close()
+
+
+def test_open_confined_readonly_rejects_symlink_final_component(tmp_path):
+    real = tmp_path / "real.bin"
+    real.write_bytes(b"secret")
+    link = tmp_path / "link.bin"
+    link.symlink_to(real)
+    with pytest.raises(_filesystem.FileExchangeTransferError) as ei:
+        _filesystem._open_confined_readonly(link)
+    assert ei.value.code is TransferErrorCode.NOT_ACCESSIBLE
+
+
+def test_open_confined_readonly_rejects_directory(tmp_path):
+    d = tmp_path / "adir"
+    d.mkdir()
+    with pytest.raises(_filesystem.FileExchangeTransferError) as ei:
+        _filesystem._open_confined_readonly(d)
+    assert ei.value.code is TransferErrorCode.NOT_ACCESSIBLE
+
+
+def test_verify_stream_accepts_matching_size_and_digest():
+    payload = b"verify-me"
+    artifact = ArtifactMetadata(
+        size=len(payload),
+        digest=f"sha-256:{hashlib.sha256(payload).hexdigest()}",
+    )
+    _filesystem._verify_stream(io.BytesIO(payload), artifact)  # no raise
+
+
+def test_verify_stream_raises_size_mismatch():
+    artifact = ArtifactMetadata(size=999)
+    with pytest.raises(_filesystem.FileExchangeTransferError) as ei:
+        _filesystem._verify_stream(io.BytesIO(b"short"), artifact)
+    assert ei.value.code is TransferErrorCode.SIZE_MISMATCH
+
+
+def test_verify_stream_raises_digest_mismatch():
+    artifact = ArtifactMetadata(digest="sha-256:" + "0" * 64)
+    with pytest.raises(_filesystem.FileExchangeTransferError) as ei:
+        _filesystem._verify_stream(io.BytesIO(b"data"), artifact)
+    assert ei.value.code is TransferErrorCode.DIGEST_MISMATCH
+
+
+def test_verify_stream_unsupported_algorithm_is_digest_mismatch():
+    artifact = ArtifactMetadata(digest="md5:" + "0" * 32)
+    with pytest.raises(_filesystem.FileExchangeTransferError) as ei:
+        _filesystem._verify_stream(io.BytesIO(b"data"), artifact)
+    assert ei.value.code is TransferErrorCode.DIGEST_MISMATCH
