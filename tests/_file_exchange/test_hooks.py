@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import inspect
 from io import BytesIO
 
+import pytest
+
+from fastmcp_pvl_core._file_exchange import _hooks
 from fastmcp_pvl_core._file_exchange._hooks import ArtifactSink, ArtifactSource
 from fastmcp_pvl_core._file_exchange._wire import ArtifactMetadata
 
@@ -47,3 +51,72 @@ async def test_sink_reads_stream_and_returns_none():
     )
     assert result is None
     assert sink.stored == b"payload"
+
+
+# Transport / mechanism names that must never appear in a hook signature.
+_FORBIDDEN_TOKENS = (
+    "filesystem",
+    "download",
+    "upload",
+    "http",
+    "https",
+    "exchange",
+    "url",
+    "volume",
+)
+
+# Protocol classes defined in _hooks (not imported ones like ArtifactMetadata):
+_HOOK_PROTOCOLS = [
+    obj
+    for _name, obj in inspect.getmembers(_hooks, inspect.isclass)
+    if obj.__module__ == _hooks.__name__
+]
+
+
+def _signature_tokens(method) -> list[str]:  # noqa: ANN001
+    """Param names + annotation reprs + return annotation, as strings."""
+    sig = inspect.signature(method)
+    tokens: list[str] = []
+    for name, param in sig.parameters.items():
+        if name == "self":
+            continue
+        tokens.append(name)
+        tokens.append(str(param.annotation))
+    tokens.append(str(sig.return_annotation))
+    return tokens
+
+
+def _public_methods(cls):  # noqa: ANN001, ANN202
+    return [
+        m
+        for name, m in inspect.getmembers(cls, inspect.isfunction)
+        if not name.startswith("_")
+    ]
+
+
+def test_hook_protocols_discovered():
+    # Guard the guard: if discovery breaks (0 protocols), the parametrized
+    # test below would pass vacuously. Pin that both hooks are found.
+    names = {p.__name__ for p in _HOOK_PROTOCOLS}
+    assert names == {"ArtifactSource", "ArtifactSink"}
+
+
+@pytest.mark.parametrize("proto", _HOOK_PROTOCOLS, ids=lambda p: p.__name__)
+def test_no_transport_name_in_hook_signatures(proto):
+    for method in _public_methods(proto):
+        for token in _signature_tokens(method):
+            low = token.lower()
+            for forbidden in _FORBIDDEN_TOKENS:
+                assert forbidden not in low, (
+                    f"{proto.__name__}.{method.__name__}: transport token "
+                    f"{forbidden!r} leaked into the signature ({token!r})"
+                )
+
+
+def test_introspection_guard_has_teeth():
+    # Negative control: a signature carrying a transport token is detectable
+    # by the same token extraction, so a real leak could not pass silently.
+    def bad(self, http_url: str) -> None: ...  # noqa: ANN001
+
+    tokens = [t.lower() for t in _signature_tokens(bad)]
+    assert any("http" in t for t in tokens)
