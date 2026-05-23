@@ -64,6 +64,8 @@ def capability_url(base_url: str, path: str, token: str) -> str:
         raise ConfigurationError(
             "capability URLs must use https (§12); base_url must start with 'https://'."
         )
+    if not token:
+        raise ValueError("token must not be empty")
     segments = [base_url.rstrip("/")]
     trimmed = path.strip("/")
     if trimmed:

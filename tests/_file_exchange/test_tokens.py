@@ -30,3 +30,8 @@ def test_capability_url_requires_base_url():
 def test_capability_url_requires_https():
     with pytest.raises(ConfigurationError):
         _tokens.capability_url("http://x.example.com", "/d", "tok")
+
+
+def test_capability_url_requires_nonempty_token():
+    with pytest.raises(ValueError):
+        _tokens.capability_url("https://x.example.com", "/d", "")
