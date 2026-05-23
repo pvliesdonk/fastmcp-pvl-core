@@ -106,3 +106,12 @@ def test_error_envelope_helper_exposed():
     assert result.isError is True
     inner = result.meta["nl.liesdonk.file-exchange/error"]
     assert inner == {"code": "no-supported-transport"}
+
+
+def test_path_helpers_exposed():
+    from fastmcp_pvl_core import file_exchange
+
+    assert callable(file_exchange.canonicalize_and_confine)
+    assert callable(file_exchange.resolve_filesystem_uri)
+    assert callable(file_exchange.load_volume_map)
+    assert hasattr(file_exchange, "VolumeMap")

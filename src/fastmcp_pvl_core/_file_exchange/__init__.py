@@ -19,6 +19,12 @@ from fastmcp_pvl_core._file_exchange._codes import (
 from fastmcp_pvl_core._file_exchange._errors import (
     build_file_exchange_error,
 )
+from fastmcp_pvl_core._file_exchange._paths import (
+    VolumeMap,
+    canonicalize_and_confine,
+    load_volume_map,
+    resolve_filesystem_uri,
+)
 from fastmcp_pvl_core._file_exchange._selection import (
     select_sink,
     select_source,
@@ -79,11 +85,15 @@ __all__ = [
     "UnsupportedVersionError",
     "UploadSink",
     "VERSION_PATTERN",
+    "VolumeMap",
     "WireFormatError",
     "build_file_exchange_error",
+    "canonicalize_and_confine",
     "capability_declaration",
     "check_requires",
     "check_version_skew",
+    "load_volume_map",
+    "resolve_filesystem_uri",
     "select_sink",
     "select_source",
     "validate_wire",
