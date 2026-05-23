@@ -76,7 +76,7 @@ async def test_push_to_deposit(tmp_path):
     assert isinstance(sink, FilesystemSink)
     await file_exchange.filesystem_sender_consume(sink, a, "ds", volume_map=volume_map)
 
-    relpath = sink.uri.removeprefix("exchange://shared/")
-    deposit = tmp_path / relpath
+    deposit = file_exchange.resolve_filesystem_uri(sink.uri, volume_map=volume_map)
+    assert deposit is not None
     assert deposit.read_bytes() == payload
     assert deposit.stat().st_mode & 0o777 == 0o664
