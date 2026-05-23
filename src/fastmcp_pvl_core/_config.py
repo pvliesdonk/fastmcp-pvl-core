@@ -57,6 +57,12 @@ class ServerConfig:
 
     auth_mode: str | None = None
 
+    # File-exchange capability-token config (#144). token_ttl is the TTL
+    # *ceiling* the token store clamps mint() requests to; max_artifact_size
+    # is consumed by the #146 upload route, surfaced here per #144's scope.
+    file_exchange_token_ttl: float = 3600.0
+    file_exchange_max_artifact_size: int | None = None
+
     bearer_tokens_file: Path | None = None
     # Subject for the single-token bearer mode; ignored when
     # ``bearer_tokens_file`` is set (mapped mode uses per-token subjects).
@@ -120,6 +126,9 @@ class ServerConfig:
             parse_bool(verify_access_raw) if verify_access_raw is not None else False
         )
 
+        token_ttl_str = env(env_prefix, "FILE_EXCHANGE_TOKEN_TTL", "3600")
+        max_size_raw = env(env_prefix, "FILE_EXCHANGE_MAX_ARTIFACT_SIZE")
+
         tokens_file_raw = env(env_prefix, "BEARER_TOKENS_FILE")
         # ``Path(...)`` keeps a leading ``~`` literal here.  Expansion is
         # performed once, in :func:`fastmcp_pvl_core._auth._load_bearer_tokens`,
@@ -148,6 +157,10 @@ class ServerConfig:
             event_store_url=env(env_prefix, "EVENT_STORE_URL"),
             app_domain=env(env_prefix, "APP_DOMAIN"),
             auth_mode=env(env_prefix, "AUTH_MODE"),
+            file_exchange_token_ttl=float(token_ttl_str),
+            file_exchange_max_artifact_size=(
+                int(max_size_raw) if max_size_raw else None
+            ),
             bearer_tokens_file=bearer_tokens_file,
             bearer_default_subject=bearer_default_subject,
         )
