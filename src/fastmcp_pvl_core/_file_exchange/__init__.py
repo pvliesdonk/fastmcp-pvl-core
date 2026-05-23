@@ -17,7 +17,16 @@ from fastmcp_pvl_core._file_exchange._codes import (
     TransferErrorCode,
 )
 from fastmcp_pvl_core._file_exchange._errors import (
+    FileExchangeTransferError,
     build_file_exchange_error,
+)
+from fastmcp_pvl_core._file_exchange._filesystem import (
+    filesystem_fetcher_consume,
+    filesystem_provider_mint,
+    filesystem_receiver_mint,
+    filesystem_sender_consume,
+    filesystem_sink_writable,
+    filesystem_source_readable,
 )
 from fastmcp_pvl_core._file_exchange._hooks import (
     ArtifactSink,
@@ -72,6 +81,7 @@ __all__ = [
     "ArtifactSource",
     "DownloadSource",
     "FileExchangeCapability",
+    "FileExchangeTransferError",
     "FilesystemSink",
     "FilesystemSource",
     "HANDLE_TYPE",
@@ -100,6 +110,12 @@ __all__ = [
     "capability_declaration",
     "check_requires",
     "check_version_skew",
+    "filesystem_fetcher_consume",
+    "filesystem_provider_mint",
+    "filesystem_receiver_mint",
+    "filesystem_sender_consume",
+    "filesystem_sink_writable",
+    "filesystem_source_readable",
     "load_volume_map",
     "resolve_filesystem_uri",
     "select_sink",
