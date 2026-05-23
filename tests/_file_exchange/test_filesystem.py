@@ -6,7 +6,12 @@ import pytest
 from fastmcp_pvl_core._errors import ConfigurationError
 from fastmcp_pvl_core._file_exchange import _filesystem
 from fastmcp_pvl_core._file_exchange._codes import TransferErrorCode
-from fastmcp_pvl_core._file_exchange._wire import ArtifactMetadata, FilesystemSource
+from fastmcp_pvl_core._file_exchange._spec import HANDLE_TYPE, SPEC_VERSION
+from fastmcp_pvl_core._file_exchange._wire import (
+    ArtifactMetadata,
+    FilesystemSource,
+    TransferHandle,
+)
 
 
 def test_hashing_reader_tracks_size_and_digest():
@@ -218,3 +223,66 @@ async def test_ingest_does_not_call_sink_on_digest_mismatch(tmp_path):
 
     assert ei.value.code is TransferErrorCode.DIGEST_MISMATCH
     assert sink.called is False
+
+
+async def test_fetcher_consume_resolves_verifies_and_deposits(tmp_path):
+    payload = b"fetch-bytes"
+    (tmp_path / "art").write_bytes(payload)
+    artifact = ArtifactMetadata(
+        id="a1",
+        size=len(payload),
+        digest=f"sha-256:{hashlib.sha256(payload).hexdigest()}",
+    )
+    handle = TransferHandle(
+        type=HANDLE_TYPE,
+        version=SPEC_VERSION,
+        artifact=artifact,
+        sources=[FilesystemSource(transport="filesystem", uri="exchange://vol/art")],
+    )
+    source = handle.sources[0]
+    assert isinstance(source, FilesystemSource)
+    sink = _RecordingSink()
+
+    await _filesystem.filesystem_fetcher_consume(
+        handle, source, sink, volume_map={"vol": tmp_path}
+    )
+
+    assert sink.stored["a1"] == payload
+
+
+async def test_fetcher_consume_unresolvable_uri_is_not_accessible(tmp_path):
+    handle = TransferHandle(
+        type=HANDLE_TYPE,
+        version=SPEC_VERSION,
+        artifact=ArtifactMetadata(id="a1", name="x"),
+        sources=[FilesystemSource(transport="filesystem", uri="exchange://other/art")],
+    )
+    source = handle.sources[0]
+    assert isinstance(source, FilesystemSource)
+    with pytest.raises(_filesystem.FileExchangeTransferError) as ei:
+        await _filesystem.filesystem_fetcher_consume(
+            handle, source, _RecordingSink(), volume_map={"vol": tmp_path}
+        )
+    assert ei.value.code is TransferErrorCode.NOT_ACCESSIBLE
+
+
+async def test_fetcher_consume_sink_failure_is_transfer_failed(tmp_path):
+    (tmp_path / "art").write_bytes(b"x")
+
+    class _BoomSink:
+        async def store_artifact(self, artifact_id, metadata, stream):
+            raise RuntimeError("downstream storage exploded")
+
+    handle = TransferHandle(
+        type=HANDLE_TYPE,
+        version=SPEC_VERSION,
+        artifact=ArtifactMetadata(id="a1", name="x"),
+        sources=[FilesystemSource(transport="filesystem", uri="exchange://vol/art")],
+    )
+    source = handle.sources[0]
+    assert isinstance(source, FilesystemSource)
+    with pytest.raises(_filesystem.FileExchangeTransferError) as ei:
+        await _filesystem.filesystem_fetcher_consume(
+            handle, source, _BoomSink(), volume_map={"vol": tmp_path}
+        )
+    assert ei.value.code is TransferErrorCode.TRANSFER_FAILED

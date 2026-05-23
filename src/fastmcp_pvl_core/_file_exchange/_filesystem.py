@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING
 from fastmcp_pvl_core._errors import ConfigurationError
 from fastmcp_pvl_core._file_exchange._codes import TransferErrorCode
 from fastmcp_pvl_core._file_exchange._errors import FileExchangeTransferError
-from fastmcp_pvl_core._file_exchange._paths import atomic_write
+from fastmcp_pvl_core._file_exchange._paths import atomic_write, resolve_filesystem_uri
 from fastmcp_pvl_core._file_exchange._spec import HANDLE_TYPE, SPEC_VERSION
 from fastmcp_pvl_core._file_exchange._wire import FilesystemSource, TransferHandle
 
@@ -241,3 +241,39 @@ async def _ingest(
         await sink.store_artifact(artifact_id, artifact, f)
     finally:
         await asyncio.to_thread(f.close)
+
+
+async def filesystem_fetcher_consume(
+    handle: TransferHandle,
+    source: FilesystemSource,
+    sink: ArtifactSink,
+    *,
+    volume_map: VolumeMap,
+) -> None:
+    """Fetcher role (pull): read the already-selected ``source``.
+
+    Verify against ``handle.artifact`` and deposit into ``sink``.
+
+    Selection (``select_source``) is the caller's step. A descriptor that
+    does not resolve/confine is ``not-accessible``; size/digest mismatches
+    are ``size-mismatch``/``digest-mismatch``; any other failure (e.g. the
+    sink raising) is ``transfer-failed``. The original cause is chained for
+    local logs; only generic detail reaches the wire.
+    """
+    path = resolve_filesystem_uri(source.uri, volume_map=volume_map)
+    if path is None:
+        raise FileExchangeTransferError(
+            TransferErrorCode.NOT_ACCESSIBLE,
+            transport="filesystem",
+            detail="source descriptor did not resolve within a configured volume",
+        )
+    try:
+        await _ingest(path, handle.artifact, sink, handle.artifact.id)
+    except FileExchangeTransferError:
+        raise
+    except Exception as exc:
+        raise FileExchangeTransferError(
+            TransferErrorCode.TRANSFER_FAILED,
+            transport="filesystem",
+            detail="artifact transfer failed",
+        ) from exc
