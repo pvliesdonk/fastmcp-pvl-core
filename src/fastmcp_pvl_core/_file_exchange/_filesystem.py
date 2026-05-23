@@ -10,11 +10,19 @@ stay mechanism-agnostic. See
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 from typing import TYPE_CHECKING
 
+from fastmcp_pvl_core._file_exchange._paths import atomic_write
+
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from _typeshed import SupportsRead
+
+    from fastmcp_pvl_core._file_exchange._hooks import ArtifactSource
+    from fastmcp_pvl_core._file_exchange._wire import ArtifactMetadata
 
 
 class _HashingReader:
@@ -42,3 +50,39 @@ class _HashingReader:
 
     def hexdigest(self) -> str:
         return self._hash.hexdigest()
+
+
+# pvl-core emits sha-256 (the §7.1 example) — its shape.
+_DIGEST_LABEL = "sha-256"
+
+# Fixed deposit/staged-file mode (#155): owner rw, group rw, other r — so a
+# different-uid party on a shared volume can read what pvl-core writes.
+_DEPOSIT_MODE = 0o664
+
+
+def _write_hashed(stream: SupportsRead[bytes], target: Path) -> tuple[int, str]:
+    """Sync: copy ``stream`` to ``target`` atomically at 0o664, hashing as it goes.
+
+    Returns ``(size, "sha-256:<hex>")``.
+    """
+    reader = _HashingReader(stream)
+    atomic_write(target, reader, mode=_DEPOSIT_MODE)
+    return reader.size, f"{_DIGEST_LABEL}:{reader.hexdigest()}"
+
+
+async def _stage(
+    source: ArtifactSource, key: str, target: Path
+) -> tuple[int, str, ArtifactMetadata]:
+    """Pull ``source``'s bytes for ``key`` and stage them at ``target``.
+
+    ``open_artifact`` is awaited on the loop; the blocking copy/hash/atomic
+    rename runs in a worker thread. pvl-core owns the returned stream and
+    closes it (per #142). Returns ``(size, digest, metadata)`` — the caller
+    folds size+digest into the reference it builds.
+    """
+    stream, meta = await source.open_artifact(key)
+    try:
+        size, digest = await asyncio.to_thread(_write_hashed, stream, target)
+    finally:
+        stream.close()
+    return size, digest, meta
