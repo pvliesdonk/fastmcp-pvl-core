@@ -8,6 +8,7 @@ Security-critical. Turns an untrusted ``filesystem`` descriptor ``uri``
 - :func:`resolve_filesystem_uri` — parse ``exchange://`` / ``file://``,
   look up the volume, confine.
 - :func:`load_volume_map` — env-driven volume-to-mount-point config.
+- :func:`atomic_write` — atomic write-then-rename of a stream to a local path.
 
 All non-usable outcomes return ``None`` (the §9 "skip this descriptor"
 signal); a confinement failure additionally logs a ``WARNING`` carrying
@@ -156,7 +157,8 @@ def atomic_write(target: Path, source: BinaryIO) -> None:
         # copy/fsync/replace failed — the temp may still exist (it is only
         # gone after a successful os.replace). Remove it so no partial
         # deposit and no orphan temp is left; target is untouched.
-        with contextlib.suppress(FileNotFoundError):
+        # Suppress any OSError so a cleanup failure can't mask the original error.
+        with contextlib.suppress(OSError):
             os.unlink(tmp_name)
         raise
 
