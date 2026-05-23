@@ -64,11 +64,9 @@ class _HashingReader:
     a non-seekable source stream allows (#142).
     """
 
-    def __init__(
-        self, stream: SupportsRead[bytes], *, algorithm: str = "sha256"
-    ) -> None:
+    def __init__(self, stream: SupportsRead[bytes]) -> None:
         self._stream = stream
-        self._hash = hashlib.new(algorithm)
+        self._hash = hashlib.sha256()
         self.size = 0
 
     def read(self, size: int = -1, /) -> bytes:
@@ -268,9 +266,11 @@ async def _ingest(
         await asyncio.to_thread(f.seek, 0)
         await sink.store_artifact(artifact_id, artifact, f)
     finally:
-        # Suppress a cleanup-close failure so it can't mask an in-flight
-        # transfer error (and can't fail an already-completed ingest).
-        with contextlib.suppress(OSError):
+        # Suppress a cleanup-close failure (broadly, matching _stage) so it
+        # can never mask an in-flight transfer error or fail an
+        # already-completed ingest — the close runs via asyncio.to_thread, so
+        # a non-OSError must not escape the finally either.
+        with contextlib.suppress(Exception):
             await asyncio.to_thread(f.close)
 
 

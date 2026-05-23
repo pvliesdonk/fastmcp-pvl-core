@@ -434,3 +434,28 @@ def test_open_confined_readonly_rejects_fifo(tmp_path):
     with pytest.raises(_filesystem.FileExchangeTransferError) as ei:
         _filesystem._open_confined_readonly(fifo)
     assert ei.value.code is TransferErrorCode.NOT_ACCESSIBLE
+
+
+def test_open_confined_readonly_closes_fd_when_fdopen_fails(tmp_path, monkeypatch):
+    import os as _os
+
+    p = tmp_path / "f.bin"
+    p.write_bytes(b"abc")
+    captured: list[int] = []
+    real_open = _os.open
+
+    def _spy_open(*args, **kwargs):
+        fd = real_open(*args, **kwargs)
+        captured.append(fd)
+        return fd
+
+    def _boom_fdopen(*args, **kwargs):
+        raise OSError("simulated fdopen failure")
+
+    monkeypatch.setattr(_filesystem.os, "open", _spy_open)
+    monkeypatch.setattr(_filesystem.os, "fdopen", _boom_fdopen)
+    with pytest.raises(OSError):
+        _filesystem._open_confined_readonly(p)
+    assert captured, "os.open was not called"
+    with pytest.raises(OSError):
+        os.fstat(captured[0])  # fd must be closed -> EBADF
