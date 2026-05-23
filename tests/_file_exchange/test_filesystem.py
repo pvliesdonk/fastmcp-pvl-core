@@ -354,3 +354,41 @@ async def test_sender_consume_source_failure_is_transfer_failed(tmp_path):
         )
     assert ei.value.code is TransferErrorCode.TRANSFER_FAILED
     assert isinstance(ei.value.__cause__, RuntimeError)
+
+
+def test_source_readable_predicate(tmp_path):
+    (tmp_path / "art").write_bytes(b"x")
+    is_readable = _filesystem.filesystem_source_readable({"vol": tmp_path})
+    assert (
+        is_readable(FilesystemSource(transport="filesystem", uri="exchange://vol/art"))
+        is True
+    )
+    assert (
+        is_readable(
+            FilesystemSource(transport="filesystem", uri="exchange://vol/missing")
+        )
+        is False
+    )
+    assert (
+        is_readable(
+            FilesystemSource(transport="filesystem", uri="exchange://other/art")
+        )
+        is False
+    )
+
+
+def test_sink_writable_predicate(tmp_path):
+    is_writable = _filesystem.filesystem_sink_writable({"vol": tmp_path})
+    # deposit file need not exist; its parent (the volume root) is writable
+    assert (
+        is_writable(
+            FilesystemSink(transport="filesystem", uri="exchange://vol/deposit")
+        )
+        is True
+    )
+    assert (
+        is_writable(
+            FilesystemSink(transport="filesystem", uri="exchange://other/deposit")
+        )
+        is False
+    )

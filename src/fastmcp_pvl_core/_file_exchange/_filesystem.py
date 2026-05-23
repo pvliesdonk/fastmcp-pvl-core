@@ -30,6 +30,7 @@ from fastmcp_pvl_core._file_exchange._wire import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from pathlib import Path
     from typing import BinaryIO
 
@@ -349,3 +350,37 @@ async def filesystem_sender_consume(
             transport="filesystem",
             detail="artifact transfer failed",
         ) from exc
+
+
+def filesystem_source_readable(
+    volume_map: VolumeMap,
+) -> Callable[[FilesystemSource], bool]:
+    """Build the ``is_accessible`` callback for ``select_source``.
+
+    Returns ``True`` when the resolved location exists and is readable.
+    """
+
+    def _readable(source: FilesystemSource) -> bool:
+        path = resolve_filesystem_uri(source.uri, volume_map=volume_map)
+        return path is not None and os.access(path, os.R_OK)
+
+    return _readable
+
+
+def filesystem_sink_writable(
+    volume_map: VolumeMap,
+) -> Callable[[FilesystemSink], bool]:
+    """Build the ``is_accessible`` callback for ``select_sink``.
+
+    Returns ``True`` when the deposit's parent dir exists and is writable;
+    the target file itself need not exist yet.
+    """
+
+    def _writable(sink: FilesystemSink) -> bool:
+        path = resolve_filesystem_uri(sink.uri, volume_map=volume_map)
+        if path is None:
+            return False
+        parent = path.parent
+        return parent.is_dir() and os.access(parent, os.W_OK)
+
+    return _writable
