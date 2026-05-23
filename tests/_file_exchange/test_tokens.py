@@ -117,6 +117,9 @@ async def test_multi_use_consume_is_noop(store):
     minted = await store.mint({"k": "v"}, ttl=60.0, single_use=False)
     assert await store.consume(minted.token) is True
     assert await store.lookup(minted.token) is not None
+    # second consume: still a no-op, token survives
+    assert await store.consume(minted.token) is True
+    assert await store.lookup(minted.token) is not None
 
 
 async def test_revoke_invalidates_unconditionally(store):
@@ -127,3 +130,9 @@ async def test_revoke_invalidates_unconditionally(store):
 
 async def test_revoke_absent_token_does_not_raise(store):
     await store.revoke("nope")  # no exception
+
+
+async def test_revoke_single_use_token(store):
+    minted = await store.mint({"k": "v"}, ttl=60.0, single_use=True)
+    await store.revoke(minted.token)
+    assert await store.lookup(minted.token) is None
