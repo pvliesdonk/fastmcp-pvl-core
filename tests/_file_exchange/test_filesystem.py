@@ -17,3 +17,12 @@ def test_hashing_reader_tracks_size_and_digest():
     assert sink.getvalue() == payload
     assert reader.size == len(payload)
     assert reader.hexdigest() == hashlib.sha256(payload).hexdigest()
+
+
+def test_hashing_reader_read_all():
+    payload = b"the quick brown fox" * 1000
+    reader = _filesystem._HashingReader(io.BytesIO(payload))
+    data = reader.read(-1)
+    assert data == payload
+    assert reader.size == len(payload)
+    assert reader.hexdigest() == hashlib.sha256(payload).hexdigest()
