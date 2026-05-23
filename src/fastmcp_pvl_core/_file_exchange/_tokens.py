@@ -62,6 +62,8 @@ class CapabilityTokenStore:
     """
 
     def __init__(self, store: AsyncKeyValue, *, ttl_ceiling: float) -> None:
+        if ttl_ceiling <= 0:
+            raise ValueError("ttl_ceiling must be positive")
         self._store = store
         self._ttl_ceiling = ttl_ceiling
 

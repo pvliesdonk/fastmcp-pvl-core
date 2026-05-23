@@ -1,3 +1,6 @@
+import asyncio
+from datetime import datetime, timezone
+
 import pytest
 from key_value.aio.stores.memory import MemoryStore
 
@@ -48,16 +51,12 @@ async def test_mint_returns_urlsafe_token_and_expiry(store):
     assert isinstance(minted.token, str)
     assert len(minted.token) >= 43
     assert all(c.isalnum() or c in "-_" for c in minted.token)
-    from datetime import datetime, timezone
-
     delta = (minted.expires_at - datetime.now(timezone.utc)).total_seconds()
     assert 55 <= delta <= 61
 
 
 async def test_mint_clamps_ttl_to_ceiling(store):
     minted = await store.mint({"k": "v"}, ttl=10_000.0)
-    from datetime import datetime, timezone
-
     delta = (minted.expires_at - datetime.now(timezone.utc)).total_seconds()
     assert 3595 <= delta <= 3601
 
@@ -80,8 +79,18 @@ async def test_lookup_absent_token_returns_none(store):
 
 
 async def test_lookup_returns_none_after_expiry(store):
-    import asyncio
-
     minted = await store.mint({"k": "v"}, ttl=0.05)
     await asyncio.sleep(0.12)
     assert await store.lookup(minted.token) is None
+
+
+async def test_mint_default_single_use_is_true(store):
+    minted = await store.mint({"k": "v"}, ttl=60.0)
+    record = await store.lookup(minted.token)
+    assert record is not None
+    assert record.single_use is True
+
+
+def test_store_rejects_nonpositive_ttl_ceiling():
+    with pytest.raises(ValueError):
+        _tokens.CapabilityTokenStore(MemoryStore(), ttl_ceiling=0.0)
