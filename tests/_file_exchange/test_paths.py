@@ -739,6 +739,15 @@ def test_atomic_write_reads_from_current_position(tmp_path):
     assert (tmp_path / "out.bin").read_bytes() == b"keep"
 
 
+def test_atomic_write_accepts_str_target(tmp_path):
+    # Pins the widened Path | str contract — the body coerces via Path(target).
+    from io import BytesIO
+
+    target = tmp_path / "out.bin"
+    atomic_write(str(target), BytesIO(b"hi"))
+    assert target.read_bytes() == b"hi"
+
+
 def test_atomic_write_deposits_owner_only_mode(tmp_path):
     # Pins the documented current behavior: deposits inherit mkstemp's 0o600,
     # preserved by os.replace, on both create and overwrite. The deposit

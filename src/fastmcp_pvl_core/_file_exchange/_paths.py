@@ -132,7 +132,7 @@ def canonicalize_and_confine(candidate: Path | str, root: Path | str) -> Path | 
     return None
 
 
-def atomic_write(target: Path, source: BinaryIO) -> None:
+def atomic_write(target: Path | str, source: BinaryIO) -> None:
     """Write ``source``'s bytes to ``target`` atomically.
 
     Reads ``source`` from its *current* position to EOF — it does not seek, so
