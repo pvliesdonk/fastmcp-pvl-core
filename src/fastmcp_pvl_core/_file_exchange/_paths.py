@@ -141,8 +141,8 @@ def atomic_write(target: Path, source: BinaryIO) -> None:
     path, then rename into place"). The parent directory must already exist.
     On any error the temp file is removed, leaving ``target`` untouched.
 
-    Sync (pure file I/O); an async transport hook runs it via
-    ``asyncio.to_thread`` so it never blocks the event loop.
+    Sync, blocking file I/O — async callers should run it via
+    ``asyncio.to_thread`` so it does not block the event loop.
     """
     target = Path(target)
     fd, tmp_name = tempfile.mkstemp(dir=target.parent)
