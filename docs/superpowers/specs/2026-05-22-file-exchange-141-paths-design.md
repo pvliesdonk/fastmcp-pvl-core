@@ -58,13 +58,18 @@ Every non-usable outcome returns `None`, never raises (except
 
 - unknown volume → `None` (benign skip, per §9 / §10.1.1),
 - malformed URI → `None` (the wire layer normally pre-rejects these),
-- confinement escape (`..` / symlink out of root) → `None` **plus a
-  `WARNING` log**.
+- confinement failure (`..` / symlink out of root, **or** a symlink loop
+  / filesystem error during resolution) → `None` **plus a `WARNING` log**.
 
 `None` is the §9 "skip this descriptor" signal, so #143's
 `is_accessible` callback treats it uniformly without exception control
-flow. The escape case additionally logs because an untrusted path
-escaping its root is a likely-malicious event an operator should see.
+flow. The confinement-failure case additionally logs because a path that
+cannot be confined to its root is a likely-malicious event an operator
+should see. The wording is "could not be confined" rather than "escaped":
+`canonicalize_and_confine` returns `None` not only for a genuine escape
+but also for a symlink loop (`RuntimeError` on CPython ≤3.12) or an
+`OSError`, so an "escaped" message would misattribute a broken in-volume
+link as an out-of-bounds path.
 
 The single exception to "never raises": `load_volume_map` /
 `_parse_volume_map` raise `ConfigurationError` (the repo's existing
@@ -244,8 +249,8 @@ def resolve_filesystem_uri(uri: str, *, volume_map: VolumeMap) -> Path | None:
         confined = canonicalize_and_confine(root / path, root)
         if confined is None:
             logger.warning(
-                "file-exchange: exchange:// path escaped its volume root; "
-                "rejecting (volume=%r)",
+                "file-exchange: exchange:// path could not be confined to its "
+                "volume root; rejecting (volume=%r)",
                 volume,
             )
         return confined
@@ -256,8 +261,8 @@ def resolve_filesystem_uri(uri: str, *, volume_map: VolumeMap) -> Path | None:
         if confined is not None:
             return confined
     logger.warning(
-        "file-exchange: file:// path is not within any configured volume; "
-        "rejecting"
+        "file-exchange: file:// path could not be confined to any configured "
+        "volume; rejecting"
     )
     return None
 ```
