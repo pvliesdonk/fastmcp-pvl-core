@@ -230,7 +230,9 @@ async def _ingest(
     sink never receives unverified bytes (§15 "validate before use"); pass 2
     rewinds and hands the stream to ``store_artifact`` (the sink reads, does
     not close — #142). pvl-core closes the fd. ``artifact`` is the handle's
-    metadata, passed through to the sink.
+    metadata, passed through to the sink. The sink reads the stream on the
+    event loop; a sink with heavy I/O is responsible for offloading its own
+    reads (pvl-core passes the raw fd, not a thread-bridged wrapper).
     """
     f = await asyncio.to_thread(_open_confined_readonly, path)
     try:

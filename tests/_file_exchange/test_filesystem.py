@@ -170,7 +170,7 @@ def test_verify_stream_accepts_uppercase_algorithm_label():
 
 class _RecordingSink:
     def __init__(self) -> None:
-        self.stored: dict[str, bytes] = {}
+        self.stored: dict[str | None, bytes] = {}
         self.called = False
 
     async def store_artifact(self, artifact_id, metadata, stream):
@@ -192,6 +192,19 @@ async def test_ingest_verifies_then_hands_verified_bytes_to_sink(tmp_path):
     await _filesystem._ingest(p, artifact, sink, "a1")
 
     assert sink.stored["a1"] == payload
+
+
+async def test_ingest_passes_none_artifact_id_to_sink(tmp_path):
+    payload = b"id-none"
+    p = tmp_path / "src.bin"
+    p.write_bytes(payload)
+    artifact = ArtifactMetadata(
+        size=len(payload),
+        digest=f"sha-256:{hashlib.sha256(payload).hexdigest()}",
+    )
+    sink = _RecordingSink()
+    await _filesystem._ingest(p, artifact, sink, None)
+    assert sink.stored[None] == payload
 
 
 async def test_ingest_does_not_call_sink_on_digest_mismatch(tmp_path):
