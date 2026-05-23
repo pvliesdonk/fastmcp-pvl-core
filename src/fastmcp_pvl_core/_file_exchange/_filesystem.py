@@ -193,7 +193,11 @@ async def _stage(
     try:
         size, digest = await asyncio.to_thread(_write_hashed, stream, target)
     finally:
-        stream.close()
+        # Suppress a cleanup-close failure so it can't mask an in-flight
+        # transfer error (and can't fail an already-completed stage); the
+        # source stream is downstream code, so suppress broadly.
+        with contextlib.suppress(Exception):
+            stream.close()
     return size, digest, meta
 
 
@@ -264,7 +268,10 @@ async def _ingest(
         await asyncio.to_thread(f.seek, 0)
         await sink.store_artifact(artifact_id, artifact, f)
     finally:
-        await asyncio.to_thread(f.close)
+        # Suppress a cleanup-close failure so it can't mask an in-flight
+        # transfer error (and can't fail an already-completed ingest).
+        with contextlib.suppress(OSError):
+            await asyncio.to_thread(f.close)
 
 
 async def filesystem_fetcher_consume(

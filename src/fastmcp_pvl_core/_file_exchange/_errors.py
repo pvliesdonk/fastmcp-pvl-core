@@ -1,10 +1,15 @@
-"""§13 error-envelope CallToolResult builder.
+"""§13 transfer-error type and error-envelope ``CallToolResult`` builder.
 
-Single helper :func:`build_file_exchange_error` that returns a fully
-formed ``CallToolResult`` with ``isError=True``, a human-readable
-``TextContent`` block, and the spec-mandated ``_meta`` key
-``"nl.liesdonk.file-exchange/error"`` carrying the structured
-``{code, [transport], [detail]}`` payload.
+Two public members:
+
+* :class:`FileExchangeTransferError` — a §13-coded exception raised by the
+  transport bindings (#143+) when a transfer fails; #148's middleware maps
+  it onto the wire response.
+* :func:`build_file_exchange_error` — returns a fully formed
+  ``CallToolResult`` with ``isError=True``, a human-readable ``TextContent``
+  block, and the spec-mandated ``_meta`` key
+  ``"nl.liesdonk.file-exchange/error"`` carrying the structured
+  ``{code, [transport], [detail]}`` payload.
 
 This builds the §13 error in its ``CallToolResult`` *Python* shape.
 **It is not a tool return value you can hand back from a plain
