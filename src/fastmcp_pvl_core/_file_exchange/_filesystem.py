@@ -22,10 +22,12 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import hashlib
+import logging
 import os
 import stat
 import uuid
 from typing import TYPE_CHECKING
+from urllib.parse import urlsplit
 
 from fastmcp_pvl_core._errors import ConfigurationError
 from fastmcp_pvl_core._file_exchange._codes import TransferErrorCode
@@ -91,6 +93,8 @@ _DEPOSIT_MODE = 0o664
 _HASHLIB_BY_LABEL = {"sha-256": "sha256", "sha-384": "sha384", "sha-512": "sha512"}
 
 _CHUNK = 1024 * 1024
+
+logger = logging.getLogger(__name__)
 
 
 def _open_confined_readonly(path: Path) -> BinaryIO:
@@ -388,7 +392,16 @@ def filesystem_source_readable(
 
     def _readable(source: FilesystemSource) -> bool:
         path = resolve_filesystem_uri(source.uri, volume_map=volume_map)
-        return path is not None and os.access(path, os.R_OK)
+        if path is None:
+            return False
+        if not os.access(path, os.R_OK):
+            logger.debug(
+                "file-exchange: filesystem source resolved but is not readable; "
+                "skipping (volume=%r)",
+                urlsplit(source.uri).netloc,
+            )
+            return False
+        return True
 
     return _readable
 
@@ -410,6 +423,13 @@ def filesystem_sink_writable(
         if path is None:
             return False
         parent = path.parent
-        return parent.is_dir() and os.access(parent, os.W_OK)
+        if not (parent.is_dir() and os.access(parent, os.W_OK)):
+            logger.debug(
+                "file-exchange: filesystem sink resolved but parent is not "
+                "writable; skipping (volume=%r)",
+                urlsplit(sink.uri).netloc,
+            )
+            return False
+        return True
 
     return _writable
