@@ -6,11 +6,21 @@ composed over two private byte primitives (:func:`_stage` write,
 The transport is mechanism-specific *here* on purpose; the hooks it calls
 stay mechanism-agnostic. See
 ``docs/superpowers/specs/2026-05-23-file-exchange-143-filesystem-transport-design.md``.
+
+The two consuming ops (``filesystem_fetcher_consume``,
+``filesystem_sender_consume``) map failures to a §13-coded
+``FileExchangeTransferError`` for the #148 middleware to render. The two
+mint ops (``filesystem_provider_mint``, ``filesystem_receiver_mint``) are
+offering-side: per spec §16 the offering roles emit well-formed references
+rather than reporting §13 errors, so a hook/IO failure during minting
+propagates to the offering tool's own handler unwrapped (``transfer-failed``
+denotes a transfer in flight, which minting is not).
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import os
 import stat
@@ -89,13 +99,14 @@ def _open_confined_readonly(path: Path) -> BinaryIO:
     """Open an already-confined path read-only, TOCTOU-guarded.
 
     ``O_NOFOLLOW`` rejects a final-component symlink swapped in between
-    resolution (#141) and this open; ``fstat`` rejects a non-regular target.
-    Prefix-component races and full per-component ``openat`` traversal are out
-    of scope — see the design doc's TOCTOU section. Any failure surfaces as
-    ``not-accessible``.
+    resolution (#141) and this open; ``O_NONBLOCK`` keeps the open from
+    blocking on a planted FIFO (a regular file ignores it for reads);
+    ``fstat`` rejects any non-regular target. Prefix-component races and full
+    per-component ``openat`` traversal are out of scope — see the design
+    doc's TOCTOU section. Any failure surfaces as ``not-accessible``.
     """
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     except OSError as exc:
         raise FileExchangeTransferError(
             TransferErrorCode.NOT_ACCESSIBLE,
@@ -109,10 +120,14 @@ def _open_confined_readonly(path: Path) -> BinaryIO:
                 transport="filesystem",
                 detail="source is not a regular file",
             )
-        return os.fdopen(fd, "rb")
+        stream = os.fdopen(fd, "rb")
+        fd = -1  # fdopen took ownership; closing the stream closes the fd
     except BaseException:
-        os.close(fd)
+        if fd != -1:
+            with contextlib.suppress(OSError):
+                os.close(fd)
         raise
+    return stream
 
 
 def _verify_stream(stream: SupportsRead[bytes], artifact: ArtifactMetadata) -> None:

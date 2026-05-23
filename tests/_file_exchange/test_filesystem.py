@@ -1,5 +1,6 @@
 import hashlib
 import io
+import os
 
 import pytest
 
@@ -402,3 +403,34 @@ def test_sink_writable_predicate(tmp_path):
         )
         is False
     )
+
+
+def test_open_confined_readonly_closes_fd_on_nonregular_rejection(
+    tmp_path, monkeypatch
+):
+    import os as _os
+
+    d = tmp_path / "adir"
+    d.mkdir()
+    captured: list[int] = []
+    real_open = _os.open
+
+    def _spy_open(*args, **kwargs):
+        fd = real_open(*args, **kwargs)
+        captured.append(fd)
+        return fd
+
+    monkeypatch.setattr(_filesystem.os, "open", _spy_open)
+    with pytest.raises(_filesystem.FileExchangeTransferError):
+        _filesystem._open_confined_readonly(d)
+    assert captured, "os.open was not called"
+    with pytest.raises(OSError):
+        os.fstat(captured[0])  # fd must be closed -> EBADF
+
+
+def test_open_confined_readonly_rejects_fifo(tmp_path):
+    fifo = tmp_path / "pipe"
+    os.mkfifo(fifo)
+    with pytest.raises(_filesystem.FileExchangeTransferError) as ei:
+        _filesystem._open_confined_readonly(fifo)
+    assert ei.value.code is TransferErrorCode.NOT_ACCESSIBLE

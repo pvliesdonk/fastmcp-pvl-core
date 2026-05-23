@@ -176,7 +176,12 @@ raise it: `not-accessible` (confinement/access failure), `size-mismatch`,
 `build_file_exchange_error` (which, per its own docstring, needs that
 middleware to set wire `isError`+`_meta` together — so #143 raises rather than
 returns an envelope, exactly as `_selection` delegates `no-supported-transport`
-rendering to its caller).
+rendering to its caller). The mint ops (`filesystem_provider_mint`,
+`filesystem_receiver_mint`) do not wrap failures into `FileExchangeTransferError`:
+per §16 the offering roles emit well-formed references rather than reporting §13
+errors, and `transfer-failed` semantically denotes a transfer in flight, which
+minting is not — so hook/IO errors during minting propagate unwrapped to the
+offering tool's own handler.
 
 `_stage`/`atomic_write` stay fail-safe: on any error the temp file is removed
 and the target is left untouched — no partial deposit.
