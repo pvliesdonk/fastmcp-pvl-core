@@ -163,6 +163,12 @@ def test_confine_invariant_accepted_paths_are_within_root(_confine_root, segment
         ("exchange://docs/a/../etc", ("exchange", "docs", "a/../etc")),
         # leading double-slash collapses (lstrip), same path as single-slash
         ("exchange://docs//a/b", ("exchange", "docs", "a/b")),
+        # userinfo/port are part of the opaque volume id (§10.1.1: "<volume>
+        # — the URI authority — is an opaque identifier"); not split off to a
+        # bare host. Pins the decision against a future parts.hostname
+        # refactor (tracked in mcp-file-exchange-ext#15).
+        ("exchange://user@docs/a", ("exchange", "user@docs", "a")),
+        ("exchange://docs:8080/a", ("exchange", "docs:8080", "a")),
         ("file:///mnt/x", ("file", "", "/mnt/x")),
         ("file:///mnt/../etc", ("file", "", "/mnt/../etc")),
     ],
@@ -394,6 +400,19 @@ def test_resolve_exchange_unknown_volume_does_not_warn(tmp_path, caplog):
     with caplog.at_level(logging.WARNING):
         resolve_filesystem_uri("exchange://other/a.bin", volume_map=vm)
     assert caplog.records == []
+
+
+def test_resolve_exchange_userinfo_or_port_is_unmapped_volume(tmp_path):
+    """userinfo/port make the netloc a distinct opaque volume id, so
+    exchange://user@docs/x does NOT resolve under a configured 'docs' volume
+    — it's an unmapped volume, skipped (None). Pins the §10.1.1 opaque-
+    authority decision against a parts.hostname refactor (mcp-file-exchange-ext#15)."""
+    root = tmp_path / "docs"
+    root.mkdir()
+    (root / "a.bin").write_text("x")
+    vm = {"docs": root}
+    assert resolve_filesystem_uri("exchange://user@docs/a.bin", volume_map=vm) is None
+    assert resolve_filesystem_uri("exchange://docs:8080/a.bin", volume_map=vm) is None
 
 
 def test_resolve_file_within_a_volume(tmp_path):
