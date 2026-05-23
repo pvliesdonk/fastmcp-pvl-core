@@ -761,17 +761,6 @@ def test_atomic_write_deposits_owner_only_mode(tmp_path):
     assert target.stat().st_mode & 0o777 == 0o600
 
 
-def test_atomic_write_default_mode_is_0600(tmp_path):
-    from io import BytesIO
-
-    from fastmcp_pvl_core._file_exchange._paths import atomic_write
-
-    target = tmp_path / "out.bin"
-    atomic_write(target, BytesIO(b"data"))
-    assert target.read_bytes() == b"data"
-    assert target.stat().st_mode & 0o777 == 0o600
-
-
 def test_atomic_write_explicit_mode_is_applied(tmp_path):
     from io import BytesIO
 

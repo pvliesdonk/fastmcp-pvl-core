@@ -29,6 +29,7 @@ from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
     from _typeshed import SupportsRead
+
 from urllib.parse import urlsplit
 
 from fastmcp_pvl_core._env import env
