@@ -297,13 +297,20 @@ def register_file_exchange_routes(
             return Response(status_code=404)
         stream, meta = await source.open_artifact(rec.metadata["key"])
         size = meta.size
-        range_header = request.headers.get("range")
+        # A 206 MUST carry a Content-Range (RFC 9110 §15.3.7), which needs a
+        # known total length. When the hook does not report size, ignore Range
+        # (§14.2 permits this) and serve the whole stream as 200 — so a resume
+        # against an unknown-size artifact is not honored.
+        range_header = request.headers.get("range") if size is not None else None
         try:
             start, end = _parse_range(range_header, size)
         except _UnsatisfiableError:
-            await asyncio.to_thread(stream.close)
-            extra = {"Content-Range": f"bytes */{size}"} if size is not None else {}
-            return Response(status_code=416, headers=extra)
+            # Reached only with a Range present, which implies a known size.
+            with contextlib.suppress(Exception):
+                await asyncio.to_thread(stream.close)
+            return Response(
+                status_code=416, headers={"Content-Range": f"bytes */{size}"}
+            )
 
         partial = range_header is not None
         headers = {"Accept-Ranges": "bytes"}
@@ -330,6 +337,11 @@ def register_file_exchange_routes(
                     if not chunk:
                         break
                     to_skip -= len(chunk)
+                if to_skip > 0:
+                    # Source ended before the range start — a hook that did not
+                    # yield the stable bytes the token promised. Serve nothing
+                    # and do not consume; leave the token valid.
+                    return
                 remaining = None if end is None else (end - start + 1)
                 hit_eof = False
                 while remaining is None or remaining > 0:
@@ -344,7 +356,8 @@ def register_file_exchange_routes(
                 if consume_on_eof and hit_eof:
                     await token_store.consume(token)
             finally:
-                await asyncio.to_thread(stream.close)
+                with contextlib.suppress(Exception):
+                    await asyncio.to_thread(stream.close)
 
         return StreamingResponse(
             _body(),

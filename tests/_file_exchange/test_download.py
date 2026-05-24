@@ -350,10 +350,15 @@ async def test_fetcher_gives_up_after_max_reconnects(monkeypatch):
 
 
 class _BytesSource:
-    """ArtifactSource serving fixed bytes for a single key."""
+    """ArtifactSource serving fixed bytes for a single key.
 
-    def __init__(self, key, body, *, mime="application/octet-stream"):
+    ``report_size=False`` models a hook that does not know the size (§7.1 makes
+    it optional), exercising the route's unknown-size path.
+    """
+
+    def __init__(self, key, body, *, mime="application/octet-stream", report_size=True):
         self._key, self._body, self._mime = key, body, mime
+        self._report_size = report_size
         self.opens = 0
 
     async def open_artifact(self, key):
@@ -361,8 +366,9 @@ class _BytesSource:
 
         assert key == self._key
         self.opens += 1
+        size = len(self._body) if self._report_size else None
         return io.BytesIO(self._body), ArtifactMetadata(
-            name="a", mimeType=self._mime, size=len(self._body)
+            name="a", mimeType=self._mime, size=size
         )
 
 
@@ -452,3 +458,31 @@ async def test_route_ignores_ambient_credentials():
             headers={"Authorization": "Bearer x", "Cookie": "s=1"},
         )
     assert r.status_code == 200 and r.content == body
+
+
+async def test_route_unknown_size_full_get_consumes():
+    store = _store()
+    body = b"unknown-size-body"
+    token = await _mint_token(store, "k1")
+    source = _BytesSource("k1", body, report_size=False)
+    async with _route_client(store, source) as client:
+        r1 = await client.get(f"/fx/d/{token}")
+        assert r1.status_code == 200
+        assert r1.content == body
+        assert "content-length" not in r1.headers  # size unknown -> chunked
+        r2 = await client.get(f"/fx/d/{token}")  # consumed on full retrieval
+    assert r2.status_code == 404
+
+
+async def test_route_unknown_size_ignores_range_serves_200():
+    store = _store()
+    body = b"0123456789"
+    token = await _mint_token(store, "k1")
+    source = _BytesSource("k1", body, report_size=False)
+    async with _route_client(store, source) as client:
+        # A 206 needs a Content-Range (impossible without total size), so the
+        # route ignores Range and serves the whole body as 200.
+        r = await client.get(f"/fx/d/{token}", headers={"Range": "bytes=3-6"})
+    assert r.status_code == 200
+    assert r.content == body
+    assert "content-range" not in r.headers
