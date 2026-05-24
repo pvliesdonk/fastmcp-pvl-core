@@ -178,12 +178,16 @@ async def download_fetcher_consume(
                             # corrupt the running hash). Any other status is a
                             # failed transfer — never ingest an error-page body
                             # as artifact bytes (§10.2 mandates Range support;
-                            # 200/206 status semantics are RFC 9110).
-                            code = (
-                                TransferErrorCode.NOT_ACCESSIBLE
-                                if 400 <= resp.status < 500
-                                else TransferErrorCode.TRANSFER_FAILED
-                            )
+                            # 200/206 status semantics are RFC 9110). 416 is a
+                            # range-satisfiability failure (e.g. the source
+                            # changed between the initial 200 and the resume), not
+                            # an access failure, so it maps to transfer-failed.
+                            if resp.status == 416:
+                                code = TransferErrorCode.TRANSFER_FAILED
+                            elif 400 <= resp.status < 500:
+                                code = TransferErrorCode.NOT_ACCESSIBLE
+                            else:
+                                code = TransferErrorCode.TRANSFER_FAILED
                             raise FileExchangeTransferError(
                                 code,
                                 transport="download",

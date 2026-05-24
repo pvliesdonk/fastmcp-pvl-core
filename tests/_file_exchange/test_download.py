@@ -366,6 +366,26 @@ async def test_fetcher_resume_non_206_is_rejected(monkeypatch):
     assert sink.calls == 0
 
 
+async def test_fetcher_resume_416_maps_transfer_failed(monkeypatch):
+    body = b"abcd" * 32  # 128 bytes
+    split = 40
+
+    def first(request):
+        return httpx.Response(200, stream=_DropAfter(body[:split]))
+
+    def range_not_satisfiable(request):
+        return httpx.Response(416)  # range-protocol failure, not an access failure
+
+    _install_guard_seq(monkeypatch, [first, range_not_satisfiable])
+    sink = _CapturingSink()
+    with pytest.raises(FileExchangeTransferError) as ei:
+        await _download.download_fetcher_consume(
+            _handle(body), _handle(body).sources[0], sink, config=_cfg()
+        )
+    assert ei.value.code == TransferErrorCode.TRANSFER_FAILED  # not NOT_ACCESSIBLE
+    assert sink.calls == 0
+
+
 async def test_fetcher_gives_up_after_max_reconnects(monkeypatch):
     def first(request):
         return httpx.Response(200, stream=_DropAfter(b"a"))  # initial: 200
