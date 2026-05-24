@@ -577,6 +577,9 @@ async def test_guarded_response_repr_hides_token(monkeypatch):
         rendered = repr(resp)
         assert "SECRETTOKEN" not in rendered
         assert "/d/" not in rendered
+        # Pin repr=False on _response: with repr=True the field (and the
+        # underlying response/request that carries the URL) would be rendered.
+        assert "_response" not in rendered
         async for _ in resp.aiter_bytes():
             pass
 
@@ -727,11 +730,37 @@ async def test_body_iteration_error_propagates_raw_and_closes_client(monkeypatch
     assert holder["client"].is_closed is True
 
 
-async def test_failure_logs_do_not_leak_credentials_or_token(monkeypatch, caplog):
+@pytest.mark.parametrize(
+    "scenario",
+    ["dns-failure", "empty-resolution", "non-global", "connect-error"],
+)
+async def test_failure_logs_do_not_leak_credentials_or_token(
+    monkeypatch, caplog, scenario
+):
+    # Sweep every logger.debug emit-path in _send_pinned, not just one — the
+    # URL-credential-redaction discipline (PR #122) requires all of them be
+    # proven to log only the redacted hostname.
     async def fake_resolve(host, port):
-        return ["127.0.0.1"]  # non-global -> refusal + debug log on the failure path
+        if scenario == "dns-failure":
+            raise socket.gaierror("resolution failed")
+        if scenario == "empty-resolution":
+            return []
+        if scenario == "non-global":
+            return ["127.0.0.1"]
+        return ["93.184.216.34"]  # connect-error: reach the send path
+
+    def handler(request):
+        raise httpx.ConnectError("connection refused")
+
+    def fake_make_client(timeout):
+        return httpx.AsyncClient(
+            transport=httpx.MockTransport(handler),
+            trust_env=False,
+            follow_redirects=False,
+        )
 
     monkeypatch.setattr(_outbound, "_resolve", fake_resolve)
+    monkeypatch.setattr(_outbound, "_make_client", fake_make_client)
     with caplog.at_level(logging.DEBUG):
         with pytest.raises(FileExchangeTransferError):
             async with _outbound.guarded_stream(
@@ -745,3 +774,23 @@ async def test_failure_logs_do_not_leak_credentials_or_token(monkeypatch, caplog
     assert "hunter2" not in blob
     assert "carol" not in blob
     assert "SECRETTOKEN" not in blob
+
+
+async def test_host_header_brackets_ipv6_literal(monkeypatch):
+    seen = []
+
+    def handler(request):
+        seen.append(request)
+        return httpx.Response(200, content=b"x")
+
+    ipv6 = "2606:2800:220:1:248:1893:25c8:1946"
+    _install_mock(monkeypatch, handler, resolve_to=[ipv6])
+    async with _outbound.guarded_stream(
+        "GET", f"https://[{ipv6}]:8443/x", config=_cfg(), transport="download"
+    ) as resp:
+        async for _ in resp.aiter_bytes():
+            pass
+    req = seen[0]
+    assert req.headers["host"] == f"[{ipv6}]:8443"
+    assert req.extensions.get("sni_hostname") == ipv6  # bare, no brackets
+    assert req.url.host == ipv6

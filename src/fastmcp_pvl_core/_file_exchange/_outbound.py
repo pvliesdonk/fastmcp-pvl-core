@@ -147,17 +147,16 @@ def _make_client(timeout: float) -> httpx.AsyncClient:
 class GuardedResponse:
     """A streaming response yielded by :func:`guarded_stream`.
 
-    The underlying ``httpx.Response`` is held in a ``repr=False`` field so that
-    ``repr``-ing or logging a :class:`GuardedResponse` does not surface the
-    response's request URL — which httpx's own ``Response``/``Request`` repr
-    embeds verbatim, capability token and all. The guarantee is scoped to that
-    httpx-repr channel: ``status`` and ``headers`` are still shown, so a server
-    that echoed the URL into a response header would still expose it (not the
-    normal case). The response stays reachable as a private field for the body
-    read. The caller reads the body via :meth:`aiter_bytes` inside the ``async
-    with``; a failure *during* body iteration propagates as a raw ``httpx`` error
-    for the consuming data plane (#145/#146) to map, whereas pre-body failures are
-    raised as :class:`FileExchangeTransferError`.
+    Surfaces only ``status``, ``headers``, and :meth:`aiter_bytes`. The underlying
+    ``httpx.Response`` is kept in a ``repr=False`` field so it is not rendered into
+    a :class:`GuardedResponse` ``repr`` or log line — defence in depth, since the
+    response's request carries the capability-token URL. (``status`` and
+    ``headers`` are still shown, so a server that echoed the URL into a response
+    header would surface it there.) The caller reads the body via
+    :meth:`aiter_bytes` inside the ``async with``; a failure *during* body
+    iteration propagates as a raw ``httpx`` error for the consuming data plane
+    (#145/#146) to map, whereas pre-body failures raise
+    :class:`FileExchangeTransferError`.
     """
 
     status: int
