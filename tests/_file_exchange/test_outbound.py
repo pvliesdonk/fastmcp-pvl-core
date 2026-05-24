@@ -49,6 +49,14 @@ def test_allowlist_permits_private_cidr():
     assert _outbound._is_permitted(ipaddress.ip_address("10.1.2.3"), allowed) is True
 
 
+def test_allowlist_permits_ipv4_mapped_private():
+    allowed = _outbound._parse_allowed_networks(("192.168.0.0/16",))
+    assert (
+        _outbound._is_permitted(ipaddress.ip_address("::ffff:192.168.1.1"), allowed)
+        is True
+    )
+
+
 def test_malformed_cidr_raises_configuration_error():
     with pytest.raises(ConfigurationError):
         _outbound._parse_allowed_networks(("not-a-cidr",))
@@ -63,3 +71,11 @@ def test_select_pinned_skips_blocked_picks_global():
 
 def test_select_pinned_none_when_all_blocked():
     assert _outbound._select_pinned(["127.0.0.1", "10.0.0.1"], []) is None
+
+
+def test_select_pinned_picks_global_ipv6_over_blocked_ipv4():
+    resolved = ["10.0.0.1", "2606:2800:220:1:248:1893:25c8:1946"]
+    assert (
+        _outbound._select_pinned(resolved, [])
+        == "2606:2800:220:1:248:1893:25c8:1946"
+    )

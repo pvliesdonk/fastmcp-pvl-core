@@ -60,7 +60,10 @@ def _parse_allowed_networks(cidrs: tuple[str, ...]) -> list[_IPNetwork]:
     """Parse operator CIDR strings into networks.
 
     A malformed entry is operator misconfiguration → :class:`ConfigurationError`
-    (loud), consistent with the rest of the package.
+    (loud), consistent with the rest of the package. Allowlist entries must use
+    the canonical address form (e.g. ``10.0.0.0/8``); an IPv4-mapped-IPv6 CIDR
+    (``::ffff:10.0.0.0/104``) parses but will never match, because membership is
+    tested against the unwrapped IPv4 candidate (see :func:`_is_permitted`).
     """
     networks: list[_IPNetwork] = []
     for cidr in cidrs:
@@ -91,8 +94,10 @@ def _is_permitted(ip: _IPAddress, allowed: list[_IPNetwork]) -> bool:
 def _select_pinned(resolved: list[str], allowed: list[_IPNetwork]) -> str | None:
     """Pick the first permitted address to pin, or ``None`` if all are refused.
 
-    Picking a permitted address out of a mixed result set is safe because the
-    connection is then pinned to exactly that address — a DNS result that
+    ``resolved`` entries must be valid IP-address strings as returned by
+    ``socket.getaddrinfo`` (``ipaddress.ip_address`` would raise on a malformed
+    one). Picking a permitted address out of a mixed result set is safe because
+    the connection is then pinned to exactly that address — a DNS result that
     mixes a private and a public record cannot induce a connection to the
     private one.
     """
