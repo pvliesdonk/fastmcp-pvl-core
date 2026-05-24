@@ -173,3 +173,25 @@ class TestServerConfigFromEnv:
         monkeypatch.delenv("MYAPP_BEARER_DEFAULT_SUBJECT", raising=False)
         config = ServerConfig.from_env("MYAPP")
         assert config.bearer_default_subject == "bearer-anon"
+
+
+def test_from_env_file_exchange_token_ttl_default_and_override(monkeypatch):
+    from fastmcp_pvl_core import ServerConfig
+
+    cfg = ServerConfig.from_env("MYAPP")
+    assert cfg.file_exchange_token_ttl == 3600.0
+
+    monkeypatch.setenv("MYAPP_FILE_EXCHANGE_TOKEN_TTL", "900")
+    cfg2 = ServerConfig.from_env("MYAPP")
+    assert cfg2.file_exchange_token_ttl == 900.0
+
+
+def test_from_env_file_exchange_max_artifact_size(monkeypatch):
+    from fastmcp_pvl_core import ServerConfig
+
+    cfg = ServerConfig.from_env("MYAPP")
+    assert cfg.file_exchange_max_artifact_size is None
+
+    monkeypatch.setenv("MYAPP_FILE_EXCHANGE_MAX_ARTIFACT_SIZE", "1048576")
+    cfg2 = ServerConfig.from_env("MYAPP")
+    assert cfg2.file_exchange_max_artifact_size == 1048576
