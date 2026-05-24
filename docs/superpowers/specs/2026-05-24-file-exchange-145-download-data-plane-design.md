@@ -143,33 +143,49 @@ async def download_fetcher_consume(
 ```
 
 Selection (`select_source`) is the caller's step (consistent with
-`_filesystem`). The fetcher composes a **verifying, reconnecting reader** and
-hands it to the sink:
+`_filesystem`). The fetcher **downloads to a transient temp file, verifies, then
+ingests the temp into the sink** — a two-phase flow that mirrors `_filesystem`:
 
-- **Transport:** `guarded_stream("GET", descriptor.url, config=config,
-  transport="download")` (#147) yields the streamed response. The fetcher reads
-  `aiter_bytes()` and, on a mid-stream drop (an `httpx` error before
-  `handle.artifact.size` bytes have arrived), re-issues `guarded_stream` with a
-  `Range: bytes=<received>-` header and continues the *same* running hash/count.
-  Each reconnect is a fresh guarded call (re-resolved + re-pinned — correct per
-  #147's per-request mitigation).
-- **Verify-at-EOF-raises:** the reader wraps the byte flow in a SHA-style hasher
-  + byte counter (reusing the `_filesystem._HashingReader` shape). Download is
-  single-pass and non-seekable, so it cannot two-pass like `_filesystem._ingest`.
-  Instead, at the underlying EOF the wrapper verifies `size` (vs
-  `handle.artifact.size` if present) and `digest` (vs `handle.artifact.digest` if
-  present, algorithm parsed from the `<label>:` prefix) and **raises**
-  `FileExchangeTransferError(size-mismatch | digest-mismatch)` *instead of*
-  signalling EOF when wrong. The sink (`store_artifact`), reading the wrapper,
-  therefore never reaches a clean EOF on corrupt bytes — an atomic sink (temp →
-  rename, per #142/#143) discards them, so bad bytes are never committed. This is
-  the streaming analog of `_filesystem`'s verify-before-use.
-- **Size bound:** while streaming, if the byte count exceeds
-  `config.file_exchange_max_artifact_size` (when set), raise `too-large` —
-  bounding consumption to `max + one chunk` rather than reading an
-  attacker-sized body to completion (§15 resource exhaustion).
-- The wrapped reader is passed to `await sink.store_artifact(handle.artifact.id,
-  handle.artifact, reader)`; pvl-core does not buffer the artifact.
+**Why a temp file (not streaming straight into the sink).** `ArtifactSink.store_artifact`
+reads a *synchronous* `BinaryIO` and the #142 contract explicitly permits a sink
+to read it on the event loop (filesystem hands it a raw fd). The download bytes
+arrive *asynchronously* from `guarded_stream.aiter_bytes()`. Bridging an async
+source into a sync `.read()` that a loop-reading sink consumes would deadlock
+(the sink's blocking `.read()` stalls the loop the producer needs). Spooling to a
+transient temp file resolves this cleanly: the sink receives a real sync seekable
+fd — identical to the `filesystem` transport — so it works regardless of whether
+the sink reads on the loop or offloads. The temp file is single-call-scoped
+(created, used, and deleted within `download_fetcher_consume`); it is **not** the
+TTL'd provider spool rejected above. The issue's bar is "never buffered whole
+*in memory*", which an on-disk temp satisfies.
+
+- **Phase 1 — download to temp (hashing as it writes).** Open a `NamedTemporaryFile`.
+  Loop `guarded_stream("GET", descriptor.url, config=config, transport="download")`
+  (#147): read `aiter_bytes()`, write each chunk to the temp, and update a running
+  SHA + byte count. On a mid-stream drop (an `httpx` error before the body is
+  complete) re-issue `guarded_stream` with a `Range: bytes=<received>-` header
+  (where `<received>` is the temp's current size) and continue the *same* hash and
+  count. Each reconnect is a fresh guarded call (re-resolved + re-pinned, correct
+  per #147's per-request mitigation), bounded to a small retry cap. While writing,
+  if the byte count exceeds `config.file_exchange_max_artifact_size` (when set),
+  raise `too-large` — bounding consumption to `max + one chunk` rather than
+  reading an attacker-sized body to completion (§15 resource exhaustion).
+- **Phase 2 — verify-before-use, then ingest.** After the body completes, verify
+  `size` (vs `handle.artifact.size` if present) and `digest` (vs
+  `handle.artifact.digest` if present, algorithm parsed from the `<label>:`
+  prefix, supporting `sha-256/384/512` as `_filesystem` does) against the running
+  count/hash; on mismatch raise `FileExchangeTransferError(size-mismatch |
+  digest-mismatch)` **before** the sink is invoked. Only on a clean verify, open
+  the temp read-only and `await sink.store_artifact(handle.artifact.id,
+  handle.artifact, temp_fd)`. The sink never sees unverified bytes — the same
+  verify-before-use guarantee as `_filesystem._ingest`. The temp file is deleted
+  in a `finally` (and on every error path).
+
+pvl-core never buffers the artifact in memory; it streams network → temp →
+sink. The phase-2 verify+ingest is structurally `_filesystem._ingest` minus the
+path-confinement/TOCTOU concerns (the temp is pvl-core's own file, not an
+untrusted volume path) — a shared verify helper may be factored out, or download
+keeps its own; that mechanical choice is the plan's.
 
 ## Error handling
 
@@ -179,12 +195,12 @@ shared type from #143):
 - Guard refusals/connection failures already arrive as
   `FileExchangeTransferError(not-accessible, transport="download")` from
   `guarded_stream` — propagated unchanged (it already carries the label).
-- `size-mismatch` / `digest-mismatch` from the verify-at-EOF wrapper;
-  `too-large` from the size bound.
+- `size-mismatch` / `digest-mismatch` from the phase-2 verify (raised before the
+  sink is invoked); `too-large` from the phase-1 size bound.
 - Any other underlying failure (e.g. the sink raising for a non-verification
   reason) is wrapped as `transfer-failed`, with the original cause chained for
   local logs and a generic, non-leaking wire `detail` (URL redaction discipline
-  carried forward).
+  carried forward). The temp file is removed on every path (`finally`).
 
 `download_provider_mint` is an offering-side op: per §16 the offering roles emit
 well-formed references rather than reporting §13 transfer errors, so a
@@ -213,13 +229,14 @@ Unit:
    retrieval consumes a single-use token (second `GET` → `404`); a middle-range
    or simulated client-disconnect does **not** consume; ambient
    `Authorization`/cookie headers are ignored.
-3. `download_fetcher_consume` — happy path streams into a sink with size+digest
-   verified; a tampered body raises `digest-mismatch` and the sink's
-   `store_artifact` never sees a clean EOF (verify-before-commit); a short/long
-   body raises `size-mismatch`; exceeding `max_artifact_size` raises `too-large`;
-   a guard refusal propagates `not-accessible`; a dropped connection is recovered
+3. `download_fetcher_consume` — happy path downloads to the temp and ingests into
+   a sink with size+digest verified; a tampered body raises `digest-mismatch`
+   **and `store_artifact` is never called** (verify-before-use); a short/long body
+   raises `size-mismatch`; exceeding `max_artifact_size` raises `too-large`; a
+   guard refusal propagates `not-accessible`; a dropped connection is recovered
    via `Range` (mock `guarded_stream` to fail once mid-stream, assert the resume
-   `Range` header and the completed transfer).
+   `Range: bytes=<received>-` header and the completed transfer); the temp file is
+   gone after every outcome (success and each error).
 
 End-to-end (`test_download_e2e.py`): two pvl-core-built mock servers. A mints via
 `download_provider_mint` and serves via `register_file_exchange_routes` (mounted
