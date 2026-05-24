@@ -3,7 +3,8 @@
 The single primitive the download fetcher (#145) and upload sender (#146)
 issue their requests through. Enforces the §15 SSRF mitigations (https-only,
 deny-all-non-global address refusal with a CIDR allowlist, cross-origin redirect
-refusal (same-origin followed, bounded), no ambient credentials) and the §15
+refusal — same-origin followed and bounded, but any redirect on a request with a
+body is refused — and no ambient credentials) and the §15
 DNS-rebinding mitigation (resolve-once-pin-IP via httpx's ``sni_hostname``
 extension). Carries the
 URL-redaction discipline: only the hostname ever reaches a log line, and no
