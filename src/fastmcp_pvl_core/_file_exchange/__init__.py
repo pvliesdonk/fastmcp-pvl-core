@@ -19,7 +19,6 @@ from fastmcp_pvl_core._file_exchange._codes import (
 from fastmcp_pvl_core._file_exchange._download import (
     download_fetcher_consume,
     download_provider_mint,
-    register_file_exchange_routes,
 )
 from fastmcp_pvl_core._file_exchange._errors import (
     FileExchangeTransferError,
@@ -44,6 +43,7 @@ from fastmcp_pvl_core._file_exchange._paths import (
     load_volume_map,
     resolve_filesystem_uri,
 )
+from fastmcp_pvl_core._file_exchange._routes import register_file_exchange_routes
 from fastmcp_pvl_core._file_exchange._selection import (
     select_sink,
     select_source,

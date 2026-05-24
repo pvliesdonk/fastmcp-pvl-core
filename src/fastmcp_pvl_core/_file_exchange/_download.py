@@ -319,7 +319,7 @@ def _parse_range(header: str | None, size: int | None) -> tuple[int, int | None]
     return start, end
 
 
-def register_file_exchange_routes(
+def register_download_route(
     mcp: FastMCP,
     *,
     token_store: CapabilityTokenStore,

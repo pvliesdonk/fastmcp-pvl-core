@@ -15,7 +15,7 @@ import httpx
 from fastmcp import FastMCP
 
 from fastmcp_pvl_core._config import ServerConfig
-from fastmcp_pvl_core._file_exchange import _download
+from fastmcp_pvl_core._file_exchange import _download, _routes
 from fastmcp_pvl_core._file_exchange._selection import select_source
 from fastmcp_pvl_core._file_exchange._tokens import build_capability_token_store
 from fastmcp_pvl_core._file_exchange._wire import ArtifactMetadata
@@ -64,7 +64,7 @@ async def test_two_server_pull_download(monkeypatch):
     # Server A: provider mint + serving route on a real ASGI app.
     store = _store()
     mcp = FastMCP("provider")
-    _download.register_file_exchange_routes(
+    _routes.register_file_exchange_routes(
         mcp, token_store=store, source=_BytesSource("doc", body)
     )
     app_a = mcp.http_app()
