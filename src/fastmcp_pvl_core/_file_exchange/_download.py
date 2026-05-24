@@ -16,14 +16,26 @@ resume.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
+import hashlib
 import logging
+import os
+import tempfile
 from typing import TYPE_CHECKING
 
+import httpx
+
+from fastmcp_pvl_core._file_exchange._codes import TransferErrorCode
+from fastmcp_pvl_core._file_exchange._errors import FileExchangeTransferError
+from fastmcp_pvl_core._file_exchange._outbound import guarded_stream
 from fastmcp_pvl_core._file_exchange._spec import HANDLE_TYPE, SPEC_VERSION
 from fastmcp_pvl_core._file_exchange._tokens import capability_url
 from fastmcp_pvl_core._file_exchange._wire import DownloadSource, TransferHandle
 
 if TYPE_CHECKING:
+    from fastmcp_pvl_core._config import ServerConfig
+    from fastmcp_pvl_core._file_exchange._hooks import ArtifactSink
     from fastmcp_pvl_core._file_exchange._tokens import CapabilityTokenStore
     from fastmcp_pvl_core._file_exchange._wire import ArtifactMetadata
 
@@ -32,6 +44,13 @@ logger = logging.getLogger(__name__)
 # pvl-core's download route shape (§12 capability URL path). A constant, not a
 # kwarg — route structure is a pvl-core shape decision.
 DOWNLOAD_PREFIX = "/fx/d"
+
+_CHUNK = 1024 * 1024
+# Declared-digest label -> hashlib name; an unsupported label fails verification
+# (cannot verify -> digest-mismatch), never silently skips. Mirrors _filesystem.
+_HASHLIB_BY_LABEL = {"sha-256": "sha256", "sha-384": "sha384", "sha-512": "sha512"}
+# Max mid-stream reconnects before giving up on a dropped download.
+_MAX_RECONNECTS = 5
 
 
 async def download_provider_mint(
@@ -66,3 +85,120 @@ async def download_provider_mint(
             )
         ],
     )
+
+
+def _digest_verifier(
+    declared: str | None,
+) -> tuple[hashlib._Hash | None, str | None, bool]:
+    """Return (hasher | None, expected_hex | None, unverifiable).
+
+    ``unverifiable`` is True when a digest is declared with an unsupported label
+    — verification must then fail (cannot verify), never silently skip (§15).
+    """
+    if declared is None:
+        return None, None, False
+    label, _, expected_hex = declared.partition(":")
+    name = _HASHLIB_BY_LABEL.get(label.lower())
+    if name is None:
+        return None, expected_hex, True
+    return hashlib.new(name), expected_hex.lower(), False
+
+
+async def download_fetcher_consume(
+    handle: TransferHandle,
+    descriptor: DownloadSource,
+    sink: ArtifactSink,
+    *,
+    config: ServerConfig,
+) -> None:
+    """Fetcher role (pull): download ``descriptor`` and deposit into ``sink``.
+
+    Selection (``select_source``) is the caller's step. Streams the body through
+    the #147 guard into a transient temp file (hashing as it writes), verifies
+    ``handle.artifact`` size+digest **before** opening the temp for the sink
+    (verify-before-use), then deletes the temp. Failures map to §13 codes; a
+    dropped connection is recovered with ``Range``.
+
+    The download loop is async (it awaits ``guarded_stream``); only the blocking
+    temp-file writes are off-loaded with ``asyncio.to_thread``.
+    """
+    expected_size = handle.artifact.size
+    max_size = config.file_exchange_max_artifact_size
+    hasher, expected_hex, unverifiable = _digest_verifier(handle.artifact.digest)
+
+    fd, tmp_path = tempfile.mkstemp(prefix="fx-download-")
+    tmp = os.fdopen(fd, "wb")
+    try:
+        received = 0
+        attempts = 0
+        while True:
+            req_headers = {} if received == 0 else {"Range": f"bytes={received}-"}
+            try:
+                async with guarded_stream(
+                    "GET",
+                    descriptor.url,
+                    config=config,
+                    transport="download",
+                    headers=req_headers,
+                ) as resp:
+                    async for chunk in resp.aiter_bytes():
+                        await asyncio.to_thread(tmp.write, chunk)
+                        if hasher is not None:
+                            hasher.update(chunk)
+                        received += len(chunk)
+                        if max_size is not None and received > max_size:
+                            raise FileExchangeTransferError(
+                                TransferErrorCode.TOO_LARGE,
+                                transport="download",
+                                detail="artifact exceeds the configured maximum size",
+                            )
+                break  # body read to completion without a connection error
+            except FileExchangeTransferError:
+                raise  # guard refusal / too-large — not a resumable drop
+            except (httpx.HTTPError, OSError) as exc:
+                attempts += 1
+                if attempts > _MAX_RECONNECTS:
+                    raise FileExchangeTransferError(
+                        TransferErrorCode.TRANSFER_FAILED,
+                        transport="download",
+                        detail="download interrupted and could not be resumed",
+                    ) from exc
+                # loop: resume from `received` via a Range request
+        await asyncio.to_thread(tmp.flush)
+    finally:
+        await asyncio.to_thread(tmp.close)
+
+    try:
+        # verify-before-use (computed during the single write pass)
+        if expected_size is not None and received != expected_size:
+            raise FileExchangeTransferError(
+                TransferErrorCode.SIZE_MISMATCH,
+                transport="download",
+                detail="transferred byte count did not match declared size",
+            )
+        if handle.artifact.digest is not None and (
+            unverifiable or hasher is None or hasher.hexdigest() != expected_hex
+        ):
+            raise FileExchangeTransferError(
+                TransferErrorCode.DIGEST_MISMATCH,
+                transport="download",
+                detail="transferred bytes did not match declared digest",
+            )
+        # ingest: hand the sink a real sync fd (works whether it reads on the
+        # loop or offloads — the async->sync bridge the temp file provides)
+        f = await asyncio.to_thread(open, tmp_path, "rb")
+        try:
+            await sink.store_artifact(handle.artifact.id, handle.artifact, f)
+        except FileExchangeTransferError:
+            raise
+        except Exception as exc:
+            raise FileExchangeTransferError(
+                TransferErrorCode.TRANSFER_FAILED,
+                transport="download",
+                detail="artifact transfer failed",
+            ) from exc
+        finally:
+            await asyncio.to_thread(f.close)
+    finally:
+        with contextlib.suppress(OSError):
+            await asyncio.to_thread(os.unlink, tmp_path)
