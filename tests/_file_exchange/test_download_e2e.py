@@ -40,6 +40,17 @@ class _CapturingSink:
         self.deposited = stream.read()
 
 
+class _FakeGuarded:
+    """Mirror the production GuardedResponse surface (status + aiter_bytes)."""
+
+    def __init__(self, resp):
+        self.status = resp.status_code
+        self._resp = resp
+
+    def aiter_bytes(self):
+        return self._resp.aiter_bytes()
+
+
 def _store():
     return build_capability_token_store(
         ServerConfig(kv_store_url="memory://", file_exchange_token_ttl=3600.0)
@@ -72,7 +83,7 @@ async def test_two_server_pull_download(monkeypatch):
             req = client.build_request(method, path, headers=headers or {})
             resp = await client.send(req, stream=True)
             try:
-                yield resp
+                yield _FakeGuarded(resp)
             finally:
                 await resp.aclose()
         finally:

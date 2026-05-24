@@ -1,7 +1,8 @@
 """The ``download`` transport data plane (#145).
 
-Three role helpers plus a serving route, free functions mirroring
-``_filesystem.py``. The transport is **lazy**: the GET route calls the #142
+Two role helpers (provider, fetcher — ``download`` is pull-only) plus a serving
+route, free functions mirroring ``_filesystem.py``. The transport is **lazy**:
+the GET route calls the #142
 ``ArtifactSource`` hook on demand and streams the result — pvl-core holds no
 copy of the artifact. The provider mints a capability URL backed by the #144
 token store; the fetcher retrieves it through the #147 ``guarded_stream`` into a
@@ -162,15 +163,22 @@ async def download_fetcher_consume(
                         transport="download",
                         headers=req_headers,
                     ) as resp:
-                        if received > 0 and resp.status != 206:
-                            # A resume sent ``Range`` but the provider replied
-                            # with the whole body (§10.2 requires Range support);
-                            # appending it would corrupt the running hash, so
-                            # fail fast rather than re-download and mis-diagnose.
+                        expected_status = 206 if received > 0 else 200
+                        if resp.status != expected_status:
+                            # Initial GET must be 200; a resume must be 206 (a
+                            # provider that ignored Range and replied 200 would
+                            # corrupt the running hash). Any other status is a
+                            # failed transfer — never ingest an error-page body
+                            # as artifact bytes (§10.2 requires 200/206 + Range).
+                            code = (
+                                TransferErrorCode.NOT_ACCESSIBLE
+                                if 400 <= resp.status < 500
+                                else TransferErrorCode.TRANSFER_FAILED
+                            )
                             raise FileExchangeTransferError(
-                                TransferErrorCode.TRANSFER_FAILED,
+                                code,
                                 transport="download",
-                                detail="provider did not honor the range request",
+                                detail="unexpected download response status",
                             )
                         async for chunk in resp.aiter_bytes():
                             received += len(chunk)
@@ -297,10 +305,10 @@ def register_file_exchange_routes(
             return Response(status_code=404)
         stream, meta = await source.open_artifact(rec.metadata["key"])
         size = meta.size
-        # A 206 MUST carry a Content-Range (RFC 9110 §15.3.7), which needs a
-        # known total length. When the hook does not report size, ignore Range
-        # (§14.2 permits this) and serve the whole stream as 200 — so a resume
-        # against an unknown-size artifact is not honored.
+        # A single-part 206 MUST carry a Content-Range (RFC 9110 §15.3.7.1),
+        # which needs a known total length; without size we cannot form one, so
+        # ignore Range and serve the whole stream as 200 — a resume against an
+        # unknown-size artifact is therefore not honored.
         range_header = request.headers.get("range") if size is not None else None
         try:
             start, end = _parse_range(range_header, size)
@@ -354,7 +362,17 @@ def register_file_exchange_routes(
                         remaining -= len(chunk)
                     yield chunk
                 if consume_on_eof and hit_eof:
-                    await token_store.consume(token)
+                    try:
+                        await token_store.consume(token)
+                    except Exception:
+                        # The body was fully delivered; a consume failure must
+                        # not turn that into a mid-stream error. Log it (no
+                        # token — redaction): the single-use token may remain
+                        # usable until it expires.
+                        logger.warning(
+                            "file-exchange: download token consume failed after "
+                            "delivery; token may remain usable until expiry"
+                        )
             finally:
                 with contextlib.suppress(Exception):
                     await asyncio.to_thread(stream.close)

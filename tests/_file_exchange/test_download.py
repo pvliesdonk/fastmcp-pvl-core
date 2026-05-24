@@ -1,3 +1,4 @@
+import contextlib
 import hashlib
 import io
 import os
@@ -334,11 +335,14 @@ async def test_fetcher_resume_non_206_is_rejected(monkeypatch):
 
 
 async def test_fetcher_gives_up_after_max_reconnects(monkeypatch):
-    def responder(request):
-        # 206 so each resume passes the range check, then drops again.
+    def first(request):
+        return httpx.Response(200, stream=_DropAfter(b"a"))  # initial: 200
+
+    def rest(request):
+        # 206 so each resume passes the status check, then drops again.
         return httpx.Response(206, stream=_DropAfter(b"a"))
 
-    calls = _install_guard_seq(monkeypatch, [responder])
+    calls = _install_guard_seq(monkeypatch, [first, rest])
     sink = _CapturingSink()
     with pytest.raises(FileExchangeTransferError) as ei:
         await _download.download_fetcher_consume(
@@ -486,3 +490,146 @@ async def test_route_unknown_size_ignores_range_serves_200():
     assert r.status_code == 200
     assert r.content == body
     assert "content-range" not in r.headers
+
+
+async def test_route_open_ended_range_206_and_consumes():
+    store = _store()
+    body = b"0123456789"
+    token = await _mint_token(store, "k1")
+    async with _route_client(store, _BytesSource("k1", body)) as client:
+        r = await client.get(f"/fx/d/{token}", headers={"Range": "bytes=3-"})
+        assert r.status_code == 206
+        assert r.content == b"3456789"
+        assert r.headers["content-range"] == "bytes 3-9/10"
+        assert r.headers["content-length"] == "7"
+        # Open-ended range streamed through EOF consumes the single-use token.
+        r2 = await client.get(f"/fx/d/{token}")
+    assert r2.status_code == 404
+
+
+async def test_route_suffix_range_returns_last_bytes():
+    store = _store()
+    body = b"0123456789"
+    token = await _mint_token(store, "k1")
+    async with _route_client(store, _BytesSource("k1", body)) as client:
+        r = await client.get(f"/fx/d/{token}", headers={"Range": "bytes=-4"})
+        assert r.status_code == 206
+        assert r.content == b"6789"
+        assert r.headers["content-range"] == "bytes 6-9/10"
+        # Suffix range is closed (has a definite end) -> never consumes.
+        r2 = await client.get(f"/fx/d/{token}")
+    assert r2.status_code == 200
+
+
+class _ShortStreamSource:
+    """Reports a larger size than the stream actually yields — models a hook that
+    breaks its 'stable bytes for the token lifetime' promise."""
+
+    def __init__(self, key, body, reported_size):
+        self._key, self._body, self._reported = key, body, reported_size
+
+    async def open_artifact(self, key):
+        from fastmcp_pvl_core._file_exchange._wire import ArtifactMetadata
+
+        assert key == self._key
+        return io.BytesIO(self._body), ArtifactMetadata(name="a", size=self._reported)
+
+
+async def test_route_source_shorter_than_range_start_does_not_consume():
+    store = _store()
+    token = await _mint_token(store, "k1")
+    # Reports size 100 (so bytes=50- parses) but only yields 10 bytes.
+    source = _ShortStreamSource("k1", b"0123456789", reported_size=100)
+    async with _route_client(store, source) as client:
+        # The under-length body trips httpx's content-length check; we only care
+        # that the token was NOT consumed (the source ended before the start).
+        with contextlib.suppress(httpx.RemoteProtocolError):
+            await client.get(f"/fx/d/{token}", headers={"Range": "bytes=50-"})
+    assert await store.lookup(token) is not None
+
+
+async def test_fetcher_initial_404_maps_not_accessible(monkeypatch):
+    def responder(request):
+        return httpx.Response(404, content=b"<html>not found</html>")
+
+    _install_guard(monkeypatch, responder)
+    sink = _CapturingSink()
+    with pytest.raises(FileExchangeTransferError) as ei:
+        await _download.download_fetcher_consume(
+            _handle(b"x"), _handle(b"x").sources[0], sink, config=_cfg()
+        )
+    assert ei.value.code == TransferErrorCode.NOT_ACCESSIBLE
+    assert sink.calls == 0  # an error-page body is never ingested as artifact
+
+
+async def test_fetcher_initial_500_maps_transfer_failed(monkeypatch):
+    def responder(request):
+        return httpx.Response(500, content=b"boom")
+
+    _install_guard(monkeypatch, responder)
+    sink = _CapturingSink()
+    with pytest.raises(FileExchangeTransferError) as ei:
+        await _download.download_fetcher_consume(
+            _handle(b"x"), _handle(b"x").sources[0], sink, config=_cfg()
+        )
+    assert ei.value.code == TransferErrorCode.TRANSFER_FAILED
+    assert sink.calls == 0
+
+
+async def test_fetcher_unsupported_digest_label_fails(monkeypatch):
+    body = b"some-bytes"
+
+    def responder(request):
+        return httpx.Response(200, content=body)
+
+    _install_guard(monkeypatch, responder)
+    sink = _CapturingSink()
+    with pytest.raises(FileExchangeTransferError) as ei:
+        await _download.download_fetcher_consume(
+            _handle(body, digest="sha-1:" + "0" * 40),
+            _handle(body).sources[0],
+            sink,
+            config=_cfg(),
+        )
+    assert ei.value.code == TransferErrorCode.DIGEST_MISMATCH  # cannot verify -> fail
+    assert sink.calls == 0
+
+
+async def test_fetcher_sink_oserror_maps_transfer_failed(monkeypatch):
+    body = b"payload"
+
+    def responder(request):
+        return httpx.Response(200, content=body)
+
+    _install_guard(monkeypatch, responder)
+
+    class _RaisingSink:
+        async def store_artifact(self, artifact_id, metadata, stream):
+            raise OSError("disk full")
+
+    with pytest.raises(FileExchangeTransferError) as ei:
+        await _download.download_fetcher_consume(
+            _handle(body), _handle(body).sources[0], _RaisingSink(), config=_cfg()
+        )
+    assert ei.value.code == TransferErrorCode.TRANSFER_FAILED
+
+
+async def test_fetcher_sink_transfer_error_propagates_unchanged(monkeypatch):
+    body = b"payload"
+
+    def responder(request):
+        return httpx.Response(200, content=body)
+
+    _install_guard(monkeypatch, responder)
+
+    class _CodedSink:
+        async def store_artifact(self, artifact_id, metadata, stream):
+            raise FileExchangeTransferError(
+                TransferErrorCode.NOT_ACCESSIBLE, transport="download", detail="x"
+            )
+
+    with pytest.raises(FileExchangeTransferError) as ei:
+        await _download.download_fetcher_consume(
+            _handle(body), _handle(body).sources[0], _CodedSink(), config=_cfg()
+        )
+    assert ei.value.code == TransferErrorCode.NOT_ACCESSIBLE  # not re-wrapped
