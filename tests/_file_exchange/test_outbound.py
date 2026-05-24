@@ -399,3 +399,88 @@ async def test_refuses_too_many_redirects(monkeypatch):
             pass
     assert ei.value.code == TransferErrorCode.NOT_ACCESSIBLE
     assert counter["n"] == _outbound._MAX_REDIRECTS + 1  # initial + 5 follows
+
+
+# ---------------------------------------------------------------------------
+# Task 5: Userinfo / no-ambient-credentials tests
+# ---------------------------------------------------------------------------
+
+
+async def test_initial_url_userinfo_not_sent_as_credentials(monkeypatch):
+    seen = []
+
+    def handler(request):
+        seen.append(request)
+        return httpx.Response(200, content=b"x")
+
+    _install_mock(monkeypatch, handler, resolve_to=["93.184.216.34"])
+    async with _outbound.guarded_stream(
+        "GET",
+        "https://user:pass@example.com/d/tok",
+        config=_cfg(),
+        transport="download",
+    ) as resp:
+        async for _ in resp.aiter_bytes():
+            pass
+    assert "authorization" not in seen[0].headers
+
+
+async def test_redirect_userinfo_not_sent_as_credentials(monkeypatch):
+    seen = []
+
+    def handler(request):
+        seen.append(request)
+        if len(seen) == 1:
+            return httpx.Response(
+                302, headers={"location": "https://user:pass@example.com/final"}
+            )
+        return httpx.Response(200, content=b"ok")
+
+    _install_mock(monkeypatch, handler, resolve_to=["93.184.216.34"])
+    async with _outbound.guarded_stream(
+        "GET", "https://example.com/start", config=_cfg(), transport="download"
+    ) as resp:
+        async for _ in resp.aiter_bytes():
+            pass
+    assert "authorization" not in seen[1].headers
+
+
+async def test_refuses_scheme_downgrade_redirect(monkeypatch):
+    def handler(request):
+        return httpx.Response(302, headers={"location": "http://example.com/x"})
+
+    _install_mock(monkeypatch, handler, resolve_to=["93.184.216.34"])
+    with pytest.raises(FileExchangeTransferError) as ei:
+        async with _outbound.guarded_stream(
+            "GET", "https://example.com/start", config=_cfg(), transport="download"
+        ):
+            pass
+    assert ei.value.code == TransferErrorCode.NOT_ACCESSIBLE
+
+
+async def test_refuses_redirect_that_rebinds_to_blocked_ip(monkeypatch):
+    seen = []
+    resolves = [["93.184.216.34"], ["127.0.0.1"]]  # hop 1 global, hop 2 loopback
+
+    async def fake_resolve(host, port):
+        return resolves[len(seen)]
+
+    def handler(request):
+        seen.append(request)
+        return httpx.Response(302, headers={"location": "https://example.com/next"})
+
+    def fake_make_client(timeout):
+        return httpx.AsyncClient(
+            transport=httpx.MockTransport(handler),
+            trust_env=False,
+            follow_redirects=False,
+        )
+
+    monkeypatch.setattr(_outbound, "_resolve", fake_resolve)
+    monkeypatch.setattr(_outbound, "_make_client", fake_make_client)
+    with pytest.raises(FileExchangeTransferError) as ei:
+        async with _outbound.guarded_stream(
+            "GET", "https://example.com/start", config=_cfg(), transport="download"
+        ):
+            pass
+    assert ei.value.code == TransferErrorCode.NOT_ACCESSIBLE

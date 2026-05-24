@@ -202,9 +202,14 @@ async def _send_pinned(
     # caller cannot redirect the request to a different vhost on the pinned IP);
     # strip any caller-supplied host key (case-insensitive) before forcing ours.
     safe_headers = {k: v for k, v in (headers or {}).items() if k.lower() != "host"}
+    # Strip any userinfo (user:pass@) from the URL: httpx.send would otherwise
+    # turn it into an Authorization: Basic header, breaking the no-ambient-
+    # credentials guarantee (§10.2/§10.3). Applies to the initial URL and to
+    # every same-origin redirect target (all go through _send_pinned).
+    pinned_url = httpx.URL(url).copy_with(host=pinned, username="", password="")
     request = client.build_request(
         method,
-        httpx.URL(url).copy_with(host=pinned),
+        pinned_url,
         headers={"Host": host, **safe_headers},
         content=content,
         extensions={"sni_hostname": host},
