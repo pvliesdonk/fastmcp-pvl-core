@@ -1,8 +1,10 @@
 import hashlib
+import io
 import os
 
 import httpx
 import pytest
+from fastmcp import FastMCP
 
 from fastmcp_pvl_core._config import ServerConfig
 from fastmcp_pvl_core._file_exchange import _download
@@ -345,3 +347,108 @@ async def test_fetcher_gives_up_after_max_reconnects(monkeypatch):
     assert ei.value.code == TransferErrorCode.TRANSFER_FAILED
     # initial attempt + _MAX_RECONNECTS resume attempts
     assert len(calls["seen_headers"]) == _download._MAX_RECONNECTS + 1
+
+
+class _BytesSource:
+    """ArtifactSource serving fixed bytes for a single key."""
+
+    def __init__(self, key, body, *, mime="application/octet-stream"):
+        self._key, self._body, self._mime = key, body, mime
+        self.opens = 0
+
+    async def open_artifact(self, key):
+        from fastmcp_pvl_core._file_exchange._wire import ArtifactMetadata
+
+        assert key == self._key
+        self.opens += 1
+        return io.BytesIO(self._body), ArtifactMetadata(
+            name="a", mimeType=self._mime, size=len(self._body)
+        )
+
+
+def _route_client(store, source):
+    mcp = FastMCP("test")
+    _download.register_file_exchange_routes(mcp, token_store=store, source=source)
+    app = mcp.http_app()
+    return httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://route.test"
+    )
+
+
+async def _mint_token(store, key):
+    minted = await store.mint({"key": key}, ttl=300.0, single_use=True)
+    return minted.token
+
+
+async def test_route_unknown_token_404():
+    store = _store()
+    async with _route_client(store, _BytesSource("k", b"x")) as client:
+        r = await client.get("/fx/d/nope")
+    assert r.status_code == 404
+
+
+async def test_route_serves_full_body_with_headers():
+    store = _store()
+    body = b"the-quick-brown-fox"
+    source = _BytesSource("k1", body, mime="text/plain")
+    token = await _mint_token(store, "k1")
+    async with _route_client(store, source) as client:
+        r = await client.get(f"/fx/d/{token}")
+    assert r.status_code == 200
+    assert r.content == body
+    assert r.headers["content-type"].startswith("text/plain")
+    assert r.headers["content-length"] == str(len(body))
+    assert r.headers["accept-ranges"] == "bytes"
+
+
+async def test_route_range_returns_206_partial():
+    store = _store()
+    body = b"0123456789"
+    token = await _mint_token(store, "k1")
+    async with _route_client(store, _BytesSource("k1", body)) as client:
+        r = await client.get(f"/fx/d/{token}", headers={"Range": "bytes=3-6"})
+    assert r.status_code == 206
+    assert r.content == b"3456"
+    assert r.headers["content-range"] == "bytes 3-6/10"
+    assert r.headers["content-length"] == "4"
+
+
+async def test_route_unsatisfiable_range_416():
+    store = _store()
+    token = await _mint_token(store, "k1")
+    async with _route_client(store, _BytesSource("k1", b"0123456789")) as client:
+        r = await client.get(f"/fx/d/{token}", headers={"Range": "bytes=99-"})
+    assert r.status_code == 416
+
+
+async def test_route_full_retrieval_consumes_single_use_token():
+    store = _store()
+    body = b"consume-me"
+    token = await _mint_token(store, "k1")
+    async with _route_client(store, _BytesSource("k1", body)) as client:
+        r1 = await client.get(f"/fx/d/{token}")
+        assert r1.status_code == 200 and r1.content == body
+        r2 = await client.get(f"/fx/d/{token}")
+    assert r2.status_code == 404  # single-use token consumed after full retrieval
+
+
+async def test_route_middle_range_does_not_consume():
+    store = _store()
+    token = await _mint_token(store, "k1")
+    async with _route_client(store, _BytesSource("k1", b"0123456789")) as client:
+        r1 = await client.get(f"/fx/d/{token}", headers={"Range": "bytes=2-5"})
+        assert r1.status_code == 206
+        r2 = await client.get(f"/fx/d/{token}")  # still valid
+    assert r2.status_code == 200
+
+
+async def test_route_ignores_ambient_credentials():
+    store = _store()
+    body = b"data"
+    token = await _mint_token(store, "k1")
+    async with _route_client(store, _BytesSource("k1", body)) as client:
+        r = await client.get(
+            f"/fx/d/{token}",
+            headers={"Authorization": "Bearer x", "Cookie": "s=1"},
+        )
+    assert r.status_code == 200 and r.content == body

@@ -22,9 +22,11 @@ import hashlib
 import logging
 import os
 import tempfile
+from collections.abc import AsyncGenerator
 from typing import IO, TYPE_CHECKING
 
 import httpx
+from starlette.responses import Response, StreamingResponse
 
 from fastmcp_pvl_core._file_exchange._codes import TransferErrorCode
 from fastmcp_pvl_core._file_exchange._errors import FileExchangeTransferError
@@ -34,8 +36,11 @@ from fastmcp_pvl_core._file_exchange._tokens import capability_url
 from fastmcp_pvl_core._file_exchange._wire import DownloadSource, TransferHandle
 
 if TYPE_CHECKING:
+    from fastmcp import FastMCP
+    from starlette.requests import Request
+
     from fastmcp_pvl_core._config import ServerConfig
-    from fastmcp_pvl_core._file_exchange._hooks import ArtifactSink
+    from fastmcp_pvl_core._file_exchange._hooks import ArtifactSink, ArtifactSource
     from fastmcp_pvl_core._file_exchange._tokens import CapabilityTokenStore
     from fastmcp_pvl_core._file_exchange._wire import ArtifactMetadata
 
@@ -225,3 +230,125 @@ async def download_fetcher_consume(
     finally:
         with contextlib.suppress(OSError):
             await asyncio.to_thread(os.unlink, tmp_path)
+
+
+class _UnsatisfiableError(Exception):
+    """Internal: the Range header cannot be satisfied -> HTTP 416."""
+
+
+def _parse_range(header: str | None, size: int | None) -> tuple[int, int | None]:
+    """Parse a single-range ``Range`` header into ``(start, end_inclusive|None)``.
+
+    ``end`` is ``None`` for "no Range" and for an open-ended ``bytes=start-``
+    (the fetcher's resume form). Raises :class:`_UnsatisfiableError` (-> 416) on a
+    malformed or unsatisfiable range. Only a single byte range is supported.
+    """
+    if header is None:
+        return 0, None
+    if not header.startswith("bytes="):
+        raise _UnsatisfiableError
+    spec = header[len("bytes=") :].split(",")[0].strip()
+    start_s, sep, end_s = spec.partition("-")
+    if sep != "-":
+        raise _UnsatisfiableError
+    try:
+        if start_s == "":  # suffix range: bytes=-N (last N bytes)
+            if size is None or end_s == "":
+                raise _UnsatisfiableError
+            suffix = int(end_s)
+            if suffix <= 0:
+                raise _UnsatisfiableError
+            return max(0, size - suffix), size - 1
+        start = int(start_s)
+        if start < 0 or (size is not None and start >= size):
+            raise _UnsatisfiableError
+        if end_s == "":  # open-ended: bytes=start-
+            return start, None
+        end = int(end_s)
+    except ValueError as exc:
+        raise _UnsatisfiableError from exc
+    if size is not None:
+        end = min(end, size - 1)
+    if end < start:
+        raise _UnsatisfiableError
+    return start, end
+
+
+def register_file_exchange_routes(
+    mcp: FastMCP,
+    *,
+    token_store: CapabilityTokenStore,
+    source: ArtifactSource,
+) -> None:
+    """Mount the ``download`` GET route on ``mcp`` (serves §12 capability URLs).
+
+    ``GET <DOWNLOAD_PREFIX>/{token}`` looks the token up in ``token_store``,
+    serves the artifact via ``source.open_artifact`` (streamed, ``Range``
+    supported), and consumes a single-use token once it has been fully retrieved
+    (§10.2). Ambient credentials are ignored — the in-URL token is the only
+    authorization. ``token_store`` and ``source`` are threaded by #148.
+    """
+
+    @mcp.custom_route(f"{DOWNLOAD_PREFIX}/{{token}}", methods=["GET"])
+    async def _serve_download(request: Request) -> Response:
+        token = request.path_params["token"]
+        rec = await token_store.lookup(token)
+        if rec is None:
+            return Response(status_code=404)
+        stream, meta = await source.open_artifact(rec.metadata["key"])
+        size = meta.size
+        range_header = request.headers.get("range")
+        try:
+            start, end = _parse_range(range_header, size)
+        except _UnsatisfiableError:
+            await asyncio.to_thread(stream.close)
+            extra = {"Content-Range": f"bytes */{size}"} if size is not None else {}
+            return Response(status_code=416, headers=extra)
+
+        partial = range_header is not None
+        headers = {"Accept-Ranges": "bytes"}
+        if end is not None:
+            headers["Content-Length"] = str(end - start + 1)
+            total = str(size) if size is not None else "*"
+            headers["Content-Range"] = f"bytes {start}-{end}/{total}"
+        elif partial and size is not None:  # open-ended bytes=start-
+            headers["Content-Length"] = str(size - start)
+            headers["Content-Range"] = f"bytes {start}-{size - 1}/{size}"
+        elif not partial and size is not None:  # full GET
+            headers["Content-Length"] = str(size)
+
+        # Consume only when the whole remaining artifact is delivered: no Range
+        # or an open-ended bytes=start- streamed through source EOF. A closed
+        # range never consumes (safe; the descriptor stays valid until expiry).
+        consume_on_eof = end is None
+
+        async def _body() -> AsyncGenerator[bytes, None]:
+            try:
+                to_skip = start
+                while to_skip > 0:
+                    chunk = await asyncio.to_thread(stream.read, min(to_skip, _CHUNK))
+                    if not chunk:
+                        break
+                    to_skip -= len(chunk)
+                remaining = None if end is None else (end - start + 1)
+                hit_eof = False
+                while remaining is None or remaining > 0:
+                    n = _CHUNK if remaining is None else min(_CHUNK, remaining)
+                    chunk = await asyncio.to_thread(stream.read, n)
+                    if not chunk:
+                        hit_eof = True
+                        break
+                    if remaining is not None:
+                        remaining -= len(chunk)
+                    yield chunk
+                if consume_on_eof and hit_eof:
+                    await token_store.consume(token)
+            finally:
+                await asyncio.to_thread(stream.close)
+
+        return StreamingResponse(
+            _body(),
+            status_code=206 if partial else 200,
+            headers=headers,
+            media_type=meta.mimeType,
+        )
