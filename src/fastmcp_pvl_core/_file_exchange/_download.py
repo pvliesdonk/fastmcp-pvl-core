@@ -22,7 +22,7 @@ import hashlib
 import logging
 import os
 import tempfile
-from typing import TYPE_CHECKING
+from typing import IO, TYPE_CHECKING
 
 import httpx
 
@@ -104,6 +104,16 @@ def _digest_verifier(
     return hashlib.new(name), expected_hex.lower(), False
 
 
+def _write_chunk(tmp: IO[bytes], hasher: hashlib._Hash | None, chunk: bytes) -> None:
+    """Write a body chunk to the temp file and fold it into the running hash.
+
+    Both ops run off the event loop in a single ``asyncio.to_thread`` dispatch.
+    """
+    tmp.write(chunk)
+    if hasher is not None:
+        hasher.update(chunk)
+
+
 async def download_fetcher_consume(
     handle: TransferHandle,
     descriptor: DownloadSource,
@@ -127,8 +137,13 @@ async def download_fetcher_consume(
     hasher, expected_hex, unverifiable = _digest_verifier(handle.artifact.digest)
 
     fd, tmp_path = tempfile.mkstemp(prefix="fx-download-")
-    tmp = os.fdopen(fd, "wb")
     try:
+        try:
+            tmp = os.fdopen(fd, "wb")
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.close(fd)
+            raise
         try:
             received = 0
             attempts = 0
@@ -143,9 +158,6 @@ async def download_fetcher_consume(
                         headers=req_headers,
                     ) as resp:
                         async for chunk in resp.aiter_bytes():
-                            await asyncio.to_thread(tmp.write, chunk)
-                            if hasher is not None:
-                                hasher.update(chunk)
                             received += len(chunk)
                             if max_size is not None and received > max_size:
                                 raise FileExchangeTransferError(
@@ -153,6 +165,7 @@ async def download_fetcher_consume(
                                     transport="download",
                                     detail="artifact exceeds the configured max size",
                                 )
+                            await asyncio.to_thread(_write_chunk, tmp, hasher, chunk)
                     break  # body read to completion without a connection error
                 except FileExchangeTransferError:
                     raise  # guard refusal / too-large — not a resumable drop
