@@ -12,6 +12,12 @@
 
 **Public surface:** `download_provider_mint`, `download_fetcher_consume`, `register_file_exchange_routes` are re-exported (transport-qualified, beside `filesystem_*`). `DOWNLOAD_PREFIX` is a module constant (pvl-core route shape) — not exported, not configurable.
 
+**Implementation deltas (applied during the per-task review loop — the shipped code is authoritative):**
+- Fetcher: the temp-file unlink wraps *both* phases in one outer `try/finally` (a streaming-phase error must not skip cleanup); `os.fdopen` is guarded so a raw fd can't leak (matching `_filesystem`); per-chunk write + hash are folded into a single `asyncio.to_thread` so neither blocks the loop.
+- Fetcher resume: a resume whose provider answers non-`206` is rejected (`transfer-failed`) instead of corrupting the running hash (§10.2 requires `Range` support).
+- Route, unknown size (`meta.size is None`): `Range` is ignored and the whole stream is served as `200` — a `206` MUST carry `Content-Range` (RFC 9110), impossible without a total length; this also prevents a past-EOF range start from consuming a single-use token having served nothing. The route also declines to consume when the source ends before the range start.
+- Naming/typing: the 416 sentinel is `_UnsatisfiableError` (ruff N818); the body generator is annotated `AsyncGenerator[bytes, None]` (mypy).
+
 ---
 
 ## File structure
