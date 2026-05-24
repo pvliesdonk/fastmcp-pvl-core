@@ -343,6 +343,8 @@ async def upload_sender_consume(
         except BaseException:
             with contextlib.suppress(OSError):
                 os.close(fd)
+            with contextlib.suppress(Exception):
+                await asyncio.to_thread(stream.close)
             raise
         hasher = hashlib.sha256()
         size = 0
