@@ -96,26 +96,29 @@ def _parse_content_digest(header: str) -> tuple[str, bytes] | None:
     """Parse the first supported RFC 9530 ``Content-Digest`` member.
 
     Returns ``(label, raw_digest_bytes)`` for the first member whose algorithm is
-    in :data:`_HASHLIB_BY_LABEL` and whose value is a well-formed byte sequence,
-    or ``None`` when the header has no supported, well-formed member. A present
-    header that parses to ``None`` is unverifiable -> the route rejects it
-    (digest-mismatch), never silently skips (§15).
+    in :data:`_HASHLIB_BY_LABEL`, or ``None`` when the header carries no member
+    for a supported algorithm. RFC 8941 member parameters (``;key=value`` after
+    the byte sequence) are ignored. A member for a *supported* algorithm whose
+    byte sequence is malformed (bad colon-wrapping or invalid base64) yields
+    ``None`` rather than falling through to a later member — a supported digest
+    we cannot verify is rejected, never silently skipped (§15). Members for
+    unsupported algorithms are skipped so a supported member elsewhere in the
+    dictionary still wins.
     """
     for member in header.split(","):
         label, sep, value = member.strip().partition("=")
         if sep != "=":
             continue
         label = label.strip().lower()
-        value = value.strip()
         if label not in _HASHLIB_BY_LABEL:
             continue
+        value = value.split(";", 1)[0].strip()
         if len(value) < 2 or value[0] != ":" or value[-1] != ":":
-            continue
+            return None
         try:
-            raw = base64.b64decode(value[1:-1], validate=True)
+            return label, base64.b64decode(value[1:-1], validate=True)
         except (binascii.Error, ValueError):
-            continue
-        return label, raw
+            return None
     return None
 
 

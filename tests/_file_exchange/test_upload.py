@@ -82,12 +82,9 @@ def test_parse_content_digest_roundtrip():
 
 def test_parse_content_digest_picks_first_supported():
     raw = hashlib.sha512(b"abc").digest()
-    header = (
-        "md5=:"
-        + base64.b64encode(b"x").decode()
-        + ":, sha-512=:"
-        + (base64.b64encode(raw).decode() + ":")
-    )
+    md5_b64 = base64.b64encode(b"x").decode()
+    sha512_b64 = base64.b64encode(raw).decode()
+    header = f"md5=:{md5_b64}:, sha-512=:{sha512_b64}:"
     assert _upload._parse_content_digest(header) == ("sha-512", raw)
 
 
@@ -98,6 +95,24 @@ def test_parse_content_digest_rejects_unparseable():
         _upload._parse_content_digest("md5=:" + base64.b64encode(b"x").decode() + ":")
         is None
     )
+
+
+def test_parse_content_digest_ignores_member_params():
+    raw = hashlib.sha256(b"abc").digest()
+    b64 = base64.b64encode(raw).decode()
+    # RFC 8941 member parameters after the byte sequence are stripped, not rejected.
+    assert _upload._parse_content_digest(f"sha-256=:{b64}:;preference=3") == (
+        "sha-256",
+        raw,
+    )
+
+
+def test_parse_content_digest_supported_malformed_does_not_fall_through():
+    raw = hashlib.sha512(b"abc").digest()
+    b64 = base64.b64encode(raw).decode()
+    # A supported algo with corrupt bytes is rejected outright, not skipped in
+    # favour of a later well-formed member.
+    assert _upload._parse_content_digest(f"sha-256=:!!!:, sha-512=:{b64}:") is None
 
 
 @pytest.mark.parametrize(
@@ -111,6 +126,8 @@ def test_parse_content_digest_rejects_unparseable():
         ("application/json", ["text/*", "application/json"], True),
         (None, ["text/*"], False),
         ("not-a-media-type", ["*/*"], False),
+        ("*/*", ["application/octet-stream"], False),
+        ("*/*", ["*/*"], True),
     ],
 )
 def test_media_type_accepted(content_type, accept, ok):
