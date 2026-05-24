@@ -321,3 +321,81 @@ async def test_client_closed_after_send_pinned_raises(monkeypatch):
         ):
             pass
     assert holder["client"].is_closed is True
+
+
+# ---------------------------------------------------------------------------
+# Task 4: Redirect handling tests
+# ---------------------------------------------------------------------------
+
+
+async def test_follows_same_origin_redirect_and_reresolves(monkeypatch):
+    seen = []
+
+    def handler(request):
+        seen.append(str(request.url))
+        if len(seen) == 1:
+            return httpx.Response(
+                302, headers={"location": "https://example.com/final"}
+            )
+        return httpx.Response(200, content=b"final-bytes")
+
+    calls = _install_mock(monkeypatch, handler, resolve_to=["93.184.216.34"])
+    data = b""
+    async with _outbound.guarded_stream(
+        "GET", "https://example.com/start", config=_cfg(), transport="download"
+    ) as resp:
+        async for chunk in resp.aiter_bytes():
+            data += chunk
+    assert data == b"final-bytes"
+    assert calls["resolve"] == 2  # re-resolved + re-validated per hop
+
+
+async def test_follows_relative_redirect(monkeypatch):
+    seen = []
+
+    def handler(request):
+        seen.append(request.url.path)
+        if len(seen) == 1:
+            return httpx.Response(302, headers={"location": "/elsewhere"})
+        return httpx.Response(200, content=b"ok")
+
+    _install_mock(monkeypatch, handler, resolve_to=["93.184.216.34"])
+    async with _outbound.guarded_stream(
+        "GET", "https://example.com/start", config=_cfg(), transport="download"
+    ) as resp:
+        async for _ in resp.aiter_bytes():
+            pass
+    assert seen[1] == "/elsewhere"
+
+
+async def test_refuses_cross_origin_redirect(monkeypatch):
+    def handler(request):
+        return httpx.Response(302, headers={"location": "https://evil.example/x"})
+
+    _install_mock(monkeypatch, handler, resolve_to=["93.184.216.34"])
+    with pytest.raises(FileExchangeTransferError) as ei:
+        async with _outbound.guarded_stream(
+            "GET", "https://example.com/start", config=_cfg(), transport="download"
+        ):
+            pass
+    assert ei.value.code == TransferErrorCode.NOT_ACCESSIBLE
+    assert "evil.example" not in (ei.value.detail or "")
+
+
+async def test_refuses_too_many_redirects(monkeypatch):
+    counter = {"n": 0}
+
+    def handler(request):
+        counter["n"] += 1
+        return httpx.Response(
+            302, headers={"location": f"https://example.com/hop{counter['n']}"}
+        )
+
+    _install_mock(monkeypatch, handler, resolve_to=["93.184.216.34"])
+    with pytest.raises(FileExchangeTransferError) as ei:
+        async with _outbound.guarded_stream(
+            "GET", "https://example.com/start", config=_cfg(), transport="download"
+        ):
+            pass
+    assert ei.value.code == TransferErrorCode.NOT_ACCESSIBLE
+    assert counter["n"] == _outbound._MAX_REDIRECTS + 1  # initial + 5 follows

@@ -220,6 +220,20 @@ async def _send_pinned(
         ) from exc
 
 
+def _same_origin(a: str, b: str) -> bool:
+    """Whether two URLs share scheme + host + port (case-insensitive host).
+
+    https default port 443 is normalised so ``https://h/x`` and
+    ``https://h:443/x`` compare equal.
+    """
+    pa, pb = urlsplit(a), urlsplit(b)
+    return (
+        pa.scheme.lower() == pb.scheme.lower()
+        and (pa.hostname or "").lower() == (pb.hostname or "").lower()
+        and (pa.port or 443) == (pb.port or 443)
+    )
+
+
 @asynccontextmanager
 async def guarded_stream(
     method: str,
@@ -242,13 +256,35 @@ async def guarded_stream(
     client = _make_client(config.file_exchange_http_timeout)
     response: httpx.Response | None = None
     try:
-        response = await _send_pinned(
-            client, method, url, transport, allowed, headers, content
-        )
-        yield GuardedResponse(
-            status=response.status_code,
-            headers=response.headers,
-            _response=response,
+        current = url
+        for _hop in range(_MAX_REDIRECTS + 1):
+            response = await _send_pinned(
+                client, method, current, transport, allowed, headers, content
+            )
+            if response.is_redirect:
+                target = str(
+                    httpx.URL(current).join(response.headers.get("location", ""))
+                )
+                await response.aclose()
+                response = None
+                if not _same_origin(current, target):
+                    raise FileExchangeTransferError(
+                        TransferErrorCode.NOT_ACCESSIBLE,
+                        transport=transport,
+                        detail="refused cross-origin redirect",
+                    )
+                current = target
+                continue
+            yield GuardedResponse(
+                status=response.status_code,
+                headers=response.headers,
+                _response=response,
+            )
+            return
+        raise FileExchangeTransferError(
+            TransferErrorCode.NOT_ACCESSIBLE,
+            transport=transport,
+            detail="too many redirects",
         )
     finally:
         if response is not None:
