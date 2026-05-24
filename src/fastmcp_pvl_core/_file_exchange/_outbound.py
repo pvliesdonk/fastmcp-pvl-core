@@ -21,7 +21,7 @@ import asyncio
 import ipaddress
 import logging
 import socket
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 from urllib.parse import urlsplit
@@ -112,15 +112,20 @@ def _is_permitted(ip: _IPAddress, allowed: list[_IPNetwork]) -> bool:
 def _select_pinned(resolved: list[str], allowed: list[_IPNetwork]) -> str | None:
     """Pick the first permitted address to pin, or ``None`` if all are refused.
 
-    ``resolved`` entries must be valid IP-address strings as returned by
-    ``socket.getaddrinfo`` (``ipaddress.ip_address`` would raise on a malformed
-    one). Picking a permitted address out of a mixed result set is safe because
-    the connection is then pinned to exactly that address — a DNS result that
-    mixes a private and a public record cannot induce a connection to the
-    private one.
+    ``resolved`` entries are normally valid IP-address strings from
+    ``socket.getaddrinfo``; an entry ``ipaddress.ip_address`` cannot parse is
+    skipped (treated as not-permitted) rather than raising — keeping the
+    pre-yield "all guard failures are coded" contract total. Picking a permitted
+    address out of a mixed result set is safe because the connection is then
+    pinned to exactly that address — a DNS result that mixes a private and a
+    public record cannot induce a connection to the private one.
     """
     for addr in resolved:
-        if _is_permitted(ipaddress.ip_address(addr), allowed):
+        try:
+            ip = ipaddress.ip_address(addr)
+        except ValueError:
+            continue
+        if _is_permitted(ip, allowed):
             return addr
     return None
 
@@ -333,7 +338,12 @@ async def guarded_stream(
                         transport=transport,
                         detail="malformed redirect location",
                     ) from exc
-                await response.aclose()
+                # Discarding a redirect response body: a close error (e.g. the
+                # server dropping the connection mid-discard) is irrelevant and
+                # must not escape the guard as a non-coded exception — matches
+                # the fail-safe cleanup-close pattern in _filesystem.py.
+                with suppress(Exception):
+                    await response.aclose()
                 response = None
                 if content is not None:
                     # A streaming request body cannot be safely replayed across

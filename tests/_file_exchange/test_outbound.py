@@ -112,6 +112,15 @@ def test_select_pinned_picks_global_ipv6_over_blocked_ipv4():
     )
 
 
+def test_select_pinned_skips_unparseable_address():
+    # A getaddrinfo result ipaddress cannot parse is skipped (not-permitted),
+    # never raising a bare ValueError out of the guard.
+    assert (
+        _outbound._select_pinned(["not-an-ip", "93.184.216.34"], []) == "93.184.216.34"
+    )
+    assert _outbound._select_pinned(["not-an-ip"], []) is None
+
+
 # ---------------------------------------------------------------------------
 # Task 3: guarded_stream core tests
 # ---------------------------------------------------------------------------
@@ -502,6 +511,41 @@ async def test_refuses_malformed_redirect_location(monkeypatch):
         ):
             pass
     assert ei.value.code == TransferErrorCode.NOT_ACCESSIBLE
+
+
+async def test_redirect_discard_aclose_error_is_suppressed(monkeypatch):
+    # Closing a discarded redirect response can fail (server drops the
+    # connection mid-discard); that error must be suppressed, not escape the
+    # guard as a raw non-coded exception. The redirect is still followed.
+    seen = []
+
+    class _RaisingCloseStream(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            return
+            yield  # pragma: no cover  (empty body; never iterated for a 302)
+
+        async def aclose(self):
+            raise httpx.RemoteProtocolError("connection dropped mid-discard")
+
+    def handler(request):
+        seen.append(str(request.url))
+        if len(seen) == 1:
+            return httpx.Response(
+                302,
+                headers={"location": "https://example.com/final"},
+                stream=_RaisingCloseStream(),
+            )
+        return httpx.Response(200, content=b"final-bytes")
+
+    _install_mock(monkeypatch, handler, resolve_to=["93.184.216.34"])
+    data = b""
+    async with _outbound.guarded_stream(
+        "GET", "https://example.com/start", config=_cfg(), transport="download"
+    ) as resp:
+        async for chunk in resp.aiter_bytes():
+            data += chunk
+    assert data == b"final-bytes"
+    assert len(seen) == 2
 
 
 async def test_refuses_same_host_different_port_redirect(monkeypatch):
