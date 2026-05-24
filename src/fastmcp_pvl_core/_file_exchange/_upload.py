@@ -178,6 +178,13 @@ def register_upload_route(
     consumes the single-use token only on a successful store (§10.3). Ambient
     credentials are ignored — the in-URL token is the only authorization.
     ``token_store``/``sink``/``config`` are threaded by #148.
+
+    "single-use" means the first successful store burns the token (§10.3), not
+    a concurrency lock: two concurrent PUTs begun before either completes can
+    both pass verification and reach ``store_artifact`` before one ``consume``
+    wins. The ``ArtifactSink`` MUST therefore tolerate duplicate
+    ``store_artifact`` calls for the same ``artifact_id`` within the token's
+    TTL window.
     """
     max_artifact = config.file_exchange_max_artifact_size
 
@@ -260,6 +267,10 @@ def register_upload_route(
                 size=received,
                 digest=f"{algo_label}:{hasher.hexdigest()}",
             )
+            # ingest: hand the sink a real sync fd (works whether it reads on the
+            # loop or offloads — the async->sync bridge the temp file provides).
+            # The sink MUST drain before returning: ingest is closed and the temp
+            # unlinked immediately after the await.
             try:
                 ingest = await asyncio.to_thread(open, tmp_path, "rb")
             except OSError:

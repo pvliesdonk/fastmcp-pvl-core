@@ -56,7 +56,11 @@ class ArtifactSink(Protocol):
         The caller (pvl-core) owns ``stream`` and is responsible for
         verifying the artifact's size + digest by its own means (before or
         as the sink reads); the sink reads but does **not** close it, and
-        MUST NOT assume the stream's concrete type. Return ``None`` on
-        success; raise on failure.
+        MUST NOT assume the stream's concrete type. The caller closes
+        ``stream`` and may delete its backing storage immediately after this
+        method returns, so the sink MUST finish reading before returning (it
+        may read on the loop or off-load to a thread, but MUST NOT retain the
+        handle for deferred reads). Return ``None`` on success; raise on
+        failure.
         """
         ...
