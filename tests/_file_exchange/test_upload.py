@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
+
 import pytest
 
 from fastmcp_pvl_core._config import ServerConfig
@@ -63,3 +66,52 @@ async def test_receiver_mint_threads_method_and_expected():
         "acceptMimeTypes": ["text/*"],
         "requireDigest": None,
     }
+
+
+def test_format_content_digest_rfc9530():
+    raw = hashlib.sha256(b"abc").digest()
+    out = _upload._format_content_digest("sha-256", raw)
+    assert out == "sha-256=:" + base64.b64encode(raw).decode("ascii") + ":"
+
+
+def test_parse_content_digest_roundtrip():
+    raw = hashlib.sha256(b"abc").digest()
+    header = _upload._format_content_digest("sha-256", raw)
+    assert _upload._parse_content_digest(header) == ("sha-256", raw)
+
+
+def test_parse_content_digest_picks_first_supported():
+    raw = hashlib.sha512(b"abc").digest()
+    header = (
+        "md5=:"
+        + base64.b64encode(b"x").decode()
+        + ":, sha-512=:"
+        + (base64.b64encode(raw).decode() + ":")
+    )
+    assert _upload._parse_content_digest(header) == ("sha-512", raw)
+
+
+def test_parse_content_digest_rejects_unparseable():
+    assert _upload._parse_content_digest("sha-256=not-a-byte-sequence") is None
+    assert _upload._parse_content_digest("sha-256=:!!!notbase64!!!:") is None
+    assert (
+        _upload._parse_content_digest("md5=:" + base64.b64encode(b"x").decode() + ":")
+        is None
+    )
+
+
+@pytest.mark.parametrize(
+    ("content_type", "accept", "ok"),
+    [
+        ("text/plain", ["text/plain"], True),
+        ("text/plain; charset=utf-8", ["text/plain"], True),
+        ("text/plain", ["text/*"], True),
+        ("text/plain", ["*/*"], True),
+        ("application/json", ["text/*"], False),
+        ("application/json", ["text/*", "application/json"], True),
+        (None, ["text/*"], False),
+        ("not-a-media-type", ["*/*"], False),
+    ],
+)
+def test_media_type_accepted(content_type, accept, ok):
+    assert _upload._media_type_accepted(content_type, accept) is ok
