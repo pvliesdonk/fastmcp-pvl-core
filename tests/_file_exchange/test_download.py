@@ -535,7 +535,7 @@ class _ShortStreamSource:
         return io.BytesIO(self._body), ArtifactMetadata(name="a", size=self._reported)
 
 
-async def test_route_source_shorter_than_range_start_does_not_consume():
+async def test_route_source_shorter_than_range_start_does_not_consume(caplog):
     store = _store()
     token = await _mint_token(store, "k1")
     # Reports size 100 (so bytes=50- parses) but only yields 10 bytes.
@@ -543,9 +543,10 @@ async def test_route_source_shorter_than_range_start_does_not_consume():
     async with _route_client(store, source) as client:
         # The under-length body trips httpx's content-length check; we only care
         # that the token was NOT consumed (the source ended before the start).
-        with contextlib.suppress(httpx.RemoteProtocolError):
+        with caplog.at_level("WARNING"), contextlib.suppress(httpx.RemoteProtocolError):
             await client.get(f"/fx/d/{token}", headers={"Range": "bytes=50-"})
     assert await store.lookup(token) is not None
+    assert any("fewer bytes" in m for m in caplog.messages)  # misbehaving hook logged
 
 
 async def test_fetcher_initial_404_maps_not_accessible(monkeypatch):

@@ -386,7 +386,12 @@ def register_file_exchange_routes(
                 if to_skip > 0:
                     # Source ended before the range start — a hook that did not
                     # yield the stable bytes the token promised. Serve nothing
-                    # and do not consume; leave the token valid.
+                    # and do not consume; leave the token valid. Log it (no
+                    # token — redaction) so a misbehaving source is diagnosable.
+                    logger.warning(
+                        "file-exchange: download source yielded fewer bytes than "
+                        "the requested range start; serving a short body"
+                    )
                     return
                 remaining = None if end is None else (end - start + 1)
                 hit_eof = False
