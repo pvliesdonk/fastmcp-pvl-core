@@ -156,3 +156,17 @@ def test_capability_token_names_reexported():
     ):
         assert hasattr(file_exchange, name), name
         assert name in file_exchange.__all__, name
+
+
+def test_download_data_plane_names_reexported():
+    from fastmcp_pvl_core import file_exchange
+
+    for name in (
+        "download_provider_mint",
+        "download_fetcher_consume",
+        "register_file_exchange_routes",
+    ):
+        assert hasattr(file_exchange, name), name
+        assert name in file_exchange.__all__, name
+    # DOWNLOAD_PREFIX is internal route shape, not part of the public surface.
+    assert not hasattr(file_exchange, "DOWNLOAD_PREFIX")
