@@ -157,6 +157,16 @@ async def download_fetcher_consume(
                         transport="download",
                         headers=req_headers,
                     ) as resp:
+                        if received > 0 and resp.status != 206:
+                            # A resume sent ``Range`` but the provider replied
+                            # with the whole body (§10.2 requires Range support);
+                            # appending it would corrupt the running hash, so
+                            # fail fast rather than re-download and mis-diagnose.
+                            raise FileExchangeTransferError(
+                                TransferErrorCode.TRANSFER_FAILED,
+                                transport="download",
+                                detail="provider did not honor the range request",
+                            )
                         async for chunk in resp.aiter_bytes():
                             received += len(chunk)
                             if max_size is not None and received > max_size:

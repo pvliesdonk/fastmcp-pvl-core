@@ -98,6 +98,19 @@ def _handle(body: bytes, *, size=None, digest=None):
     )
 
 
+class _FakeGuarded:
+    """Mimic the real GuardedResponse surface (``status`` + ``aiter_bytes``) over
+    a streamed httpx response, so fetcher tests exercise the same attributes the
+    production ``guarded_stream`` yields."""
+
+    def __init__(self, resp):
+        self.status = resp.status_code
+        self._resp = resp
+
+    def aiter_bytes(self):
+        return self._resp.aiter_bytes()
+
+
 def _install_guard(monkeypatch, responder):
     """Patch _download.guarded_stream with a MockTransport-backed guarded_stream
     that does NOT resolve/pin (we are testing the fetcher, not the guard)."""
@@ -112,13 +125,40 @@ def _install_guard(monkeypatch, responder):
             req = client.build_request(method, url, headers=headers or {})
             resp = await client.send(req, stream=True)
             try:
-                yield resp
+                yield _FakeGuarded(resp)
             finally:
                 await resp.aclose()
         finally:
             await client.aclose()
 
     monkeypatch.setattr(_download, "guarded_stream", fake_guarded_stream)
+
+
+def _install_guard_seq(monkeypatch, responders):
+    """Like _install_guard but uses a fresh responder per guarded_stream call, so
+    a reconnect (with a Range header) hits the next responder. Records the headers
+    each call received."""
+    import contextlib as _ctx
+
+    calls = {"seen_headers": []}
+
+    @_ctx.asynccontextmanager
+    async def fake(method, url, *, config, transport, headers=None, content=None):
+        calls["seen_headers"].append(dict(headers or {}))
+        responder = responders[min(len(calls["seen_headers"]) - 1, len(responders) - 1)]
+        client = httpx.AsyncClient(transport=httpx.MockTransport(responder))
+        try:
+            req = client.build_request(method, url, headers=headers or {})
+            resp = await client.send(req, stream=True)
+            try:
+                yield _FakeGuarded(resp)
+            finally:
+                await resp.aclose()
+        finally:
+            await client.aclose()
+
+    monkeypatch.setattr(_download, "guarded_stream", fake)
+    return calls
 
 
 async def test_fetcher_happy_path_verifies_and_deposits(monkeypatch):
@@ -233,3 +273,75 @@ async def test_fetcher_cleans_up_temp_on_error(monkeypatch, tmp_path):
     assert ei.value.code == TransferErrorCode.TOO_LARGE
     assert created  # a temp file was created
     assert all(not os.path.exists(p) for p in created)  # ...and removed on error
+
+
+class _DropAfter(httpx.AsyncByteStream):
+    """Yield a prefix, then raise a mid-stream connection error."""
+
+    def __init__(self, prefix: bytes):
+        self._prefix = prefix
+
+    async def __aiter__(self):
+        yield self._prefix
+        raise httpx.ReadError("connection dropped mid-stream")
+
+    async def aclose(self):
+        return
+
+
+async def test_fetcher_resumes_with_range_after_drop(monkeypatch):
+    body = b"0123456789abcdef" * 8  # 128 bytes
+    digest = "sha-256:" + hashlib.sha256(body).hexdigest()
+    split = 50
+
+    def first(request):
+        return httpx.Response(200, stream=_DropAfter(body[:split]))
+
+    def rest(request):
+        start = int(request.headers["range"][len("bytes=") :].split("-")[0])
+        return httpx.Response(206, content=body[start:])
+
+    calls = _install_guard_seq(monkeypatch, [first, rest])
+    sink = _CapturingSink()
+    await _download.download_fetcher_consume(
+        _handle(body, digest=digest), _handle(body).sources[0], sink, config=_cfg()
+    )
+    assert sink.deposited == body  # hash/count continued across the reconnect
+    assert calls["seen_headers"][0] == {}  # first attempt: no Range
+    assert calls["seen_headers"][1] == {"Range": f"bytes={split}-"}  # resume
+
+
+async def test_fetcher_resume_non_206_is_rejected(monkeypatch):
+    body = b"abcd" * 32  # 128 bytes
+    split = 40
+
+    def first(request):
+        return httpx.Response(200, stream=_DropAfter(body[:split]))
+
+    def ignores_range(request):
+        return httpx.Response(200, content=body)  # 200, not 206 -> must be rejected
+
+    _install_guard_seq(monkeypatch, [first, ignores_range])
+    sink = _CapturingSink()
+    with pytest.raises(FileExchangeTransferError) as ei:
+        await _download.download_fetcher_consume(
+            _handle(body), _handle(body).sources[0], sink, config=_cfg()
+        )
+    assert ei.value.code == TransferErrorCode.TRANSFER_FAILED
+    assert sink.calls == 0
+
+
+async def test_fetcher_gives_up_after_max_reconnects(monkeypatch):
+    def responder(request):
+        # 206 so each resume passes the range check, then drops again.
+        return httpx.Response(206, stream=_DropAfter(b"a"))
+
+    calls = _install_guard_seq(monkeypatch, [responder])
+    sink = _CapturingSink()
+    with pytest.raises(FileExchangeTransferError) as ei:
+        await _download.download_fetcher_consume(
+            _handle(b"a" * 100, size=100), _handle(b"x").sources[0], sink, config=_cfg()
+        )
+    assert ei.value.code == TransferErrorCode.TRANSFER_FAILED
+    # initial attempt + _MAX_RECONNECTS resume attempts
+    assert len(calls["seen_headers"]) == _download._MAX_RECONNECTS + 1
