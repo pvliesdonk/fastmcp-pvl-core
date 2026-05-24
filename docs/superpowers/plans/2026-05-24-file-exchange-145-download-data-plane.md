@@ -368,7 +368,40 @@ async def test_fetcher_guard_refusal_propagates(monkeypatch):
         )
     assert ei.value.code == TransferErrorCode.NOT_ACCESSIBLE
     assert sink.calls == 0
+
+
+async def test_fetcher_cleans_up_temp_on_error(monkeypatch, tmp_path):
+    # The temp file must be removed on a streaming-phase error path (regression:
+    # the unlink used to sit in a second sequential try that such errors skipped).
+    real_mkstemp = _download.tempfile.mkstemp
+    created: list[str] = []
+
+    def spy_mkstemp(*args, **kwargs):
+        kwargs.setdefault("dir", str(tmp_path))
+        fd, path = real_mkstemp(*args, **kwargs)
+        created.append(path)
+        return fd, path
+
+    monkeypatch.setattr(_download.tempfile, "mkstemp", spy_mkstemp)
+
+    body = b"x" * 5000
+
+    def responder(request):
+        return httpx.Response(200, content=body)
+
+    _install_guard(monkeypatch, responder)
+    sink = _CapturingSink()
+    with pytest.raises(FileExchangeTransferError) as ei:
+        await _download.download_fetcher_consume(
+            _handle(body), _handle(body).sources[0], sink, config=_cfg(max_size=1000)
+        )
+    assert ei.value.code == TransferErrorCode.TOO_LARGE
+    assert created  # a temp file was created
+    assert all(not os.path.exists(p) for p in created)  # ...and removed on error
 ```
+
+(This test needs `import os` at the top of `test_download.py` — add it if Task 1
+didn't.)
 
 - [ ] **Step 2: Run tests to verify they fail**
 
@@ -420,46 +453,46 @@ async def download_fetcher_consume(
     fd, tmp_path = tempfile.mkstemp(prefix="fx-download-")
     tmp = os.fdopen(fd, "wb")
     try:
-        received = 0
-        attempts = 0
-        while True:
-            req_headers = {} if received == 0 else {"Range": f"bytes={received}-"}
-            try:
-                async with guarded_stream(
-                    "GET",
-                    descriptor.url,
-                    config=config,
-                    transport="download",
-                    headers=req_headers,
-                ) as resp:
-                    async for chunk in resp.aiter_bytes():
-                        await asyncio.to_thread(tmp.write, chunk)
-                        if hasher is not None:
-                            hasher.update(chunk)
-                        received += len(chunk)
-                        if max_size is not None and received > max_size:
-                            raise FileExchangeTransferError(
-                                TransferErrorCode.TOO_LARGE,
-                                transport="download",
-                                detail="artifact exceeds the configured maximum size",
-                            )
-                break  # body read to completion without a connection error
-            except FileExchangeTransferError:
-                raise  # guard refusal / too-large — not a resumable drop
-            except (httpx.HTTPError, OSError) as exc:
-                attempts += 1
-                if attempts > _MAX_RECONNECTS:
-                    raise FileExchangeTransferError(
-                        TransferErrorCode.TRANSFER_FAILED,
+        try:
+            received = 0
+            attempts = 0
+            while True:
+                req_headers = {} if received == 0 else {"Range": f"bytes={received}-"}
+                try:
+                    async with guarded_stream(
+                        "GET",
+                        descriptor.url,
+                        config=config,
                         transport="download",
-                        detail="download interrupted and could not be resumed",
-                    ) from exc
-                # loop: resume from `received` via a Range request
-        await asyncio.to_thread(tmp.flush)
-    finally:
-        await asyncio.to_thread(tmp.close)
+                        headers=req_headers,
+                    ) as resp:
+                        async for chunk in resp.aiter_bytes():
+                            await asyncio.to_thread(tmp.write, chunk)
+                            if hasher is not None:
+                                hasher.update(chunk)
+                            received += len(chunk)
+                            if max_size is not None and received > max_size:
+                                raise FileExchangeTransferError(
+                                    TransferErrorCode.TOO_LARGE,
+                                    transport="download",
+                                    detail="artifact exceeds the configured max size",
+                                )
+                    break  # body read to completion without a connection error
+                except FileExchangeTransferError:
+                    raise  # guard refusal / too-large — not a resumable drop
+                except (httpx.HTTPError, OSError) as exc:
+                    attempts += 1
+                    if attempts > _MAX_RECONNECTS:
+                        raise FileExchangeTransferError(
+                            TransferErrorCode.TRANSFER_FAILED,
+                            transport="download",
+                            detail="download interrupted and could not be resumed",
+                        ) from exc
+                    # loop: resume from `received` via a Range request
+            await asyncio.to_thread(tmp.flush)
+        finally:
+            await asyncio.to_thread(tmp.close)
 
-    try:
         # verify-before-use (computed during the single write pass)
         if expected_size is not None and received != expected_size:
             raise FileExchangeTransferError(
@@ -494,6 +527,10 @@ async def download_fetcher_consume(
         with contextlib.suppress(OSError):
             await asyncio.to_thread(os.unlink, tmp_path)
 ```
+
+The outer ``try/finally`` around both phases (not two sequential ``try`` blocks)
+is what guarantees the temp file is unlinked even when a streaming-phase error
+(too-large, guard refusal, max-reconnect failure) propagates.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
