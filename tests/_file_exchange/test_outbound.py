@@ -69,8 +69,7 @@ def test_malformed_cidr_raises_configuration_error():
 
 def test_select_pinned_skips_blocked_picks_global():
     assert (
-        _outbound._select_pinned(["127.0.0.1", "93.184.216.34"], [])
-        == "93.184.216.34"
+        _outbound._select_pinned(["127.0.0.1", "93.184.216.34"], []) == "93.184.216.34"
     )
 
 
@@ -81,8 +80,7 @@ def test_select_pinned_none_when_all_blocked():
 def test_select_pinned_picks_global_ipv6_over_blocked_ipv4():
     resolved = ["10.0.0.1", "2606:2800:220:1:248:1893:25c8:1946"]
     assert (
-        _outbound._select_pinned(resolved, [])
-        == "2606:2800:220:1:248:1893:25c8:1946"
+        _outbound._select_pinned(resolved, []) == "2606:2800:220:1:248:1893:25c8:1946"
     )
 
 
