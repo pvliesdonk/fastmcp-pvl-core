@@ -293,6 +293,37 @@ class _DropAfter(httpx.AsyncByteStream):
         return
 
 
+class _DropImmediately(httpx.AsyncByteStream):
+    """Raise a connection error before yielding any bytes."""
+
+    async def __aiter__(self):
+        raise httpx.ReadError("connection dropped before any bytes")
+        yield b""  # pragma: no cover  (makes this an async generator)
+
+    async def aclose(self):
+        return
+
+
+async def test_fetcher_reconnects_with_no_range_when_no_bytes_received(monkeypatch):
+    body = b"recovered-from-connect-drop"
+
+    def first(request):
+        return httpx.Response(200, stream=_DropImmediately())
+
+    def rest(request):
+        return httpx.Response(200, content=body)  # fresh full GET, not a 206 resume
+
+    calls = _install_guard_seq(monkeypatch, [first, rest])
+    sink = _CapturingSink()
+    await _download.download_fetcher_consume(
+        _handle(body), _handle(body).sources[0], sink, config=_cfg()
+    )
+    assert sink.deposited == body
+    assert calls["seen_headers"][0] == {}  # initial: no Range
+    # A drop with zero bytes received retries as a fresh 200 GET, not a Range resume.
+    assert calls["seen_headers"][1] == {}
+
+
 async def test_fetcher_resumes_with_range_after_drop(monkeypatch):
     body = b"0123456789abcdef" * 8  # 128 bytes
     digest = "sha-256:" + hashlib.sha256(body).hexdigest()

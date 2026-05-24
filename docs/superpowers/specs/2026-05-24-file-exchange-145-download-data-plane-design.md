@@ -166,7 +166,8 @@ the sink reads on the loop or offloads. The temp file is single-call-scoped
 TTL'd provider spool rejected above. The issue's bar is "never buffered whole
 *in memory*", which an on-disk temp satisfies.
 
-- **Phase 1 — download to temp (hashing as it writes).** Open a `NamedTemporaryFile`.
+- **Phase 1 — download to temp (hashing as it writes).** Open a temp file
+  (`tempfile.mkstemp` + `os.fdopen`; the exact mechanism is the plan's call).
   Loop `guarded_stream("GET", descriptor.url, config=config, transport="download")`
   (#147): read `aiter_bytes()`, write each chunk to the temp, and update a running
   SHA + byte count. On a mid-stream drop (an `httpx` error before the body is
