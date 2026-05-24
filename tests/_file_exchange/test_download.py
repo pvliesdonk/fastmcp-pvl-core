@@ -738,3 +738,58 @@ async def test_fetcher_digest_only_no_declared_size(monkeypatch):
 def test_parse_range_malformed_raises(header):
     with pytest.raises(_download._UnsatisfiableError):
         _download._parse_range(header, 100)
+
+
+async def test_route_multi_use_token_serves_repeatedly():
+    store = _store()
+    body = b"reusable-bytes"
+    minted = await store.mint({"key": "k1"}, ttl=300.0, single_use=False)
+    token = minted.token
+    async with _route_client(store, _BytesSource("k1", body)) as client:
+        r1 = await client.get(f"/fx/d/{token}")
+        assert r1.status_code == 200 and r1.content == body
+        r2 = await client.get(f"/fx/d/{token}")  # multi-use: still valid
+        assert r2.status_code == 200 and r2.content == body
+    assert await store.lookup(token) is not None  # never consumed
+
+
+async def test_fetcher_oversize_body_aborts_early(monkeypatch):
+    body = b"x" * 200
+
+    def responder(request):
+        return httpx.Response(200, content=body)
+
+    _install_guard(monkeypatch, responder)
+    sink = _CapturingSink()
+    with pytest.raises(FileExchangeTransferError) as ei:
+        await _download.download_fetcher_consume(
+            _handle(body, size=50),  # declares 50, serves 200
+            _handle(body).sources[0],
+            sink,
+            config=_cfg(),
+        )
+    assert ei.value.code == TransferErrorCode.SIZE_MISMATCH
+    assert sink.calls == 0
+
+
+async def test_fetcher_resume_wrong_bytes_caught_by_digest(monkeypatch):
+    body = b"0123456789abcdef" * 8  # 128 bytes
+    digest = "sha-256:" + hashlib.sha256(body).hexdigest()
+    split = 50
+
+    def first(request):
+        return httpx.Response(200, stream=_DropAfter(body[:split]))
+
+    def rest(request):
+        start = int(request.headers["range"][len("bytes=") :].split("-")[0])
+        # Same length, wrong content -> size passes, digest must catch it.
+        return httpx.Response(206, content=b"X" * (len(body) - start))
+
+    _install_guard_seq(monkeypatch, [first, rest])
+    sink = _CapturingSink()
+    with pytest.raises(FileExchangeTransferError) as ei:
+        await _download.download_fetcher_consume(
+            _handle(body, digest=digest), _handle(body).sources[0], sink, config=_cfg()
+        )
+    assert ei.value.code == TransferErrorCode.DIGEST_MISMATCH
+    assert sink.calls == 0

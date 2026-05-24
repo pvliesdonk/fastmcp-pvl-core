@@ -182,14 +182,41 @@ async def download_fetcher_consume(
                                 detail="unexpected download response status",
                             )
                         async for chunk in resp.aiter_bytes():
-                            received += len(chunk)
-                            if max_size is not None and received > max_size:
+                            chunk_len = len(chunk)
+                            if max_size is not None and received + chunk_len > max_size:
                                 raise FileExchangeTransferError(
                                     TransferErrorCode.TOO_LARGE,
                                     transport="download",
                                     detail="artifact exceeds the configured max size",
                                 )
-                            await asyncio.to_thread(_write_chunk, tmp, hasher, chunk)
+                            if (
+                                expected_size is not None
+                                and received + chunk_len > expected_size
+                            ):
+                                # Bound consumption to the declared size + one
+                                # chunk rather than the (much larger) max ceiling.
+                                raise FileExchangeTransferError(
+                                    TransferErrorCode.SIZE_MISMATCH,
+                                    transport="download",
+                                    detail="byte count exceeded declared size",
+                                )
+                            try:
+                                await asyncio.to_thread(
+                                    _write_chunk, tmp, hasher, chunk
+                                )
+                            except OSError as exc:
+                                # A local temp-write failure (e.g. disk full) is
+                                # not a resumable network drop — fail accurately
+                                # instead of letting the retry handler mis-label
+                                # it as an interrupted download.
+                                raise FileExchangeTransferError(
+                                    TransferErrorCode.TRANSFER_FAILED,
+                                    transport="download",
+                                    detail="failed to buffer the downloaded artifact",
+                                ) from exc
+                            # Advance only after the bytes are persisted+hashed, so
+                            # a resume's Range offset always matches the temp file.
+                            received += chunk_len
                     break  # body read to completion without a connection error
                 except FileExchangeTransferError:
                     raise  # guard refusal / too-large — not a resumable drop
