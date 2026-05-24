@@ -16,6 +16,11 @@ from fastmcp_pvl_core._file_exchange._codes import (
     KNOWN_CODES,
     TransferErrorCode,
 )
+from fastmcp_pvl_core._file_exchange._download import (
+    download_fetcher_consume,
+    download_provider_mint,
+    register_file_exchange_routes,
+)
 from fastmcp_pvl_core._file_exchange._errors import (
     FileExchangeTransferError,
     build_file_exchange_error,
@@ -122,6 +127,8 @@ __all__ = [
     "capability_url",
     "check_requires",
     "check_version_skew",
+    "download_fetcher_consume",
+    "download_provider_mint",
     "filesystem_fetcher_consume",
     "filesystem_provider_mint",
     "filesystem_receiver_mint",
@@ -129,6 +136,7 @@ __all__ = [
     "filesystem_sink_writable",
     "filesystem_source_readable",
     "load_volume_map",
+    "register_file_exchange_routes",
     "resolve_filesystem_uri",
     "select_sink",
     "select_source",
