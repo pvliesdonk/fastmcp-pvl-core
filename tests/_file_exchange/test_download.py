@@ -575,6 +575,70 @@ async def test_route_yield_phase_truncation_does_not_consume():
     assert await store.lookup(token) is not None  # truncated delivery -> token kept
 
 
+async def test_route_over_delivery_does_not_consume():
+    store = _store()
+    token = await _mint_token(store, "k1")
+    # Reports size 5 but yields 10 bytes: delivered != size - start, so the
+    # single-use token is not consumed (the == guard is load-bearing both ways).
+    source = _ShortStreamSource("k1", b"0123456789", reported_size=5)
+    async with _route_client(store, source) as client:
+        with contextlib.suppress(httpx.HTTPError):
+            await client.get(f"/fx/d/{token}")
+    assert await store.lookup(token) is not None  # over-delivery -> token kept
+
+
+def _unverified_handle(body: bytes):
+    from fastmcp_pvl_core._file_exchange._wire import ArtifactMetadata, TransferHandle
+
+    # Neither size nor digest declared (§7.1 makes both optional).
+    return TransferHandle(
+        type=HANDLE_TYPE,
+        version=SPEC_VERSION,
+        artifact=ArtifactMetadata(name="a"),
+        sources=[
+            DownloadSource(
+                transport="download",
+                url="https://prov.example/fx/d/tok",
+                expiresAt="2099-01-01T00:00:00Z",
+                singleUse=True,
+            )
+        ],
+    )
+
+
+async def test_fetcher_unknown_size_bounded_by_max_size(monkeypatch):
+    body = b"x" * 5000
+
+    def responder(request):
+        return httpx.Response(200, content=body)
+
+    _install_guard(monkeypatch, responder)
+    handle = _unverified_handle(body)  # size None: max_size is the only ceiling
+    sink = _CapturingSink()
+    with pytest.raises(FileExchangeTransferError) as ei:
+        await _download.download_fetcher_consume(
+            handle, handle.sources[0], sink, config=_cfg(max_size=1000)
+        )
+    assert ei.value.code == TransferErrorCode.TOO_LARGE
+    assert sink.calls == 0
+
+
+async def test_fetcher_no_size_no_digest_deposits(monkeypatch):
+    body = b"unverified-but-deposited"
+
+    def responder(request):
+        return httpx.Response(200, content=body)
+
+    _install_guard(monkeypatch, responder)
+    handle = _unverified_handle(body)  # nothing to verify -> deposit as-is
+    sink = _CapturingSink()
+    await _download.download_fetcher_consume(
+        handle, handle.sources[0], sink, config=_cfg()
+    )
+    assert sink.deposited == body
+    assert sink.calls == 1
+
+
 async def test_fetcher_initial_404_maps_not_accessible(monkeypatch):
     def responder(request):
         return httpx.Response(404, content=b"<html>not found</html>")

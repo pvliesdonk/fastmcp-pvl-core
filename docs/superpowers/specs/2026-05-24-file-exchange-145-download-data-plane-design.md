@@ -121,12 +121,16 @@ an async handler (Starlette `Request` → `Response`):
 5. **Single-use consume:** at the *end* of the generator — reached only if the
    client received every chunk — call `await token_store.consume(token)` **iff
    the request had no upper bound** (a full `200` GET, or an open-ended
-   `bytes=start-` streamed through source EOF). Any *closed* range (`bytes=a-b`,
-   including a suffix `bytes=-N` and even one ending at `size-1`) never consumes —
-   the implementation deliberately under-consumes for safety, so a partial fetch
-   never burns the descriptor. A dropped connection (generator closed early) also
-   never consumes; the descriptor stays valid for `Range` recovery until
-   `expiresAt` (§10.2). `consume` is a no-op for a multi-use token.
+   `bytes=start-` streamed through source EOF) **and the full declared payload
+   was delivered** (`delivered == size - start`; when `size` is unknown this
+   cannot be checked, so an unbounded request consumes on EOF). A *truncated*
+   delivery — the source hits EOF before its declared `size` — does **not**
+   consume, leaving the token valid so the fetcher can retry. Any *closed* range
+   (`bytes=a-b`, including a suffix `bytes=-N` and even one ending at `size-1`)
+   never consumes — the implementation deliberately under-consumes for safety, so
+   a partial fetch never burns the descriptor. A dropped connection (generator
+   closed early) also never consumes; the descriptor stays valid for `Range`
+   recovery until `expiresAt` (§10.2). `consume` is a no-op for a multi-use token.
 6. Ambient credentials are ignored — the in-URL token is the only authorization;
    the handler reads no cookies/`Authorization`.
 
