@@ -195,3 +195,29 @@ def test_from_env_file_exchange_max_artifact_size(monkeypatch):
     monkeypatch.setenv("MYAPP_FILE_EXCHANGE_MAX_ARTIFACT_SIZE", "1048576")
     cfg2 = ServerConfig.from_env("MYAPP")
     assert cfg2.file_exchange_max_artifact_size == 1048576
+
+
+def test_file_exchange_outbound_defaults():
+    from fastmcp_pvl_core import ServerConfig
+
+    cfg = ServerConfig.from_env("MYAPP")
+    assert cfg.file_exchange_allowed_networks == ()
+    assert cfg.file_exchange_http_timeout == 30.0
+
+
+def test_from_env_file_exchange_allowed_networks(monkeypatch):
+    from fastmcp_pvl_core import ServerConfig
+
+    monkeypatch.setenv(
+        "MYAPP_FILE_EXCHANGE_ALLOWED_NETWORKS", "10.0.0.0/8, 192.168.5.0/24"
+    )
+    cfg = ServerConfig.from_env("MYAPP")
+    assert cfg.file_exchange_allowed_networks == ("10.0.0.0/8", "192.168.5.0/24")
+
+
+def test_from_env_file_exchange_http_timeout(monkeypatch):
+    from fastmcp_pvl_core import ServerConfig
+
+    monkeypatch.setenv("MYAPP_FILE_EXCHANGE_HTTP_TIMEOUT", "12.5")
+    cfg = ServerConfig.from_env("MYAPP")
+    assert cfg.file_exchange_http_timeout == 12.5
