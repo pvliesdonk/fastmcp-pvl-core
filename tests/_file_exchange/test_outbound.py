@@ -504,6 +504,45 @@ async def test_refuses_malformed_redirect_location(monkeypatch):
     assert ei.value.code == TransferErrorCode.NOT_ACCESSIBLE
 
 
+async def test_refuses_same_host_different_port_redirect(monkeypatch):
+    # Same host/scheme but a different port is a different origin (a pivot to
+    # another service on the host) — must be refused.
+    def handler(request):
+        return httpx.Response(302, headers={"location": "https://example.com:8443/x"})
+
+    _install_mock(monkeypatch, handler, resolve_to=["93.184.216.34"])
+    with pytest.raises(FileExchangeTransferError) as ei:
+        async with _outbound.guarded_stream(
+            "GET", "https://example.com/start", config=_cfg(), transport="download"
+        ):
+            pass
+    assert ei.value.code == TransferErrorCode.NOT_ACCESSIBLE
+
+
+async def test_follows_same_non_default_port_redirect(monkeypatch):
+    # A redirect that keeps the same non-default port is same-origin and followed
+    # (port normalization must not treat :8443 -> :8443 as cross-origin).
+    seen = []
+
+    def handler(request):
+        seen.append(str(request.url))
+        if len(seen) == 1:
+            return httpx.Response(
+                302, headers={"location": "https://example.com:8443/final"}
+            )
+        return httpx.Response(200, content=b"final-bytes")
+
+    _install_mock(monkeypatch, handler, resolve_to=["93.184.216.34"])
+    data = b""
+    async with _outbound.guarded_stream(
+        "GET", "https://example.com:8443/start", config=_cfg(), transport="download"
+    ) as resp:
+        async for chunk in resp.aiter_bytes():
+            data += chunk
+    assert data == b"final-bytes"
+    assert len(seen) == 2
+
+
 async def test_refuses_scheme_downgrade_redirect(monkeypatch):
     def handler(request):
         return httpx.Response(302, headers={"location": "http://example.com/x"})

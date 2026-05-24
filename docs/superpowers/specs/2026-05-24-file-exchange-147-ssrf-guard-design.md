@@ -99,15 +99,19 @@ redirect-following rebind-safe).
    no ambient credentials, and no `HTTP(S)_PROXY`/`NETRC` interference (a proxy
    env var would otherwise route around the IP pin — an SSRF bypass). Caller
    headers other than `Host` pass through; the guard adds no credential headers.
-5. **Redirects.** On a redirect status carrying a valid `Location` (httpx
+5. **Redirects.** On a redirect status carrying a `Location` header (httpx
    `has_redirect_location` — a `304` or a `Location`-less 3xx is *not* a redirect
-   and is yielded as a terminal response): resolve `Location` relative to the
-   current request URL. If the request carries a body (`content is not None`),
-   refuse — a streaming request body cannot be safely replayed across a redirect
-   hop. If it is **same-origin** (case-normalized scheme+host+port match) and the
-   hop count is below the cap (5), recurse from step 1 against the new URL (full
-   re-resolve + re-validate + re-pin). If it is **cross-origin**, refuse. If the
-   hop cap is exceeded, refuse.
+   and is yielded as a terminal response). `has_redirect_location` is true on
+   header *presence* alone, so a present-but-**empty** `Location` is likewise
+   treated as terminal and yielded (not a usable redirect target). Otherwise
+   resolve `Location` relative to the current request URL; a value `httpx.URL.join`
+   cannot parse is refused as a **malformed redirect location** (a raw
+   `httpx.InvalidURL` must not escape the guard). If the request carries a body
+   (`content is not None`), refuse — a streaming request body cannot be safely
+   replayed across a redirect hop. If it is **same-origin** (case-normalized
+   scheme+host+port match) and the hop count is below the cap (5), recurse from
+   step 1 against the new URL (full re-resolve + re-validate + re-pin). If it is
+   **cross-origin**, refuse. If the hop cap is exceeded, refuse.
 6. **Yield.** Otherwise wrap the streaming response in `GuardedResponse` and
    yield it.
 
