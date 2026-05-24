@@ -66,15 +66,21 @@ def register_file_exchange_routes(
     token_store: CapabilityTokenStore,
     source: ArtifactSource | None = None,
     sink: ArtifactSink | None = None,
+    config: ServerConfig | None = None,
 ) -> None: ...
 ```
 
 Mounts the download `GET` route iff `source` is given, and the upload
 `PUT`/`POST` route iff `sink` is given — supporting download-only, upload-only,
 or both. This makes #145's `source` parameter optional (it was required); safe
-because no downstream has adopted the hooks yet (#148 threads them). `UPLOAD_PREFIX`
-is a pvl-core route-shape constant (e.g. `/fx/u`), not a kwarg, not exported —
-mirroring `DOWNLOAD_PREFIX`.
+because no downstream has adopted the hooks yet (#148 threads them).
+`config` carries the operator size cap (`file_exchange_max_artifact_size`) the
+upload route needs to bound untrusted request bodies (§15); the download route
+ignores it. **Mounting the upload route requires `config`** — `sink` given
+without `config` raises `ValueError` at registration, since an upload route with
+no operator cap could accept an unbounded body. `UPLOAD_PREFIX` is a pvl-core
+route-shape constant (e.g. `/fx/u`), not a kwarg, not exported — mirroring
+`DOWNLOAD_PREFIX`.
 
 ## Components (mirroring #145's provider/fetcher)
 
