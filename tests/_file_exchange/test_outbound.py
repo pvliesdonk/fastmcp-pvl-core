@@ -68,6 +68,21 @@ def test_malformed_cidr_raises_configuration_error():
         _outbound._parse_allowed_networks(("not-a-cidr",))
 
 
+def test_ipv4_mapped_cidr_in_allowlist_raises_configuration_error():
+    # An IPv4-mapped IPv6 CIDR would silently never match (membership tests the
+    # unwrapped IPv4 form), so it is rejected loudly — the operator means the
+    # canonical IPv4 CIDR.
+    with pytest.raises(ConfigurationError):
+        _outbound._parse_allowed_networks(("::ffff:10.0.0.0/104",))
+
+
+def test_non_mapped_ipv6_cidr_in_allowlist_accepted():
+    # A normal (non-mapped) IPv6 range must still parse — the mapped-CIDR guard
+    # uses subnet_of, so a broad/ULA range is not over-rejected.
+    nets = _outbound._parse_allowed_networks(("fc00::/7",))
+    assert len(nets) == 1
+
+
 def test_select_pinned_skips_blocked_picks_global():
     assert (
         _outbound._select_pinned(["127.0.0.1", "93.184.216.34"], []) == "93.184.216.34"

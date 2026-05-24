@@ -57,23 +57,39 @@ def _redact(url: str) -> str:
     return host or "<unknown-host>"
 
 
+# The IPv4-mapped IPv6 range. An allowlist CIDR that is a subnet of this is
+# rejected loudly: _is_permitted tests membership against the unwrapped IPv4
+# candidate, so a mapped CIDR would silently never match (the operator means the
+# canonical IPv4 form).
+_IPV4_MAPPED_NETWORK = ipaddress.IPv6Network("::ffff:0:0/96")
+
+
 def _parse_allowed_networks(cidrs: tuple[str, ...]) -> list[_IPNetwork]:
     """Parse operator CIDR strings into networks.
 
     A malformed entry is operator misconfiguration → :class:`ConfigurationError`
-    (loud), consistent with the rest of the package. Allowlist entries must use
-    the canonical address form (e.g. ``10.0.0.0/8``); an IPv4-mapped-IPv6 CIDR
-    (``::ffff:10.0.0.0/104``) parses but will never match, because membership is
-    tested against the unwrapped IPv4 candidate (see :func:`_is_permitted`).
+    (loud), consistent with the rest of the package. An IPv4-mapped-IPv6 CIDR
+    (e.g. ``::ffff:10.0.0.0/104``) is rejected the same way: membership is tested
+    against the unwrapped IPv4 candidate (see :func:`_is_permitted`), so such an
+    entry would silently never match — the operator means the canonical IPv4 form
+    (``10.0.0.0/8``).
     """
     networks: list[_IPNetwork] = []
     for cidr in cidrs:
         try:
-            networks.append(ipaddress.ip_network(cidr, strict=False))
+            net = ipaddress.ip_network(cidr, strict=False)
         except ValueError as exc:
             raise ConfigurationError(
                 f"file-exchange: malformed CIDR in allowed-networks: {cidr!r}"
             ) from exc
+        if isinstance(net, ipaddress.IPv6Network) and net.subnet_of(
+            _IPV4_MAPPED_NETWORK
+        ):
+            raise ConfigurationError(
+                "file-exchange: use the canonical IPv4 CIDR, not an IPv4-mapped "
+                f"IPv6 range, in allowed-networks: {cidr!r}"
+            )
+        networks.append(net)
     return networks
 
 
