@@ -920,6 +920,69 @@ async def test_fetcher_flush_error_maps_transfer_failed(monkeypatch):
     assert sink.calls == 0  # flush failed before the sink was ever invoked
 
 
+async def test_fetcher_close_after_flush_failure_keeps_transfer_error(monkeypatch):
+    body = b"payload-bytes"
+
+    def responder(request):
+        return httpx.Response(200, content=body)
+
+    _install_guard(monkeypatch, responder)
+    real_fdopen = os.fdopen
+
+    class _FlushAndCloseFail:
+        def __init__(self, f):
+            self._f = f
+
+        def write(self, b):
+            return self._f.write(b)
+
+        def flush(self):
+            raise OSError("disk full on flush")
+
+        def close(self):
+            self._f.close()
+            raise OSError("disk full on close")
+
+    monkeypatch.setattr(
+        _download.os,
+        "fdopen",
+        lambda fd, mode: _FlushAndCloseFail(real_fdopen(fd, mode)),
+    )
+    sink = _CapturingSink()
+    with pytest.raises(FileExchangeTransferError) as ei:
+        await _download.download_fetcher_consume(
+            _handle(body), _handle(body).sources[0], sink, config=_cfg()
+        )
+    # close()'s OSError must not replace the flush's mapped FileExchangeTransferError
+    assert ei.value.code == TransferErrorCode.TRANSFER_FAILED
+
+
+async def test_fetcher_open_failure_maps_transfer_failed(monkeypatch):
+    import builtins
+
+    body = b"payload-bytes"
+
+    def responder(request):
+        return httpx.Response(200, content=body)
+
+    _install_guard(monkeypatch, responder)
+    real_open = builtins.open
+
+    def fake_open(path, *args, **kwargs):
+        if isinstance(path, str) and "fx-download-" in path:
+            raise OSError("EMFILE: too many open files")
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", fake_open)
+    sink = _CapturingSink()
+    with pytest.raises(FileExchangeTransferError) as ei:
+        await _download.download_fetcher_consume(
+            _handle(body), _handle(body).sources[0], sink, config=_cfg()
+        )
+    assert ei.value.code == TransferErrorCode.TRANSFER_FAILED
+    assert sink.calls == 0  # open failed before the sink was invoked
+
+
 async def test_route_concurrent_single_use_both_served():
     store = _store()
     body = b"shared-single-use-bytes"

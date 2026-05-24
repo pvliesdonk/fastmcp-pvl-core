@@ -143,7 +143,14 @@ async def download_fetcher_consume(
     max_size = config.file_exchange_max_artifact_size
     hasher, expected_hex, unverifiable = _digest_verifier(handle.artifact.digest)
 
-    fd, tmp_path = tempfile.mkstemp(prefix="fx-download-")
+    try:
+        fd, tmp_path = tempfile.mkstemp(prefix="fx-download-")
+    except OSError as exc:
+        raise FileExchangeTransferError(
+            TransferErrorCode.TRANSFER_FAILED,
+            transport="download",
+            detail="failed to create a temporary file",
+        ) from exc
     try:
         try:
             tmp = os.fdopen(fd, "wb")
@@ -242,7 +249,11 @@ async def download_fetcher_consume(
                     detail="failed to buffer the downloaded artifact",
                 ) from exc
         finally:
-            await asyncio.to_thread(tmp.close)
+            # close() re-flushes; suppress a close failure so it can't replace
+            # an in-flight FileExchangeTransferError with a raw OSError (the temp
+            # is unlinked below regardless).
+            with contextlib.suppress(OSError):
+                await asyncio.to_thread(tmp.close)
 
         # verify-before-use (computed during the single write pass)
         if expected_size is not None and received != expected_size:
@@ -261,7 +272,14 @@ async def download_fetcher_consume(
             )
         # ingest: hand the sink a real sync fd (works whether it reads on the
         # loop or offloads — the async->sync bridge the temp file provides)
-        f = await asyncio.to_thread(open, tmp_path, "rb")
+        try:
+            f = await asyncio.to_thread(open, tmp_path, "rb")
+        except OSError as exc:
+            raise FileExchangeTransferError(
+                TransferErrorCode.TRANSFER_FAILED,
+                transport="download",
+                detail="failed to open the downloaded artifact",
+            ) from exc
         try:
             await sink.store_artifact(handle.artifact.id, handle.artifact, f)
         except FileExchangeTransferError:
@@ -273,7 +291,8 @@ async def download_fetcher_consume(
                 detail="artifact transfer failed",
             ) from exc
         finally:
-            await asyncio.to_thread(f.close)
+            with contextlib.suppress(OSError):
+                await asyncio.to_thread(f.close)
     finally:
         with contextlib.suppress(OSError):
             await asyncio.to_thread(os.unlink, tmp_path)
