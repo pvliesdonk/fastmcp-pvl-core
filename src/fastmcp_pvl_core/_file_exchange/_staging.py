@@ -42,7 +42,8 @@ def _digest_verifier(
 def _write_chunk(tmp: IO[bytes], hasher: hashlib._Hash | None, chunk: bytes) -> None:
     """Write a body chunk to the temp file and fold it into the running hash.
 
-    Both ops run off the event loop in a single ``asyncio.to_thread`` dispatch.
+    Both ops are synchronous and are designed to be dispatched off the event
+    loop by the caller (e.g. via ``asyncio.to_thread``).
     """
     tmp.write(chunk)
     if hasher is not None:
