@@ -170,7 +170,8 @@ async def download_fetcher_consume(
                             # provider that ignored Range and replied 200 would
                             # corrupt the running hash). Any other status is a
                             # failed transfer — never ingest an error-page body
-                            # as artifact bytes (§10.2 requires 200/206 + Range).
+                            # as artifact bytes (§10.2 mandates Range support;
+                            # 200/206 status semantics are RFC 9110).
                             code = (
                                 TransferErrorCode.NOT_ACCESSIBLE
                                 if 400 <= resp.status < 500

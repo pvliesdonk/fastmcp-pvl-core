@@ -773,6 +773,29 @@ async def test_fetcher_oversize_body_aborts_early(monkeypatch):
     assert sink.calls == 0
 
 
+async def test_fetcher_local_write_error_not_retried(monkeypatch):
+    body = b"payload-bytes"
+
+    def responder(request):
+        return httpx.Response(200, content=body)
+
+    calls = _install_guard_seq(monkeypatch, [responder])
+
+    def boom(tmp, hasher, chunk):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(_download, "_write_chunk", boom)
+    sink = _CapturingSink()
+    with pytest.raises(FileExchangeTransferError) as ei:
+        await _download.download_fetcher_consume(
+            _handle(body), _handle(body).sources[0], sink, config=_cfg()
+        )
+    assert ei.value.code == TransferErrorCode.TRANSFER_FAILED
+    assert sink.calls == 0
+    # A local write failure is not a resumable network drop: no reconnect attempt.
+    assert len(calls["seen_headers"]) == 1
+
+
 async def test_fetcher_resume_wrong_bytes_caught_by_digest(monkeypatch):
     body = b"0123456789abcdef" * 8  # 128 bytes
     digest = "sha-256:" + hashlib.sha256(body).hexdigest()
