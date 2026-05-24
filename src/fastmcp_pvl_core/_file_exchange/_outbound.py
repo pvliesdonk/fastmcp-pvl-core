@@ -313,10 +313,26 @@ async def guarded_stream(
             response = await _send_pinned(
                 client, method, current, transport, allowed, headers, content
             )
-            if response.has_redirect_location:
-                target = str(
-                    httpx.URL(current).join(response.headers.get("location", ""))
-                )
+            # ``has_redirect_location`` is True whenever a ``Location`` header is
+            # *present*, even if its value is empty — an empty value is not a
+            # usable redirect target, so treat it (like a 3xx with no Location)
+            # as terminal and yield below.
+            location = (
+                response.headers.get("location", "")
+                if response.has_redirect_location
+                else ""
+            )
+            if location:
+                try:
+                    target = str(httpx.URL(current).join(location))
+                except httpx.InvalidURL as exc:
+                    # A malformed Location must surface as a coded refusal, not a
+                    # raw httpx error escaping the guard.
+                    raise FileExchangeTransferError(
+                        TransferErrorCode.NOT_ACCESSIBLE,
+                        transport=transport,
+                        detail="malformed redirect location",
+                    ) from exc
                 await response.aclose()
                 response = None
                 if content is not None:

@@ -83,6 +83,18 @@ def test_non_mapped_ipv6_cidr_in_allowlist_accepted():
     assert len(nets) == 1
 
 
+@pytest.mark.parametrize(
+    ("addr", "cidr"),
+    [("10.0.0.1", "fc00::/7"), ("fc00::1", "10.0.0.0/8")],
+)
+def test_is_permitted_mixed_version_returns_false_not_raises(addr, cidr):
+    # An address tested against a different-version allowlist network must yield
+    # False (ipaddress __contains__ version-checks), never raise — the guard
+    # docstring's "never raises" contract.
+    allowed = _outbound._parse_allowed_networks((cidr,))
+    assert _outbound._is_permitted(ipaddress.ip_address(addr), allowed) is False
+
+
 def test_select_pinned_skips_blocked_picks_global():
     assert (
         _outbound._select_pinned(["127.0.0.1", "93.184.216.34"], []) == "93.184.216.34"
@@ -459,6 +471,37 @@ async def test_redirect_userinfo_not_sent_as_credentials(monkeypatch):
         async for _ in resp.aiter_bytes():
             pass
     assert "authorization" not in seen[1].headers
+
+
+async def test_empty_location_redirect_is_yielded(monkeypatch):
+    # has_redirect_location is True for a present-but-empty Location; an empty
+    # value is not a usable redirect target, so it must be yielded as terminal
+    # rather than looping (join("") -> current) until "too many redirects".
+    def handler(request):
+        return httpx.Response(302, headers={"location": ""})
+
+    _install_mock(monkeypatch, handler, resolve_to=["93.184.216.34"])
+    async with _outbound.guarded_stream(
+        "GET", "https://example.com/x", config=_cfg(), transport="download"
+    ) as resp:
+        assert resp.status == 302
+        async for _ in resp.aiter_bytes():
+            pass
+
+
+async def test_refuses_malformed_redirect_location(monkeypatch):
+    # A Location that httpx.URL.join cannot parse must surface as a coded
+    # FileExchangeTransferError, not a raw httpx.InvalidURL escaping the guard.
+    def handler(request):
+        return httpx.Response(302, headers={"location": "ht\x00tp://x"})
+
+    _install_mock(monkeypatch, handler, resolve_to=["93.184.216.34"])
+    with pytest.raises(FileExchangeTransferError) as ei:
+        async with _outbound.guarded_stream(
+            "GET", "https://example.com/start", config=_cfg(), transport="download"
+        ):
+            pass
+    assert ei.value.code == TransferErrorCode.NOT_ACCESSIBLE
 
 
 async def test_refuses_scheme_downgrade_redirect(monkeypatch):
