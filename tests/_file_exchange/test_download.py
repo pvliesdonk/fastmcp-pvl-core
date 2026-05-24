@@ -508,6 +508,18 @@ async def test_route_open_ended_range_206_and_consumes():
     assert r2.status_code == 404
 
 
+async def test_route_closed_range_end_clamped_to_size():
+    store = _store()
+    body = b"0123456789"  # size 10
+    token = await _mint_token(store, "k1")
+    async with _route_client(store, _BytesSource("k1", body)) as client:
+        r = await client.get(f"/fx/d/{token}", headers={"Range": "bytes=3-99"})
+    assert r.status_code == 206
+    assert r.content == b"3456789"  # end clamped to size-1
+    assert r.headers["content-range"] == "bytes 3-9/10"
+    assert r.headers["content-length"] == "7"
+
+
 async def test_route_suffix_range_returns_last_bytes():
     store = _store()
     body = b"0123456789"
@@ -753,6 +765,28 @@ async def test_route_multi_use_token_serves_repeatedly():
         r2 = await client.get(f"/fx/d/{token}")  # multi-use: still valid
         assert r2.status_code == 200 and r2.content == body
     assert await store.lookup(token) is not None  # never consumed
+
+
+async def test_fetcher_size_ok_digest_wrong_raises_digest_mismatch(monkeypatch):
+    body = b"some-payload"
+    wrong_digest = "sha-256:" + hashlib.sha256(b"other").hexdigest()
+
+    def responder(request):
+        return httpx.Response(200, content=body)
+
+    _install_guard(monkeypatch, responder)
+    sink = _CapturingSink()
+    with pytest.raises(FileExchangeTransferError) as ei:
+        await _download.download_fetcher_consume(
+            _handle(body, size=len(body), digest=wrong_digest),  # size ok, digest bad
+            _handle(body).sources[0],
+            sink,
+            config=_cfg(),
+        )
+    assert (
+        ei.value.code == TransferErrorCode.DIGEST_MISMATCH
+    )  # digest checked after size
+    assert sink.calls == 0
 
 
 async def test_fetcher_oversize_body_aborts_early(monkeypatch):
