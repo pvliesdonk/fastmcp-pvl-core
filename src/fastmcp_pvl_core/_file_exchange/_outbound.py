@@ -105,3 +105,148 @@ def _select_pinned(resolved: list[str], allowed: list[_IPNetwork]) -> str | None
         if _is_permitted(ipaddress.ip_address(addr), allowed):
             return addr
     return None
+
+
+async def _resolve(host: str, port: int) -> list[str]:
+    """Resolve ``host`` once to a list of IP strings (single getaddrinfo call).
+
+    Kept as a module-level function so tests can pin it; this single call is
+    the resolution the §15 DNS-rebind mitigation anchors on — the connection
+    uses only addresses from this result.
+    """
+    loop = asyncio.get_running_loop()
+    infos = await loop.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    return [info[4][0] for info in infos]
+
+
+def _make_client(timeout: float) -> httpx.AsyncClient:
+    """Build the outbound client.
+
+    No ambient credentials and ``trust_env=False`` (so ``HTTP(S)_PROXY`` /
+    ``netrc`` cannot inject credentials or divert past the pinned IP — an SSRF
+    bypass). Redirects are handled by :func:`guarded_stream`, not httpx.
+    """
+    return httpx.AsyncClient(
+        timeout=httpx.Timeout(timeout),
+        follow_redirects=False,
+        trust_env=False,
+    )
+
+
+@dataclass(frozen=True)
+class GuardedResponse:
+    """A streaming response yielded by :func:`guarded_stream`.
+
+    Wraps the underlying ``httpx.Response`` so the raw URL (carrying the
+    capability token) cannot leak through httpx's ``repr``/traceback. The
+    caller reads the body via :meth:`aiter_bytes` inside the ``async with``.
+    """
+
+    status: int
+    headers: Mapping[str, str]
+    _response: httpx.Response = field(repr=False)
+
+    def aiter_bytes(self) -> AsyncIterator[bytes]:
+        return self._response.aiter_bytes()
+
+
+async def _send_pinned(
+    client: httpx.AsyncClient,
+    method: str,
+    url: str,
+    transport: str,
+    allowed: list[_IPNetwork],
+    headers: Mapping[str, str] | None,
+    content: AsyncIterable[bytes] | bytes | None,
+) -> httpx.Response:
+    """Resolve-once, validate, pin, and send a single streamed request.
+
+    Raises :class:`FileExchangeTransferError` (``not-accessible``) for a
+    non-https URL, a missing host, an unresolvable host, a non-permitted
+    address, or a connection failure. The returned response is streamed
+    (body not yet read).
+    """
+    parts = urlsplit(url)
+    if parts.scheme != "https":
+        raise FileExchangeTransferError(
+            TransferErrorCode.NOT_ACCESSIBLE,
+            transport=transport,
+            detail="refused non-https URL",
+        )
+    host = parts.hostname
+    if host is None:
+        raise FileExchangeTransferError(
+            TransferErrorCode.NOT_ACCESSIBLE,
+            transport=transport,
+            detail="URL has no host",
+        )
+    port = parts.port or 443
+    try:
+        resolved = await _resolve(host, port)
+    except OSError as exc:
+        logger.debug("file-exchange: DNS resolution failed for %s", _redact(url))
+        raise FileExchangeTransferError(
+            TransferErrorCode.NOT_ACCESSIBLE,
+            transport=transport,
+            detail="host could not be resolved",
+        ) from exc
+    pinned = _select_pinned(resolved, allowed)
+    if pinned is None:
+        logger.debug("file-exchange: refused non-global address for %s", _redact(url))
+        raise FileExchangeTransferError(
+            TransferErrorCode.NOT_ACCESSIBLE,
+            transport=transport,
+            detail="address not permitted",
+        )
+    request = client.build_request(
+        method,
+        httpx.URL(url).copy_with(host=pinned),
+        headers={"Host": host, **(headers or {})},
+        content=content,
+        extensions={"sni_hostname": host},
+    )
+    try:
+        return await client.send(request, stream=True)
+    except httpx.HTTPError as exc:
+        logger.debug("file-exchange: outbound request failed for %s", _redact(url))
+        raise FileExchangeTransferError(
+            TransferErrorCode.NOT_ACCESSIBLE,
+            transport=transport,
+            detail="endpoint unreachable",
+        ) from exc
+
+
+@asynccontextmanager
+async def guarded_stream(
+    method: str,
+    url: str,
+    *,
+    config: ServerConfig,
+    transport: str,
+    headers: Mapping[str, str] | None = None,
+    content: AsyncIterable[bytes] | bytes | None = None,
+) -> AsyncIterator[GuardedResponse]:
+    """Issue a guarded, streamed outbound request and yield the response.
+
+    Enforces the §15 SSRF + DNS-rebind mitigations (see module docstring).
+    ``transport`` is the §13 envelope label (``"download"``/``"upload"``)
+    carried on any raised :class:`FileExchangeTransferError`. The caller reads
+    the body via the yielded :class:`GuardedResponse` inside the ``async
+    with``; the response and client are closed on exit, including on error.
+    """
+    allowed = _parse_allowed_networks(config.file_exchange_allowed_networks)
+    client = _make_client(config.file_exchange_http_timeout)
+    response: httpx.Response | None = None
+    try:
+        response = await _send_pinned(
+            client, method, url, transport, allowed, headers, content
+        )
+        yield GuardedResponse(
+            status=response.status_code,
+            headers=response.headers,
+            _response=response,
+        )
+    finally:
+        if response is not None:
+            await response.aclose()
+        await client.aclose()
