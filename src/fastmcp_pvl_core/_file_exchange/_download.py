@@ -230,7 +230,17 @@ async def download_fetcher_consume(
                             detail="download interrupted and could not be resumed",
                         ) from exc
                     # loop: resume from `received` via a Range request
-            await asyncio.to_thread(tmp.flush)
+            try:
+                await asyncio.to_thread(tmp.flush)
+            except OSError as exc:
+                # A flush failure (e.g. disk full after the last write) is a
+                # buffering failure, not a network drop — map it like the
+                # per-chunk write error rather than letting a raw OSError escape.
+                raise FileExchangeTransferError(
+                    TransferErrorCode.TRANSFER_FAILED,
+                    transport="download",
+                    detail="failed to buffer the downloaded artifact",
+                ) from exc
         finally:
             await asyncio.to_thread(tmp.close)
 
@@ -326,6 +336,13 @@ def register_file_exchange_routes(
     supported), and consumes a single-use token once it has been fully retrieved
     (§10.2). Ambient credentials are ignored — the in-URL token is the only
     authorization. ``token_store`` and ``source`` are threaded by #148.
+
+    "single-use" means *invalidated after the first full retrieval*, not a
+    concurrency lock: §10.2 requires that opening alone MUST NOT invalidate (so
+    the token stays valid for ``Range`` resume across reconnects), which means
+    two concurrent in-flight retrievals begun before either completes can both
+    be served. Consuming earlier (at lookup/open) would break resume and violate
+    §10.2; bearer-capability semantics make this an accepted trade-off.
     """
 
     @mcp.custom_route(f"{DOWNLOAD_PREFIX}/{{token}}", methods=["GET"])
@@ -359,71 +376,81 @@ def register_file_exchange_routes(
                 status_code=416, headers={"Content-Range": f"bytes */{size}"}
             )
 
-        partial = range_header is not None
-        headers = {"Accept-Ranges": "bytes"}
-        if end is not None:
-            headers["Content-Length"] = str(end - start + 1)
-            total = str(size) if size is not None else "*"
-            headers["Content-Range"] = f"bytes {start}-{end}/{total}"
-        elif partial and size is not None:  # open-ended bytes=start-
-            headers["Content-Length"] = str(size - start)
-            headers["Content-Range"] = f"bytes {start}-{size - 1}/{size}"
-        elif not partial and size is not None:  # full GET
-            headers["Content-Length"] = str(size)
+        # Own the stream until the response generator takes over: close it if
+        # anything fails before the StreamingResponse is returned (header build,
+        # response construction), so it cannot leak on a pre-handoff error.
+        try:
+            partial = range_header is not None
+            headers = {"Accept-Ranges": "bytes"}
+            if end is not None:
+                headers["Content-Length"] = str(end - start + 1)
+                total = str(size) if size is not None else "*"
+                headers["Content-Range"] = f"bytes {start}-{end}/{total}"
+            elif partial and size is not None:  # open-ended bytes=start-
+                headers["Content-Length"] = str(size - start)
+                headers["Content-Range"] = f"bytes {start}-{size - 1}/{size}"
+            elif not partial and size is not None:  # full GET
+                headers["Content-Length"] = str(size)
 
-        # Consume only when the whole remaining artifact is delivered: no Range
-        # or an open-ended bytes=start- streamed through source EOF. A closed
-        # range never consumes (safe; the descriptor stays valid until expiry).
-        consume_on_eof = end is None
+            # Consume only when the whole remaining artifact is delivered: no
+            # Range or an open-ended bytes=start- streamed through source EOF. A
+            # closed range never consumes (safe; descriptor stays valid to TTL).
+            consume_on_eof = end is None
 
-        async def _body() -> AsyncGenerator[bytes, None]:
-            try:
-                to_skip = start
-                while to_skip > 0:
-                    chunk = await asyncio.to_thread(stream.read, min(to_skip, _CHUNK))
-                    if not chunk:
-                        break
-                    to_skip -= len(chunk)
-                if to_skip > 0:
-                    # Source ended before the range start — a hook that did not
-                    # yield the stable bytes the token promised. Serve nothing
-                    # and do not consume; leave the token valid. Log it (no
-                    # token — redaction) so a misbehaving source is diagnosable.
-                    logger.warning(
-                        "file-exchange: download source yielded fewer bytes than "
-                        "the requested range start; serving a short body"
-                    )
-                    return
-                remaining = None if end is None else (end - start + 1)
-                hit_eof = False
-                while remaining is None or remaining > 0:
-                    n = _CHUNK if remaining is None else min(_CHUNK, remaining)
-                    chunk = await asyncio.to_thread(stream.read, n)
-                    if not chunk:
-                        hit_eof = True
-                        break
-                    if remaining is not None:
-                        remaining -= len(chunk)
-                    yield chunk
-                if consume_on_eof and hit_eof:
-                    try:
-                        await token_store.consume(token)
-                    except Exception:
-                        # The body was fully delivered; a consume failure must
-                        # not turn that into a mid-stream error. Log it (no
-                        # token — redaction): the single-use token may remain
-                        # usable until it expires.
-                        logger.warning(
-                            "file-exchange: download token consume failed after "
-                            "delivery; token may remain usable until expiry"
+            async def _body() -> AsyncGenerator[bytes, None]:
+                try:
+                    to_skip = start
+                    while to_skip > 0:
+                        chunk = await asyncio.to_thread(
+                            stream.read, min(to_skip, _CHUNK)
                         )
-            finally:
-                with contextlib.suppress(Exception):
-                    await asyncio.to_thread(stream.close)
+                        if not chunk:
+                            break
+                        to_skip -= len(chunk)
+                    if to_skip > 0:
+                        # Source ended before the range start — a hook that did
+                        # not yield the stable bytes the token promised. Serve
+                        # nothing and do not consume; leave the token valid. Log
+                        # it (no token — redaction) so it is diagnosable.
+                        logger.warning(
+                            "file-exchange: download source yielded fewer bytes "
+                            "than the requested range start; serving a short body"
+                        )
+                        return
+                    remaining = None if end is None else (end - start + 1)
+                    hit_eof = False
+                    while remaining is None or remaining > 0:
+                        n = _CHUNK if remaining is None else min(_CHUNK, remaining)
+                        chunk = await asyncio.to_thread(stream.read, n)
+                        if not chunk:
+                            hit_eof = True
+                            break
+                        if remaining is not None:
+                            remaining -= len(chunk)
+                        yield chunk
+                    if consume_on_eof and hit_eof:
+                        try:
+                            await token_store.consume(token)
+                        except Exception:
+                            # The body was fully delivered; a consume failure
+                            # must not turn that into a mid-stream error. Log it
+                            # (no token — redaction): the single-use token may
+                            # remain usable until it expires.
+                            logger.warning(
+                                "file-exchange: download token consume failed "
+                                "after delivery; token may remain usable to TTL"
+                            )
+                finally:
+                    with contextlib.suppress(Exception):
+                        await asyncio.to_thread(stream.close)
 
-        return StreamingResponse(
-            _body(),
-            status_code=206 if partial else 200,
-            headers=headers,
-            media_type=meta.mimeType,
-        )
+            return StreamingResponse(
+                _body(),
+                status_code=206 if partial else 200,
+                headers=headers,
+                media_type=meta.mimeType,
+            )
+        except BaseException:
+            with contextlib.suppress(Exception):
+                await asyncio.to_thread(stream.close)
+            raise

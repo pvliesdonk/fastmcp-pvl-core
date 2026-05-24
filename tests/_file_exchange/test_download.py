@@ -1,3 +1,4 @@
+import asyncio
 import contextlib
 import hashlib
 import io
@@ -771,6 +772,58 @@ async def test_fetcher_oversize_body_aborts_early(monkeypatch):
         )
     assert ei.value.code == TransferErrorCode.SIZE_MISMATCH
     assert sink.calls == 0
+
+
+async def test_fetcher_flush_error_maps_transfer_failed(monkeypatch):
+    body = b"payload-bytes"
+
+    def responder(request):
+        return httpx.Response(200, content=body)
+
+    _install_guard(monkeypatch, responder)
+
+    real_fdopen = os.fdopen
+
+    class _FlushFails:
+        def __init__(self, f):
+            self._f = f
+
+        def write(self, b):
+            return self._f.write(b)
+
+        def flush(self):
+            raise OSError("disk full on flush")
+
+        def close(self):
+            return self._f.close()
+
+    monkeypatch.setattr(
+        _download.os, "fdopen", lambda fd, mode: _FlushFails(real_fdopen(fd, mode))
+    )
+    sink = _CapturingSink()
+    with pytest.raises(FileExchangeTransferError) as ei:
+        await _download.download_fetcher_consume(
+            _handle(body), _handle(body).sources[0], sink, config=_cfg()
+        )
+    assert ei.value.code == TransferErrorCode.TRANSFER_FAILED
+    assert sink.calls == 0  # flush failed before the sink was ever invoked
+
+
+async def test_route_concurrent_single_use_both_served():
+    store = _store()
+    body = b"shared-single-use-bytes"
+    token = await _mint_token(store, "k1")
+    async with _route_client(store, _BytesSource("k1", body)) as client:
+        # §10.2: opening MUST NOT invalidate (so Range resume works), so two
+        # concurrent retrievals begun before either completes are both served;
+        # "single-use" = invalidated after the first full retrieval.
+        r1, r2 = await asyncio.gather(
+            client.get(f"/fx/d/{token}"),
+            client.get(f"/fx/d/{token}"),
+        )
+    assert r1.status_code == 200 and r1.content == body
+    assert r2.status_code == 200 and r2.content == body
+    assert await store.lookup(token) is None  # consumed after the retrievals
 
 
 async def test_fetcher_local_write_error_not_retried(monkeypatch):
