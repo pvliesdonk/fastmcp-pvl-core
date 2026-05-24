@@ -125,7 +125,15 @@ def _make_client(timeout: float) -> httpx.AsyncClient:
     No ambient credentials and ``trust_env=False`` (so ``HTTP(S)_PROXY`` /
     ``netrc`` cannot inject credentials or divert past the pinned IP — an SSRF
     bypass). Redirects are handled by :func:`guarded_stream`, not httpx.
+
+    A non-positive ``timeout`` is operator misconfiguration that would silently
+    disable the request timeout (the resource-exhaustion bound), so it raises
+    :class:`ConfigurationError` — consistent with the token-store TTL guard.
     """
+    if timeout <= 0:
+        raise ConfigurationError(
+            "file-exchange: file_exchange_http_timeout must be positive"
+        )
     return httpx.AsyncClient(
         timeout=httpx.Timeout(timeout),
         follow_redirects=False,
@@ -137,9 +145,13 @@ def _make_client(timeout: float) -> httpx.AsyncClient:
 class GuardedResponse:
     """A streaming response yielded by :func:`guarded_stream`.
 
-    Wraps the underlying ``httpx.Response`` so the raw URL (carrying the
-    capability token) cannot leak through httpx's ``repr``/traceback. The
-    caller reads the body via :meth:`aiter_bytes` inside the ``async with``.
+    The underlying ``httpx.Response`` is held in a ``repr=False`` field so that
+    logging or ``repr``-ing a :class:`GuardedResponse` never exposes the
+    capability-token-bearing URL (the response stays reachable as a private
+    field for the body read). The caller reads the body via :meth:`aiter_bytes`
+    inside the ``async with``; a failure *during* body iteration propagates as a
+    raw ``httpx`` error for the consuming data plane (#145/#146) to map, whereas
+    pre-body failures are raised as :class:`FileExchangeTransferError`.
     """
 
     status: int
@@ -190,6 +202,15 @@ async def _send_pinned(
             transport=transport,
             detail="host could not be resolved",
         ) from exc
+    if not resolved:
+        logger.debug(
+            "file-exchange: host resolved to no addresses for %s", _redact(url)
+        )
+        raise FileExchangeTransferError(
+            TransferErrorCode.NOT_ACCESSIBLE,
+            transport=transport,
+            detail="host could not be resolved",
+        )
     pinned = _select_pinned(resolved, allowed)
     if pinned is None:
         logger.debug("file-exchange: refused non-global address for %s", _redact(url))
@@ -272,6 +293,16 @@ async def guarded_stream(
                 )
                 await response.aclose()
                 response = None
+                if content is not None:
+                    # A streaming request body cannot be safely replayed across
+                    # a redirect hop (the iterator is already consumed), so a
+                    # redirect on a bodied request is refused rather than
+                    # silently re-sent empty. The upload sender re-issues.
+                    raise FileExchangeTransferError(
+                        TransferErrorCode.NOT_ACCESSIBLE,
+                        transport=transport,
+                        detail="refused redirect on a request with a body",
+                    )
                 if not _same_origin(current, target):
                     raise FileExchangeTransferError(
                         TransferErrorCode.NOT_ACCESSIBLE,

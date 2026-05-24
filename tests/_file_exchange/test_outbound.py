@@ -484,3 +484,152 @@ async def test_refuses_redirect_that_rebinds_to_blocked_ip(monkeypatch):
         ):
             pass
     assert ei.value.code == TransferErrorCode.NOT_ACCESSIBLE
+
+
+async def test_refuses_redirect_on_request_with_body(monkeypatch):
+    async def body():
+        yield b"upload-bytes"
+
+    def handler(request):
+        return httpx.Response(302, headers={"location": "https://example.com/final"})
+
+    _install_mock(monkeypatch, handler, resolve_to=["93.184.216.34"])
+    with pytest.raises(FileExchangeTransferError) as ei:
+        async with _outbound.guarded_stream(
+            "PUT",
+            "https://example.com/start",
+            config=_cfg(),
+            transport="upload",
+            content=body(),
+        ):
+            pass
+    assert ei.value.code == TransferErrorCode.NOT_ACCESSIBLE
+
+
+async def test_refuses_empty_resolution(monkeypatch):
+    async def fake_resolve(host, port):
+        return []
+
+    monkeypatch.setattr(_outbound, "_resolve", fake_resolve)
+    with pytest.raises(FileExchangeTransferError) as ei:
+        async with _outbound.guarded_stream(
+            "GET", "https://example.com/x", config=_cfg(), transport="download"
+        ):
+            pass
+    assert ei.value.code == TransferErrorCode.NOT_ACCESSIBLE
+    assert ei.value.detail == "host could not be resolved"
+
+
+async def test_nonpositive_timeout_raises_configuration_error():
+    with pytest.raises(ConfigurationError):
+        async with _outbound.guarded_stream(
+            "GET",
+            "https://example.com/x",
+            config=_cfg(timeout=0.0),
+            transport="download",
+        ):
+            pass
+
+
+async def test_http_timeout_threads_to_client(monkeypatch):
+    seen = {}
+
+    def handler(request):
+        return httpx.Response(200, content=b"x")
+
+    async def fake_resolve(host, port):
+        return ["93.184.216.34"]
+
+    def fake_make_client(timeout):
+        seen["timeout"] = timeout
+        return httpx.AsyncClient(
+            transport=httpx.MockTransport(handler),
+            trust_env=False,
+            follow_redirects=False,
+        )
+
+    monkeypatch.setattr(_outbound, "_resolve", fake_resolve)
+    monkeypatch.setattr(_outbound, "_make_client", fake_make_client)
+    async with _outbound.guarded_stream(
+        "GET",
+        "https://example.com/x",
+        config=_cfg(timeout=12.5),
+        transport="download",
+    ) as resp:
+        async for _ in resp.aiter_bytes():
+            pass
+    assert seen["timeout"] == 12.5
+
+
+async def test_guarded_response_repr_hides_token(monkeypatch):
+    def handler(request):
+        return httpx.Response(200, content=b"x")
+
+    _install_mock(monkeypatch, handler, resolve_to=["93.184.216.34"])
+    async with _outbound.guarded_stream(
+        "GET",
+        "https://example.com/d/SECRETTOKEN?sig=abc",
+        config=_cfg(),
+        transport="download",
+    ) as resp:
+        rendered = repr(resp)
+        assert "SECRETTOKEN" not in rendered
+        assert "/d/" not in rendered
+        async for _ in resp.aiter_bytes():
+            pass
+
+
+async def test_client_closed_on_success(monkeypatch):
+    holder = {}
+
+    def handler(request):
+        return httpx.Response(200, content=b"data")
+
+    async def fake_resolve(host, port):
+        return ["93.184.216.34"]
+
+    def fake_make_client(timeout):
+        client = httpx.AsyncClient(
+            transport=httpx.MockTransport(handler),
+            trust_env=False,
+            follow_redirects=False,
+        )
+        holder["client"] = client
+        return client
+
+    monkeypatch.setattr(_outbound, "_resolve", fake_resolve)
+    monkeypatch.setattr(_outbound, "_make_client", fake_make_client)
+    async with _outbound.guarded_stream(
+        "GET", "https://example.com/x", config=_cfg(), transport="download"
+    ) as resp:
+        async for _ in resp.aiter_bytes():
+            pass
+    assert holder["client"].is_closed is True
+
+
+async def test_client_closed_on_cross_origin_refusal(monkeypatch):
+    holder = {}
+
+    def handler(request):
+        return httpx.Response(302, headers={"location": "https://evil.example/x"})
+
+    async def fake_resolve(host, port):
+        return ["93.184.216.34"]
+
+    def fake_make_client(timeout):
+        client = httpx.AsyncClient(
+            transport=httpx.MockTransport(handler),
+            trust_env=False,
+            follow_redirects=False,
+        )
+        holder["client"] = client
+        return client
+
+    monkeypatch.setattr(_outbound, "_resolve", fake_resolve)
+    monkeypatch.setattr(_outbound, "_make_client", fake_make_client)
+    with pytest.raises(FileExchangeTransferError):
+        async with _outbound.guarded_stream(
+            "GET", "https://example.com/start", config=_cfg(), transport="download"
+        ):
+            pass
+    assert holder["client"].is_closed is True

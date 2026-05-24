@@ -149,6 +149,7 @@ module (relative-`Location` resolution, origin comparison, per-hop re-guard, hop
 cap); it is accepted over the simpler "refuse all redirects" to stay faithful to
 the spec wording and the issue's intent. Following without re-guarding each hop
 would be a redirect-driven rebind hole — hence the re-run.
+A redirect on a request that carries a body is refused outright — the guard cannot safely replay a streaming request body across hops, so the upload sender (#146) re-issues rather than risk a silently-truncated upload.
 
 ### No ambient credentials and `trust_env=False`
 
