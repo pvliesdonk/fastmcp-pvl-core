@@ -22,12 +22,20 @@ import hashlib
 import logging
 import os
 import tempfile
+from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Literal
 
 from starlette.responses import Response
 
+from fastmcp_pvl_core._file_exchange._codes import TransferErrorCode
+from fastmcp_pvl_core._file_exchange._errors import FileExchangeTransferError
+from fastmcp_pvl_core._file_exchange._outbound import guarded_stream
 from fastmcp_pvl_core._file_exchange._spec import SPEC_VERSION, TICKET_TYPE
-from fastmcp_pvl_core._file_exchange._staging import _HASHLIB_BY_LABEL, _write_chunk
+from fastmcp_pvl_core._file_exchange._staging import (
+    _CHUNK,
+    _HASHLIB_BY_LABEL,
+    _write_chunk,
+)
 from fastmcp_pvl_core._file_exchange._tokens import capability_url
 from fastmcp_pvl_core._file_exchange._wire import (
     ArtifactConstraints,
@@ -41,7 +49,7 @@ if TYPE_CHECKING:
     from starlette.requests import Request
 
     from fastmcp_pvl_core._config import ServerConfig
-    from fastmcp_pvl_core._file_exchange._hooks import ArtifactSink
+    from fastmcp_pvl_core._file_exchange._hooks import ArtifactSink, ArtifactSource
     from fastmcp_pvl_core._file_exchange._tokens import CapabilityTokenStore
 
 logger = logging.getLogger(__name__)
@@ -296,3 +304,112 @@ def register_upload_route(
         finally:
             with contextlib.suppress(OSError):
                 await asyncio.to_thread(os.unlink, tmp_path)
+
+
+async def upload_sender_consume(
+    sink: UploadSink,
+    source: ArtifactSource,
+    key: str,
+    *,
+    config: ServerConfig,
+) -> None:
+    """Sender role (push): stage ``source[key]`` and push it to ``sink``.
+
+    Selection (``select_sink``) is the caller's step. Stages the artifact to a
+    transient temp file (single pass, hashing), computes an RFC 9530
+    ``Content-Digest``, and streams the temp through the #147 ``guarded_stream``
+    (which strips ambient credentials and refuses redirects on a bodied request).
+    A non-2xx response maps to ``transfer-failed``; a guard refusal arrives coded
+    and propagates. The temp is deleted on every path.
+
+    Staging is required: the hook stream is non-seekable and the ``Content-Digest``
+    must be hashed before it can be sent in the request header, so a single hook
+    read cannot both hash-first and stream-from-the-hook.
+    """
+    stream, meta = await source.open_artifact(key)
+    try:
+        fd, tmp_path = tempfile.mkstemp(prefix="fx-upload-send-")
+    except OSError as exc:
+        with contextlib.suppress(Exception):
+            await asyncio.to_thread(stream.close)
+        raise FileExchangeTransferError(
+            TransferErrorCode.TRANSFER_FAILED,
+            transport="upload",
+            detail="failed to create a temporary file",
+        ) from exc
+    try:
+        try:
+            tmp = os.fdopen(fd, "wb")
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.close(fd)
+            raise
+        hasher = hashlib.sha256()
+        size = 0
+        try:
+            try:
+                while True:
+                    chunk = await asyncio.to_thread(stream.read, _CHUNK)
+                    if not chunk:
+                        break
+                    size += len(chunk)
+                    await asyncio.to_thread(_write_chunk, tmp, hasher, chunk)
+                await asyncio.to_thread(tmp.flush)
+            except OSError as exc:
+                raise FileExchangeTransferError(
+                    TransferErrorCode.TRANSFER_FAILED,
+                    transport="upload",
+                    detail="failed to stage the artifact for upload",
+                ) from exc
+            finally:
+                with contextlib.suppress(OSError):
+                    tmp.close()
+        finally:
+            with contextlib.suppress(Exception):
+                await asyncio.to_thread(stream.close)
+
+        headers = {
+            "Content-Length": str(size),
+            "Content-Digest": _format_content_digest(
+                _DEFAULT_DIGEST_LABEL, hasher.digest()
+            ),
+        }
+        if meta.mimeType is not None:
+            headers["Content-Type"] = meta.mimeType
+
+        async def _content() -> AsyncIterator[bytes]:
+            handle = await asyncio.to_thread(open, tmp_path, "rb")
+            try:
+                while True:
+                    chunk = await asyncio.to_thread(handle.read, _CHUNK)
+                    if not chunk:
+                        break
+                    yield chunk
+            finally:
+                with contextlib.suppress(OSError):
+                    await asyncio.to_thread(handle.close)
+
+        try:
+            async with guarded_stream(
+                sink.method,
+                sink.url,
+                config=config,
+                transport="upload",
+                headers=headers,
+                content=_content(),
+            ) as resp:
+                if not 200 <= resp.status < 300:
+                    raise FileExchangeTransferError(
+                        TransferErrorCode.TRANSFER_FAILED,
+                        transport="upload",
+                        detail="upload endpoint returned a non-success status",
+                    )
+        except OSError as exc:
+            raise FileExchangeTransferError(
+                TransferErrorCode.TRANSFER_FAILED,
+                transport="upload",
+                detail="failed to read the staged artifact during upload",
+            ) from exc
+    finally:
+        with contextlib.suppress(OSError):
+            await asyncio.to_thread(os.unlink, tmp_path)

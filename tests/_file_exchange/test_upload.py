@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import base64
+import contextlib
 import hashlib
+from datetime import datetime, timedelta, timezone
 
 import httpx
 import pytest
@@ -11,9 +13,12 @@ from fastmcp import FastMCP
 
 from fastmcp_pvl_core._config import ServerConfig
 from fastmcp_pvl_core._file_exchange import _routes, _upload
+from fastmcp_pvl_core._file_exchange._codes import TransferErrorCode
+from fastmcp_pvl_core._file_exchange._errors import FileExchangeTransferError
 from fastmcp_pvl_core._file_exchange._tokens import build_capability_token_store
 from fastmcp_pvl_core._file_exchange._wire import (
     ArtifactConstraints,
+    ArtifactMetadata,
     IntakeTicket,
     UploadSink,
 )
@@ -308,3 +313,117 @@ async def test_register_routes_upload_requires_config():
         _routes.register_file_exchange_routes(
             mcp, token_store=store, sink=_CapturingSink(), config=None
         )
+
+
+class _BytesSource:
+    def __init__(self, key, body, *, mime="application/octet-stream"):
+        self._key, self._body, self._mime = key, body, mime
+
+    async def open_artifact(self, key):
+        import io
+
+        assert key == self._key
+        return io.BytesIO(self._body), ArtifactMetadata(
+            name="a", mimeType=self._mime, size=len(self._body)
+        )
+
+
+class _FakeGuarded:
+    def __init__(self, status):
+        self.status = status
+
+
+def _upload_sink(method="PUT"):
+    return UploadSink(
+        transport="upload",
+        url="https://up.test/fx/u/tok",
+        method=method,
+        expiresAt=datetime.now(timezone.utc) + timedelta(hours=1),
+    )
+
+
+async def test_sender_stages_and_sends_with_headers(monkeypatch):
+    body = b"sender-payload" * 50
+    captured: dict = {}
+
+    @contextlib.asynccontextmanager
+    async def fake_guard(method, url, *, config, transport, headers=None, content=None):
+        captured["method"] = method
+        captured["url"] = url
+        captured["transport"] = transport
+        captured["headers"] = dict(headers or {})
+        captured["body"] = b"".join([chunk async for chunk in content])
+        yield _FakeGuarded(204)
+
+    monkeypatch.setattr(_upload, "guarded_stream", fake_guard)
+    await _upload.upload_sender_consume(
+        _upload_sink(),
+        _BytesSource("k", body, mime="text/plain"),
+        "k",
+        config=ServerConfig(),
+    )
+    assert captured["method"] == "PUT"
+    assert captured["url"] == "https://up.test/fx/u/tok"
+    assert captured["transport"] == "upload"
+    assert captured["body"] == body
+    assert captured["headers"]["Content-Length"] == str(len(body))
+    assert captured["headers"]["Content-Type"] == "text/plain"
+    assert captured["headers"]["Content-Digest"] == (
+        "sha-256=:" + base64.b64encode(hashlib.sha256(body).digest()).decode() + ":"
+    )
+
+
+async def test_sender_omits_content_type_when_unknown(monkeypatch):
+    captured: dict = {}
+
+    @contextlib.asynccontextmanager
+    async def fake_guard(method, url, *, config, transport, headers=None, content=None):
+        async for _ in content:
+            pass
+        captured["headers"] = dict(headers or {})
+        yield _FakeGuarded(201)
+
+    monkeypatch.setattr(_upload, "guarded_stream", fake_guard)
+
+    class _NoMimeSource:
+        async def open_artifact(self, key):
+            import io
+
+            return io.BytesIO(b"x"), ArtifactMetadata(size=1)
+
+    await _upload.upload_sender_consume(
+        _upload_sink(), _NoMimeSource(), "k", config=ServerConfig()
+    )
+    assert "Content-Type" not in captured["headers"]
+
+
+async def test_sender_non_2xx_raises_transfer_failed(monkeypatch):
+    @contextlib.asynccontextmanager
+    async def fake_guard(method, url, *, config, transport, headers=None, content=None):
+        async for _ in content:
+            pass
+        yield _FakeGuarded(500)
+
+    monkeypatch.setattr(_upload, "guarded_stream", fake_guard)
+    with pytest.raises(FileExchangeTransferError) as exc:
+        await _upload.upload_sender_consume(
+            _upload_sink(), _BytesSource("k", b"data"), "k", config=ServerConfig()
+        )
+    assert exc.value.code == TransferErrorCode.TRANSFER_FAILED
+    assert exc.value.transport == "upload"
+
+
+async def test_sender_guard_refusal_propagates(monkeypatch):
+    @contextlib.asynccontextmanager
+    async def fake_guard(method, url, *, config, transport, headers=None, content=None):
+        raise FileExchangeTransferError(
+            TransferErrorCode.NOT_ACCESSIBLE, transport="upload", detail="blocked"
+        )
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(_upload, "guarded_stream", fake_guard)
+    with pytest.raises(FileExchangeTransferError) as exc:
+        await _upload.upload_sender_consume(
+            _upload_sink(), _BytesSource("k", b"data"), "k", config=ServerConfig()
+        )
+    assert exc.value.code == TransferErrorCode.NOT_ACCESSIBLE
