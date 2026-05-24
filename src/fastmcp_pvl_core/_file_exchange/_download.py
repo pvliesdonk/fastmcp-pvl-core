@@ -419,6 +419,7 @@ def register_file_exchange_routes(
                         return
                     remaining = None if end is None else (end - start + 1)
                     hit_eof = False
+                    delivered = 0
                     while remaining is None or remaining > 0:
                         n = _CHUNK if remaining is None else min(_CHUNK, remaining)
                         chunk = await asyncio.to_thread(stream.read, n)
@@ -427,8 +428,17 @@ def register_file_exchange_routes(
                             break
                         if remaining is not None:
                             remaining -= len(chunk)
+                        delivered += len(chunk)
                         yield chunk
-                    if consume_on_eof and hit_eof:
+                    # Consume only when the full declared payload was delivered:
+                    # a source that truncates (yields fewer than its declared
+                    # size) must not burn the single-use token, so the fetcher
+                    # can retry. Unknown size can't be checked — consume on EOF.
+                    if (
+                        consume_on_eof
+                        and hit_eof
+                        and (size is None or delivered == size - start)
+                    ):
                         try:
                             await token_store.consume(token)
                         except Exception:

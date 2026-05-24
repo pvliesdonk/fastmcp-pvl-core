@@ -562,6 +562,19 @@ async def test_route_source_shorter_than_range_start_does_not_consume(caplog):
     assert any("fewer bytes" in m for m in caplog.messages)  # misbehaving hook logged
 
 
+async def test_route_yield_phase_truncation_does_not_consume():
+    store = _store()
+    token = await _mint_token(store, "k1")
+    # Reports size 100 but the stream yields only 10 bytes: a full GET reaches
+    # the yield loop, hits EOF early, and must NOT burn the single-use token so
+    # the fetcher can retry.
+    source = _ShortStreamSource("k1", b"0123456789", reported_size=100)
+    async with _route_client(store, source) as client:
+        with contextlib.suppress(httpx.RemoteProtocolError):
+            await client.get(f"/fx/d/{token}")
+    assert await store.lookup(token) is not None  # truncated delivery -> token kept
+
+
 async def test_fetcher_initial_404_maps_not_accessible(monkeypatch):
     def responder(request):
         return httpx.Response(404, content=b"<html>not found</html>")
