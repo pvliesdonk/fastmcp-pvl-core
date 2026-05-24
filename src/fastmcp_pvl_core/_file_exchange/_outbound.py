@@ -148,12 +148,16 @@ class GuardedResponse:
     """A streaming response yielded by :func:`guarded_stream`.
 
     The underlying ``httpx.Response`` is held in a ``repr=False`` field so that
-    logging or ``repr``-ing a :class:`GuardedResponse` never exposes the
-    capability-token-bearing URL (the response stays reachable as a private
-    field for the body read). The caller reads the body via :meth:`aiter_bytes`
-    inside the ``async with``; a failure *during* body iteration propagates as a
-    raw ``httpx`` error for the consuming data plane (#145/#146) to map, whereas
-    pre-body failures are raised as :class:`FileExchangeTransferError`.
+    ``repr``-ing or logging a :class:`GuardedResponse` does not surface the
+    response's request URL — which httpx's own ``Response``/``Request`` repr
+    embeds verbatim, capability token and all. The guarantee is scoped to that
+    httpx-repr channel: ``status`` and ``headers`` are still shown, so a server
+    that echoed the URL into a response header would still expose it (not the
+    normal case). The response stays reachable as a private field for the body
+    read. The caller reads the body via :meth:`aiter_bytes` inside the ``async
+    with``; a failure *during* body iteration propagates as a raw ``httpx`` error
+    for the consuming data plane (#145/#146) to map, whereas pre-body failures are
+    raised as :class:`FileExchangeTransferError`.
     """
 
     status: int

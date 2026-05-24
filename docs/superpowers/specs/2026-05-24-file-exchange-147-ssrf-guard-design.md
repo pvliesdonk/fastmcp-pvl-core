@@ -86,21 +86,28 @@ redirect-following rebind-safe).
    permitted → refuse (blocked). If resolution fails or returns nothing → refuse
    (unresolvable).
 4. **Pin + connect.** Issue the request to `https://<pinned-ip>:<port><path+query>`
-   with `headers={"Host": host, **caller_headers}` and
-   `extensions={"sni_hostname": host}` — so TLS SNI and certificate verification
-   still target the hostname while the socket connects to the validated IP.
-   `follow_redirects=False`. `timeout=` from `config.file_exchange_http_timeout`.
-   Streamed (the body is not read here). The `httpx.AsyncClient` is built with
-   **`trust_env=False`** and no auth/cookies: no ambient credentials, and no
-   `HTTP(S)_PROXY`/`NETRC` interference (a proxy env var would otherwise route
-   around the IP pin — an SSRF bypass). Caller headers pass through; the guard
-   adds no credential headers.
-5. **Redirects.** On a 3xx with `Location`: resolve `Location` relative to the
-   current request URL. If the request carries a body (`content is not None`), refuse — a streaming request body cannot be safely replayed across a redirect hop.
-   If it is **same-origin** (case-normalized
-   scheme+host+port match) and the hop count is below the cap (5), recurse from
-   step 1 against the new URL (full re-resolve + re-validate + re-pin). If it is
-   **cross-origin**, refuse. If the hop cap is exceeded, refuse.
+   with `extensions={"sni_hostname": host}` — so TLS SNI and certificate
+   verification still target the hostname while the socket connects to the
+   validated IP. The guard **owns** the `Host` header: it strips any
+   caller-supplied `host` key (case-insensitive) and forces the validated
+   hostname (a non-default port is preserved and an IPv6 literal bracketed), so a
+   caller cannot smuggle a different vhost onto the pinned IP. It also strips any
+   userinfo (`user:pass@`) from the URL, since httpx would otherwise synthesise an
+   `Authorization: Basic` header from it. `follow_redirects=False`. `timeout=`
+   from `config.file_exchange_http_timeout`. Streamed (the body is not read here).
+   The `httpx.AsyncClient` is built with **`trust_env=False`** and no auth/cookies:
+   no ambient credentials, and no `HTTP(S)_PROXY`/`NETRC` interference (a proxy
+   env var would otherwise route around the IP pin — an SSRF bypass). Caller
+   headers other than `Host` pass through; the guard adds no credential headers.
+5. **Redirects.** On a redirect status carrying a valid `Location` (httpx
+   `has_redirect_location` — a `304` or a `Location`-less 3xx is *not* a redirect
+   and is yielded as a terminal response): resolve `Location` relative to the
+   current request URL. If the request carries a body (`content is not None`),
+   refuse — a streaming request body cannot be safely replayed across a redirect
+   hop. If it is **same-origin** (case-normalized scheme+host+port match) and the
+   hop count is below the cap (5), recurse from step 1 against the new URL (full
+   re-resolve + re-validate + re-pin). If it is **cross-origin**, refuse. If the
+   hop cap is exceeded, refuse.
 6. **Yield.** Otherwise wrap the streaming response in `GuardedResponse` and
    yield it.
 
@@ -158,7 +165,12 @@ A redirect on a request that carries a body is refused outright — the guard ca
 client certificates — the capability URL is the only credential. The guard
 builds a fresh client per call with no auth and no cookie jar, and crucially sets
 `trust_env=False` so environment proxies and `netrc` cannot inject credentials or
-divert the connection past the pinned IP.
+divert the connection past the pinned IP. Two further leaks are closed at request
+build: any userinfo in the URL (`user:pass@`) is stripped, because httpx would
+otherwise synthesise an `Authorization: Basic` header from it; and any
+caller-supplied `Host` header is stripped in favour of the validated hostname, so
+a caller cannot smuggle the request onto a different vhost on the pinned IP. Both
+apply to the initial URL and to every same-origin redirect hop.
 
 ### Timeouts
 

@@ -12,6 +12,8 @@
 
 **No public surface change:** `guarded_stream`/`GuardedResponse` are imported by #145/#146 via `fastmcp_pvl_core._file_exchange._outbound`. They are NOT added to `file_exchange.py` or the subpackage `__init__.py` `__all__`. The only operator-facing additions are two `ServerConfig` fields.
 
+> **The shipped module is the source of truth, not the code blocks below.** This is a forward-looking TDD plan: the code in each task is the *planned starting point*. During implementation, review surfaced additional security mechanisms that the shipped `_outbound.py` carries and these snippets do not — the userinfo strip and caller-`Host` strip in `_send_pinned`, `has_redirect_location` (not `is_redirect`) gating with a body-on-redirect refusal in `guarded_stream`, the non-positive-timeout `ConfigurationError` guard in `_make_client`, and the empty-resolution guard. Read `_outbound.py` at HEAD for the actual behaviour.
+
 ---
 
 ### Task 1: ServerConfig fields
