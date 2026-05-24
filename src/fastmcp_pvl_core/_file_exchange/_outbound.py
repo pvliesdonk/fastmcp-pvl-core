@@ -198,10 +198,14 @@ async def _send_pinned(
             transport=transport,
             detail="address not permitted",
         )
+    # The guard owns the Host header (it must match the validated hostname so a
+    # caller cannot redirect the request to a different vhost on the pinned IP);
+    # strip any caller-supplied host key (case-insensitive) before forcing ours.
+    safe_headers = {k: v for k, v in (headers or {}).items() if k.lower() != "host"}
     request = client.build_request(
         method,
         httpx.URL(url).copy_with(host=pinned),
-        headers={"Host": host, **(headers or {})},
+        headers={"Host": host, **safe_headers},
         content=content,
         extensions={"sni_hostname": host},
     )

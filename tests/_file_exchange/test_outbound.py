@@ -249,8 +249,7 @@ async def test_make_client_security_defaults():
     try:
         assert client.trust_env is False
         assert client.follow_redirects is False
-        assert client.timeout.read == 30.0
-        assert client.timeout.connect == 30.0
+        assert client.timeout == httpx.Timeout(30.0)
     finally:
         await client.aclose()
 
@@ -280,4 +279,45 @@ async def test_client_closed_on_caller_exception(monkeypatch):
             "GET", "https://example.com/x", config=_cfg(), transport="download"
         ):
             raise RuntimeError("boom")
+    assert holder["client"].is_closed is True
+
+
+async def test_caller_cannot_inject_host_header(monkeypatch):
+    seen = []
+
+    def handler(request):
+        seen.append(request)
+        return httpx.Response(200, content=b"x")
+
+    _install_mock(monkeypatch, handler, resolve_to=["93.184.216.34"])
+    async with _outbound.guarded_stream(
+        "GET",
+        "https://example.com/x",
+        config=_cfg(),
+        transport="download",
+        headers={"Host": "evil.com", "host": "evil2.com"},
+    ) as resp:
+        async for _ in resp.aiter_bytes():
+            pass
+    assert seen[0].headers["host"] == "example.com"
+
+
+async def test_client_closed_after_send_pinned_raises(monkeypatch):
+    holder = {}
+
+    async def fake_resolve(host, port):
+        return ["127.0.0.1"]  # non-global -> refusal before yield
+
+    def fake_make_client(timeout):
+        client = httpx.AsyncClient(trust_env=False, follow_redirects=False)
+        holder["client"] = client
+        return client
+
+    monkeypatch.setattr(_outbound, "_resolve", fake_resolve)
+    monkeypatch.setattr(_outbound, "_make_client", fake_make_client)
+    with pytest.raises(FileExchangeTransferError):
+        async with _outbound.guarded_stream(
+            "GET", "https://example.com/x", config=_cfg(), transport="download"
+        ):
+            pass
     assert holder["client"].is_closed is True
