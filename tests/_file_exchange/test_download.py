@@ -633,3 +633,108 @@ async def test_fetcher_sink_transfer_error_propagates_unchanged(monkeypatch):
             _handle(body), _handle(body).sources[0], _CodedSink(), config=_cfg()
         )
     assert ei.value.code == TransferErrorCode.NOT_ACCESSIBLE  # not re-wrapped
+
+
+class _RaisingSource:
+    async def open_artifact(self, key):
+        raise FileNotFoundError("/srv/secret/vault/path")  # message must not leak
+
+
+async def test_route_open_artifact_failure_returns_body_free_500():
+    store = _store()
+    token = await _mint_token(store, "k1")
+    async with _route_client(store, _RaisingSource()) as client:
+        r = await client.get(f"/fx/d/{token}")
+    assert r.status_code == 500
+    assert r.content == b""  # the hook's exception message is not echoed
+    assert await store.lookup(token) is not None  # artifact unserved -> not consumed
+
+
+async def test_route_consume_failure_after_delivery_is_logged(monkeypatch, caplog):
+    store = _store()
+    body = b"deliver-me-then-fail-consume"
+    token = await _mint_token(store, "k1")
+
+    async def _boom(_token):
+        raise RuntimeError("kv backend down")
+
+    monkeypatch.setattr(store, "consume", _boom)
+    async with _route_client(store, _BytesSource("k1", body)) as client:
+        with caplog.at_level("WARNING"):
+            r = await client.get(f"/fx/d/{token}")
+    assert r.status_code == 200
+    assert r.content == body  # full body delivered despite the consume failure
+    assert any("consume failed" in m for m in caplog.messages)
+
+
+async def test_route_empty_artifact_full_get_200():
+    store = _store()
+    token = await _mint_token(store, "k1")
+    async with _route_client(store, _BytesSource("k1", b"")) as client:
+        r = await client.get(f"/fx/d/{token}")
+    assert r.status_code == 200
+    assert r.content == b""
+    assert r.headers["content-length"] == "0"
+
+
+async def test_route_suffix_range_on_empty_artifact_416():
+    store = _store()
+    token = await _mint_token(store, "k1")
+    async with _route_client(store, _BytesSource("k1", b"")) as client:
+        r = await client.get(f"/fx/d/{token}", headers={"Range": "bytes=-4"})
+    assert r.status_code == 416
+
+
+async def test_fetcher_empty_artifact(monkeypatch):
+    body = b""
+    digest = "sha-256:" + hashlib.sha256(body).hexdigest()
+
+    def responder(request):
+        return httpx.Response(200, content=body)
+
+    _install_guard(monkeypatch, responder)
+    sink = _CapturingSink()
+    await _download.download_fetcher_consume(
+        _handle(body, digest=digest), _handle(body).sources[0], sink, config=_cfg()
+    )
+    assert sink.deposited == b""
+    assert sink.calls == 1
+
+
+async def test_fetcher_digest_only_no_declared_size(monkeypatch):
+    body = b"digest-only-bytes"
+    digest = "sha-256:" + hashlib.sha256(body).hexdigest()
+    from fastmcp_pvl_core._file_exchange._wire import ArtifactMetadata, TransferHandle
+
+    handle = TransferHandle(
+        type=HANDLE_TYPE,
+        version=SPEC_VERSION,
+        artifact=ArtifactMetadata(name="a", digest=digest),  # no size declared
+        sources=[
+            DownloadSource(
+                transport="download",
+                url="https://prov.example/fx/d/tok",
+                expiresAt="2099-01-01T00:00:00Z",
+                singleUse=True,
+            )
+        ],
+    )
+
+    def responder(request):
+        return httpx.Response(200, content=body)
+
+    _install_guard(monkeypatch, responder)
+    sink = _CapturingSink()
+    await _download.download_fetcher_consume(
+        handle, handle.sources[0], sink, config=_cfg()
+    )
+    assert sink.deposited == body  # digest-only verification succeeds
+
+
+@pytest.mark.parametrize(
+    "header",
+    ["items=0-1", "bytes=abc", "bytes=5-2", "bytes=-0", "bytes=", "bytes=-abc"],
+)
+def test_parse_range_malformed_raises(header):
+    with pytest.raises(_download._UnsatisfiableError):
+        _download._parse_range(header, 100)

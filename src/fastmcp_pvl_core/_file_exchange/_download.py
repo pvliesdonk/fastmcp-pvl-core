@@ -135,8 +135,9 @@ async def download_fetcher_consume(
     (verify-before-use), then deletes the temp. Failures map to §13 codes; a
     dropped connection is recovered with ``Range``.
 
-    The download loop is async (it awaits ``guarded_stream``); only the blocking
-    temp-file writes are off-loaded with ``asyncio.to_thread``.
+    The download loop is async (it awaits ``guarded_stream``); the blocking file
+    I/O (chunk writes, flush/close, and the final temp open/close/unlink) is
+    off-loaded with ``asyncio.to_thread``.
     """
     expected_size = handle.artifact.size
     max_size = config.file_exchange_max_artifact_size
@@ -261,7 +262,9 @@ def _parse_range(header: str | None, size: int | None) -> tuple[int, int | None]
         raise _UnsatisfiableError
     try:
         if start_s == "":  # suffix range: bytes=-N (last N bytes)
-            if size is None or end_s == "":
+            # A suffix range on a zero-byte (or unknown-size) representation is
+            # unsatisfiable — there is no last byte to address.
+            if size is None or size == 0 or end_s == "":
                 raise _UnsatisfiableError
             suffix = int(end_s)
             if suffix <= 0:
@@ -303,7 +306,15 @@ def register_file_exchange_routes(
         rec = await token_store.lookup(token)
         if rec is None:
             return Response(status_code=404)
-        stream, meta = await source.open_artifact(rec.metadata["key"])
+        try:
+            stream, meta = await source.open_artifact(rec.metadata["key"])
+        except Exception:
+            # The hook contract permits any exception ("raise on failure"); its
+            # message may carry server paths/identifiers, so never echo it to the
+            # client — log locally and return a body-free 500. The token is not
+            # consumed (the artifact was not served).
+            logger.exception("file-exchange: download source open_artifact failed")
+            return Response(status_code=500)
         size = meta.size
         # A single-part 206 MUST carry a Content-Range (RFC 9110 §15.3.7.1),
         # which needs a known total length; without size we cannot form one, so
