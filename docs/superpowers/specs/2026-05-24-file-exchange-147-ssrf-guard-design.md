@@ -96,7 +96,8 @@ redirect-following rebind-safe).
    around the IP pin — an SSRF bypass). Caller headers pass through; the guard
    adds no credential headers.
 5. **Redirects.** On a 3xx with `Location`: resolve `Location` relative to the
-   current request URL. If it is **same-origin** (case-normalized
+   current request URL. If the request carries a body (`content is not None`), refuse — a streaming request body cannot be safely replayed across a redirect hop.
+   If it is **same-origin** (case-normalized
    scheme+host+port match) and the hop count is below the cap (5), recurse from
    step 1 against the new URL (full re-resolve + re-validate + re-pin). If it is
    **cross-origin**, refuse. If the hop cap is exceeded, refuse.

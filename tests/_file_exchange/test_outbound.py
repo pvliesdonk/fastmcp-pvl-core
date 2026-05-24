@@ -1,4 +1,5 @@
 import ipaddress
+import logging
 import socket
 
 import httpx
@@ -484,6 +485,7 @@ async def test_refuses_redirect_that_rebinds_to_blocked_ip(monkeypatch):
         ):
             pass
     assert ei.value.code == TransferErrorCode.NOT_ACCESSIBLE
+    assert ei.value.detail == "address not permitted"
 
 
 async def test_refuses_redirect_on_request_with_body(monkeypatch):
@@ -633,3 +635,113 @@ async def test_client_closed_on_cross_origin_refusal(monkeypatch):
         ):
             pass
     assert holder["client"].is_closed is True
+
+
+async def test_non_redirect_3xx_is_yielded(monkeypatch):
+    def handler(request):
+        return httpx.Response(304)
+
+    _install_mock(monkeypatch, handler, resolve_to=["93.184.216.34"])
+    async with _outbound.guarded_stream(
+        "GET", "https://example.com/x", config=_cfg(), transport="download"
+    ) as resp:
+        assert resp.status == 304
+        async for _ in resp.aiter_bytes():
+            pass
+
+
+async def test_3xx_without_location_is_yielded(monkeypatch):
+    def handler(request):
+        return httpx.Response(302)  # 3xx but no Location header
+
+    _install_mock(monkeypatch, handler, resolve_to=["93.184.216.34"])
+    async with _outbound.guarded_stream(
+        "GET", "https://example.com/x", config=_cfg(), transport="download"
+    ) as resp:
+        assert resp.status == 302
+        async for _ in resp.aiter_bytes():
+            pass
+
+
+async def test_host_header_includes_non_default_port(monkeypatch):
+    seen = []
+
+    def handler(request):
+        seen.append(request)
+        return httpx.Response(200, content=b"x")
+
+    _install_mock(monkeypatch, handler, resolve_to=["93.184.216.34"])
+    async with _outbound.guarded_stream(
+        "GET", "https://example.com:8443/x", config=_cfg(), transport="download"
+    ) as resp:
+        async for _ in resp.aiter_bytes():
+            pass
+    req = seen[0]
+    assert req.headers["host"] == "example.com:8443"
+    assert req.url.host == "93.184.216.34"
+    assert req.url.port == 8443
+    assert req.extensions.get("sni_hostname") == "example.com"
+
+
+async def test_refuses_url_without_host():
+    with pytest.raises(FileExchangeTransferError) as ei:
+        async with _outbound.guarded_stream(
+            "GET", "https:///path", config=_cfg(), transport="download"
+        ):
+            pass
+    assert ei.value.code == TransferErrorCode.NOT_ACCESSIBLE
+
+
+async def test_body_iteration_error_propagates_raw_and_closes_client(monkeypatch):
+    holder = {}
+
+    async def raising_stream():
+        yield b"partial"
+        raise httpx.ReadError("mid-stream failure")
+
+    def handler(request):
+        return httpx.Response(200, content=raising_stream())
+
+    async def fake_resolve(host, port):
+        return ["93.184.216.34"]
+
+    def fake_make_client(timeout):
+        client = httpx.AsyncClient(
+            transport=httpx.MockTransport(handler),
+            trust_env=False,
+            follow_redirects=False,
+        )
+        holder["client"] = client
+        return client
+
+    monkeypatch.setattr(_outbound, "_resolve", fake_resolve)
+    monkeypatch.setattr(_outbound, "_make_client", fake_make_client)
+    # A failure during body iteration must surface as a raw httpx error (so the
+    # data plane can map/recover), NOT remapped to FileExchangeTransferError.
+    with pytest.raises(httpx.HTTPError):
+        async with _outbound.guarded_stream(
+            "GET", "https://example.com/x", config=_cfg(), transport="download"
+        ) as resp:
+            async for _ in resp.aiter_bytes():
+                pass
+    assert holder["client"].is_closed is True
+
+
+async def test_failure_logs_do_not_leak_credentials_or_token(monkeypatch, caplog):
+    async def fake_resolve(host, port):
+        return ["127.0.0.1"]  # non-global -> refusal + debug log on the failure path
+
+    monkeypatch.setattr(_outbound, "_resolve", fake_resolve)
+    with caplog.at_level(logging.DEBUG):
+        with pytest.raises(FileExchangeTransferError):
+            async with _outbound.guarded_stream(
+                "GET",
+                "https://carol:hunter2@example.com/d/SECRETTOKEN",
+                config=_cfg(),
+                transport="download",
+            ):
+                pass
+    blob = " ".join(record.getMessage() for record in caplog.records)
+    assert "hunter2" not in blob
+    assert "carol" not in blob
+    assert "SECRETTOKEN" not in blob

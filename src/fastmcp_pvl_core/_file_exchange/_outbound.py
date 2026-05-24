@@ -2,9 +2,10 @@
 
 The single primitive the download fetcher (#145) and upload sender (#146)
 issue their requests through. Enforces the §15 SSRF mitigations (https-only,
-deny-all-non-global address refusal with a CIDR allowlist, no cross-origin
-redirect, no ambient credentials) and the §15 DNS-rebinding mitigation
-(resolve-once-pin-IP via httpx's ``sni_hostname`` extension). Carries the
+deny-all-non-global address refusal with a CIDR allowlist, cross-origin redirect
+refusal (same-origin followed, bounded), no ambient credentials) and the §15
+DNS-rebinding mitigation (resolve-once-pin-IP via httpx's ``sni_hostname``
+extension). Carries the
 URL-redaction discipline: only the hostname ever reaches a log line, and no
 URL parts reach the wire ``detail``.
 
@@ -128,7 +129,8 @@ def _make_client(timeout: float) -> httpx.AsyncClient:
 
     A non-positive ``timeout`` is operator misconfiguration that would silently
     disable the request timeout (the resource-exhaustion bound), so it raises
-    :class:`ConfigurationError` — consistent with the token-store TTL guard.
+    :class:`ConfigurationError` — the same loud-failure type this module uses for
+    the CIDR-allowlist parse above.
     """
     if timeout <= 0:
         raise ConfigurationError(
@@ -228,10 +230,14 @@ async def _send_pinned(
     # credentials guarantee (§10.2/§10.3). Applies to the initial URL and to
     # every same-origin redirect target (all go through _send_pinned).
     pinned_url = httpx.URL(url).copy_with(host=pinned, username="", password="")
+    # Carry a non-default port in the Host header (RFC 7230 §5.4) and bracket an
+    # IPv6-literal host; SNI stays the bare hostname (no port/brackets).
+    bracketed = f"[{host}]" if ":" in host else host
+    host_header = bracketed if port == 443 else f"{bracketed}:{port}"
     request = client.build_request(
         method,
         pinned_url,
-        headers={"Host": host, **safe_headers},
+        headers={"Host": host_header, **safe_headers},
         content=content,
         extensions={"sni_hostname": host},
     )
@@ -287,7 +293,7 @@ async def guarded_stream(
             response = await _send_pinned(
                 client, method, current, transport, allowed, headers, content
             )
-            if response.is_redirect:
+            if response.has_redirect_location:
                 target = str(
                     httpx.URL(current).join(response.headers.get("location", ""))
                 )
