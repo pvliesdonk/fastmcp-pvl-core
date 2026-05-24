@@ -1,4 +1,5 @@
 import hashlib
+import os
 
 import httpx
 import pytest
@@ -202,3 +203,33 @@ async def test_fetcher_guard_refusal_propagates(monkeypatch):
         )
     assert ei.value.code == TransferErrorCode.NOT_ACCESSIBLE
     assert sink.calls == 0
+
+
+async def test_fetcher_cleans_up_temp_on_error(monkeypatch, tmp_path):
+    # The temp file must be removed on a streaming-phase error path (regression:
+    # the unlink used to sit in a second sequential try that such errors skipped).
+    real_mkstemp = _download.tempfile.mkstemp
+    created: list[str] = []
+
+    def spy_mkstemp(*args, **kwargs):
+        kwargs.setdefault("dir", str(tmp_path))
+        fd, path = real_mkstemp(*args, **kwargs)
+        created.append(path)
+        return fd, path
+
+    monkeypatch.setattr(_download.tempfile, "mkstemp", spy_mkstemp)
+
+    body = b"x" * 5000
+
+    def responder(request):
+        return httpx.Response(200, content=body)
+
+    _install_guard(monkeypatch, responder)
+    sink = _CapturingSink()
+    with pytest.raises(FileExchangeTransferError) as ei:
+        await _download.download_fetcher_consume(
+            _handle(body), _handle(body).sources[0], sink, config=_cfg(max_size=1000)
+        )
+    assert ei.value.code == TransferErrorCode.TOO_LARGE
+    assert created  # a temp file was created
+    assert all(not os.path.exists(p) for p in created)  # ...and removed on error
