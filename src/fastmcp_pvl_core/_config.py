@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
-from fastmcp_pvl_core._env import env, parse_bool, parse_scopes
+from fastmcp_pvl_core._env import env, parse_bool, parse_list, parse_scopes
 
 Transport = Literal["stdio", "http", "sse"]
 
@@ -62,6 +62,12 @@ class ServerConfig:
     # is consumed by the #146 upload route, surfaced here per #144's scope.
     file_exchange_token_ttl: float = 3600.0
     file_exchange_max_artifact_size: int | None = None
+    # File-exchange outbound-HTTP guard config (#147). allowed_networks are
+    # CIDRs that bypass the deny-all-non-global SSRF refusal (parsed in
+    # _file_exchange._outbound); http_timeout bounds connect/read/write on
+    # every guarded request.
+    file_exchange_allowed_networks: tuple[str, ...] = ()
+    file_exchange_http_timeout: float = 30.0
 
     bearer_tokens_file: Path | None = None
     # Subject for the single-token bearer mode; ignored when
@@ -128,6 +134,8 @@ class ServerConfig:
 
         token_ttl_str = env(env_prefix, "FILE_EXCHANGE_TOKEN_TTL", "3600")
         max_size_raw = env(env_prefix, "FILE_EXCHANGE_MAX_ARTIFACT_SIZE")
+        allowed_networks_raw = env(env_prefix, "FILE_EXCHANGE_ALLOWED_NETWORKS")
+        http_timeout_str = env(env_prefix, "FILE_EXCHANGE_HTTP_TIMEOUT", "30")
 
         tokens_file_raw = env(env_prefix, "BEARER_TOKENS_FILE")
         # ``Path(...)`` keeps a leading ``~`` literal here.  Expansion is
@@ -161,6 +169,10 @@ class ServerConfig:
             file_exchange_max_artifact_size=(
                 int(max_size_raw) if max_size_raw else None
             ),
+            file_exchange_allowed_networks=(
+                tuple(parse_list(allowed_networks_raw)) if allowed_networks_raw else ()
+            ),
+            file_exchange_http_timeout=float(http_timeout_str),
             bearer_tokens_file=bearer_tokens_file,
             bearer_default_subject=bearer_default_subject,
         )
