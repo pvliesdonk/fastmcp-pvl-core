@@ -5,10 +5,12 @@ from __future__ import annotations
 import base64
 import hashlib
 
+import httpx
 import pytest
+from fastmcp import FastMCP
 
 from fastmcp_pvl_core._config import ServerConfig
-from fastmcp_pvl_core._file_exchange import _upload
+from fastmcp_pvl_core._file_exchange import _routes, _upload
 from fastmcp_pvl_core._file_exchange._tokens import build_capability_token_store
 from fastmcp_pvl_core._file_exchange._wire import (
     ArtifactConstraints,
@@ -132,3 +134,177 @@ def test_parse_content_digest_supported_malformed_does_not_fall_through():
 )
 def test_media_type_accepted(content_type, accept, ok):
     assert _upload._media_type_accepted(content_type, accept) is ok
+
+
+class _CapturingSink:
+    def __init__(self):
+        self.calls = []
+
+    async def store_artifact(self, artifact_id, metadata, stream):
+        self.calls.append((artifact_id, metadata, stream.read()))
+
+
+class _BoomSink:
+    async def store_artifact(self, artifact_id, metadata, stream):
+        raise RuntimeError("sink failure with /secret/path detail")
+
+
+def _mount(sink, *, config=None):
+    store = _store()
+    mcp = FastMCP("receiver")
+    _routes.register_file_exchange_routes(
+        mcp, token_store=store, sink=sink, config=config or ServerConfig()
+    )
+    return store, mcp
+
+
+def _client(mcp):
+    return httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=mcp.http_app()), base_url="http://up.test"
+    )
+
+
+async def _mint_token(store, *, artifact_id="art-1", expected=None):
+    minted = await store.mint(
+        {
+            "artifact_id": artifact_id,
+            "expected": expected.model_dump(mode="json") if expected else None,
+        },
+        ttl=300.0,
+        single_use=True,
+    )
+    return minted.token
+
+
+async def test_upload_route_unknown_token_404():
+    _store_, mcp = _mount(_CapturingSink())
+    async with _client(mcp) as client:
+        resp = await client.put("/fx/u/nonexistent", content=b"x")
+    assert resp.status_code == 404
+
+
+async def test_upload_route_happy_deposits_and_consumes():
+    store, mcp = _mount(sink := _CapturingSink())
+    token = await _mint_token(store)
+    body = b"upload-payload" * 100
+    async with _client(mcp) as client:
+        resp = await client.put(f"/fx/u/{token}", content=body)
+    assert resp.status_code == 204
+    assert len(sink.calls) == 1
+    artifact_id, meta, deposited = sink.calls[0]
+    assert artifact_id == "art-1"
+    assert deposited == body
+    assert meta.size == len(body)
+    assert meta.digest == "sha-256:" + hashlib.sha256(body).hexdigest()
+    assert await store.lookup(token) is None
+    async with _client(mcp) as client:
+        resp2 = await client.put(f"/fx/u/{token}", content=body)
+    assert resp2.status_code == 404
+
+
+async def test_upload_route_oversize_413_no_consume():
+    store, mcp = _mount(
+        sink := _CapturingSink(),
+        config=ServerConfig(file_exchange_max_artifact_size=16),
+    )
+    token = await _mint_token(store)
+    async with _client(mcp) as client:
+        resp = await client.put(f"/fx/u/{token}", content=b"x" * 64)
+    assert resp.status_code == 413
+    assert sink.calls == []
+    assert await store.lookup(token) is not None
+
+
+async def test_upload_route_maxsize_constraint_413():
+    store, mcp = _mount(sink := _CapturingSink())
+    token = await _mint_token(store, expected=ArtifactConstraints(maxSize=8))
+    async with _client(mcp) as client:
+        resp = await client.put(f"/fx/u/{token}", content=b"x" * 64)
+    assert resp.status_code == 413
+    assert sink.calls == []
+
+
+async def test_upload_route_mime_reject_415_no_consume():
+    store, mcp = _mount(sink := _CapturingSink())
+    token = await _mint_token(
+        store, expected=ArtifactConstraints(acceptMimeTypes=["text/*"])
+    )
+    async with _client(mcp) as client:
+        resp = await client.put(
+            f"/fx/u/{token}",
+            content=b"{}",
+            headers={"content-type": "application/json"},
+        )
+    assert resp.status_code == 415
+    assert sink.calls == []
+    assert await store.lookup(token) is not None
+
+
+async def test_upload_route_valid_content_digest_verifies():
+    store, mcp = _mount(sink := _CapturingSink())
+    token = await _mint_token(store)
+    body = b"digest-checked-body"
+    cd = _upload._format_content_digest("sha-256", hashlib.sha256(body).digest())
+    async with _client(mcp) as client:
+        resp = await client.put(
+            f"/fx/u/{token}", content=body, headers={"content-digest": cd}
+        )
+    assert resp.status_code == 204
+    assert sink.calls[0][2] == body
+
+
+async def test_upload_route_digest_mismatch_400_no_sink_call():
+    store, mcp = _mount(sink := _CapturingSink())
+    token = await _mint_token(store)
+    body = b"the-real-body"
+    wrong = _upload._format_content_digest("sha-256", hashlib.sha256(b"other").digest())
+    async with _client(mcp) as client:
+        resp = await client.put(
+            f"/fx/u/{token}", content=body, headers={"content-digest": wrong}
+        )
+    assert resp.status_code == 400
+    assert sink.calls == []
+    assert await store.lookup(token) is not None
+
+
+async def test_upload_route_require_digest_missing_header_400():
+    store, mcp = _mount(sink := _CapturingSink())
+    token = await _mint_token(
+        store, expected=ArtifactConstraints(requireDigest=["sha-256"])
+    )
+    async with _client(mcp) as client:
+        resp = await client.put(f"/fx/u/{token}", content=b"no-digest-header")
+    assert resp.status_code == 400
+    assert sink.calls == []
+
+
+async def test_upload_route_ambient_credentials_ignored():
+    store, mcp = _mount(sink := _CapturingSink())
+    token = await _mint_token(store)
+    async with _client(mcp) as client:
+        resp = await client.put(
+            f"/fx/u/{token}",
+            content=b"ok",
+            headers={"authorization": "Bearer bogus", "cookie": "x=y"},
+        )
+    assert resp.status_code == 204
+    assert sink.calls[0][2] == b"ok"
+
+
+async def test_upload_route_sink_failure_500_no_consume():
+    store, mcp = _mount(_BoomSink())
+    token = await _mint_token(store)
+    async with _client(mcp) as client:
+        resp = await client.put(f"/fx/u/{token}", content=b"data")
+    assert resp.status_code == 500
+    assert resp.content == b""
+    assert await store.lookup(token) is not None
+
+
+async def test_register_routes_upload_requires_config():
+    store = _store()
+    mcp = FastMCP("receiver")
+    with pytest.raises(ValueError, match="config"):
+        _routes.register_file_exchange_routes(
+            mcp, token_store=store, sink=_CapturingSink(), config=None
+        )

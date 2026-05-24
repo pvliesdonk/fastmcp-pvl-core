@@ -14,19 +14,35 @@ stages the artifact, computes a ``Content-Digest``, and pushes it through the
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import binascii
+import contextlib
+import hashlib
 import logging
+import os
+import tempfile
 from typing import TYPE_CHECKING, Literal
 
+from starlette.responses import Response
+
 from fastmcp_pvl_core._file_exchange._spec import SPEC_VERSION, TICKET_TYPE
-from fastmcp_pvl_core._file_exchange._staging import _HASHLIB_BY_LABEL
+from fastmcp_pvl_core._file_exchange._staging import _HASHLIB_BY_LABEL, _write_chunk
 from fastmcp_pvl_core._file_exchange._tokens import capability_url
-from fastmcp_pvl_core._file_exchange._wire import IntakeTicket, UploadSink
+from fastmcp_pvl_core._file_exchange._wire import (
+    ArtifactConstraints,
+    ArtifactMetadata,
+    IntakeTicket,
+    UploadSink,
+)
 
 if TYPE_CHECKING:
+    from fastmcp import FastMCP
+    from starlette.requests import Request
+
+    from fastmcp_pvl_core._config import ServerConfig
+    from fastmcp_pvl_core._file_exchange._hooks import ArtifactSink
     from fastmcp_pvl_core._file_exchange._tokens import CapabilityTokenStore
-    from fastmcp_pvl_core._file_exchange._wire import ArtifactConstraints
 
 logger = logging.getLogger(__name__)
 
@@ -143,3 +159,129 @@ def _media_type_accepted(content_type: str | None, accept: list[str]) -> bool:
         if cand_main == main and cand_sub in ("*", sub):
             return True
     return False
+
+
+def register_upload_route(
+    mcp: FastMCP,
+    *,
+    token_store: CapabilityTokenStore,
+    sink: ArtifactSink,
+    config: ServerConfig,
+) -> None:
+    """Mount the ``upload`` PUT/POST route on ``mcp`` (serves §12 capability URLs).
+
+    ``PUT``/``POST <UPLOAD_PREFIX>/{token}`` looks the token up, streams the
+    request body to a transient temp file (hashing, bounded by the operator cap
+    ``config.file_exchange_max_artifact_size`` and the ticket's
+    ``expected.maxSize``), enforces ``acceptMimeTypes`` and verifies a declared
+    ``Content-Digest`` **before** depositing through ``sink.store_artifact``, and
+    consumes the single-use token only on a successful store (§10.3). Ambient
+    credentials are ignored — the in-URL token is the only authorization.
+    ``token_store``/``sink``/``config`` are threaded by #148.
+    """
+    max_artifact = config.file_exchange_max_artifact_size
+
+    @mcp.custom_route(f"{UPLOAD_PREFIX}/{{token}}", methods=["PUT", "POST"])
+    async def _serve_upload(request: Request) -> Response:
+        token = request.path_params["token"]
+        rec = await token_store.lookup(token)
+        if rec is None:
+            return Response(status_code=404)
+        artifact_id = rec.metadata["artifact_id"]
+        expected_raw = rec.metadata.get("expected")
+        expected: ArtifactConstraints | None = (
+            ArtifactConstraints.model_validate(expected_raw)
+            if expected_raw is not None
+            else None
+        )
+
+        content_type = request.headers.get("content-type")
+        if (
+            expected is not None
+            and expected.acceptMimeTypes
+            and not _media_type_accepted(content_type, expected.acceptMimeTypes)
+        ):
+            return Response(status_code=415)
+
+        cd_header = request.headers.get("content-digest")
+        require_digest = bool(expected is not None and expected.requireDigest)
+        cd = _parse_content_digest(cd_header) if cd_header is not None else None
+        if cd_header is not None and cd is None:
+            return Response(status_code=400)
+        if cd is None and require_digest:
+            return Response(status_code=400)
+        algo_label = cd[0] if cd is not None else _DEFAULT_DIGEST_LABEL
+
+        size_cap = max_artifact
+        if expected is not None and expected.maxSize is not None:
+            size_cap = (
+                expected.maxSize
+                if size_cap is None
+                else min(size_cap, expected.maxSize)
+            )
+
+        try:
+            fd, tmp_path = tempfile.mkstemp(prefix="fx-upload-")
+        except OSError:
+            logger.exception("file-exchange: upload temp create failed")
+            return Response(status_code=500)
+        try:
+            try:
+                tmp = os.fdopen(fd, "wb")
+            except OSError:
+                with contextlib.suppress(OSError):
+                    os.close(fd)
+                logger.exception("file-exchange: upload temp open failed")
+                return Response(status_code=500)
+            hasher = hashlib.new(_HASHLIB_BY_LABEL[algo_label])
+            received = 0
+            try:
+                try:
+                    async for chunk in request.stream():
+                        if not chunk:
+                            continue
+                        received += len(chunk)
+                        if size_cap is not None and received > size_cap:
+                            return Response(status_code=413)
+                        await asyncio.to_thread(_write_chunk, tmp, hasher, chunk)
+                    await asyncio.to_thread(tmp.flush)
+                except OSError:
+                    logger.exception("file-exchange: upload temp write failed")
+                    return Response(status_code=500)
+            finally:
+                with contextlib.suppress(OSError):
+                    tmp.close()
+
+            if cd is not None and hasher.digest() != cd[1]:
+                return Response(status_code=400)
+
+            meta = ArtifactMetadata(
+                mimeType=content_type,
+                size=received,
+                digest=f"{algo_label}:{hasher.hexdigest()}",
+            )
+            try:
+                ingest = await asyncio.to_thread(open, tmp_path, "rb")
+            except OSError:
+                logger.exception("file-exchange: upload staged open failed")
+                return Response(status_code=500)
+            try:
+                await sink.store_artifact(artifact_id, meta, ingest)
+            except Exception:
+                logger.exception("file-exchange: upload sink store_artifact failed")
+                return Response(status_code=500)
+            finally:
+                with contextlib.suppress(OSError):
+                    ingest.close()
+
+            try:
+                await token_store.consume(token)
+            except Exception:
+                logger.warning(
+                    "file-exchange: upload token consume failed after store; "
+                    "token may remain usable to TTL"
+                )
+            return Response(status_code=204)
+        finally:
+            with contextlib.suppress(OSError):
+                await asyncio.to_thread(os.unlink, tmp_path)
