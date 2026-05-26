@@ -19,12 +19,11 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import hashlib
 import logging
 import os
 import tempfile
 from collections.abc import AsyncGenerator
-from typing import IO, TYPE_CHECKING
+from typing import TYPE_CHECKING
 
 import httpx
 from starlette.responses import Response, StreamingResponse
@@ -33,6 +32,11 @@ from fastmcp_pvl_core._file_exchange._codes import TransferErrorCode
 from fastmcp_pvl_core._file_exchange._errors import FileExchangeTransferError
 from fastmcp_pvl_core._file_exchange._outbound import guarded_stream
 from fastmcp_pvl_core._file_exchange._spec import HANDLE_TYPE, SPEC_VERSION
+from fastmcp_pvl_core._file_exchange._staging import (
+    _CHUNK,
+    _digest_verifier,
+    _write_chunk,
+)
 from fastmcp_pvl_core._file_exchange._tokens import capability_url
 from fastmcp_pvl_core._file_exchange._wire import DownloadSource, TransferHandle
 
@@ -51,10 +55,6 @@ logger = logging.getLogger(__name__)
 # kwarg — route structure is a pvl-core shape decision.
 DOWNLOAD_PREFIX = "/fx/d"
 
-_CHUNK = 1024 * 1024
-# Declared-digest label -> hashlib name; an unsupported label fails verification
-# (cannot verify -> digest-mismatch), never silently skips. Mirrors _filesystem.
-_HASHLIB_BY_LABEL = {"sha-256": "sha256", "sha-384": "sha384", "sha-512": "sha512"}
 # Max mid-stream reconnects before giving up on a dropped download.
 _MAX_RECONNECTS = 5
 
@@ -91,33 +91,6 @@ async def download_provider_mint(
             )
         ],
     )
-
-
-def _digest_verifier(
-    declared: str | None,
-) -> tuple[hashlib._Hash | None, str | None, bool]:
-    """Return (hasher | None, expected_hex | None, unverifiable).
-
-    ``unverifiable`` is True when a digest is declared with an unsupported label
-    — verification must then fail (cannot verify), never silently skip (§15).
-    """
-    if declared is None:
-        return None, None, False
-    label, _, expected_hex = declared.partition(":")
-    name = _HASHLIB_BY_LABEL.get(label.lower())
-    if name is None:
-        return None, expected_hex, True
-    return hashlib.new(name), expected_hex.lower(), False
-
-
-def _write_chunk(tmp: IO[bytes], hasher: hashlib._Hash | None, chunk: bytes) -> None:
-    """Write a body chunk to the temp file and fold it into the running hash.
-
-    Both ops run off the event loop in a single ``asyncio.to_thread`` dispatch.
-    """
-    tmp.write(chunk)
-    if hasher is not None:
-        hasher.update(chunk)
 
 
 async def download_fetcher_consume(
@@ -346,7 +319,7 @@ def _parse_range(header: str | None, size: int | None) -> tuple[int, int | None]
     return start, end
 
 
-def register_file_exchange_routes(
+def register_download_route(
     mcp: FastMCP,
     *,
     token_store: CapabilityTokenStore,
