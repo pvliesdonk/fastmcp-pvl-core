@@ -63,4 +63,5 @@ def register_file_exchange_routes(
     if sink is not None:
         from fastmcp_pvl_core._file_exchange._upload import register_upload_route
 
+        assert config is not None  # validated above; assertion narrows type for mypy
         register_upload_route(mcp, token_store=token_store, sink=sink, config=config)
