@@ -138,7 +138,7 @@ def _parse_content_digest(header: str) -> tuple[str, bytes] | None:
         if label not in _HASHLIB_BY_LABEL:
             continue
         value = value.split(";", 1)[0].strip()
-        if len(value) < 2 or value[0] != ":" or value[-1] != ":":
+        if len(value) <= 2 or value[0] != ":" or value[-1] != ":":
             return None
         try:
             return label, base64.b64decode(value[1:-1], validate=True)
@@ -293,7 +293,10 @@ def register_upload_route(
                 with contextlib.suppress(OSError):
                     await asyncio.to_thread(tmp.close)
 
-            if cd is not None and not hmac.compare_digest(hasher.digest(), cd[1]):
+            if cd is not None and (
+                len(cd[1]) != hasher.digest_size
+                or not hmac.compare_digest(hasher.digest(), cd[1])
+            ):
                 return Response(status_code=400)
 
             meta = ArtifactMetadata(
@@ -403,14 +406,24 @@ async def upload_sender_consume(
                     if not chunk:
                         break
                     size += len(chunk)
-                    await asyncio.to_thread(_write_chunk, tmp, hasher, chunk)
-                await asyncio.to_thread(tmp.flush)
-            except OSError as exc:
-                raise FileExchangeTransferError(
-                    TransferErrorCode.TRANSFER_FAILED,
-                    transport="upload",
-                    detail="failed to stage the artifact for upload",
-                ) from exc
+                    try:
+                        await asyncio.to_thread(_write_chunk, tmp, hasher, chunk)
+                    except OSError as exc:
+                        raise FileExchangeTransferError(
+                            TransferErrorCode.TRANSFER_FAILED,
+                            transport="upload",
+                            detail="failed to stage the artifact for upload",
+                        ) from exc
+                try:
+                    await asyncio.to_thread(tmp.flush)
+                except OSError as exc:
+                    raise FileExchangeTransferError(
+                        TransferErrorCode.TRANSFER_FAILED,
+                        transport="upload",
+                        detail="failed to stage the artifact for upload",
+                    ) from exc
+            except FileExchangeTransferError:
+                raise
             except Exception as exc:
                 raise FileExchangeTransferError(
                     TransferErrorCode.TRANSFER_FAILED,
