@@ -5,6 +5,8 @@ from __future__ import annotations
 import base64
 import contextlib
 import hashlib
+import os
+import tempfile
 from datetime import datetime, timedelta, timezone
 
 import httpx
@@ -487,3 +489,99 @@ async def test_sender_guard_refusal_propagates(monkeypatch):
             _upload_sink(), _BytesSource("k", b"data"), "k", config=ServerConfig()
         )
     assert exc.value.code == TransferErrorCode.NOT_ACCESSIBLE
+
+
+async def test_upload_route_consume_failure_still_returns_204():
+    # The route's contract (docstring): consume runs only after a successful
+    # store, and if consume itself raises the route logs a warning and still
+    # returns 204 — the bytes already landed, failing the request would mislead
+    # the client into retrying against a slot that may already be filled.
+    store, mcp = _mount(sink := _CapturingSink())
+    token = await _mint_token(store)
+
+    async def boom_consume(_token):
+        raise RuntimeError("kv backend down")
+
+    store.consume = boom_consume  # type: ignore[method-assign]
+    body = b"consume-fails-but-store-ok"
+    async with _client(mcp) as client:
+        resp = await client.put(f"/fx/u/{token}", content=body)
+    assert resp.status_code == 204
+    assert len(sink.calls) == 1
+    assert sink.calls[0][2] == body
+
+
+async def test_upload_route_temp_file_unlinked_on_failure_paths(monkeypatch):
+    # Regression guard: the outer try/finally unlinks tmp_path on every exit
+    # path (413/415/400/500/204). A refactor that moved the unlink inside the
+    # inner try, or returned before reaching the outer finally, would silently
+    # leak temp files. Capture every mkstemp path; assert none survive.
+    captured: list[str] = []
+    real_mkstemp = tempfile.mkstemp
+
+    def capturing_mkstemp(*args, **kwargs):
+        fd, path = real_mkstemp(*args, **kwargs)
+        captured.append(path)
+        return fd, path
+
+    monkeypatch.setattr(tempfile, "mkstemp", capturing_mkstemp)
+
+    # Drive the 413 oversize path (operator cap).
+    store, mcp = _mount(
+        sink := _CapturingSink(),
+        config=ServerConfig(file_exchange_max_artifact_size=8),
+    )
+    token = await _mint_token(store)
+    async with _client(mcp) as client:
+        resp = await client.put(f"/fx/u/{token}", content=b"x" * 64)
+    assert resp.status_code == 413
+    # Drive the 400 digest-mismatch path on a separate mount.
+    store2, mcp2 = _mount(_CapturingSink())
+    token2 = await _mint_token(store2)
+    body2 = b"the-real-body"
+    wrong = _upload._format_content_digest("sha-256", hashlib.sha256(b"other").digest())
+    async with _client(mcp2) as client:
+        resp2 = await client.put(
+            f"/fx/u/{token2}", content=body2, headers={"content-digest": wrong}
+        )
+    assert resp2.status_code == 400
+    # Drive the 500 sink-failure path on a third mount.
+    store3, mcp3 = _mount(_BoomSink())
+    token3 = await _mint_token(store3)
+    async with _client(mcp3) as client:
+        resp3 = await client.put(f"/fx/u/{token3}", content=b"data")
+    assert resp3.status_code == 500
+
+    assert captured, "expected at least one temp file to have been created"
+    leaked = [p for p in captured if os.path.exists(p)]
+    assert not leaked, f"temp files leaked across failure paths: {leaked}"
+
+
+async def test_upload_sender_temp_file_unlinked_on_non_2xx(monkeypatch):
+    # Regression guard mirroring the route's: the sender's outer finally unlinks
+    # tmp_path on every exit path including non-2xx and guard-refusal. A refactor
+    # that moved the unlink would silently leak temps on every send failure.
+    captured: list[str] = []
+    real_mkstemp = tempfile.mkstemp
+
+    def capturing_mkstemp(*args, **kwargs):
+        fd, path = real_mkstemp(*args, **kwargs)
+        captured.append(path)
+        return fd, path
+
+    monkeypatch.setattr(tempfile, "mkstemp", capturing_mkstemp)
+
+    @contextlib.asynccontextmanager
+    async def fake_guard(method, url, *, config, transport, headers=None, content=None):
+        async for _ in content:
+            pass
+        yield _FakeGuarded(500)
+
+    monkeypatch.setattr(_upload, "guarded_stream", fake_guard)
+    with pytest.raises(FileExchangeTransferError):
+        await _upload.upload_sender_consume(
+            _upload_sink(), _BytesSource("k", b"data"), "k", config=ServerConfig()
+        )
+    assert captured, "expected the sender to have created a temp file"
+    leaked = [p for p in captured if os.path.exists(p)]
+    assert not leaked, f"sender temp files leaked: {leaked}"
