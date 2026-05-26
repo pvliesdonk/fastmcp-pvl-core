@@ -58,5 +58,14 @@ class ArtifactSink(Protocol):
         as the sink reads); the sink reads but does **not** close it, and
         MUST NOT assume the stream's concrete type. Return ``None`` on
         success; raise on failure.
+
+        **Ownership contract:** the caller closes ``stream`` and MAY delete
+        its backing storage immediately after this method returns, so the
+        sink MUST finish reading before returning. The sink may read on the
+        event loop or off-load reads to a thread, but MUST NOT retain the
+        handle for deferred reads after return. (The upload route's outer
+        temp-file ``os.unlink`` relies on this contract — a sink that keeps
+        the handle open may see the file disappear under it on POSIX, or
+        cause an access error on Windows.)
         """
         ...

@@ -9,7 +9,7 @@ import pytest
 from fastmcp import FastMCP
 
 from fastmcp_pvl_core._config import ServerConfig
-from fastmcp_pvl_core._file_exchange import _download
+from fastmcp_pvl_core._file_exchange import _download, _routes
 from fastmcp_pvl_core._file_exchange._codes import TransferErrorCode
 from fastmcp_pvl_core._file_exchange._errors import FileExchangeTransferError
 from fastmcp_pvl_core._file_exchange._spec import HANDLE_TYPE, SPEC_VERSION
@@ -430,7 +430,7 @@ class _BytesSource:
 
 def _route_client(store, source):
     mcp = FastMCP("test")
-    _download.register_file_exchange_routes(mcp, token_store=store, source=source)
+    _routes.register_file_exchange_routes(mcp, token_store=store, source=source)
     app = mcp.http_app()
     return httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://route.test"
