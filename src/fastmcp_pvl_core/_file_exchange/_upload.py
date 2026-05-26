@@ -311,6 +311,8 @@ def register_upload_route(
             try:
                 tmp = os.fdopen(fd, "wb")
             except OSError:
+                with contextlib.suppress(OSError):
+                    os.close(fd)
                 logger.exception("file-exchange: upload fdopen failed")
                 return Response(status_code=500)
             except BaseException:
@@ -504,9 +506,25 @@ async def upload_sender_consume(
         )
 
     # Stage: open the source hook and write bytes to a temp file, hashing as we go.
+    # Open the source hook FIRST (B1 — wrap hook failures as TRANSFER_FAILED).
+    # Acquiring this before the temp file means a hook failure leaks nothing.
+    try:
+        stream, meta = await source.open_artifact(key)
+    except FileExchangeTransferError:
+        raise
+    except Exception as exc:
+        raise FileExchangeTransferError(
+            TransferErrorCode.TRANSFER_FAILED,
+            transport="upload",
+            detail="failed to open the artifact source",
+        ) from exc
+
+    # Now create the temp file. On failure, close the hook stream we just got.
     try:
         fd, tmp_path = tempfile.mkstemp(prefix="fx-upload-send-")
     except OSError as exc:
+        with contextlib.suppress(Exception):
+            await asyncio.to_thread(stream.close)
         raise FileExchangeTransferError(
             TransferErrorCode.TRANSFER_FAILED,
             transport="upload",
@@ -514,12 +532,15 @@ async def upload_sender_consume(
         ) from exc
 
     try:
-        # Open the fd; guard against fd leak on BaseException (A2).
+        # Open the fd; guard against fd leak on OSError AND BaseException (A2).
+        # On both failure paths, close both the fd and the hook stream.
         try:
             tmp = os.fdopen(fd, "wb")
         except OSError as exc:
             with contextlib.suppress(OSError):
                 os.close(fd)
+            with contextlib.suppress(Exception):
+                await asyncio.to_thread(stream.close)
             raise FileExchangeTransferError(
                 TransferErrorCode.TRANSFER_FAILED,
                 transport="upload",
@@ -528,19 +549,9 @@ async def upload_sender_consume(
         except BaseException:
             with contextlib.suppress(OSError):
                 os.close(fd)
+            with contextlib.suppress(Exception):
+                await asyncio.to_thread(stream.close)
             raise
-
-        # Open the source hook (B1 — wrap hook failures as TRANSFER_FAILED).
-        try:
-            stream, meta = await source.open_artifact(key)
-        except FileExchangeTransferError:
-            raise
-        except Exception as exc:
-            raise FileExchangeTransferError(
-                TransferErrorCode.TRANSFER_FAILED,
-                transport="upload",
-                detail="failed to open the artifact source",
-            ) from exc
 
         hasher = hashlib.new(_HASHLIB_BY_LABEL[digest_algo])
         size = 0

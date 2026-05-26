@@ -12,7 +12,7 @@ is mounted so a misconfigured call never partially mounts routes.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from fastmcp_pvl_core._file_exchange._download import register_download_route
 
@@ -63,5 +63,10 @@ def register_file_exchange_routes(
     if sink is not None:
         from fastmcp_pvl_core._file_exchange._upload import register_upload_route
 
-        assert config is not None  # validated above; assertion narrows type for mypy
-        register_upload_route(mcp, token_store=token_store, sink=sink, config=config)
+        # config is validated above; cast survives `python -O` (unlike assert).
+        register_upload_route(
+            mcp,
+            token_store=token_store,
+            sink=sink,
+            config=cast("ServerConfig", config),
+        )

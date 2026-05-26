@@ -1151,3 +1151,72 @@ def test_register_sink_with_config_succeeds():
     _routes.register_file_exchange_routes(
         mcp, token_store=store, sink=sink, config=_cfg()
     )
+
+
+# ---------------------------------------------------------------------------
+# 11. fd/temp leak regression tests
+# ---------------------------------------------------------------------------
+
+
+async def test_sender_does_not_create_temp_when_source_open_fails(monkeypatch):
+    # Regression for the fd/temp leak gemini found: if source.open_artifact
+    # raises, no temp file should be created (the hook open happens first).
+    captured_paths: list[str] = []
+    real_mkstemp = _upload.tempfile.mkstemp
+
+    def capturing_mkstemp(*args, **kwargs):
+        fd, path = real_mkstemp(*args, **kwargs)
+        captured_paths.append(path)
+        return fd, path
+
+    monkeypatch.setattr(_upload.tempfile, "mkstemp", capturing_mkstemp)
+
+    class _BoomSource:
+        async def open_artifact(self, _key):
+            raise RuntimeError("hook open boom")
+
+    sink_desc = _make_sink_descriptor()
+    with pytest.raises(FileExchangeTransferError) as exc:
+        await _upload.upload_sender_consume(
+            sink_desc, _BoomSource(), "k", config=_cfg()
+        )
+    assert exc.value.code == TransferErrorCode.TRANSFER_FAILED
+    assert exc.value.transport == "upload"
+    # The hook failed before the temp was ever created.
+    assert captured_paths == [], (
+        f"sender created temp files before opening source: {captured_paths}"
+    )
+
+
+async def test_route_fdopen_oserror_returns_500_and_cleans_up(monkeypatch, tmp_path):
+    # Regression for the route fdopen OSError fd-leak fix: when fdopen raises,
+    # we must close the raw fd AND unlink the temp.
+    captured_paths: list[str] = []
+    real_mkstemp = _upload.tempfile.mkstemp
+
+    def capturing_mkstemp(*args, **kwargs):
+        kwargs.setdefault("dir", str(tmp_path))
+        fd, path = real_mkstemp(*args, **kwargs)
+        captured_paths.append(path)
+        return fd, path
+
+    monkeypatch.setattr(_upload.tempfile, "mkstemp", capturing_mkstemp)
+
+    def boom_fdopen(fd, *args, **kwargs):
+        # Don't consume the fd — the route's except OSError arm must close it.
+        raise OSError("fdopen boom")
+
+    monkeypatch.setattr(_upload.os, "fdopen", boom_fdopen)
+
+    store = _store()
+    sink = _CapturingSink()
+    token = await _mint_upload_token(store)
+    async with _route_client(store, sink) as client:
+        resp = await client.put(f"/fx/u/{token}", content=b"data")
+
+    assert resp.status_code == 500
+    assert captured_paths, "expected mkstemp to have been called"
+    leaked = [p for p in captured_paths if os.path.exists(p)]
+    assert not leaked, f"temp files leaked after fdopen failure: {leaked}"
+    # (We cannot directly assert the fd was closed without /proc introspection;
+    # the explicit os.close(fd) in the route's except OSError arm is the contract.)
