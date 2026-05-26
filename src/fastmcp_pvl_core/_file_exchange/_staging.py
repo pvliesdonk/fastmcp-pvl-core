@@ -1,9 +1,16 @@
 """Shared digest + temp-file staging primitives for the file-exchange transports.
 
-The supported-algorithm table (:data:`_HASHLIB_BY_LABEL`) and the
-:func:`_digest_verifier` helper are shared across every transport that verifies a
-declared ``label:hex`` digest (download, upload, filesystem). The streaming
-primitives (:data:`_CHUNK`, :func:`_write_chunk`) are used by the HTTP transports
+:data:`_HASHLIB_BY_LABEL` is the canonical supported-algorithm table, shared by
+every transport — directly for the download fetcher's and filesystem transport's
+``label:hex`` digest verification, and as the validation set for the upload
+transport's inbound/outbound RFC 9530 ``Content-Digest`` algorithms.
+
+:func:`_digest_verifier` bundles ``label:hex`` partition + lookup + hasher
+construction for the download fetcher (the filesystem transport's verifier
+inlines equivalent logic against :data:`_HASHLIB_BY_LABEL`; the upload
+transport's RFC 9530 verifier is in ``_upload.py``).
+
+:data:`_CHUNK` and :func:`_write_chunk` are used by the HTTP transports
 (download fetcher / upload route + sender) for buffered staging to a transient
 temp file with hashing — each HTTP transport keeps its own read loop (download
 resumes via ``Range``; upload reads ``request.stream()`` or a hook stream) and
