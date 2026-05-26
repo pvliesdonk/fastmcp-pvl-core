@@ -354,9 +354,15 @@ def register_upload_route(
                     await asyncio.to_thread(tmp.close)
 
             # Step 5: verify-before-use — check Content-Digest and requireDigest.
-            cd = _parse_content_digest(request.headers.get("content-digest"))
+            cd_header = request.headers.get("content-digest")
+            cd = _parse_content_digest(cd_header)
 
-            # Determine which algorithms are required (G1).
+            # A present-but-unverifiable Content-Digest is a verification failure,
+            # never a silent skip (§15).
+            if cd_header is not None and cd is None:
+                return Response(status_code=400)
+
+            # Determine which algorithms are required.
             required_algos: set[str] | None = None
             if expected is not None and expected.requireDigest:
                 required_algos = {a.lower() for a in expected.requireDigest}
@@ -369,7 +375,7 @@ def register_upload_route(
                 and required_algos is not None
                 and cd[0] not in required_algos
             ):
-                # Digest present but wrong algorithm (G1).
+                # Digest present but wrong algorithm.
                 return Response(status_code=400)
 
             if cd is not None:
@@ -389,11 +395,15 @@ def register_upload_route(
                         )
                         return Response(status_code=500)
                     try:
-                        while True:
-                            vchunk = await asyncio.to_thread(f_verify.read, _CHUNK)
-                            if not vchunk:
-                                break
-                            verify_hasher.update(vchunk)
+                        try:
+                            while True:
+                                vchunk = await asyncio.to_thread(f_verify.read, _CHUNK)
+                                if not vchunk:
+                                    break
+                                verify_hasher.update(vchunk)
+                        except OSError:
+                            logger.exception("file-exchange: upload verify-read failed")
+                            return Response(status_code=500)
                     finally:
                         with contextlib.suppress(OSError):
                             await asyncio.to_thread(f_verify.close)

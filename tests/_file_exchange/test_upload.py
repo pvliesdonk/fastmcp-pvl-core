@@ -508,6 +508,29 @@ async def test_route_required_digest_wrong_algo_400():
     assert sink.calls == 0
 
 
+async def test_route_malformed_content_digest_400_without_requiredigest():
+    # Regression for §15 fail-don't-skip: a present-but-unverifiable
+    # Content-Digest header must yield 400 even when requireDigest is absent.
+    # Previously this case was silently skipped (gemini G1, fix-2).
+    store = _store()
+    body = b"some-body-content"
+    # No ArtifactConstraints — requireDigest is absent.
+    token = await _mint_upload_token(store)
+    sink = _CapturingSink()
+    async with _route_client(store, sink) as client:
+        # Send a header the parser cannot resolve (unsupported algorithm
+        # in byte-sequence form). `_parse_content_digest` returns None.
+        r = await client.put(
+            f"/fx/u/{token}",
+            content=body,
+            headers={"Content-Digest": "md5=:abc=:"},  # md5 not in _HASHLIB_BY_LABEL
+        )
+    assert r.status_code == 400
+    assert sink.calls == 0  # no deposit
+    # Token NOT consumed — the sender can retry with a verifiable digest.
+    assert await store.lookup(token) is not None
+
+
 async def test_route_sink_failure_500_body_free():
     store = _store()
     token = await _mint_upload_token(store)
