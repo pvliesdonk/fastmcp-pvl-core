@@ -19,10 +19,11 @@ import base64
 import binascii
 import contextlib
 import hashlib
+import hmac
 import logging
 import os
 import tempfile
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, Literal
 
 from starlette.responses import Response
@@ -181,11 +182,12 @@ def register_upload_route(
     ``PUT``/``POST <UPLOAD_PREFIX>/{token}`` looks the token up, streams the
     request body to a transient temp file (hashing, bounded by the operator cap
     ``config.file_exchange_max_artifact_size`` and the ticket's
-    ``expected.maxSize``), enforces ``acceptMimeTypes`` and verifies a declared
-    ``Content-Digest`` **before** depositing through ``sink.store_artifact``, and
-    consumes the single-use token only on a successful store (§10.3). Ambient
-    credentials are ignored — the in-URL token is the only authorization.
-    ``token_store``/``sink``/``config`` are threaded by #148.
+    ``expected.maxSize``), enforces ``acceptMimeTypes`` and ``requireDigest``
+    and verifies a declared ``Content-Digest`` **before** depositing through
+    ``sink.store_artifact``, and consumes the single-use token only on a
+    successful store (§10.3). Ambient credentials are ignored — the in-URL
+    token is the only authorization. ``token_store``/``sink``/``config`` are
+    threaded by #148.
 
     "single-use" means the first successful store burns the token (§10.3), not
     a concurrency lock: two concurrent PUTs begun before either completes can
@@ -193,6 +195,12 @@ def register_upload_route(
     wins. The ``ArtifactSink`` MUST therefore tolerate duplicate
     ``store_artifact`` calls for the same ``artifact_id`` within the token's
     TTL window.
+
+    ``requireDigest`` is enforced against ``_parse_content_digest``'s first
+    supported member. A sender that includes multiple ``Content-Digest`` members
+    in a single header MUST place a required algorithm first (or send only the
+    required algorithm) — a non-required algorithm in the first supported slot
+    yields ``400`` even when a required-algo member follows.
     """
     max_artifact = config.file_exchange_max_artifact_size
 
@@ -279,9 +287,9 @@ def register_upload_route(
                     return Response(status_code=500)
             finally:
                 with contextlib.suppress(OSError):
-                    tmp.close()
+                    await asyncio.to_thread(tmp.close)
 
-            if cd is not None and hasher.digest() != cd[1]:
+            if cd is not None and not hmac.compare_digest(hasher.digest(), cd[1]):
                 return Response(status_code=400)
 
             meta = ArtifactMetadata(
@@ -305,7 +313,7 @@ def register_upload_route(
                 return Response(status_code=500)
             finally:
                 with contextlib.suppress(OSError):
-                    ingest.close()
+                    await asyncio.to_thread(ingest.close)
 
             try:
                 await token_store.consume(token)
@@ -389,7 +397,7 @@ async def upload_sender_consume(
                 ) from exc
             finally:
                 with contextlib.suppress(OSError):
-                    tmp.close()
+                    await asyncio.to_thread(tmp.close)
         finally:
             with contextlib.suppress(Exception):
                 await asyncio.to_thread(stream.close)
@@ -403,7 +411,7 @@ async def upload_sender_consume(
         if meta.mimeType is not None:
             headers["Content-Type"] = meta.mimeType
 
-        async def _content() -> AsyncIterator[bytes]:
+        async def _content() -> AsyncGenerator[bytes, None]:
             handle = await asyncio.to_thread(open, tmp_path, "rb")
             try:
                 while True:
