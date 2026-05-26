@@ -585,3 +585,117 @@ async def test_upload_sender_temp_file_unlinked_on_non_2xx(monkeypatch):
     assert captured, "expected the sender to have created a temp file"
     leaked = [p for p in captured if os.path.exists(p)]
     assert not leaked, f"sender temp files leaked: {leaked}"
+
+
+async def test_upload_route_flush_failure_returns_500(monkeypatch):
+    # When tmp.flush() raises OSError after the body has been streamed, the route
+    # must return 500, not call the sink, and not consume the token.
+    store, mcp = _mount(sink := _CapturingSink())
+    token = await _mint_token(store)
+
+    real_fdopen = os.fdopen
+
+    class _FlushFails:
+        def __init__(self, f):
+            self._f = f
+
+        def write(self, b):
+            return self._f.write(b)
+
+        def flush(self):
+            raise OSError("disk full on flush")
+
+        def close(self):
+            return self._f.close()
+
+    monkeypatch.setattr(
+        _upload.os, "fdopen", lambda fd, mode: _FlushFails(real_fdopen(fd, mode))
+    )
+    async with _client(mcp) as client:
+        resp = await client.put(f"/fx/u/{token}", content=b"some-upload-body")
+    assert resp.status_code == 500
+    assert resp.content == b""
+    assert sink.calls == []  # flush failed before the sink was ever invoked
+    assert await store.lookup(token) is not None  # token not consumed
+
+
+async def test_upload_route_close_failure_after_success_still_204(monkeypatch):
+    # When tmp.close() raises OSError in the inner finally after a successful
+    # write+flush, the contextlib.suppress(OSError) around it must keep the
+    # success path intact: the response is still 204, the sink IS called, and
+    # the token IS consumed.
+    store, mcp = _mount(sink := _CapturingSink())
+    token = await _mint_token(store)
+
+    real_fdopen = os.fdopen
+
+    class _CloseFails:
+        def __init__(self, f):
+            self._f = f
+
+        def write(self, b):
+            return self._f.write(b)
+
+        def flush(self):
+            return self._f.flush()
+
+        def close(self):
+            self._f.close()
+            raise OSError("disk full on close")
+
+    monkeypatch.setattr(
+        _upload.os, "fdopen", lambda fd, mode: _CloseFails(real_fdopen(fd, mode))
+    )
+    body = b"close-raises-but-success"
+    async with _client(mcp) as client:
+        resp = await client.put(f"/fx/u/{token}", content=body)
+    assert resp.status_code == 204
+    assert len(sink.calls) == 1  # sink was called despite close() raising
+    assert sink.calls[0][2] == body
+    assert await store.lookup(token) is None  # token consumed
+
+
+async def test_sender_close_after_flush_failure_keeps_transfer_error(monkeypatch):
+    # When tmp.flush() raises OSError in the sender (mapped to
+    # FileExchangeTransferError(TRANSFER_FAILED)) AND tmp.close() ALSO raises in
+    # the finally, the in-flight FileExchangeTransferError must NOT be replaced by
+    # the raw OSError from close. This pins the contextlib.suppress(OSError) around
+    # tmp.close in the sender.
+    real_fdopen = os.fdopen
+
+    class _FlushAndCloseFail:
+        def __init__(self, f):
+            self._f = f
+
+        def write(self, b):
+            return self._f.write(b)
+
+        def flush(self):
+            raise OSError("disk full on flush")
+
+        def close(self):
+            self._f.close()
+            raise OSError("disk full on close")
+
+    monkeypatch.setattr(
+        _upload.os,
+        "fdopen",
+        lambda fd, mode: _FlushAndCloseFail(real_fdopen(fd, mode)),
+    )
+
+    @contextlib.asynccontextmanager
+    async def fake_guard(method, url, *, config, transport, headers=None, content=None):
+        async for _ in content:  # pragma: no cover
+            pass
+        yield _FakeGuarded(204)  # pragma: no cover
+
+    monkeypatch.setattr(_upload, "guarded_stream", fake_guard)
+    with pytest.raises(FileExchangeTransferError) as ei:
+        await _upload.upload_sender_consume(
+            _upload_sink(),
+            _BytesSource("k", b"sender-payload"),
+            "k",
+            config=ServerConfig(),
+        )
+    # close()'s OSError must not replace the flush's mapped FileExchangeTransferError
+    assert ei.value.code == TransferErrorCode.TRANSFER_FAILED
