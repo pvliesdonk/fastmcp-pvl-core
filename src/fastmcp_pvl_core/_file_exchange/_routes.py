@@ -37,6 +37,11 @@ def register_file_exchange_routes(
     ``config`` (the operator size cap bounds untrusted request bodies). All of
     ``token_store``/``source``/``sink``/``config`` are threaded by #148.
     """
+    if source is None and sink is None:
+        raise ValueError(
+            "register_file_exchange_routes: at least one of `source` or `sink` "
+            "must be provided"
+        )
     if source is not None:
         register_download_route(mcp, token_store=token_store, source=source)
     if sink is not None:

@@ -1,12 +1,14 @@
-"""Shared temp-file staging + digest primitives for the HTTP transports.
+"""Shared digest + temp-file staging primitives for the file-exchange transports.
 
-The download fetcher (#145) and the upload route/sender (#146) both buffer a
-byte stream to a transient temp file with hashing and a size bound, and verify a
-declared digest. These primitives factor out the common parts. Each transport
-keeps its own read loop (download resumes via ``Range``; upload reads
-``request.stream()`` or a hook stream) and applies the
-``OSError -> transfer-failed`` mapping / cleanup-suppression contract around
-them.
+The supported-algorithm table (:data:`_HASHLIB_BY_LABEL`) and the
+:func:`_digest_verifier` helper are shared across every transport that verifies a
+declared ``label:hex`` digest (download, upload, filesystem). The streaming
+primitives (:data:`_CHUNK`, :func:`_write_chunk`) are used by the HTTP transports
+(download fetcher / upload route + sender) for buffered staging to a transient
+temp file with hashing — each HTTP transport keeps its own read loop (download
+resumes via ``Range``; upload reads ``request.stream()`` or a hook stream) and
+applies the ``OSError -> transfer-failed`` mapping / cleanup-suppression contract
+around them.
 """
 
 from __future__ import annotations

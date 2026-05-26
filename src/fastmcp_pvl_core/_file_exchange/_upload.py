@@ -273,17 +273,21 @@ def register_upload_route(
             hasher = hashlib.new(_HASHLIB_BY_LABEL[algo_label])
             received = 0
             try:
-                try:
-                    async for chunk in request.stream():
-                        if not chunk:
-                            continue
-                        received += len(chunk)
-                        if size_cap is not None and received > size_cap:
-                            return Response(status_code=413)
+                async for chunk in request.stream():
+                    if not chunk:
+                        continue
+                    received += len(chunk)
+                    if size_cap is not None and received > size_cap:
+                        return Response(status_code=413)
+                    try:
                         await asyncio.to_thread(_write_chunk, tmp, hasher, chunk)
+                    except OSError:
+                        logger.exception("file-exchange: upload temp write failed")
+                        return Response(status_code=500)
+                try:
                     await asyncio.to_thread(tmp.flush)
                 except OSError:
-                    logger.exception("file-exchange: upload temp write failed")
+                    logger.exception("file-exchange: upload temp flush failed")
                     return Response(status_code=500)
             finally:
                 with contextlib.suppress(OSError):
@@ -334,6 +338,7 @@ async def upload_sender_consume(
     key: str,
     *,
     config: ServerConfig,
+    digest_algo: str = _DEFAULT_DIGEST_LABEL,
 ) -> None:
     """Sender role (push): stage ``source[key]`` and push it to ``sink``.
 
@@ -344,10 +349,21 @@ async def upload_sender_consume(
     A non-2xx response maps to ``transfer-failed``; a guard refusal arrives coded
     and propagates. The temp is deleted on every path.
 
+    ``digest_algo`` (defaults to ``sha-256``) is the algorithm used for the
+    outbound ``Content-Digest`` header — set it to match the receiver's
+    ``requireDigest`` constraint when interoperating with a receiver that requires
+    a non-default algorithm. Must be one of the keys in ``_HASHLIB_BY_LABEL``;
+    invalid values raise ``ValueError``.
+
     Staging is required: the hook stream is non-seekable and the ``Content-Digest``
     must be hashed before it can be sent in the request header, so a single hook
     read cannot both hash-first and stream-from-the-hook.
     """
+    if digest_algo not in _HASHLIB_BY_LABEL:
+        raise ValueError(
+            f"upload_sender_consume: digest_algo {digest_algo!r} not in supported set "
+            f"{sorted(_HASHLIB_BY_LABEL)}"
+        )
     stream, meta = await source.open_artifact(key)
     try:
         fd, tmp_path = tempfile.mkstemp(prefix="fx-upload-send-")
@@ -378,7 +394,7 @@ async def upload_sender_consume(
             with contextlib.suppress(Exception):
                 await asyncio.to_thread(stream.close)
             raise
-        hasher = hashlib.sha256()
+        hasher = hashlib.new(_HASHLIB_BY_LABEL[digest_algo])
         size = 0
         try:
             try:
@@ -404,9 +420,7 @@ async def upload_sender_consume(
 
         headers = {
             "Content-Length": str(size),
-            "Content-Digest": _format_content_digest(
-                _DEFAULT_DIGEST_LABEL, hasher.digest()
-            ),
+            "Content-Digest": _format_content_digest(digest_algo, hasher.digest()),
         }
         if meta.mimeType is not None:
             headers["Content-Type"] = meta.mimeType

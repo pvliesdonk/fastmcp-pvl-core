@@ -699,3 +699,46 @@ async def test_sender_close_after_flush_failure_keeps_transfer_error(monkeypatch
         )
     # close()'s OSError must not replace the flush's mapped FileExchangeTransferError
     assert ei.value.code == TransferErrorCode.TRANSFER_FAILED
+
+
+async def test_sender_with_non_sha256_digest_algo_sends_that_algo(monkeypatch):
+    body = b"non-default-algo"
+    captured: dict = {}
+
+    @contextlib.asynccontextmanager
+    async def fake_guard(method, url, *, config, transport, headers=None, content=None):
+        async for _ in content:
+            pass
+        captured["headers"] = dict(headers or {})
+        yield _FakeGuarded(204)
+
+    monkeypatch.setattr(_upload, "guarded_stream", fake_guard)
+    await _upload.upload_sender_consume(
+        _upload_sink(),
+        _BytesSource("k", body),
+        "k",
+        config=ServerConfig(),
+        digest_algo="sha-512",
+    )
+    expected_cd = (
+        "sha-512=:" + base64.b64encode(hashlib.sha512(body).digest()).decode() + ":"
+    )
+    assert captured["headers"]["Content-Digest"] == expected_cd
+
+
+async def test_sender_rejects_unsupported_digest_algo():
+    with pytest.raises(ValueError, match="digest_algo"):
+        await _upload.upload_sender_consume(
+            _upload_sink(),
+            _BytesSource("k", b"x"),
+            "k",
+            config=ServerConfig(),
+            digest_algo="md5",
+        )
+
+
+async def test_register_routes_requires_source_or_sink():
+    store = _store()
+    mcp = FastMCP("receiver")
+    with pytest.raises(ValueError, match="source.*sink"):
+        _routes.register_file_exchange_routes(mcp, token_store=store)
