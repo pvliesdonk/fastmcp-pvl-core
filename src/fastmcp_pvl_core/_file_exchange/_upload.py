@@ -258,6 +258,10 @@ def register_upload_route(
                     os.close(fd)
                 logger.exception("file-exchange: upload temp open failed")
                 return Response(status_code=500)
+            except BaseException:
+                with contextlib.suppress(OSError):
+                    os.close(fd)
+                raise
             hasher = hashlib.new(_HASHLIB_BY_LABEL[algo_label])
             received = 0
             try:

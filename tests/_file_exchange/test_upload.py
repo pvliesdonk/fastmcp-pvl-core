@@ -229,6 +229,49 @@ async def test_upload_route_maxsize_constraint_413():
     assert sink.calls == []
 
 
+async def test_upload_route_takes_min_of_both_size_caps():
+    # Operator cap looser than ticket cap -> ticket cap wins.
+    store, mcp = _mount(
+        sink := _CapturingSink(),
+        config=ServerConfig(file_exchange_max_artifact_size=100),
+    )
+    token = await _mint_token(store, expected=ArtifactConstraints(maxSize=8))
+    async with _client(mcp) as client:
+        resp = await client.put(f"/fx/u/{token}", content=b"x" * 50)
+    assert resp.status_code == 413
+    assert sink.calls == []
+    assert await store.lookup(token) is not None
+
+    # Ticket cap looser than operator cap -> operator cap wins.
+    store2, mcp2 = _mount(
+        sink2 := _CapturingSink(),
+        config=ServerConfig(file_exchange_max_artifact_size=8),
+    )
+    token2 = await _mint_token(store2, expected=ArtifactConstraints(maxSize=100))
+    async with _client(mcp2) as client:
+        resp2 = await client.put(f"/fx/u/{token2}", content=b"x" * 50)
+    assert resp2.status_code == 413
+    assert sink2.calls == []
+
+
+@pytest.mark.parametrize(
+    ("algo", "hasher_factory"),
+    [("sha-384", hashlib.sha384), ("sha-512", hashlib.sha512)],
+)
+async def test_upload_route_verifies_non_sha256_digest(algo, hasher_factory):
+    store, mcp = _mount(sink := _CapturingSink())
+    token = await _mint_token(store)
+    body = b"non-sha256-payload"
+    cd = _upload._format_content_digest(algo, hasher_factory(body).digest())
+    async with _client(mcp) as client:
+        resp = await client.put(
+            f"/fx/u/{token}", content=body, headers={"content-digest": cd}
+        )
+    assert resp.status_code == 204
+    assert sink.calls[0][2] == body
+    assert sink.calls[0][1].digest == f"{algo}:{hasher_factory(body).hexdigest()}"
+
+
 async def test_upload_route_mime_reject_415_no_consume():
     store, mcp = _mount(sink := _CapturingSink())
     token = await _mint_token(
