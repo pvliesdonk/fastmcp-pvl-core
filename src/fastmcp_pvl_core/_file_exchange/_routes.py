@@ -50,5 +50,7 @@ def register_file_exchange_routes(
     if source is not None:
         register_download_route(mcp, token_store=token_store, source=source)
     if sink is not None:
-        assert config is not None  # validated above: sink is not None and config is None raises
+        assert (
+            config is not None
+        )  # validated above: sink is not None and config is None raises
         register_upload_route(mcp, token_store=token_store, sink=sink, config=config)
