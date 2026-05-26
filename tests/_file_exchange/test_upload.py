@@ -283,6 +283,23 @@ async def test_upload_route_require_digest_missing_header_400():
     assert sink.calls == []
 
 
+async def test_upload_route_require_digest_algo_mismatch_400():
+    store, mcp = _mount(sink := _CapturingSink())
+    token = await _mint_token(
+        store, expected=ArtifactConstraints(requireDigest=["sha-512"])
+    )
+    body = b"the-body"
+    # Sender supplies a valid sha-256 digest, but the receiver requires sha-512.
+    cd = _upload._format_content_digest("sha-256", hashlib.sha256(body).digest())
+    async with _client(mcp) as client:
+        resp = await client.put(
+            f"/fx/u/{token}", content=body, headers={"content-digest": cd}
+        )
+    assert resp.status_code == 400
+    assert sink.calls == []
+    assert await store.lookup(token) is not None  # not consumed
+
+
 async def test_upload_route_ambient_credentials_ignored():
     store, mcp = _mount(sink := _CapturingSink())
     token = await _mint_token(store)

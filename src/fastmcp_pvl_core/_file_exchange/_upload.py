@@ -219,11 +219,21 @@ def register_upload_route(
             return Response(status_code=415)
 
         cd_header = request.headers.get("content-digest")
-        require_digest = bool(expected is not None and expected.requireDigest)
+        required_algos = (
+            {a.lower() for a in expected.requireDigest}
+            if expected is not None and expected.requireDigest
+            else None
+        )
         cd = _parse_content_digest(cd_header) if cd_header is not None else None
         if cd_header is not None and cd is None:
             return Response(status_code=400)
-        if cd is None and require_digest:
+        if cd is None and required_algos is not None:
+            return Response(status_code=400)
+        if (
+            cd is not None
+            and required_algos is not None
+            and cd[0] not in required_algos
+        ):
             return Response(status_code=400)
         algo_label = cd[0] if cd is not None else _DEFAULT_DIGEST_LABEL
 
@@ -340,6 +350,16 @@ async def upload_sender_consume(
     try:
         try:
             tmp = os.fdopen(fd, "wb")
+        except OSError as exc:
+            with contextlib.suppress(OSError):
+                os.close(fd)
+            with contextlib.suppress(Exception):
+                await asyncio.to_thread(stream.close)
+            raise FileExchangeTransferError(
+                TransferErrorCode.TRANSFER_FAILED,
+                transport="upload",
+                detail="failed to open the temporary file for writing",
+            ) from exc
         except BaseException:
             with contextlib.suppress(OSError):
                 os.close(fd)
