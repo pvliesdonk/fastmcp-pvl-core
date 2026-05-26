@@ -10,12 +10,15 @@ construction for the download fetcher (the filesystem transport's verifier
 inlines equivalent logic against :data:`_HASHLIB_BY_LABEL`; the upload
 transport's RFC 9530 verifier is in ``_upload.py``).
 
-:data:`_CHUNK` and :func:`_write_chunk` are used by the HTTP transports
-(download fetcher / upload route + sender) for buffered staging to a transient
-temp file with hashing — each HTTP transport keeps its own read loop (download
-resumes via ``Range``; upload reads ``request.stream()`` or a hook stream) and
-applies the ``OSError -> transfer-failed`` mapping / cleanup-suppression contract
-around them.
+:data:`_CHUNK` is the canonical chunk size for buffered reads across all
+transports (download fetcher / upload route + sender / filesystem reader).
+
+:func:`_write_chunk` is used by the HTTP transports (download fetcher / upload
+route + sender) for buffered staging to a transient temp file with hashing —
+each HTTP transport keeps its own read loop (download resumes via ``Range``;
+upload reads ``request.stream()`` or a hook stream) and applies the
+``OSError -> transfer-failed`` mapping / cleanup-suppression contract around
+them.
 """
 
 from __future__ import annotations

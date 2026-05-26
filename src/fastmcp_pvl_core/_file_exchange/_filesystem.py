@@ -34,7 +34,7 @@ from fastmcp_pvl_core._file_exchange._codes import TransferErrorCode
 from fastmcp_pvl_core._file_exchange._errors import FileExchangeTransferError
 from fastmcp_pvl_core._file_exchange._paths import atomic_write, resolve_filesystem_uri
 from fastmcp_pvl_core._file_exchange._spec import HANDLE_TYPE, SPEC_VERSION, TICKET_TYPE
-from fastmcp_pvl_core._file_exchange._staging import _HASHLIB_BY_LABEL
+from fastmcp_pvl_core._file_exchange._staging import _CHUNK, _HASHLIB_BY_LABEL
 from fastmcp_pvl_core._file_exchange._wire import (
     FilesystemSink,
     FilesystemSource,
@@ -88,8 +88,6 @@ _DIGEST_LABEL = "sha-256"
 # Fixed deposit/staged-file mode (#155): owner rw, group rw, other r — so a
 # different-uid party on a shared volume can read what pvl-core writes.
 _DEPOSIT_MODE = 0o664
-
-_CHUNK = 1024 * 1024
 
 logger = logging.getLogger(__name__)
 

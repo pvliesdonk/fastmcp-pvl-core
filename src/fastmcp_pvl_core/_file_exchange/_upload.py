@@ -411,6 +411,12 @@ async def upload_sender_consume(
                     transport="upload",
                     detail="failed to stage the artifact for upload",
                 ) from exc
+            except Exception as exc:
+                raise FileExchangeTransferError(
+                    TransferErrorCode.TRANSFER_FAILED,
+                    transport="upload",
+                    detail="artifact source read failed",
+                ) from exc
             finally:
                 with contextlib.suppress(OSError):
                     await asyncio.to_thread(tmp.close)

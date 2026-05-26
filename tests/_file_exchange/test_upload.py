@@ -737,6 +737,35 @@ async def test_sender_rejects_unsupported_digest_algo():
         )
 
 
+async def test_sender_wraps_hook_stream_non_oserror_as_transfer_failed(monkeypatch):
+    # A buggy/domain-specific ArtifactSource that raises a non-OSError on
+    # stream.read must NOT escape upload_sender_consume raw — the contract is
+    # to always raise FileExchangeTransferError. (claude-review #3, F1.)
+    class _BoomReadStream:
+        def read(self, _n):
+            raise RuntimeError("hook's stream is broken")
+
+        def close(self):
+            return None
+
+    class _BoomReadSource:
+        async def open_artifact(self, _key):
+            return _BoomReadStream(), ArtifactMetadata(size=1)
+
+    @contextlib.asynccontextmanager
+    async def fake_guard(method, url, *, config, transport, headers=None, content=None):
+        yield _FakeGuarded(204)  # pragma: no cover — never reached
+
+    monkeypatch.setattr(_upload, "guarded_stream", fake_guard)
+    with pytest.raises(FileExchangeTransferError) as exc:
+        await _upload.upload_sender_consume(
+            _upload_sink(), _BoomReadSource(), "k", config=ServerConfig()
+        )
+    assert exc.value.code == TransferErrorCode.TRANSFER_FAILED
+    assert exc.value.transport == "upload"
+    assert isinstance(exc.value.__cause__, RuntimeError)
+
+
 async def test_register_routes_requires_source_or_sink():
     store = _store()
     mcp = FastMCP("receiver")
