@@ -771,3 +771,27 @@ async def test_register_routes_requires_source_or_sink():
     mcp = FastMCP("receiver")
     with pytest.raises(ValueError, match="source.*sink"):
         _routes.register_file_exchange_routes(mcp, token_store=store)
+
+
+async def test_register_routes_validates_config_before_mounting_download():
+    # Regression: previously, mount of download succeeded before the
+    # config-missing ValueError fired, leaving mcp half-mounted. All
+    # precondition checks must run before any register_*_route call.
+    store = _store()
+    mcp = FastMCP("receiver")
+    with pytest.raises(ValueError, match="config"):
+        _routes.register_file_exchange_routes(
+            mcp,
+            token_store=store,
+            source=_BytesSource("k", b"x"),
+            sink=_CapturingSink(),
+            config=None,
+        )
+    # Download route MUST NOT have been mounted (the ValueError fires before
+    # any register_*_route call, so the http_app should have no /fx/d route).
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=mcp.http_app()),
+        base_url="http://recv.test",
+    ) as client:
+        resp = await client.get("/fx/d/any-token")
+    assert resp.status_code == 404
