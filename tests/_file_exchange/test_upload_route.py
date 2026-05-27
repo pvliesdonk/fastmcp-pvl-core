@@ -449,6 +449,25 @@ async def test_route_ambient_authorization_on_invalid_token_still_404():
     assert resp.status_code == 404
 
 
+async def test_route_concurrent_puts_at_most_one_consumes():
+    """C1."""
+    sink = _RecordingSink()
+    mcp, store = await _mount(sink)
+    ticket = await _upload.upload_receiver_mint(
+        "art-1", token_store=store, base_url="https://route.test", ttl=120.0
+    )
+    path = ticket.sinks[0].url[len("https://route.test") :]
+    token = ticket.sinks[0].url.rsplit("/", 1)[1]
+    async with await _client(mcp) as c:
+        r1, r2 = await _asyncio.gather(
+            c.put(path, content=b"a", headers={"Content-Type": "text/plain"}),
+            c.put(path, content=b"b", headers={"Content-Type": "text/plain"}),
+        )
+    statuses = sorted([r1.status_code, r2.status_code])
+    assert statuses in ([204, 204], [204, 404])
+    assert await store.lookup(token) is None
+
+
 async def test_route_content_digest_unsupported_algo_400():
     """D5."""
     sink = _RecordingSink()
