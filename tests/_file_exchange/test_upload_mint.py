@@ -70,8 +70,9 @@ async def test_mint_expected_round_trips_onto_ticket_and_metadata():
     assert rec.metadata["expected"] == expected.model_dump()
 
 
-async def test_mint_calls_do_not_collide_for_same_artifact_id():
-    """E1: minting twice yields two distinct tokens, both valid."""
+async def test_repeated_mint_yields_distinct_tokens_with_same_artifact_id():
+    """E1: minting twice for the same artifact_id yields two distinct
+    tokens; both lookups round-trip to the same artifact_id metadata."""
     store = _store()
     t1 = await _upload.upload_receiver_mint(
         "art-1", token_store=store, base_url="https://b.example", ttl=120.0
@@ -82,5 +83,8 @@ async def test_mint_calls_do_not_collide_for_same_artifact_id():
     tok1 = t1.sinks[0].url.rsplit("/", 1)[1]
     tok2 = t2.sinks[0].url.rsplit("/", 1)[1]
     assert tok1 != tok2
-    assert (await store.lookup(tok1)) is not None
-    assert (await store.lookup(tok2)) is not None
+    rec1 = await store.lookup(tok1)
+    rec2 = await store.lookup(tok2)
+    assert rec1 is not None and rec2 is not None
+    assert rec1.metadata["artifact_id"] == "art-1"
+    assert rec2.metadata["artifact_id"] == "art-1"
