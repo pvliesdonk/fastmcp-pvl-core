@@ -70,6 +70,7 @@ from fastmcp_pvl_core._file_exchange import (
     select_sink,
     select_source,
     upload_receiver_mint,
+    upload_sender_consume,
     validate_wire,
 )
 
@@ -128,5 +129,6 @@ __all__ = [
     "select_sink",
     "select_source",
     "upload_receiver_mint",
+    "upload_sender_consume",
     "validate_wire",
 ]
