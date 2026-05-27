@@ -276,6 +276,179 @@ async def test_route_content_digest_unparseable_400():
     assert resp.status_code == 400
 
 
+async def test_route_hashlib_failure_does_not_leak_fd(monkeypatch):
+    """B1: simulated post-fdopen pre-staging failure -> fd closed, temp unlinked."""
+    import fastmcp_pvl_core._file_exchange._upload as up
+
+    sink = _RecordingSink()
+    mcp, store = await _mount(sink)
+    ticket = await _upload.upload_receiver_mint(
+        "art-1", token_store=store, base_url="https://route.test", ttl=120.0
+    )
+    path = ticket.sinks[0].url[len("https://route.test") :]
+
+    created: list[str] = []
+    real_mkstemp = up.tempfile.mkstemp
+
+    def spy_mkstemp(**kw):
+        fd, path_ = real_mkstemp(**kw)
+        created.append(path_)
+        return fd, path_
+
+    monkeypatch.setattr(up.tempfile, "mkstemp", spy_mkstemp)
+
+    real_hashlib_new = up.hashlib.new
+
+    def boom(name):
+        if name == "sha256":
+            raise RuntimeError("FIPS")
+        return real_hashlib_new(name)
+
+    monkeypatch.setattr(up.hashlib, "new", boom)
+
+    async with await _client(mcp) as c:
+        resp = await c.put(path, content=b"hi", headers={"Content-Type": "text/plain"})
+    # 500 is the expected mapping for an unexpected RuntimeError inside the handler.
+    assert resp.status_code == 500
+    for p in created:
+        assert not os.path.exists(p), f"temp leaked: {p}"
+
+
+async def test_route_sink_does_not_close_fd_route_closes_it():
+    """B4: route owns the fd handed to the sink and closes it."""
+    closes: list[bool] = []
+
+    class _SpySink:
+        async def store_artifact(self, artifact_id, metadata, stream):
+            stream.read()
+            original_close = stream.close
+
+            def tracked():
+                closes.append(True)
+                original_close()
+
+            stream.close = tracked  # type: ignore[method-assign]
+
+    mcp, store = await _mount(_SpySink())
+    ticket = await _upload.upload_receiver_mint(
+        "art-1", token_store=store, base_url="https://route.test", ttl=120.0
+    )
+    path = ticket.sinks[0].url[len("https://route.test") :]
+    async with await _client(mcp) as c:
+        resp = await c.put(path, content=b"x", headers={"Content-Type": "text/plain"})
+    assert resp.status_code == 204
+    assert closes == [True]
+
+
+async def test_route_temp_reopen_failure_500(monkeypatch):
+    """B6: open(tmp_path, 'rb') raises -> 500, sink not called."""
+    sink = _RecordingSink()
+    mcp, store = await _mount(sink)
+    ticket = await _upload.upload_receiver_mint(
+        "art-1", token_store=store, base_url="https://route.test", ttl=120.0
+    )
+    path = ticket.sinks[0].url[len("https://route.test") :]
+
+    import builtins
+
+    real_open = builtins.open
+
+    def fake_open(p, mode="r", *a, **kw):
+        if isinstance(p, str) and "fx-upload-" in p and "rb" in mode:
+            raise OSError("simulated")
+        return real_open(p, mode, *a, **kw)
+
+    monkeypatch.setattr(builtins, "open", fake_open)
+    async with await _client(mcp) as c:
+        resp = await c.put(path, content=b"x", headers={"Content-Type": "text/plain"})
+    assert resp.status_code == 500
+    assert sink.calls == []
+
+
+class _FxFailSink:
+    async def store_artifact(self, artifact_id, metadata, stream):
+        from fastmcp_pvl_core._file_exchange._codes import TransferErrorCode
+        from fastmcp_pvl_core._file_exchange._errors import FileExchangeTransferError
+
+        stream.read()
+        raise FileExchangeTransferError(
+            TransferErrorCode.TRANSFER_FAILED, transport="upload", detail="x"
+        )
+
+
+async def test_route_sink_raises_file_exchange_error_500():
+    """D6."""
+    mcp, store = await _mount(_FxFailSink())
+    ticket = await _upload.upload_receiver_mint(
+        "art-1", token_store=store, base_url="https://route.test", ttl=120.0
+    )
+    path = ticket.sinks[0].url[len("https://route.test") :]
+    async with await _client(mcp) as c:
+        resp = await c.put(path, content=b"x", headers={"Content-Type": "text/plain"})
+    assert resp.status_code == 500
+    assert resp.content == b""
+
+
+async def test_route_temp_write_oserror_500(monkeypatch):
+    """D8."""
+    import fastmcp_pvl_core._file_exchange._upload as up
+
+    sink = _RecordingSink()
+    mcp, store = await _mount(sink)
+    ticket = await _upload.upload_receiver_mint(
+        "art-1", token_store=store, base_url="https://route.test", ttl=120.0
+    )
+    path = ticket.sinks[0].url[len("https://route.test") :]
+
+    def boom(tmp, hasher, chunk):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(up, "_write_chunk", boom)
+    async with await _client(mcp) as c:
+        resp = await c.put(
+            path, content=b"hello", headers={"Content-Type": "text/plain"}
+        )
+    assert resp.status_code == 500
+    assert sink.calls == []
+
+
+async def test_route_ambient_authorization_ignored():
+    """F5."""
+    sink = _RecordingSink()
+    mcp, store = await _mount(sink)
+    ticket = await _upload.upload_receiver_mint(
+        "art-1", token_store=store, base_url="https://route.test", ttl=120.0
+    )
+    path = ticket.sinks[0].url[len("https://route.test") :]
+    async with await _client(mcp) as c:
+        resp = await c.put(
+            path,
+            content=b"x",
+            headers={
+                "Content-Type": "text/plain",
+                "Authorization": "Bearer fake",
+                "Cookie": "session=abc",
+            },
+        )
+    assert resp.status_code == 204
+    assert len(sink.calls) == 1
+
+
+async def test_route_ambient_authorization_on_invalid_token_still_404():
+    sink = _RecordingSink()
+    mcp, _ = await _mount(sink)
+    async with await _client(mcp) as c:
+        resp = await c.put(
+            "/fx/u/nope",
+            content=b"x",
+            headers={
+                "Content-Type": "text/plain",
+                "Authorization": "Bearer admin",
+            },
+        )
+    assert resp.status_code == 404
+
+
 async def test_route_content_digest_unsupported_algo_400():
     """D5."""
     sink = _RecordingSink()
