@@ -4,9 +4,15 @@ This module accrues the upload-transport helpers task by task:
 
 - ``upload_receiver_mint`` — receiver role: mint a single-use capability
   token and emit an :class:`IntakeTicket` carrying one
-  :class:`UploadSink` (this commit).
-- The serving route, the sender, and the RFC 9530 / 7231 helpers land
-  in subsequent commits per the implementation plan.
+  :class:`UploadSink`.
+- ``_content_digest_parse`` / ``_content_digest_format`` — RFC 9530
+  ``Content-Digest`` structured-field dictionary parse and format
+  (sha-256/384/512 only).
+- ``_media_range_matches`` — RFC 7231 §3.1.1.1 media-range matcher
+  used to validate request ``Content-Type`` against the ticket's
+  ``expected.contentType`` allowlist (this commit).
+- The serving route and the sender land in subsequent commits per
+  the implementation plan.
 
 See ``docs/superpowers/specs/2026-05-24-file-exchange-146-upload-data-plane-design.md``
 for the behavioural contract and ``…2026-05-27-file-exchange-146-failure-modes.md``
@@ -15,9 +21,12 @@ for the enumerated failure modes each test in this module exercises.
 
 from __future__ import annotations
 
+import base64 as _b64
+import binascii
 from typing import TYPE_CHECKING, Literal
 
 from fastmcp_pvl_core._file_exchange._spec import SPEC_VERSION, TICKET_TYPE
+from fastmcp_pvl_core._file_exchange._staging import _HASHLIB_BY_LABEL
 from fastmcp_pvl_core._file_exchange._tokens import capability_url
 from fastmcp_pvl_core._file_exchange._wire import IntakeTicket, UploadSink
 
@@ -69,3 +78,69 @@ async def upload_receiver_mint(
             )
         ],
     )
+
+
+def _content_digest_parse(header: str) -> tuple[str, bytes] | None:
+    """Parse an RFC 9530 ``Content-Digest`` structured-field dictionary entry.
+
+    Returns ``(algo_label, raw_digest_bytes)`` on success, or ``None`` for any
+    malformed input or unsupported algorithm — the caller treats ``None`` as a
+    verification failure (``digest-mismatch``), never a silent skip
+    (matrix rows D4, D5; spec §10.3).
+
+    Only a single-algorithm dictionary entry is accepted (the form pvl-core's
+    sender produces); ``sha-256``/``sha-384``/``sha-512`` are the supported
+    labels.
+    """
+    if not header:
+        return None
+    entry = header.split(",", 1)[0].strip()
+    label, sep, rest = entry.partition("=")
+    if sep != "=":
+        return None
+    label = label.strip().lower()
+    if label not in _HASHLIB_BY_LABEL:
+        return None
+    rest = rest.strip()
+    if len(rest) < 2 or not rest.startswith(":") or not rest.endswith(":"):
+        return None
+    b64 = rest[1:-1]
+    if not b64:
+        return None
+    try:
+        raw = _b64.b64decode(b64, validate=True)
+    except (binascii.Error, ValueError):
+        return None
+    return label, raw
+
+
+def _content_digest_format(label: str, raw: bytes) -> str:
+    """Format ``(label, raw_digest_bytes)`` as ``algo=:base64:`` per RFC 9530."""
+    return f"{label}=:{_b64.b64encode(raw).decode('ascii')}:"
+
+
+def _media_range_matches(content_type: str, accept: list[str]) -> bool:
+    """RFC 7231 §3.1.1.1 media-range match: parameters ignored, case-insensitive.
+
+    ``type/*`` matches any subtype; ``*/*`` matches anything. An empty
+    ``content_type`` or an empty ``accept`` list never matches
+    (matrix rows F3, F4).
+    """
+    if not content_type or not accept:
+        return False
+    main = content_type.split(";", 1)[0].strip().lower()
+    if "/" not in main:
+        return False
+    main_type, main_sub = main.split("/", 1)
+    for entry in accept:
+        if not entry:
+            continue
+        entry_main = entry.split(";", 1)[0].strip().lower()
+        if "/" not in entry_main:
+            continue
+        e_type, e_sub = entry_main.split("/", 1)
+        if (e_type == "*" or e_type == main_type) and (
+            e_sub == "*" or e_sub == main_sub
+        ):
+            return True
+    return False
