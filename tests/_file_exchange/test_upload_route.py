@@ -9,7 +9,7 @@ from fastmcp import FastMCP
 from fastmcp_pvl_core._config import ServerConfig
 from fastmcp_pvl_core._file_exchange import _upload
 from fastmcp_pvl_core._file_exchange._tokens import build_capability_token_store
-from fastmcp_pvl_core._file_exchange._wire import ArtifactMetadata
+from fastmcp_pvl_core._file_exchange._wire import ArtifactConstraints, ArtifactMetadata
 
 
 def _store():
@@ -84,4 +84,33 @@ async def test_route_unknown_token_404():
             "/fx/u/does-not-exist", content=b"x", headers={"Content-Type": "text/plain"}
         )
     assert resp.status_code == 404
+    assert sink.calls == []
+
+
+async def test_route_require_digest_algorithm_mismatch_400():
+    """A6 tightening: requireDigest=[sha-256] but client sends sha-512 -> 400."""
+    import base64
+
+    sink = _RecordingSink()
+    mcp, store = await _mount(sink)
+    ticket = await _upload.upload_receiver_mint(
+        "art-1",
+        token_store=store,
+        base_url="https://route.test",
+        ttl=120.0,
+        expected=ArtifactConstraints(requireDigest=["sha-256"]),
+    )
+    url = ticket.sinks[0].url
+    path = url[len("https://route.test") :]
+    # Compute a correct sha-512 digest of the body so the header parses cleanly.
+    body = b"hello"
+    raw512 = hashlib.sha512(body).digest()
+    header = "sha-512=:" + base64.b64encode(raw512).decode("ascii") + ":"
+    async with await _client(mcp) as c:
+        resp = await c.put(
+            path,
+            content=body,
+            headers={"Content-Type": "text/plain", "Content-Digest": header},
+        )
+    assert resp.status_code == 400
     assert sink.calls == []
