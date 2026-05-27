@@ -1,6 +1,8 @@
 """Matrix rows A1–A6, B1, B4, B6, C1–C2, D4–D8, F4, F5: upload route."""
 
+import asyncio as _asyncio
 import hashlib
+import os
 from typing import BinaryIO
 
 import httpx
@@ -114,3 +116,181 @@ async def test_route_require_digest_algorithm_mismatch_400():
         )
     assert resp.status_code == 400
     assert sink.calls == []
+
+
+async def test_route_second_put_after_success_returns_404():
+    """A1 ordering: token consumed after first success; second PUT -> 404."""
+    sink = _RecordingSink()
+    mcp, store = await _mount(sink)
+    ticket = await _upload.upload_receiver_mint(
+        "art-1", token_store=store, base_url="https://route.test", ttl=120.0
+    )
+    path = ticket.sinks[0].url[len("https://route.test") :]
+    async with await _client(mcp) as c:
+        r1 = await c.put(path, content=b"a", headers={"Content-Type": "text/plain"})
+        r2 = await c.put(path, content=b"b", headers={"Content-Type": "text/plain"})
+    assert r1.status_code == 204
+    assert r2.status_code == 404
+    assert len(sink.calls) == 1
+
+
+class _RaisingSink:
+    def __init__(self) -> None:
+        self.attempts = 0
+
+    async def store_artifact(self, artifact_id, metadata, stream):
+        self.attempts += 1
+        stream.read()
+        if self.attempts == 1:
+            raise RuntimeError("boom")
+
+
+async def test_route_sink_raise_does_not_consume_token():
+    """A2: sink raises -> 500, token still valid, retry succeeds."""
+    sink = _RaisingSink()
+    mcp, store = await _mount(sink)
+    ticket = await _upload.upload_receiver_mint(
+        "art-1", token_store=store, base_url="https://route.test", ttl=120.0
+    )
+    path = ticket.sinks[0].url[len("https://route.test") :]
+    async with await _client(mcp) as c:
+        r1 = await c.put(path, content=b"a", headers={"Content-Type": "text/plain"})
+        r2 = await c.put(path, content=b"b", headers={"Content-Type": "text/plain"})
+    assert r1.status_code == 500
+    assert r2.status_code == 204
+    assert sink.attempts == 2
+
+
+async def test_route_accept_mime_mismatch_415():
+    """A3."""
+    sink = _RecordingSink()
+    mcp, store = await _mount(sink)
+    ticket = await _upload.upload_receiver_mint(
+        "art-1",
+        token_store=store,
+        base_url="https://route.test",
+        ttl=120.0,
+        expected=ArtifactConstraints(acceptMimeTypes=["application/json"]),
+    )
+    path = ticket.sinks[0].url[len("https://route.test") :]
+    token = ticket.sinks[0].url.rsplit("/", 1)[1]
+    async with await _client(mcp) as c:
+        resp = await c.put(path, content=b"hi", headers={"Content-Type": "text/plain"})
+    assert resp.status_code == 415
+    assert sink.calls == []
+    assert await store.lookup(token) is not None
+
+
+async def test_route_too_large_per_mint_cap_413():
+    sink = _RecordingSink()
+    mcp, store = await _mount(sink)
+    ticket = await _upload.upload_receiver_mint(
+        "art-1",
+        token_store=store,
+        base_url="https://route.test",
+        ttl=120.0,
+        expected=ArtifactConstraints(maxSize=4),
+    )
+    path = ticket.sinks[0].url[len("https://route.test") :]
+    token = ticket.sinks[0].url.rsplit("/", 1)[1]
+    async with await _client(mcp) as c:
+        resp = await c.put(
+            path, content=b"too-many-bytes", headers={"Content-Type": "text/plain"}
+        )
+    assert resp.status_code == 413
+    assert sink.calls == []
+    assert await store.lookup(token) is not None
+
+
+async def test_route_too_large_operator_cap_413():
+    sink = _RecordingSink()
+    cfg = ServerConfig(
+        kv_store_url="memory://",
+        file_exchange_token_ttl=3600.0,
+        file_exchange_max_artifact_size=4,
+    )
+    mcp, store = await _mount(sink, config=cfg)
+    ticket = await _upload.upload_receiver_mint(
+        "art-1", token_store=store, base_url="https://route.test", ttl=120.0
+    )
+    path = ticket.sinks[0].url[len("https://route.test") :]
+    async with await _client(mcp) as c:
+        resp = await c.put(
+            path, content=b"too-many", headers={"Content-Type": "text/plain"}
+        )
+    assert resp.status_code == 413
+
+
+async def test_route_content_digest_mismatch_400():
+    sink = _RecordingSink()
+    mcp, store = await _mount(sink)
+    ticket = await _upload.upload_receiver_mint(
+        "art-1", token_store=store, base_url="https://route.test", ttl=120.0
+    )
+    path = ticket.sinks[0].url[len("https://route.test") :]
+    token = ticket.sinks[0].url.rsplit("/", 1)[1]
+    bad = "sha-256=:" + "A" * 44 + ":"
+    async with await _client(mcp) as c:
+        resp = await c.put(
+            path,
+            content=b"hello",
+            headers={"Content-Type": "text/plain", "Content-Digest": bad},
+        )
+    assert resp.status_code == 400
+    assert sink.calls == []
+    assert await store.lookup(token) is not None
+
+
+async def test_route_require_digest_but_missing_header_400():
+    """A6."""
+    sink = _RecordingSink()
+    mcp, store = await _mount(sink)
+    ticket = await _upload.upload_receiver_mint(
+        "art-1",
+        token_store=store,
+        base_url="https://route.test",
+        ttl=120.0,
+        expected=ArtifactConstraints(requireDigest=["sha-256"]),
+    )
+    path = ticket.sinks[0].url[len("https://route.test") :]
+    async with await _client(mcp) as c:
+        resp = await c.put(path, content=b"hi", headers={"Content-Type": "text/plain"})
+    assert resp.status_code == 400
+    assert sink.calls == []
+
+
+async def test_route_content_digest_unparseable_400():
+    """D4."""
+    sink = _RecordingSink()
+    mcp, store = await _mount(sink)
+    ticket = await _upload.upload_receiver_mint(
+        "art-1", token_store=store, base_url="https://route.test", ttl=120.0
+    )
+    path = ticket.sinks[0].url[len("https://route.test") :]
+    async with await _client(mcp) as c:
+        resp = await c.put(
+            path,
+            content=b"hi",
+            headers={"Content-Type": "text/plain", "Content-Digest": "garbage"},
+        )
+    assert resp.status_code == 400
+
+
+async def test_route_content_digest_unsupported_algo_400():
+    """D5."""
+    sink = _RecordingSink()
+    mcp, store = await _mount(sink)
+    ticket = await _upload.upload_receiver_mint(
+        "art-1", token_store=store, base_url="https://route.test", ttl=120.0
+    )
+    path = ticket.sinks[0].url[len("https://route.test") :]
+    async with await _client(mcp) as c:
+        resp = await c.put(
+            path,
+            content=b"hi",
+            headers={
+                "Content-Type": "text/plain",
+                "Content-Digest": "md5=:YWJjZA==:",
+            },
+        )
+    assert resp.status_code == 400
