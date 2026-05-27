@@ -1,16 +1,16 @@
 """The ``upload`` transport data plane (#146).
 
-Three free helpers — ``upload_receiver_mint``, ``upload_sender_consume``,
-and ``register_upload_route`` — that mirror ``_download.py``'s pull plane.
-The route accepts an HTTPS ``PUT``/``POST`` capability URL, streams the
-request body to a transient temp file with size + digest verification,
-and on a clean verify deposits the bytes into the receiver's
-``ArtifactSink`` (#142). The sender stages the offered bytes (hook stream
-→ temp + hash) and ``PUT``s them through the #147 SSRF guard.
+This module accrues the upload-transport helpers task by task:
+
+- ``upload_receiver_mint`` — receiver role: mint a single-use capability
+  token and emit an :class:`IntakeTicket` carrying one
+  :class:`UploadSink` (this commit).
+- The serving route, the sender, and the RFC 9530 / 7231 helpers land
+  in subsequent commits per the implementation plan.
 
 See ``docs/superpowers/specs/2026-05-24-file-exchange-146-upload-data-plane-design.md``
-for the contract and ``…2026-05-27-file-exchange-146-failure-modes.md`` for
-the enumerated failure modes each test in this module exercises.
+for the behavioural contract and ``…2026-05-27-file-exchange-146-failure-modes.md``
+for the enumerated failure modes each test in this module exercises.
 """
 
 from __future__ import annotations
@@ -25,6 +25,8 @@ if TYPE_CHECKING:
     from fastmcp_pvl_core._file_exchange._tokens import CapabilityTokenStore
     from fastmcp_pvl_core._file_exchange._wire import ArtifactConstraints
 
+# pvl-core's upload route shape (§12 capability URL path). A constant, not a
+# kwarg — route structure is a pvl-core shape decision.
 UPLOAD_PREFIX = "/fx/u"
 
 
