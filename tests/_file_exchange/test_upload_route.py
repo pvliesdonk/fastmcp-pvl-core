@@ -6,6 +6,7 @@ import os
 from typing import BinaryIO
 
 import httpx
+import pytest
 from fastmcp import FastMCP
 
 from fastmcp_pvl_core._config import ServerConfig
@@ -622,3 +623,32 @@ async def test_route_revoke_after_lookup_still_succeeds():
     assert len(sink.calls) == 1
     # Token is gone (consume returned False, but revoke deleted it).
     assert await store.lookup(token) is None
+
+
+async def test_route_client_disconnect_propagates_without_500_response(monkeypatch):
+    """starlette.requests.ClientDisconnect during request.stream() must
+    propagate, not be caught as a generic OSError and turned into 500."""
+    from starlette.requests import ClientDisconnect
+
+    import fastmcp_pvl_core._file_exchange._upload as up
+
+    sink = _RecordingSink()
+    mcp, store = await _mount(sink)
+    ticket = await _upload.upload_receiver_mint(
+        "art-1", token_store=store, base_url="https://route.test", ttl=120.0
+    )
+    path = ticket.sinks[0].url[len("https://route.test") :]
+    token = ticket.sinks[0].url.rsplit("/", 1)[1]
+
+    # Patch _write_chunk to raise ClientDisconnect when called (simulates
+    # the body iterator yielding then the connection dropping).
+    def disconnect(tmp, hasher, chunk):
+        raise ClientDisconnect()
+
+    monkeypatch.setattr(up, "_write_chunk", disconnect)
+    async with await _client(mcp) as c:
+        with pytest.raises(ClientDisconnect):
+            await c.put(path, content=b"hello", headers={"Content-Type": "text/plain"})
+    # Token not consumed (no response was produced)
+    assert await store.lookup(token) is not None
+    assert sink.calls == []

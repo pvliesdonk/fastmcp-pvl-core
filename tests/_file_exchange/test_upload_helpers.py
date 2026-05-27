@@ -38,14 +38,30 @@ def test_content_digest_parse_sha384_well_formed():
     assert decoded == raw
 
 
-def test_content_digest_parse_multi_algo_dict_takes_first_entry():
-    """Documented scoping: only the first dictionary entry is parsed."""
+def test_content_digest_parse_multi_algo_dict_returns_first_supported():
+    """RFC 9530 §3: when a dictionary lists multiple algorithms, return the
+    first supported one in order. (sha-256 is supported; sha-512 is also
+    supported but appears second.)"""
     raw256 = hashlib.sha256(b"x").digest()
     raw512 = hashlib.sha512(b"x").digest()
     b256 = base64.b64encode(raw256).decode("ascii")
     b512 = base64.b64encode(raw512).decode("ascii")
     parsed = _content_digest_parse(f"sha-256=:{b256}:, sha-512=:{b512}:")
     assert parsed == ("sha-256", raw256)
+
+
+def test_content_digest_parse_skips_unsupported_then_takes_supported():
+    """RFC 9530 §3 MUST-ignore: unsupported algorithm at first position is
+    skipped, the supported algorithm later in the dictionary is used."""
+    raw256 = hashlib.sha256(b"hello").digest()
+    b256 = base64.b64encode(raw256).decode("ascii")
+    parsed = _content_digest_parse(f"md5=:YWJjZA==:, sha-256=:{b256}:")
+    assert parsed == ("sha-256", raw256)
+
+
+def test_content_digest_parse_all_unsupported_returns_none():
+    """If every dictionary entry is in an unsupported algorithm, return None."""
+    assert _content_digest_parse("md5=:YWJjZA==:, sha-3=:YWJjZA==:") is None
 
 
 def test_content_digest_parse_tolerates_whitespace():
