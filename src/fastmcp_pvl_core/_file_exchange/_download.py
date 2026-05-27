@@ -319,13 +319,15 @@ def _parse_range(header: str | None, size: int | None) -> tuple[int, int | None]
     return start, end
 
 
-def register_file_exchange_routes(
+def register_download_route(
     mcp: FastMCP,
     *,
     token_store: CapabilityTokenStore,
     source: ArtifactSource,
 ) -> None:
-    """Mount the ``download`` GET route on ``mcp`` (serves §12 capability URLs).
+    """Mount the ``download`` GET route on ``mcp`` (called by _routes).
+
+    Serves §12 capability URLs.
 
     ``GET <DOWNLOAD_PREFIX>/{token}`` looks the token up in ``token_store``,
     serves the artifact via ``source.open_artifact`` (streamed, ``Range``

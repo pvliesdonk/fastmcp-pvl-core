@@ -64,7 +64,7 @@ async def test_two_server_pull_download(monkeypatch):
     # Server A: provider mint + serving route on a real ASGI app.
     store = _store()
     mcp = FastMCP("provider")
-    _download.register_file_exchange_routes(
+    _download.register_download_route(
         mcp, token_store=store, source=_BytesSource("doc", body)
     )
     app_a = mcp.http_app()

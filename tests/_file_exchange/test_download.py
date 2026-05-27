@@ -430,7 +430,7 @@ class _BytesSource:
 
 def _route_client(store, source):
     mcp = FastMCP("test")
-    _download.register_file_exchange_routes(mcp, token_store=store, source=source)
+    _download.register_download_route(mcp, token_store=store, source=source)
     app = mcp.http_app()
     return httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://route.test"
