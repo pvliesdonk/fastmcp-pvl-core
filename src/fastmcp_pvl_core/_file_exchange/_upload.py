@@ -229,7 +229,11 @@ def register_upload_route(
                     os.close(fd)
                 raise
             try:
-                hasher = hashlib.new("sha256")
+                try:
+                    hasher = hashlib.new("sha256")
+                except Exception:
+                    logger.exception("file-exchange: upload hasher init failed")
+                    return Response(status_code=500)
                 received = 0
                 too_large = False
                 try:
