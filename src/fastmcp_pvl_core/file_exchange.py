@@ -69,6 +69,7 @@ from fastmcp_pvl_core._file_exchange import (
     resolve_filesystem_uri,
     select_sink,
     select_source,
+    upload_receiver_mint,
     validate_wire,
 )
 
@@ -126,5 +127,6 @@ __all__ = [
     "resolve_filesystem_uri",
     "select_sink",
     "select_source",
+    "upload_receiver_mint",
     "validate_wire",
 ]
