@@ -450,7 +450,18 @@ async def test_route_ambient_authorization_on_invalid_token_still_404():
 
 
 async def test_route_concurrent_puts_at_most_one_consumes():
-    """C1."""
+    """C1: two concurrent PUTs against one token do not crash, the token
+    is consumed exactly once, and the response set never contains two
+    404s.
+
+    Under ASGITransport's single-event-loop driver, the actual
+    interleaving window between ``token_store.lookup`` and
+    ``token_store.consume`` is not forced — the test pins the
+    observable contract (consume-exactly-once, response-set sanity)
+    rather than the specific race timing. A forced-interleaving test
+    that injects an awaitable barrier into the token store would be a
+    legitimate follow-up but is not required for the matrix row.
+    """
     sink = _RecordingSink()
     mcp, store = await _mount(sink)
     ticket = await _upload.upload_receiver_mint(
