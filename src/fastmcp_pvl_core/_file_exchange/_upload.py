@@ -397,10 +397,24 @@ async def upload_sender_consume(
                 headers["Content-Type"] = metadata.mimeType
 
             async def _body() -> AsyncIterator[bytes]:
-                f = await asyncio.to_thread(open, tmp_path, "rb")
+                try:
+                    f = await asyncio.to_thread(open, tmp_path, "rb")
+                except OSError as exc:
+                    raise FileExchangeTransferError(
+                        TransferErrorCode.TRANSFER_FAILED,
+                        transport="upload",
+                        detail="failed to read the staged artifact",
+                    ) from exc
                 try:
                     while True:
-                        chunk = await asyncio.to_thread(f.read, _CHUNK)
+                        try:
+                            chunk = await asyncio.to_thread(f.read, _CHUNK)
+                        except OSError as exc:
+                            raise FileExchangeTransferError(
+                                TransferErrorCode.TRANSFER_FAILED,
+                                transport="upload",
+                                detail="failed to read the staged artifact",
+                            ) from exc
                         if not chunk:
                             break
                         yield chunk
