@@ -214,6 +214,7 @@ def register_upload_route(
     body-size cap; per-mint ``expected.maxSize`` is the smaller of the two when
     set. See the failure-mode matrix for the full per-status-code contract.
     """
+    from starlette.requests import ClientDisconnect
     from starlette.responses import Response
 
     async def _handle(request: Request) -> Response:
@@ -273,6 +274,11 @@ def register_upload_route(
                             break
                         await asyncio.to_thread(_write_chunk, tmp, hasher, chunk)
                         received += len(chunk)
+                except ClientDisconnect:
+                    # Client dropped mid-upload — no response needed; outer
+                    # finally still unlinks the temp.
+                    logger.debug("file-exchange: upload client disconnected mid-stream")
+                    raise
                 except OSError:
                     logger.exception("file-exchange: upload temp write failed")
                     return Response(status_code=500)
@@ -281,7 +287,7 @@ def register_upload_route(
                     await asyncio.to_thread(tmp.close)
 
             if too_large:
-                return Response(status_code=413)
+                return Response(status_code=413, headers={"Connection": "close"})
 
             cd_header = request.headers.get("content-digest")
             required = expected.requireDigest if expected is not None else None
@@ -300,12 +306,16 @@ def register_upload_route(
                 else:
                     rehash = hashlib.new(_HASHLIB_BY_LABEL[cd_algo])
                     try:
-                        with open(tmp_path, "rb") as fh:
+                        fh = await asyncio.to_thread(open, tmp_path, "rb")
+                        try:
                             while True:
                                 buf = await asyncio.to_thread(fh.read, _CHUNK)
                                 if not buf:
                                     break
                                 rehash.update(buf)
+                        finally:
+                            with contextlib.suppress(OSError):
+                                await asyncio.to_thread(fh.close)
                     except OSError:
                         logger.exception("file-exchange: upload rehash read failed")
                         return Response(status_code=500)
