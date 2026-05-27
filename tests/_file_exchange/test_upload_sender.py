@@ -189,3 +189,39 @@ async def test_sender_closes_source_stream(monkeypatch, tmp_path):
     monkeypatch.setattr(_upload.tempfile, "tempdir", str(tmp_path))
     await _upload.upload_sender_consume(_sink(), _S(), "art-1", config=_cfg())
     assert tracked.closed is True
+
+
+async def test_sender_body_iter_oserror_maps_to_transfer_failed(monkeypatch, tmp_path):
+    """D9: OSError while iterating the staged body -> TRANSFER_FAILED."""
+    import builtins
+
+    monkeypatch.setattr(_upload.tempfile, "tempdir", str(tmp_path))
+
+    # Stub guarded_stream so the response is 204 if we ever get there (we won't).
+    captured: dict = {}
+    monkeypatch.setattr(_upload, "guarded_stream", _fake_guarded_stream(captured))
+
+    real_open = builtins.open
+
+    class _BadFile:
+        def __init__(self, inner):
+            self._inner = inner
+
+        def read(self, n=-1):
+            raise OSError("simulated read failure")
+
+        def close(self):
+            self._inner.close()
+
+    def wrap(path, mode="r", *a, **kw):
+        f = real_open(path, mode, *a, **kw)
+        if isinstance(path, str) and "fx-upload-" in path and "rb" in mode:
+            return _BadFile(f)
+        return f
+
+    monkeypatch.setattr(builtins, "open", wrap)
+    with pytest.raises(FileExchangeTransferError) as ei:
+        await _upload.upload_sender_consume(
+            _sink(), _StreamSource(b"hello world"), "art-1", config=_cfg()
+        )
+    assert ei.value.code == TransferErrorCode.TRANSFER_FAILED
