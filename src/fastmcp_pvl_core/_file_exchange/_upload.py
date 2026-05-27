@@ -8,7 +8,12 @@ This module accrues the upload-transport helpers task by task:
 - ``_content_digest_parse`` / ``_content_digest_format`` / ``_media_range_matches``
   — RFC 9530 Content-Digest dictionary-entry parse + format, and an RFC 7231
   media-range matcher used by the route to enforce ``acceptMimeTypes``.
-- The serving route and the sender land in subsequent commits per
+- ``register_upload_route`` — mount ``PUT``/``POST <UPLOAD_PREFIX>/{token}``
+  on a FastMCP server: streams the body to a temp file, verifies an optional
+  ``Content-Digest`` before the sink sees the bytes, deposits to
+  :class:`ArtifactSink`, and consumes the single-use token only after a
+  successful store.
+- The sender (``upload_sender_consume``) lands in a subsequent commit per
   the implementation plan.
 
 See ``docs/superpowers/specs/2026-05-24-file-exchange-146-upload-data-plane-design.md``
@@ -18,18 +23,41 @@ for the enumerated failure modes each test in this module exercises.
 
 from __future__ import annotations
 
+import asyncio
 import base64 as _b64
 import binascii
-from typing import TYPE_CHECKING, Literal
+import contextlib
+import hashlib
+import logging
+import os
+import tempfile
+from typing import TYPE_CHECKING, Literal, cast
 
 from fastmcp_pvl_core._file_exchange._spec import SPEC_VERSION, TICKET_TYPE
-from fastmcp_pvl_core._file_exchange._staging import _HASHLIB_BY_LABEL
+from fastmcp_pvl_core._file_exchange._staging import (
+    _CHUNK,
+    _HASHLIB_BY_LABEL,
+    _write_chunk,
+)
 from fastmcp_pvl_core._file_exchange._tokens import capability_url
-from fastmcp_pvl_core._file_exchange._wire import IntakeTicket, UploadSink
+from fastmcp_pvl_core._file_exchange._wire import (
+    ArtifactConstraints,
+    ArtifactMetadata,
+    IntakeTicket,
+    UploadSink,
+)
 
 if TYPE_CHECKING:
+    from fastmcp import FastMCP
+    from starlette.requests import Request
+    from starlette.responses import Response
+
+    from fastmcp_pvl_core._config import ServerConfig
+    from fastmcp_pvl_core._file_exchange._hooks import ArtifactSink
     from fastmcp_pvl_core._file_exchange._tokens import CapabilityTokenStore
-    from fastmcp_pvl_core._file_exchange._wire import ArtifactConstraints
+
+
+logger = logging.getLogger(__name__)
 
 # pvl-core's upload route shape (§12 capability URL path). A constant, not a
 # kwarg — route structure is a pvl-core shape decision.
@@ -141,3 +169,139 @@ def _media_range_matches(content_type: str, accept: list[str]) -> bool:
         ):
             return True
     return False
+
+
+def register_upload_route(
+    mcp: FastMCP,
+    *,
+    token_store: CapabilityTokenStore,
+    sink: ArtifactSink,
+    config: ServerConfig,
+) -> None:
+    """Mount ``PUT``/``POST <UPLOAD_PREFIX>/{token}`` on ``mcp``.
+
+    The route serves §12 capability URLs minted by ``upload_receiver_mint``;
+    ambient credentials are ignored — the in-URL token is the only
+    authorization. ``config.file_exchange_max_artifact_size`` is the operator
+    body-size cap; per-mint ``expected.maxSize`` is the smaller of the two when
+    set. See the failure-mode matrix for the full per-status-code contract.
+    """
+    from starlette.responses import Response
+
+    async def _handle(request: Request) -> Response:
+        token = request.path_params["token"]
+        rec = await token_store.lookup(token)
+        if rec is None:
+            return Response(status_code=404)
+        artifact_id = cast("str", rec.metadata["artifact_id"])
+        expected_raw = rec.metadata.get("expected")
+        expected = (
+            ArtifactConstraints.model_validate(expected_raw)
+            if expected_raw is not None
+            else None
+        )
+
+        content_type = request.headers.get("content-type", "")
+        if expected is not None and expected.acceptMimeTypes is not None:
+            if not _media_range_matches(content_type, expected.acceptMimeTypes):
+                return Response(status_code=415)
+
+        cap_per_mint = expected.maxSize if expected is not None else None
+        cap_operator = config.file_exchange_max_artifact_size
+        cap: int | None
+        if cap_per_mint is None:
+            cap = cap_operator
+        elif cap_operator is None:
+            cap = cap_per_mint
+        else:
+            cap = min(cap_per_mint, cap_operator)
+
+        try:
+            fd, tmp_path = tempfile.mkstemp(prefix="fx-upload-")
+        except OSError:
+            logger.exception("file-exchange: upload mkstemp failed")
+            return Response(status_code=500)
+        try:
+            try:
+                tmp = os.fdopen(fd, "wb")
+            except BaseException:
+                with contextlib.suppress(OSError):
+                    os.close(fd)
+                raise
+            try:
+                hasher = hashlib.new("sha256")
+                received = 0
+                too_large = False
+                try:
+                    async for chunk in request.stream():
+                        if not chunk:
+                            continue
+                        if cap is not None and received + len(chunk) > cap:
+                            too_large = True
+                            break
+                        await asyncio.to_thread(_write_chunk, tmp, hasher, chunk)
+                        received += len(chunk)
+                except OSError:
+                    logger.exception("file-exchange: upload temp write failed")
+                    return Response(status_code=500)
+            finally:
+                with contextlib.suppress(OSError):
+                    await asyncio.to_thread(tmp.close)
+
+            if too_large:
+                return Response(status_code=413)
+
+            cd_header = request.headers.get("content-digest")
+            if cd_header is not None:
+                parsed = _content_digest_parse(cd_header)
+                if parsed is None:
+                    return Response(status_code=400)
+                cd_algo, cd_raw = parsed
+                if cd_algo == "sha-256":
+                    if hasher.digest() != cd_raw:
+                        return Response(status_code=400)
+                else:
+                    rehash = hashlib.new(_HASHLIB_BY_LABEL[cd_algo])
+                    try:
+                        with open(tmp_path, "rb") as fh:
+                            while True:
+                                buf = await asyncio.to_thread(fh.read, _CHUNK)
+                                if not buf:
+                                    break
+                                rehash.update(buf)
+                    except OSError:
+                        logger.exception("file-exchange: upload rehash read failed")
+                        return Response(status_code=500)
+                    if rehash.digest() != cd_raw:
+                        return Response(status_code=400)
+            elif expected is not None and expected.requireDigest is not None:
+                return Response(status_code=400)
+
+            meta = ArtifactMetadata(
+                mimeType=content_type or None,
+                size=received,
+                digest="sha-256:" + hasher.hexdigest(),
+            )
+            try:
+                f = await asyncio.to_thread(open, tmp_path, "rb")
+            except OSError:
+                logger.exception("file-exchange: upload temp re-open failed")
+                return Response(status_code=500)
+            try:
+                try:
+                    await sink.store_artifact(artifact_id, meta, f)
+                except Exception:
+                    logger.exception("file-exchange: upload sink store_artifact failed")
+                    return Response(status_code=500)
+            finally:
+                with contextlib.suppress(OSError):
+                    await asyncio.to_thread(f.close)
+
+            with contextlib.suppress(Exception):
+                await token_store.consume(token)
+            return Response(status_code=204)
+        finally:
+            with contextlib.suppress(OSError):
+                await asyncio.to_thread(os.unlink, tmp_path)
+
+    mcp.custom_route(f"{UPLOAD_PREFIX}/{{token}}", methods=["PUT", "POST"])(_handle)
