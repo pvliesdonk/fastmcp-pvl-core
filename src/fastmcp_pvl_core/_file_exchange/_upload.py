@@ -5,12 +5,9 @@ This module accrues the upload-transport helpers task by task:
 - ``upload_receiver_mint`` — receiver role: mint a single-use capability
   token and emit an :class:`IntakeTicket` carrying one
   :class:`UploadSink`.
-- ``_content_digest_parse`` / ``_content_digest_format`` — RFC 9530
-  ``Content-Digest`` structured-field dictionary parse and format
-  (sha-256/384/512 only).
-- ``_media_range_matches`` — RFC 7231 §3.1.1.1 media-range matcher
-  used to validate request ``Content-Type`` against the ticket's
-  ``expected.contentType`` allowlist (this commit).
+- ``_content_digest_parse`` / ``_content_digest_format`` / ``_media_range_matches``
+  — RFC 9530 Content-Digest dictionary-entry parse + format, and an RFC 7231
+  media-range matcher used by the route to enforce ``acceptMimeTypes``.
 - The serving route and the sender land in subsequent commits per
   the implementation plan.
 
