@@ -252,11 +252,16 @@ def register_upload_route(
                 return Response(status_code=413)
 
             cd_header = request.headers.get("content-digest")
+            required = expected.requireDigest if expected is not None else None
             if cd_header is not None:
                 parsed = _content_digest_parse(cd_header)
                 if parsed is None:
                     return Response(status_code=400)
                 cd_algo, cd_raw = parsed
+                if required is not None and cd_algo not in required:
+                    # requireDigest lists specific algorithms; a digest in a
+                    # different algorithm does not satisfy the requirement.
+                    return Response(status_code=400)
                 if cd_algo == "sha-256":
                     if hasher.digest() != cd_raw:
                         return Response(status_code=400)
@@ -274,7 +279,7 @@ def register_upload_route(
                         return Response(status_code=500)
                     if rehash.digest() != cd_raw:
                         return Response(status_code=400)
-            elif expected is not None and expected.requireDigest is not None:
+            elif required is not None:
                 return Response(status_code=400)
 
             meta = ArtifactMetadata(
@@ -297,8 +302,13 @@ def register_upload_route(
                 with contextlib.suppress(OSError):
                     await asyncio.to_thread(f.close)
 
-            with contextlib.suppress(Exception):
+            try:
                 await token_store.consume(token)
+            except Exception:
+                logger.warning(
+                    "file-exchange: upload token consume failed after store; "
+                    "token may remain usable to TTL"
+                )
             return Response(status_code=204)
         finally:
             with contextlib.suppress(OSError):
