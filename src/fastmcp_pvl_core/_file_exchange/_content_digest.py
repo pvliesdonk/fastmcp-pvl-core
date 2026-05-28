@@ -14,6 +14,7 @@ staging temp-file lifecycle.
 from __future__ import annotations
 
 from collections.abc import Iterable
+from typing import Literal
 
 import http_sf
 
@@ -36,6 +37,14 @@ def parse_header(
     first supported entry, preferring ``preferred`` algorithms (if any
     are present and parse) and falling back to the first supported
     entry the dictionary lists.
+
+    ``preferred`` is treated as an **unordered set** ("any preferred
+    algorithm beats any non-preferred one"); when more than one
+    preferred algorithm is present in the header, the tie-break follows
+    header dictionary order. This matches the wire-spec semantic of
+    ``ArtifactConstraints.requireDigest`` (§7.4), which lists accepted
+    algorithms without implying priority. A future caller that wants
+    true priority-order selection would need a separate parameter.
 
     Unsupported algorithms within a multi-algorithm dictionary are
     silently skipped (RFC 9530 §3 MUST-ignore). Parameter dictionaries
@@ -85,11 +94,16 @@ def satisfies_requirement(algo: str, required: Iterable[str] | None) -> bool:
     return needle in {r.strip().lower() for r in required}
 
 
-def format_header(algo: str, raw: bytes) -> str:
+def format_header(algo: Literal["sha-256", "sha-384", "sha-512"], raw: bytes) -> str:
     """Serialise ``(algo, raw)`` as an RFC 9530 Content-Digest value.
 
-    Delegates to http_sf.ser_dictionary for the canonical RFC 8941
-    form. ``algo`` is the lowercase algorithm label
-    (``sha-256``/``sha-384``/``sha-512``); ``raw`` is the digest bytes.
+    Delegates to ``http_sf.ser_dictionary`` for the canonical RFC 8941
+    form. ``algo`` is constrained at type-check time to the lowercase
+    labels in :data:`SUPPORTED_ALGORITHMS`; ``raw`` is the digest bytes.
+
+    The ``Literal`` type annotation is load-bearing: ``ser_dictionary``
+    enforces RFC 8941 lcalpha at serialisation time and raises on any
+    other key. Callers must pass a literal from the supported set;
+    pvl-core never reaches this function with a non-literal algo.
     """
     return _ser_dictionary({algo: (raw, {})})

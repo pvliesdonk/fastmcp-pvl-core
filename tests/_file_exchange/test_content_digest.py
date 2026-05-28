@@ -106,6 +106,31 @@ def test_parse_header_preferred_is_case_insensitive():
     assert parsed == ("sha-256", raw)
 
 
+def test_parse_header_preferred_is_unordered_tie_break_by_header():
+    """When ``preferred`` lists multiple algorithms that the header all
+    advertises, ``preferred`` is treated as an unordered set — the tie-break
+    follows the header's dictionary order, NOT ``preferred``'s argument order.
+    This matches the wire semantic of ``requireDigest`` (a set of accepted
+    algorithms, no priority implied)."""
+    raw256 = hashlib.sha256(b"x").digest()
+    raw512 = hashlib.sha512(b"x").digest()
+    b256 = base64.b64encode(raw256).decode("ascii")
+    b512 = base64.b64encode(raw512).decode("ascii")
+    # ``preferred`` argument lists sha-512 first, but the header lists
+    # sha-256 first; tie-break wins for sha-256.
+    parsed = _content_digest.parse_header(
+        f"sha-256=:{b256}:, sha-512=:{b512}:",
+        preferred=["sha-512", "sha-256"],
+    )
+    assert parsed == ("sha-256", raw256)
+    # Reverse the header order to confirm the tie-break really follows it.
+    parsed = _content_digest.parse_header(
+        f"sha-512=:{b512}:, sha-256=:{b256}:",
+        preferred=["sha-512", "sha-256"],
+    )
+    assert parsed == ("sha-512", raw512)
+
+
 def test_satisfies_requirement_none_is_always_true():
     assert _content_digest.satisfies_requirement("sha-256", None) is True
     assert _content_digest.satisfies_requirement("anything", None) is True
@@ -130,6 +155,19 @@ def test_satisfies_requirement_not_in_list():
 
 def test_satisfies_requirement_normalises_whitespace_in_required():
     assert _content_digest.satisfies_requirement("sha-256", [" sha-256 "]) is True
+
+
+def test_satisfies_requirement_empty_string_entry_returns_false():
+    """An ``ArtifactConstraints.requireDigest=[""]`` wire value is currently
+    accepted by the Pydantic model (``min_length=1`` on the list constrains
+    its length, not its elements) — see ``mcp-file-exchange-ext#16`` for the
+    deferred spec evolution. Until that lands, an empty-string entry is
+    syntactically valid input that no real algorithm can satisfy: the
+    function returns False, and the route's response then becomes 400.
+    Pinned here so a future "treat [\"\"] as no-constraint" change doesn't
+    happen accidentally."""
+    assert _content_digest.satisfies_requirement("sha-256", [""]) is False
+    assert _content_digest.satisfies_requirement("sha-512", [""]) is False
 
 
 def test_format_header_round_trips_via_parse():
