@@ -18,11 +18,11 @@ from typing import Literal
 
 import http_sf
 
-# http_sf re-exports ``ser_dictionary`` into its package namespace but does
-# not list it in ``__all__``, so mypy refuses ``http_sf.ser_dictionary(...)``.
-# The submodule path is the cleanest mypy-clean alternative; revisit on any
-# http-sf upgrade in case a public serialiser surfaces upstream.
-from http_sf.dictionary import ser_dictionary as _ser_dictionary
+# ``ser_dictionary`` is re-exported into the ``http_sf`` package namespace
+# but omitted from ``__all__``, so mypy refuses the bare attribute access.
+# The ``type: ignore`` is the conventional fix; revisit on any http-sf
+# upgrade in case a public serialiser surfaces upstream.
+from http_sf import ser_dictionary as _ser_dictionary  # type: ignore[attr-defined]
 
 SUPPORTED_ALGORITHMS = frozenset({"sha-256", "sha-384", "sha-512"})
 

@@ -186,7 +186,8 @@ Two PRs in sequence, then the existing slice chain rebases:
   - OWS around `=` within a dictionary entry → **rejected** by `http_sf` per
     strict RFC 8941 grammar (pinned in `test_parse_header_ows_around_equals_rejected`).
   - Malformed base64 → `None`.
-  - Case folding: `SHA-256=:...:` → lowercase label returned.
+  - Uppercase algorithm label (`SHA-256=:...:`) → **rejected** by `http_sf`
+    per RFC 8941 lcalpha (pinned in `test_parse_header_uppercase_label_rejected`).
   - `satisfies_requirement` with `required=None`, empty list, uppercase, mixed case.
   - `format_header` round-trips through `parse_header`.
 - Does NOT touch `_upload.py` yet — keeps the diff narrow and reviewable.

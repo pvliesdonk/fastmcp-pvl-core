@@ -33,6 +33,16 @@ def test_parse_header_malformed_returns_none():
     assert _content_digest.parse_header("not a structured field!!!") is None
 
 
+def test_parse_header_malformed_base64_value_returns_none():
+    """A structurally-valid SF dictionary key (sha-256) paired with an
+    invalid byte-sequence payload should produce None — http_sf parses
+    byte-sequences eagerly, so non-base64 inside the `:…:` framing raises
+    at parse time. This is a different failure mode from
+    ``test_parse_header_malformed_returns_none`` (which trips the
+    structured-field grammar itself)."""
+    assert _content_digest.parse_header("sha-256=:not!base64!:") is None
+
+
 def test_parse_header_all_unsupported_returns_none():
     assert _content_digest.parse_header("md5=:YWJjZA==:, sha-3=:YWJjZA==:") is None
 
