@@ -36,8 +36,8 @@ from typing import TYPE_CHECKING, Literal, cast
 
 from fastmcp_pvl_core._file_exchange._spec import SPEC_VERSION, TICKET_TYPE
 from fastmcp_pvl_core._file_exchange._staging import (
-    _CHUNK,
     _HASHLIB_BY_LABEL,
+    _rehash_file,
     _write_chunk,
 )
 from fastmcp_pvl_core._file_exchange._tokens import capability_url
@@ -214,24 +214,6 @@ def _media_range_matches(content_type: str, accept: list[str]) -> bool:
         ):
             return True
     return False
-
-
-def _rehash_file(path: str, hashlib_name: str) -> bytes:
-    """Synchronously compute ``hashlib_name``'s digest of the file at ``path``.
-
-    Called via a single ``asyncio.to_thread`` dispatch from the route's
-    rehash branch (the non-sha-256 ``Content-Digest`` verify path), so the
-    entire open + chunked-read + close runs in one worker thread rather
-    than spawning a thread per chunk.
-    """
-    h = hashlib.new(hashlib_name)
-    with open(path, "rb") as fh:
-        while True:
-            buf = fh.read(_CHUNK)
-            if not buf:
-                break
-            h.update(buf)
-    return h.digest()
 
 
 def register_upload_route(

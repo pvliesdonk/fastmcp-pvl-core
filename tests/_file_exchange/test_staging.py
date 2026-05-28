@@ -75,3 +75,19 @@ def test_write_chunk_no_hasher_writes_only(tmp_path):
     with target.open("wb") as fh:
         _staging._write_chunk(fh, None, b"abc")
     assert target.read_bytes() == b"abc"
+
+
+def test_rehash_file_sha384(tmp_path):
+    payload = b"the rehash helper now lives in _staging"
+    target = tmp_path / "blob"
+    target.write_bytes(payload)
+    expected = hashlib.sha384(payload).digest()
+    assert _staging._rehash_file(str(target), "sha384") == expected
+
+
+def test_rehash_file_sha512(tmp_path):
+    payload = b"x" * (3 * _staging._CHUNK + 7)  # multiple chunks + tail
+    target = tmp_path / "blob"
+    target.write_bytes(payload)
+    expected = hashlib.sha512(payload).digest()
+    assert _staging._rehash_file(str(target), "sha512") == expected
