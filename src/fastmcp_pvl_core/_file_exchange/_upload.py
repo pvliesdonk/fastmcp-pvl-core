@@ -141,9 +141,11 @@ def _content_digest_parse(
     in preference to any other supported entry — used by the route to honour
     ``expected.requireDigest`` regardless of header entry ordering. When no
     ``preferred`` entry parses successfully, the parser falls back to the
-    first supported well-formed entry (so a client that sends a single
-    well-formed entry in a non-preferred algorithm still gets its digest
-    verified, just not against ``requireDigest``).
+    first supported well-formed entry. The caller decides what to do with
+    that fallback: the route rejects it with 400 when ``requireDigest`` is
+    set (the fallback algorithm is not in the required set, so the request
+    is non-conformant); when ``requireDigest`` is absent, the fallback
+    proceeds to digest verification against the bytes received.
     """
     if not header:
         return None
@@ -301,7 +303,9 @@ def register_upload_route(
                 raise
             try:
                 try:
-                    hasher = hashlib.new("sha256")
+                    # Use the canonical mapping so the streaming hasher
+                    # and the rehash branch can never drift apart.
+                    hasher = hashlib.new(_HASHLIB_BY_LABEL["sha-256"])
                 except Exception:
                     logger.exception("file-exchange: upload hasher init failed")
                     return Response(status_code=500)
@@ -338,10 +342,17 @@ def register_upload_route(
                 if parsed is None:
                     return Response(status_code=400)
                 cd_algo, cd_raw = parsed
-                if required is not None and cd_algo not in required:
-                    # ``preferred=required`` made the parser try ``required``
-                    # algorithms first; arriving here means the client's
-                    # header contained no entry in any ``required`` algo.
+                # ``cd_algo`` is always lowercase (the parser normalises);
+                # ``required`` comes from ``ArtifactConstraints.requireDigest``
+                # which is an unvalidated ``list[str]`` (no Pydantic-side
+                # normalisation), so lowercase the comparison set too.
+                if required is not None and cd_algo not in {
+                    r.strip().lower() for r in required
+                }:
+                    # The parser tried ``preferred=required`` first, so
+                    # arriving here means the client's header contained no
+                    # entry whose algorithm is in ``required`` — only a
+                    # fallback entry in a non-required algorithm.
                     return Response(status_code=400)
                 if cd_algo == "sha-256":
                     if hasher.digest() != cd_raw:

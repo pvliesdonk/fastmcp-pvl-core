@@ -155,6 +155,74 @@ async def test_route_require_digest_picks_required_algo_regardless_of_order():
     assert len(sink.calls) == 1
 
 
+async def test_route_require_digest_is_case_insensitive():
+    """``ArtifactConstraints.requireDigest`` is an unvalidated ``list[str]``;
+    a downstream that mints with ``["SHA-256"]`` (uppercase, non-standard
+    but syntactically valid) must not have its tokens permanently rejected.
+    The route lowercases the comparison set so ``cd_algo=="sha-256"`` still
+    satisfies the requirement."""
+    import base64
+
+    sink = _RecordingSink()
+    mcp, store = await _mount(sink)
+    ticket = await _upload.upload_receiver_mint(
+        "art-1",
+        token_store=store,
+        base_url="https://route.test",
+        ttl=120.0,
+        expected=ArtifactConstraints(requireDigest=["SHA-256"]),
+    )
+    path = ticket.sinks[0].url[len("https://route.test") :]
+    body = b"case sanity"
+    raw = hashlib.sha256(body).digest()
+    header = "sha-256=:" + base64.b64encode(raw).decode("ascii") + ":"
+    async with await _client(mcp) as c:
+        resp = await c.put(
+            path,
+            content=body,
+            headers={"Content-Type": "text/plain", "Content-Digest": header},
+        )
+    assert resp.status_code == 204
+    assert len(sink.calls) == 1
+
+
+async def test_route_non_sha256_digest_verified_via_rehash():
+    """Exercises the ``_rehash_file`` branch: when ``Content-Digest`` is in a
+    non-sha-256 algorithm (and that algorithm is required), the route re-reads
+    the staged temp through ``_rehash_file`` to compute the declared
+    algorithm's digest, compares it to the header, and on match deposits to
+    the sink with a 204."""
+    import base64
+
+    sink = _RecordingSink()
+    mcp, store = await _mount(sink)
+    ticket = await _upload.upload_receiver_mint(
+        "art-1",
+        token_store=store,
+        base_url="https://route.test",
+        ttl=120.0,
+        expected=ArtifactConstraints(requireDigest=["sha-512"]),
+    )
+    path = ticket.sinks[0].url[len("https://route.test") :]
+    body = b"the rehash branch needs its own test"
+    raw512 = hashlib.sha512(body).digest()
+    header = "sha-512=:" + base64.b64encode(raw512).decode("ascii") + ":"
+    async with await _client(mcp) as c:
+        resp = await c.put(
+            path,
+            content=body,
+            headers={"Content-Type": "text/plain", "Content-Digest": header},
+        )
+    assert resp.status_code == 204
+    assert len(sink.calls) == 1
+    aid, meta, deposited = sink.calls[0]
+    assert deposited == body
+    # ``meta.digest`` is recorded in pvl-core's canonical sha-256 form
+    # regardless of which algorithm the client attested — the rehash only
+    # verifies the client's attestation, it does not change the record.
+    assert meta.digest == "sha-256:" + hashlib.sha256(body).hexdigest()
+
+
 async def test_route_second_put_after_success_returns_404():
     """A1 ordering: token consumed after first success; second PUT -> 404."""
     sink = _RecordingSink()
