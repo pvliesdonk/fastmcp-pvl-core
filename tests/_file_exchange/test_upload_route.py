@@ -223,6 +223,40 @@ async def test_route_non_sha256_digest_verified_via_rehash():
     assert meta.digest == "sha-256:" + hashlib.sha256(body).hexdigest()
 
 
+async def test_route_non_sha256_digest_mismatch_400():
+    """Rehash branch mismatch: sha-512 required, client sends a sha-512
+    Content-Digest that does NOT match the body bytes -> 400, no sink call.
+
+    Pinning this branch separately from the sha-256 mismatch test ensures a
+    regression in ``_rehash_file``'s algorithm selection or the ``!=``
+    comparison cannot pass silently."""
+    import base64
+
+    sink = _RecordingSink()
+    mcp, store = await _mount(sink)
+    ticket = await _upload.upload_receiver_mint(
+        "art-1",
+        token_store=store,
+        base_url="https://route.test",
+        ttl=120.0,
+        expected=ArtifactConstraints(requireDigest=["sha-512"]),
+    )
+    path = ticket.sinks[0].url[len("https://route.test") :]
+    body = b"correct body bytes"
+    # sha-512 of *different* bytes so the header parses cleanly but
+    # mismatches the body that gets sent.
+    wrong512 = hashlib.sha512(b"other bytes entirely").digest()
+    header = "sha-512=:" + base64.b64encode(wrong512).decode("ascii") + ":"
+    async with await _client(mcp) as c:
+        resp = await c.put(
+            path,
+            content=body,
+            headers={"Content-Type": "text/plain", "Content-Digest": header},
+        )
+    assert resp.status_code == 400
+    assert sink.calls == []
+
+
 async def test_route_second_put_after_success_returns_404():
     """A1 ordering: token consumed after first success; second PUT -> 404."""
     sink = _RecordingSink()

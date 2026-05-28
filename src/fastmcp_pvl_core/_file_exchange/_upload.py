@@ -268,11 +268,22 @@ def register_upload_route(
             return Response(status_code=404)
         artifact_id = cast("str", rec.metadata["artifact_id"])
         expected_raw = rec.metadata.get("expected")
-        expected = (
-            ArtifactConstraints.model_validate(expected_raw)
-            if expected_raw is not None
-            else None
-        )
+        try:
+            expected = (
+                ArtifactConstraints.model_validate(expected_raw)
+                if expected_raw is not None
+                else None
+            )
+        except Exception:
+            # KV-stored metadata that fails Pydantic validation should
+            # never happen (the mint side validated before storing) but
+            # KV corruption / schema-version drift can produce it. Log
+            # and return a structured 500 rather than letting a
+            # ValidationError escape unwrapped to ASGI.
+            logger.exception(
+                "file-exchange: upload expected-constraints deserialise failed"
+            )
+            return Response(status_code=500)
 
         content_type = request.headers.get("content-type", "")
         if expected is not None and expected.acceptMimeTypes is not None:
@@ -391,7 +402,7 @@ def register_upload_route(
                     await asyncio.to_thread(f.close)
 
             try:
-                await token_store.consume(token)
+                consumed = await token_store.consume(token)
             except Exception:
                 # At-most-once *delivery*, not at-most-once *deposit*: the
                 # sink already stored these bytes, but the consume failure
@@ -404,6 +415,17 @@ def register_upload_route(
                     "token may remain usable to TTL and a sender retry would "
                     "deposit the same artifact a second time"
                 )
+            else:
+                if not consumed:
+                    # The store wrote, but the token was already gone
+                    # (concurrent PUT raced and consumed first, or a
+                    # revoke landed between lookup and consume). The
+                    # bytes are still in the sink — observability only,
+                    # not an error.
+                    logger.info(
+                        "file-exchange: upload token already consumed at deposit "
+                        "time (concurrent race or revoke); bytes are in the sink"
+                    )
             return Response(status_code=204)
         finally:
             with contextlib.suppress(OSError):
