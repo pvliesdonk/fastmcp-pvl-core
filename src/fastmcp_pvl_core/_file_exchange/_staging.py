@@ -58,3 +58,21 @@ def _write_chunk(tmp: IO[bytes], hasher: hashlib._Hash | None, chunk: bytes) -> 
     tmp.write(chunk)
     if hasher is not None:
         hasher.update(chunk)
+
+
+def _rehash_file(path: str, hashlib_name: str) -> bytes:
+    """Synchronously compute ``hashlib_name``'s digest of the file at ``path``.
+
+    Designed to be called via a single ``asyncio.to_thread`` dispatch
+    from the upload route's non-sha-256 verify branch — the entire
+    open + chunked-read + close runs in one worker thread rather than
+    spawning a thread per chunk.
+    """
+    h = hashlib.new(hashlib_name)
+    with open(path, "rb") as fh:
+        while True:
+            buf = fh.read(_CHUNK)
+            if not buf:
+                break
+            h.update(buf)
+    return h.digest()
