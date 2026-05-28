@@ -121,7 +121,15 @@ class ArtifactConstraints(_WireBase):
 
     maxSize: int | None = Field(default=None, ge=0)  # noqa: N815
     acceptMimeTypes: list[str] | None = None  # noqa: N815
-    requireDigest: list[str] | None = Field(default=None, min_length=1)  # noqa: N815
+    # ``min_length=1`` on the outer ``Field`` constrains the LIST length
+    # (≥1 algorithm), while the inner ``Annotated[str, Field(min_length=1)]``
+    # constrains each algorithm name to be a non-empty string. Without the
+    # inner constraint, ``requireDigest=[""]`` would pass validation and
+    # then permanently 400 every upload against that token (the route's
+    # ``preferred_set={""}`` matches no real algorithm).
+    requireDigest: list[Annotated[str, Field(min_length=1)]] | None = Field(  # noqa: N815
+        default=None, min_length=1
+    )
 
 
 class FilesystemSource(_DescriptorBase):

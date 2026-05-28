@@ -59,6 +59,14 @@ def test_constraints_require_digest_must_be_non_empty():
         ArtifactConstraints(requireDigest=[])
 
 
+def test_constraints_require_digest_elements_must_be_non_empty():
+    """An empty-string algorithm name would create a token that 400s every
+    upload (the route's ``preferred_set={""}`` matches no real algorithm).
+    Reject at validation time."""
+    with pytest.raises(ValidationError):
+        ArtifactConstraints(requireDigest=[""])
+
+
 def test_constraints_max_size_non_negative():
     ArtifactConstraints(maxSize=0)
     with pytest.raises(ValidationError):
