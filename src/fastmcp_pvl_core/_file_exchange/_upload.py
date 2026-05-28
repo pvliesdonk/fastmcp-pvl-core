@@ -13,8 +13,10 @@ This module accrues the upload-transport helpers task by task:
   ``Content-Digest`` before the sink sees the bytes, deposits to
   :class:`ArtifactSink`, and consumes the single-use token only after a
   successful store.
-- The sender (``upload_sender_consume``) lands in a subsequent commit per
-  the implementation plan.
+- ``upload_sender_consume`` — sender role (push): stage the source bytes to a
+  transient temp file (hashing on the fly), then PUT them through the #147
+  SSRF guard with ``Content-Type``/``Content-Length``/``Content-Digest``
+  headers. Non-2xx maps to ``transfer-failed``; guard refusals propagate.
 
 See ``docs/superpowers/specs/2026-05-27-file-exchange-146-failure-modes.md``
 for the enumerated failure modes each test in this module exercises and
@@ -30,11 +32,16 @@ import hashlib
 import logging
 import os
 import tempfile
+from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, Literal
 
 from fastmcp_pvl_core._file_exchange import _content_digest
+from fastmcp_pvl_core._file_exchange._codes import TransferErrorCode
+from fastmcp_pvl_core._file_exchange._errors import FileExchangeTransferError
+from fastmcp_pvl_core._file_exchange._outbound import guarded_stream
 from fastmcp_pvl_core._file_exchange._spec import SPEC_VERSION, TICKET_TYPE
 from fastmcp_pvl_core._file_exchange._staging import (
+    _CHUNK,
     _HASHLIB_BY_LABEL,
     _rehash_file,
     _write_chunk,
@@ -53,7 +60,7 @@ if TYPE_CHECKING:
     from starlette.responses import Response
 
     from fastmcp_pvl_core._config import ServerConfig
-    from fastmcp_pvl_core._file_exchange._hooks import ArtifactSink
+    from fastmcp_pvl_core._file_exchange._hooks import ArtifactSink, ArtifactSource
     from fastmcp_pvl_core._file_exchange._tokens import CapabilityTokenStore
 
 
@@ -351,3 +358,140 @@ def register_upload_route(
     # needs to honour POST. Accepting it would let clients use a method
     # pvl-core never minted, which is dead surface.
     mcp.custom_route(f"{UPLOAD_PREFIX}/{{token}}", methods=["PUT"])(_handle)
+
+
+async def upload_sender_consume(
+    sink: UploadSink,
+    source: ArtifactSource,
+    key: str,
+    *,
+    config: ServerConfig,
+) -> None:
+    """Sender role (push): stage ``source[key]`` and PUT it to ``sink.url``.
+
+    Streams the source bytes through a transient temp file (hashing on the
+    fly), then sends the temp through the #147 SSRF guard with
+    ``Content-Type`` / ``Content-Length`` / ``Content-Digest`` headers.
+    Non-2xx maps to ``transfer-failed``; guard refusals propagate verbatim.
+    The temp is deleted on every path (matrix rows B2, B3, B5, C3, D1, D2,
+    D3, D9, F6).
+    """
+    stream, metadata = await source.open_artifact(key)
+    try:
+        try:
+            fd, tmp_path = tempfile.mkstemp(prefix="fx-upload-")
+        except OSError as exc:
+            raise FileExchangeTransferError(
+                TransferErrorCode.TRANSFER_FAILED,
+                transport="upload",
+                detail="failed to create a temporary file",
+            ) from exc
+        try:
+            try:
+                tmp = os.fdopen(fd, "wb")
+            except BaseException:
+                with contextlib.suppress(OSError):
+                    os.close(fd)
+                raise
+            try:
+                hasher = hashlib.new("sha256")
+                size = 0
+                while True:
+                    try:
+                        chunk = await asyncio.to_thread(stream.read, _CHUNK)
+                    except OSError as exc:
+                        raise FileExchangeTransferError(
+                            TransferErrorCode.TRANSFER_FAILED,
+                            transport="upload",
+                            detail="failed to read the source artifact",
+                        ) from exc
+                    if not chunk:
+                        break
+                    try:
+                        await asyncio.to_thread(_write_chunk, tmp, hasher, chunk)
+                    except OSError as exc:
+                        raise FileExchangeTransferError(
+                            TransferErrorCode.TRANSFER_FAILED,
+                            transport="upload",
+                            detail="failed to stage the artifact",
+                        ) from exc
+                    size += len(chunk)
+                try:
+                    await asyncio.to_thread(tmp.flush)
+                except OSError as exc:
+                    raise FileExchangeTransferError(
+                        TransferErrorCode.TRANSFER_FAILED,
+                        transport="upload",
+                        detail="failed to flush the staged artifact",
+                    ) from exc
+            finally:
+                with contextlib.suppress(OSError):
+                    await asyncio.to_thread(tmp.close)
+
+            cd_header = _content_digest.format_header("sha-256", hasher.digest())
+            headers: dict[str, str] = {
+                "Content-Length": str(size),
+                "Content-Digest": cd_header,
+            }
+            if metadata.mimeType:
+                headers["Content-Type"] = metadata.mimeType
+
+            async def _body() -> AsyncGenerator[bytes, None]:
+                try:
+                    f = await asyncio.to_thread(open, tmp_path, "rb")
+                except OSError as exc:
+                    raise FileExchangeTransferError(
+                        TransferErrorCode.TRANSFER_FAILED,
+                        transport="upload",
+                        detail="failed to read the staged artifact",
+                    ) from exc
+                try:
+                    while True:
+                        try:
+                            chunk = await asyncio.to_thread(f.read, _CHUNK)
+                        except OSError as exc:
+                            raise FileExchangeTransferError(
+                                TransferErrorCode.TRANSFER_FAILED,
+                                transport="upload",
+                                detail="failed to read the staged artifact",
+                            ) from exc
+                        if not chunk:
+                            break
+                        yield chunk
+                finally:
+                    with contextlib.suppress(OSError):
+                        await asyncio.to_thread(f.close)
+
+            _body_gen = _body()
+            try:
+                async with guarded_stream(
+                    sink.method,
+                    sink.url,
+                    config=config,
+                    transport="upload",
+                    headers=headers,
+                    content=_body_gen,
+                ) as resp:
+                    if not (200 <= resp.status < 300):
+                        raise FileExchangeTransferError(
+                            TransferErrorCode.TRANSFER_FAILED,
+                            transport="upload",
+                            detail="unexpected upload response status",
+                        )
+            finally:
+                # Explicitly close the body generator so its inner ``finally``
+                # (close of the staged temp file's read handle) fires
+                # deterministically — without this, an early ``guarded_stream``
+                # exit (guard refusal, mid-send drop) would leave the fd to
+                # CPython's asyncgen GC finalizer, which is non-deterministic
+                # at event-loop shutdown.
+                await _body_gen.aclose()
+        finally:
+            with contextlib.suppress(OSError):
+                await asyncio.to_thread(os.unlink, tmp_path)
+    finally:
+        # ArtifactSource.close() is downstream hook code with no defined
+        # exception contract — suppress all, not just OSError, so a buggy
+        # hook can't mask the in-flight outcome.
+        with contextlib.suppress(Exception):
+            await asyncio.to_thread(stream.close)
