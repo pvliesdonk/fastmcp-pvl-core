@@ -1,4 +1,4 @@
-"""Shared digest + chunk-write primitives for the file-exchange data planes.
+"""Shared digest + chunk-write primitives for the HTTP-transport data planes.
 
 Both ``_download`` (fetcher: write incoming HTTP body to a temp) and
 ``_upload`` (route: write incoming PUT body to a temp; sender: write outgoing
@@ -7,8 +7,13 @@ write-and-hash pattern and the same declared-digest verifier semantics.
 Centralising the primitives here keeps the contract — every temp-file op
 maps to ``transfer-failed`` or is suppressed for cleanup, and an
 unsupported digest label fails verification rather than silently skipping
-— from being re-derived divergently between transports (matrix row G1,
-spec §15, mirror ``_download.py`` lines 47–302).
+— from being re-derived divergently between the HTTP transports
+(matrix row G1, spec §15).
+
+The ``filesystem`` transport (``_filesystem.py``) currently keeps its own
+local copies of ``_CHUNK`` and ``_HASHLIB_BY_LABEL`` plus its own digest
+verifier; consolidating that consumer is tracked separately and is
+intentionally out of scope here.
 """
 
 from __future__ import annotations
