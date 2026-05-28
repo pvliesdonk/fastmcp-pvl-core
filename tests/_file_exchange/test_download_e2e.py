@@ -1,7 +1,7 @@
 """End-to-end download pull: server A mints + serves, server B fetches.
 
 Exercises the whole ``download`` data plane together — ``download_provider_mint``,
-``register_file_exchange_routes`` (mounted on a real ASGI app), ``select_source``,
+``register_download_route`` (mounted on a real ASGI app), ``select_source``,
 and ``download_fetcher_consume`` — over a loopback ASGI transport. The SSRF guard
 is replaced with one that routes to server A's app, because we are exercising the
 pull flow, not the guard (which has its own tests).

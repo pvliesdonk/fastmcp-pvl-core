@@ -34,8 +34,13 @@ def register_file_exchange_routes(
     ``upload`` PUT/POST route iff ``sink`` is given — supporting
     download-only, upload-only, or both. Mounting the upload route requires
     ``config`` (the operator body-size cap is load-bearing for §15 untrusted
-    bytes). All preconditions are validated **before** any route is mounted
-    (matrix row A7).
+    bytes). All **preconditions** are validated before any route is mounted
+    (matrix row A7) — ``ValueError`` only fires from input validation, never
+    after a mount has started. **Note:** A7 does not promise rollback if a
+    per-transport mount itself raises (e.g. a framework-level route
+    collision after the download route has been mounted): callers should
+    treat any exception out of this function as ``mcp`` being in an
+    undefined partial-mount state and not reuse it.
 
     Kwargs (per CLAUDE.md classification):
 

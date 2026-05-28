@@ -325,7 +325,7 @@ def register_download_route(
     token_store: CapabilityTokenStore,
     source: ArtifactSource,
 ) -> None:
-    """Mount the ``download`` GET route on ``mcp`` (called by _routes).
+    """Mount the ``download`` GET route on ``mcp``.
 
     Serves §12 capability URLs.
 
