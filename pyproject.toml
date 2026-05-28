@@ -12,6 +12,10 @@ authors = [{name = "Peter van Liesdonk", email = "peter@liesdonk.nl"}]
 requires-python = ">=3.10"
 dependencies = [
   "fastmcp>=3.3.1,<4",
+  # http-sf is Mark Nottingham's RFC 8941 Structured Fields reference
+  # implementation (pure-Python, no transitive runtime deps). Used by
+  # the content-digest module to parse/serialise Content-Digest headers.
+  "http-sf>=1.3",
   # httpx is used by the remote-auth provider (`_auth.py`) to fetch the
   # OIDC discovery document at startup. Kept as a hard dependency; the
   # `remote-auth` extra is retained as a backwards-compat no-op.
