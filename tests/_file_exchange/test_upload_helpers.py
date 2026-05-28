@@ -63,6 +63,16 @@ def test_content_digest_parse_all_unsupported_returns_none():
     assert _content_digest_parse("md5=:YWJjZA==:, sha-3=:YWJjZA==:") is None
 
 
+def test_content_digest_parse_ignores_sf_parameters():
+    """RFC 8941 §3.2 / RFC 9530 §3: structured-field parameters appended to a
+    dictionary item (``sha-256=:<b64>:;foo=bar``) MUST be ignored, not cause
+    the entry to be rejected."""
+    raw = hashlib.sha256(b"hello").digest()
+    b64 = base64.b64encode(raw).decode("ascii")
+    parsed = _content_digest_parse(f"sha-256=:{b64}:;foo=bar;baz")
+    assert parsed == ("sha-256", raw)
+
+
 def test_content_digest_parse_tolerates_whitespace():
     raw = hashlib.sha256(b"x").digest()
     b64 = base64.b64encode(raw).decode("ascii")
@@ -106,6 +116,9 @@ def test_content_digest_format_round_trips():
         ("APPLICATION/JSON", ["application/json"], True),
         ("application/json", ["text/plain", "application/json"], True),
         ("application/json", ["text/plain", "text/html"], False),
+        # */subtype is NOT a valid RFC 7231 media-range; reject it.
+        ("application/json", ["*/json"], False),
+        ("image/png", ["*/png"], False),
         ("application/json", ["bogus", "application/json"], True),
         ("", ["application/json"], False),
         ("application/json", [], False),

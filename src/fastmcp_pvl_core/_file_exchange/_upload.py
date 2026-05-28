@@ -11,9 +11,10 @@ This module accrues the upload-transport helpers task by task:
 - The serving route and the sender land in subsequent commits per
   the implementation plan.
 
-See ``docs/superpowers/specs/2026-05-24-file-exchange-146-upload-data-plane-design.md``
-for the behavioural contract and ``…2026-05-27-file-exchange-146-failure-modes.md``
-for the enumerated failure modes each test in this module exercises.
+See ``docs/superpowers/specs/2026-05-27-file-exchange-146-failure-modes.md``
+for the enumerated failure modes each test in this module exercises and
+``docs/superpowers/plans/2026-05-27-file-exchange-146-upload-data-plane-v4.md``
+for the implementation plan this module is built against.
 """
 
 from __future__ import annotations
@@ -35,6 +36,13 @@ if TYPE_CHECKING:
 # kwarg — route structure is a pvl-core shape decision.
 UPLOAD_PREFIX = "/fx/u"
 
+# pvl-core's upload route HTTP method. A constant, not a kwarg — the method
+# choice is a shape decision (CLAUDE.md classification test: pvl-core can
+# pick PUT and downstream has no domain-specific basis to disagree). If a
+# future downstream genuinely needs POST, the resolution is to evolve the
+# spec and migrate all downstreams, not to grow an override kwarg.
+_UPLOAD_METHOD: Literal["PUT"] = "PUT"
+
 
 async def upload_receiver_mint(
     artifact_id: str,
@@ -43,7 +51,6 @@ async def upload_receiver_mint(
     base_url: str,
     ttl: float,
     expected: ArtifactConstraints | None = None,
-    method: Literal["PUT", "POST"] = "PUT",
 ) -> IntakeTicket:
     """Receiver role (push): mint an upload token and emit an IntakeTicket.
 
@@ -70,7 +77,7 @@ async def upload_receiver_mint(
             UploadSink(
                 transport="upload",
                 url=url,
-                method=method,
+                method=_UPLOAD_METHOD,
                 expiresAt=minted.expires_at,
             )
         ],
@@ -88,6 +95,11 @@ def _content_digest_parse(header: str) -> tuple[str, bytes] | None:
     is treated by the caller as a verification failure (``digest-mismatch``),
     never a silent skip of a header that did declare a known algorithm
     (matrix rows D4, D5; spec §10.3).
+
+    Per RFC 8941 §3.2 a dictionary item may carry parameters
+    (``sha-256=:<b64>:;foo=bar``); RFC 9530 §3 requires unknown parameters
+    to be ignored, so they are stripped before the byte-sequence boundary
+    check.
     """
     if not header:
         return None
@@ -101,10 +113,11 @@ def _content_digest_parse(header: str) -> tuple[str, bytes] | None:
         label = label.strip().lower()
         if label not in _HASHLIB_BY_LABEL:
             continue
-        rest = rest.strip()
-        if len(rest) < 2 or not rest.startswith(":") or not rest.endswith(":"):
+        item, _, _ = rest.strip().partition(";")
+        item = item.strip()
+        if not item.startswith(":") or not item.endswith(":") or len(item) < 2:
             continue
-        b64 = rest[1:-1]
+        b64 = item[1:-1]
         if not b64:
             continue
         try:
@@ -123,9 +136,10 @@ def _content_digest_format(label: str, raw: bytes) -> str:
 def _media_range_matches(content_type: str, accept: list[str]) -> bool:
     """RFC 7231 §3.1.1.1 media-range match: parameters ignored, case-insensitive.
 
-    ``type/*`` matches any subtype; ``*/*`` matches anything. An empty
-    ``content_type`` or an empty ``accept`` list never matches
-    (matrix rows F3, F4).
+    ``type/*`` matches any subtype; ``*/*`` matches anything. The
+    grammatically invalid ``*/subtype`` form is rejected, not treated as
+    a wildcard. An empty ``content_type`` or an empty ``accept`` list
+    never matches (matrix rows F3, F4).
     """
     if not content_type or not accept:
         return False
@@ -140,6 +154,10 @@ def _media_range_matches(content_type: str, accept: list[str]) -> bool:
         if "/" not in entry_main:
             continue
         e_type, e_sub = entry_main.split("/", 1)
+        if e_type == "*" and e_sub != "*":
+            # RFC 7231 §3.1.1.1 grammar only allows */* and type/*; reject
+            # the invalid */subtype form rather than silently honouring it.
+            continue
         if (e_type == "*" or e_type == main_type) and (
             e_sub == "*" or e_sub == main_sub
         ):

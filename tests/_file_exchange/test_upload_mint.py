@@ -38,16 +38,17 @@ async def test_mint_returns_intake_ticket_with_one_upload_sink():
     assert rec.single_use is True
 
 
-async def test_mint_method_post_threads_through():
+async def test_mint_method_is_always_put():
+    """Route method is a pvl-core shape decision (CLAUDE.md), not a kwarg.
+    Every minted UploadSink advertises PUT."""
     store = _store()
     ticket = await _upload.upload_receiver_mint(
         "art-2",
         token_store=store,
         base_url="https://b.example",
         ttl=120.0,
-        method="POST",
     )
-    assert ticket.sinks[0].method == "POST"
+    assert ticket.sinks[0].method == "PUT"
 
 
 async def test_mint_expected_round_trips_onto_ticket_and_metadata():
