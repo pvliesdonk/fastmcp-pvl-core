@@ -30,7 +30,7 @@ import hashlib
 import logging
 import os
 import tempfile
-from typing import TYPE_CHECKING, Literal, cast
+from typing import TYPE_CHECKING, Literal
 
 from fastmcp_pvl_core._file_exchange import _content_digest
 from fastmcp_pvl_core._file_exchange._spec import SPEC_VERSION, TICKET_TYPE
@@ -181,7 +181,13 @@ def register_upload_route(
         rec = await token_store.lookup(token)
         if rec is None:
             return Response(status_code=404)
-        artifact_id = cast("str", rec.metadata["artifact_id"])
+        # A unified token_store (#148) holds both download and upload tokens;
+        # a download-minted token presented to the upload route has no
+        # ``artifact_id`` key. Treat the cross-transport case as ``404``
+        # (uniform with the unknown-token branch above, no token-state leak).
+        artifact_id = rec.metadata.get("artifact_id")
+        if artifact_id is None:
+            return Response(status_code=404)
         expected_raw = rec.metadata.get("expected")
         try:
             expected = (

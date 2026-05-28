@@ -170,3 +170,14 @@ def test_download_data_plane_names_reexported():
         assert name in file_exchange.__all__, name
     # DOWNLOAD_PREFIX is internal route shape, not part of the public surface.
     assert not hasattr(file_exchange, "DOWNLOAD_PREFIX")
+
+
+def test_upload_data_plane_names_reexported():
+    from fastmcp_pvl_core import file_exchange
+
+    for name in ("upload_receiver_mint",):
+        assert hasattr(file_exchange, name), name
+        assert name in file_exchange.__all__, name
+    # UPLOAD_PREFIX and _UPLOAD_METHOD are internal route shape.
+    assert not hasattr(file_exchange, "UPLOAD_PREFIX")
+    assert not hasattr(file_exchange, "_UPLOAD_METHOD")
