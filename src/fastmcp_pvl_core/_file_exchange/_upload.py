@@ -32,7 +32,7 @@ import hashlib
 import logging
 import os
 import tempfile
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, Literal
 
 from fastmcp_pvl_core._file_exchange import _content_digest
@@ -397,7 +397,14 @@ async def upload_sender_consume(
                 hasher = hashlib.new("sha256")
                 size = 0
                 while True:
-                    chunk = await asyncio.to_thread(stream.read, _CHUNK)
+                    try:
+                        chunk = await asyncio.to_thread(stream.read, _CHUNK)
+                    except OSError as exc:
+                        raise FileExchangeTransferError(
+                            TransferErrorCode.TRANSFER_FAILED,
+                            transport="upload",
+                            detail="failed to read the source artifact",
+                        ) from exc
                     if not chunk:
                         break
                     try:
@@ -429,7 +436,7 @@ async def upload_sender_consume(
             if metadata.mimeType:
                 headers["Content-Type"] = metadata.mimeType
 
-            async def _body() -> AsyncIterator[bytes]:
+            async def _body() -> AsyncGenerator[bytes, None]:
                 try:
                     f = await asyncio.to_thread(open, tmp_path, "rb")
                 except OSError as exc:
@@ -455,23 +462,36 @@ async def upload_sender_consume(
                     with contextlib.suppress(OSError):
                         await asyncio.to_thread(f.close)
 
-            async with guarded_stream(
-                sink.method,
-                sink.url,
-                config=config,
-                transport="upload",
-                headers=headers,
-                content=_body(),
-            ) as resp:
-                if not (200 <= resp.status < 300):
-                    raise FileExchangeTransferError(
-                        TransferErrorCode.TRANSFER_FAILED,
-                        transport="upload",
-                        detail="unexpected upload response status",
-                    )
+            _body_gen = _body()
+            try:
+                async with guarded_stream(
+                    sink.method,
+                    sink.url,
+                    config=config,
+                    transport="upload",
+                    headers=headers,
+                    content=_body_gen,
+                ) as resp:
+                    if not (200 <= resp.status < 300):
+                        raise FileExchangeTransferError(
+                            TransferErrorCode.TRANSFER_FAILED,
+                            transport="upload",
+                            detail="unexpected upload response status",
+                        )
+            finally:
+                # Explicitly close the body generator so its inner ``finally``
+                # (close of the staged temp file's read handle) fires
+                # deterministically — without this, an early ``guarded_stream``
+                # exit (guard refusal, mid-send drop) would leave the fd to
+                # CPython's asyncgen GC finalizer, which is non-deterministic
+                # at event-loop shutdown.
+                await _body_gen.aclose()
         finally:
             with contextlib.suppress(OSError):
                 await asyncio.to_thread(os.unlink, tmp_path)
     finally:
+        # ArtifactSource.close() is downstream hook code with no defined
+        # exception contract — suppress all, not just OSError, so a buggy
+        # hook can't mask the in-flight outcome.
         with contextlib.suppress(Exception):
             await asyncio.to_thread(stream.close)

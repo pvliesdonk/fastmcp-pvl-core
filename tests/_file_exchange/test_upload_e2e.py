@@ -104,6 +104,9 @@ async def test_e2e_push_two_servers(monkeypatch):
     assert body == payload
     assert meta.size == len(payload)
     assert meta.digest == "sha-256:" + hashlib.sha256(payload).hexdigest()
+    # The source declares application/json; the route preserves that mimeType
+    # end-to-end via the PUT's Content-Type header onto sink-side metadata.
+    assert meta.mimeType == "application/json"
 
     # The single-use token was consumed by the completed deposit.
     token = ticket.sinks[0].url.rsplit("/", 1)[1]

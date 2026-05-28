@@ -111,6 +111,7 @@ async def test_sender_non_2xx_maps_to_transfer_failed(monkeypatch, tmp_path):
         )
     assert ei.value.code == TransferErrorCode.TRANSFER_FAILED
     assert ei.value.transport == "upload"
+    assert not any(n.startswith("fx-upload-") for n in os.listdir(str(tmp_path)))
 
 
 async def test_sender_guard_refusal_propagates(monkeypatch, tmp_path):
@@ -130,6 +131,7 @@ async def test_sender_guard_refusal_propagates(monkeypatch, tmp_path):
             _sink(), _StreamSource(b"x"), "art-1", config=_cfg()
         )
     assert ei.value.code == TransferErrorCode.NOT_ACCESSIBLE
+    assert not any(n.startswith("fx-upload-") for n in os.listdir(str(tmp_path)))
 
 
 async def test_sender_source_raises_propagates_no_temp_leak(monkeypatch, tmp_path):
@@ -145,10 +147,37 @@ async def test_sender_source_raises_propagates_no_temp_leak(monkeypatch, tmp_pat
     assert not any(n.startswith("fx-upload-") for n in os.listdir(str(tmp_path)))
 
 
+async def test_sender_source_read_oserror_maps_to_transfer_failed(
+    monkeypatch, tmp_path
+):
+    """Source ``.read()`` raising ``OSError`` (e.g. network-mount blip on
+    a downstream-supplied stream) maps to ``TRANSFER_FAILED`` rather than
+    propagating raw — preserves the function's coded-error contract so
+    callers that only handle ``FileExchangeTransferError`` aren't surprised."""
+
+    class _ReadFailingStream:
+        def read(self, n=-1):
+            raise OSError("simulated source read failure")
+
+        def close(self):
+            pass
+
+    class _Source:
+        async def open_artifact(self, key):
+            return _ReadFailingStream(), ArtifactMetadata(mimeType="text/plain")
+
+    monkeypatch.setattr(_upload.tempfile, "tempdir", str(tmp_path))
+    with pytest.raises(FileExchangeTransferError) as ei:
+        await _upload.upload_sender_consume(_sink(), _Source(), "art-1", config=_cfg())
+    assert ei.value.code == TransferErrorCode.TRANSFER_FAILED
+    assert ei.value.transport == "upload"
+    assert not any(n.startswith("fx-upload-") for n in os.listdir(str(tmp_path)))
+
+
 async def test_sender_mkstemp_failure_maps_to_transfer_failed(monkeypatch):
     """D3."""
 
-    def boom(**kw):
+    def boom(*a, **kw):
         raise OSError("disk full")
 
     monkeypatch.setattr(_upload.tempfile, "mkstemp", boom)
