@@ -80,35 +80,39 @@ async def upload_receiver_mint(
 def _content_digest_parse(header: str) -> tuple[str, bytes] | None:
     """Parse an RFC 9530 ``Content-Digest`` structured-field dictionary entry.
 
-    Returns ``(algo_label, raw_digest_bytes)`` on success, or ``None`` for any
-    malformed input or unsupported algorithm — the caller treats ``None`` as a
-    verification failure (``digest-mismatch``), never a silent skip
+    Returns ``(algo_label, raw_digest_bytes)`` on success, or ``None`` if no
+    supported, well-formed entry is present. Unsupported algorithms within a
+    dictionary are silently skipped (RFC 9530 §3: a recipient MUST ignore
+    digest values associated with algorithms that it does not support); the
+    function returns the first supported, well-formed entry it finds. ``None``
+    is treated by the caller as a verification failure (``digest-mismatch``),
+    never a silent skip of a header that did declare a known algorithm
     (matrix rows D4, D5; spec §10.3).
-
-    Only a single-algorithm dictionary entry is accepted (the form pvl-core's
-    sender produces); ``sha-256``/``sha-384``/``sha-512`` are the supported
-    labels.
     """
     if not header:
         return None
-    entry = header.split(",", 1)[0].strip()
-    label, sep, rest = entry.partition("=")
-    if sep != "=":
-        return None
-    label = label.strip().lower()
-    if label not in _HASHLIB_BY_LABEL:
-        return None
-    rest = rest.strip()
-    if len(rest) < 2 or not rest.startswith(":") or not rest.endswith(":"):
-        return None
-    b64 = rest[1:-1]
-    if not b64:
-        return None
-    try:
-        raw = _b64.b64decode(b64, validate=True)
-    except (binascii.Error, ValueError):
-        return None
-    return label, raw
+    for entry in header.split(","):
+        entry = entry.strip()
+        if not entry:
+            continue
+        label, sep, rest = entry.partition("=")
+        if sep != "=":
+            continue
+        label = label.strip().lower()
+        if label not in _HASHLIB_BY_LABEL:
+            continue
+        rest = rest.strip()
+        if len(rest) < 2 or not rest.startswith(":") or not rest.endswith(":"):
+            continue
+        b64 = rest[1:-1]
+        if not b64:
+            continue
+        try:
+            raw = _b64.b64decode(b64, validate=True)
+        except (binascii.Error, ValueError):
+            continue
+        return label, raw
+    return None
 
 
 def _content_digest_format(label: str, raw: bytes) -> str:
