@@ -16,6 +16,11 @@ from __future__ import annotations
 from collections.abc import Iterable
 
 import http_sf
+
+# http_sf re-exports ``ser_dictionary`` into its package namespace but does
+# not list it in ``__all__``, so mypy refuses ``http_sf.ser_dictionary(...)``.
+# The submodule path is the cleanest mypy-clean alternative; revisit on any
+# http-sf upgrade in case a public serialiser surfaces upstream.
 from http_sf.dictionary import ser_dictionary as _ser_dictionary
 
 SUPPORTED_ALGORITHMS = frozenset({"sha-256", "sha-384", "sha-512"})
@@ -46,11 +51,15 @@ def parse_header(
         return None
     preferred_set = {p.strip().lower() for p in preferred} if preferred else None
     fallback: tuple[str, bytes] | None = None
-    for raw_label, entry in parsed.items():
+    for label, entry in parsed.items():
+        # http_sf enforces RFC 8941 lcalpha at parse time, so ``label`` is
+        # already lowercase; SUPPORTED_ALGORITHMS membership is the only check
+        # we need. The runtime narrowing on ``entry`` guards against
+        # pathological return shapes from a future library version, not
+        # against well-formed RFC 8941 input.
         if not (isinstance(entry, tuple) and len(entry) == 2):
             continue
         value, _params = entry
-        label = raw_label.lower()
         if label not in SUPPORTED_ALGORITHMS:
             continue
         if not isinstance(value, bytes):

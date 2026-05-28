@@ -182,7 +182,9 @@ Two PRs in sequence, then the existing slice chain rebases:
   - Unsupported algorithm + supported algorithm → supported returned.
   - All unsupported → `None`.
   - SF parameters on the entry (`sha-256=:b64:;foo=bar`) → ignored, entry still parses.
-  - Whitespace around `=` and `,` → tolerated.
+  - OWS around `,` between dictionary entries → tolerated (RFC 8941 grammar).
+  - OWS around `=` within a dictionary entry → **rejected** by `http_sf` per
+    strict RFC 8941 grammar (pinned in `test_parse_header_ows_around_equals_rejected`).
   - Malformed base64 → `None`.
   - Case folding: `SHA-256=:...:` → lowercase label returned.
   - `satisfies_requirement` with `required=None`, empty list, uppercase, mixed case.
