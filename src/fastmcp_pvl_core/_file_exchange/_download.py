@@ -349,8 +349,15 @@ def register_download_route(
         rec = await token_store.lookup(token)
         if rec is None:
             return Response(status_code=404)
+        # Unified token_store (#148) holds both transports' tokens; an
+        # upload-minted token presented to the download route has no
+        # ``key`` field. Treat the cross-transport case as ``404`` so the
+        # log below doesn't misattribute the failure to the source hook.
+        key = rec.metadata.get("key")
+        if key is None:
+            return Response(status_code=404)
         try:
-            stream, meta = await source.open_artifact(rec.metadata["key"])
+            stream, meta = await source.open_artifact(key)
         except Exception:
             # The hook contract permits any exception ("raise on failure"); its
             # message may carry server paths/identifiers, so never echo it to the

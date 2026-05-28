@@ -27,7 +27,9 @@ def _cfg():
 
 
 def test_registrar_both_none_raises_value_error():
-    """E2: source=None, sink=None is misconfiguration."""
+    """E2: source=None, sink=None is misconfiguration. The precondition
+    gate runs before any mount happens, so the registrar must leave the
+    server with zero ``/fx/`` routes — symmetric with the E3 test below."""
     cfg = _cfg()
     store = build_capability_token_store(cfg)
     mcp = FastMCP("t")
@@ -35,6 +37,8 @@ def test_registrar_both_none_raises_value_error():
         _routes.register_file_exchange_routes(
             mcp, token_store=store, source=None, sink=None, config=cfg
         )
+    paths = {r.path for r in mcp.http_app().routes}
+    assert not any(p.startswith("/fx/") for p in paths)
 
 
 def test_registrar_sink_without_config_raises_value_error():
@@ -98,3 +102,62 @@ def test_registrar_precondition_failure_mounts_nothing():
         )
     paths = {r.path for r in mcp.http_app().routes}
     assert not any(p.startswith("/fx/") for p in paths)
+
+
+async def test_cross_transport_token_upload_route_returns_404():
+    """A unified ``token_store`` (#148) holds both download- and upload-minted
+    tokens; presenting a *download* token to the *upload* route must return
+    404, not raise a KeyError on missing metadata. Uniform with the
+    unknown-token branch — no token-state leak across transports."""
+    import httpx
+
+    from fastmcp_pvl_core._file_exchange import _download, _upload
+
+    cfg = _cfg()
+    store = build_capability_token_store(cfg)
+    mcp = FastMCP("t")
+    _routes.register_file_exchange_routes(
+        mcp, token_store=store, source=_Source(), sink=_Sink(), config=cfg
+    )
+    from fastmcp_pvl_core._file_exchange._wire import ArtifactMetadata
+
+    handle = await _download.download_provider_mint(
+        ArtifactMetadata(size=11),
+        "doc-key",
+        token_store=store,
+        base_url="https://route.test",
+        ttl=120.0,
+    )
+    token = handle.sources[0].url.rsplit("/", 1)[1]  # type: ignore[union-attr]
+    transport = httpx.ASGITransport(app=mcp.http_app())
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
+        resp = await c.put(
+            f"{_upload.UPLOAD_PREFIX}/{token}",
+            content=b"x",
+            headers={"Content-Type": "text/plain"},
+        )
+    assert resp.status_code == 404
+
+
+async def test_cross_transport_token_download_route_returns_404():
+    """Mirror of the above: an upload-minted token presented to the download
+    route returns 404, not a misleading 500 with the wrong log attribution."""
+    import httpx
+
+    from fastmcp_pvl_core._file_exchange import _download, _upload
+
+    cfg = _cfg()
+    store = build_capability_token_store(cfg)
+    mcp = FastMCP("t")
+    _routes.register_file_exchange_routes(
+        mcp, token_store=store, source=_Source(), sink=_Sink(), config=cfg
+    )
+
+    ticket = await _upload.upload_receiver_mint(
+        "art-1", token_store=store, base_url="https://route.test", ttl=120.0
+    )
+    token = ticket.sinks[0].url.rsplit("/", 1)[1]
+    transport = httpx.ASGITransport(app=mcp.http_app())
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
+        resp = await c.get(f"{_download.DOWNLOAD_PREFIX}/{token}")
+    assert resp.status_code == 404

@@ -7,7 +7,7 @@ any route (matrix row A7), then delegates to per-transport registrars.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
 from fastmcp_pvl_core._file_exchange._download import register_download_route
 from fastmcp_pvl_core._file_exchange._upload import register_upload_route
@@ -36,6 +36,18 @@ def register_file_exchange_routes(
     ``config`` (the operator body-size cap is load-bearing for §15 untrusted
     bytes). All preconditions are validated **before** any route is mounted
     (matrix row A7).
+
+    Kwargs (per CLAUDE.md classification):
+
+    - ``token_store`` (**shape**): the capability-token store. pvl-core owns
+      the token-store contract; downstream constructs but does not subclass.
+    - ``source`` (**hook**): downstream's :class:`ArtifactSource` for the
+      download transport. Omitting it skips the download-route mount.
+    - ``sink`` (**hook**): downstream's :class:`ArtifactSink` for the
+      upload transport. Omitting it skips the upload-route mount.
+    - ``config`` (**config**): operator-side :class:`ServerConfig` carrying
+      ``file_exchange_max_artifact_size`` (the body-size cap). Required
+      whenever ``sink`` is provided.
     """
     if source is None and sink is None:
         raise ValueError(
@@ -49,9 +61,8 @@ def register_file_exchange_routes(
     if source is not None:
         register_download_route(mcp, token_store=token_store, source=source)
     if sink is not None:
-        register_upload_route(
-            mcp,
-            token_store=token_store,
-            sink=sink,
-            config=cast("ServerConfig", config),
-        )
+        # ``config`` is guaranteed non-None by the precondition gate above;
+        # the assert is structural type-narrowing for mypy, not defensive
+        # validation (the spec contract is the load-bearing guarantee).
+        assert config is not None
+        register_upload_route(mcp, token_store=token_store, sink=sink, config=config)
