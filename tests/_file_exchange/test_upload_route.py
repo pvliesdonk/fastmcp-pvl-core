@@ -119,6 +119,42 @@ async def test_route_require_digest_algorithm_mismatch_400():
     assert sink.calls == []
 
 
+async def test_route_require_digest_picks_required_algo_regardless_of_order():
+    """requireDigest=[sha-256] must be honoured even when the client lists
+    sha-512 first in a multi-algorithm Content-Digest dictionary. Without
+    this, a parser that returned the first supported entry would falsely
+    reject a fully-valid request."""
+    import base64
+
+    sink = _RecordingSink()
+    mcp, store = await _mount(sink)
+    ticket = await _upload.upload_receiver_mint(
+        "art-1",
+        token_store=store,
+        base_url="https://route.test",
+        ttl=120.0,
+        expected=ArtifactConstraints(requireDigest=["sha-256"]),
+    )
+    url = ticket.sinks[0].url
+    path = url[len("https://route.test") :]
+    body = b"hello world"
+    raw256 = hashlib.sha256(body).digest()
+    raw512 = hashlib.sha512(body).digest()
+    b256 = base64.b64encode(raw256).decode("ascii")
+    b512 = base64.b64encode(raw512).decode("ascii")
+    # sha-512 first, sha-256 second — the route must prefer sha-256
+    # because requireDigest lists it.
+    header = f"sha-512=:{b512}:, sha-256=:{b256}:"
+    async with await _client(mcp) as c:
+        resp = await c.put(
+            path,
+            content=body,
+            headers={"Content-Type": "text/plain", "Content-Digest": header},
+        )
+    assert resp.status_code == 204
+    assert len(sink.calls) == 1
+
+
 async def test_route_second_put_after_success_returns_404():
     """A1 ordering: token consumed after first success; second PUT -> 404."""
     sink = _RecordingSink()
@@ -477,6 +513,12 @@ async def test_route_concurrent_puts_at_most_one_consumes():
         )
     statuses = sorted([r1.status_code, r2.status_code])
     assert statuses in ([204, 204], [204, 404])
+    # Sink may be called once (lookup-then-consume serialised) or twice
+    # (both pass lookup before either consumes), but never zero — at least
+    # one of the two PUTs must have stored. The spec design tolerates the
+    # duplicate-deposit case explicitly; pinning the upper bound at 2
+    # prevents a regression that would let unrelated PUTs sneak through.
+    assert 1 <= len(sink.calls) <= 2
     assert await store.lookup(token) is None
 
 

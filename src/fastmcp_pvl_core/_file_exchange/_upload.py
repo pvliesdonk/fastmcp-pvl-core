@@ -8,7 +8,7 @@ This module accrues the upload-transport helpers task by task:
 - ``_content_digest_parse`` / ``_content_digest_format`` / ``_media_range_matches``
   — RFC 9530 Content-Digest dictionary-entry parse + format, and an RFC 7231
   media-range matcher used by the route to enforce ``acceptMimeTypes``.
-- ``register_upload_route`` — mount ``PUT``/``POST <UPLOAD_PREFIX>/{token}``
+- ``register_upload_route`` — mount ``PUT <UPLOAD_PREFIX>/{token}``
   on a FastMCP server: streams the body to a temp file, verifies an optional
   ``Content-Digest`` before the sink sees the bytes, deposits to
   :class:`ArtifactSink`, and consumes the single-use token only after a
@@ -118,7 +118,9 @@ async def upload_receiver_mint(
     )
 
 
-def _content_digest_parse(header: str) -> tuple[str, bytes] | None:
+def _content_digest_parse(
+    header: str, *, preferred: list[str] | None = None
+) -> tuple[str, bytes] | None:
     """Parse an RFC 9530 ``Content-Digest`` structured-field dictionary entry.
 
     Returns ``(algo_label, raw_digest_bytes)`` on success, or ``None`` if no
@@ -134,9 +136,19 @@ def _content_digest_parse(header: str) -> tuple[str, bytes] | None:
     (``sha-256=:<b64>:;foo=bar``); RFC 9530 §3 requires unknown parameters
     to be ignored, so they are stripped before the byte-sequence boundary
     check.
+
+    ``preferred``, if given, lists algorithm labels the caller wants to use
+    in preference to any other supported entry — used by the route to honour
+    ``expected.requireDigest`` regardless of header entry ordering. When no
+    ``preferred`` entry parses successfully, the parser falls back to the
+    first supported well-formed entry (so a client that sends a single
+    well-formed entry in a non-preferred algorithm still gets its digest
+    verified, just not against ``requireDigest``).
     """
     if not header:
         return None
+    preferred_set = {p.strip().lower() for p in preferred} if preferred else None
+    fallback: tuple[str, bytes] | None = None
     for entry in header.split(","):
         entry = entry.strip()
         if not entry:
@@ -158,8 +170,11 @@ def _content_digest_parse(header: str) -> tuple[str, bytes] | None:
             raw = _b64.b64decode(b64, validate=True)
         except (binascii.Error, ValueError):
             continue
-        return label, raw
-    return None
+        if preferred_set is not None and label in preferred_set:
+            return label, raw
+        if fallback is None:
+            fallback = (label, raw)
+    return fallback
 
 
 def _content_digest_format(label: str, raw: bytes) -> str:
@@ -199,6 +214,24 @@ def _media_range_matches(content_type: str, accept: list[str]) -> bool:
     return False
 
 
+def _rehash_file(path: str, hashlib_name: str) -> bytes:
+    """Synchronously compute ``hashlib_name``'s digest of the file at ``path``.
+
+    Called via a single ``asyncio.to_thread`` dispatch from the route's
+    rehash branch (the non-sha-256 ``Content-Digest`` verify path), so the
+    entire open + chunked-read + close runs in one worker thread rather
+    than spawning a thread per chunk.
+    """
+    h = hashlib.new(hashlib_name)
+    with open(path, "rb") as fh:
+        while True:
+            buf = fh.read(_CHUNK)
+            if not buf:
+                break
+            h.update(buf)
+    return h.digest()
+
+
 def register_upload_route(
     mcp: FastMCP,
     *,
@@ -206,13 +239,22 @@ def register_upload_route(
     sink: ArtifactSink,
     config: ServerConfig,
 ) -> None:
-    """Mount ``PUT``/``POST <UPLOAD_PREFIX>/{token}`` on ``mcp``.
+    """Mount ``PUT <UPLOAD_PREFIX>/{token}`` on ``mcp``.
 
     The route serves §12 capability URLs minted by ``upload_receiver_mint``;
     ambient credentials are ignored — the in-URL token is the only
     authorization. ``config.file_exchange_max_artifact_size`` is the operator
     body-size cap; per-mint ``expected.maxSize`` is the smaller of the two when
     set. See the failure-mode matrix for the full per-status-code contract.
+
+    Kwargs (per CLAUDE.md classification):
+
+    - ``token_store`` (**shape**): the capability-token store. pvl-core owns
+      the token-store contract; downstream constructs but does not subclass.
+    - ``sink`` (**hook**): downstream's ``ArtifactSink`` implementation.
+      pvl-core cannot answer "where do these bytes go?" — domain hook.
+    - ``config`` (**config**): operator-side ``ServerConfig`` carrying
+      ``file_exchange_max_artifact_size`` (the body-size cap).
     """
     from starlette.requests import ClientDisconnect
     from starlette.responses import Response
@@ -292,34 +334,27 @@ def register_upload_route(
             cd_header = request.headers.get("content-digest")
             required = expected.requireDigest if expected is not None else None
             if cd_header is not None:
-                parsed = _content_digest_parse(cd_header)
+                parsed = _content_digest_parse(cd_header, preferred=required)
                 if parsed is None:
                     return Response(status_code=400)
                 cd_algo, cd_raw = parsed
                 if required is not None and cd_algo not in required:
-                    # requireDigest lists specific algorithms; a digest in a
-                    # different algorithm does not satisfy the requirement.
+                    # ``preferred=required`` made the parser try ``required``
+                    # algorithms first; arriving here means the client's
+                    # header contained no entry in any ``required`` algo.
                     return Response(status_code=400)
                 if cd_algo == "sha-256":
                     if hasher.digest() != cd_raw:
                         return Response(status_code=400)
                 else:
-                    rehash = hashlib.new(_HASHLIB_BY_LABEL[cd_algo])
                     try:
-                        fh = await asyncio.to_thread(open, tmp_path, "rb")
-                        try:
-                            while True:
-                                buf = await asyncio.to_thread(fh.read, _CHUNK)
-                                if not buf:
-                                    break
-                                rehash.update(buf)
-                        finally:
-                            with contextlib.suppress(OSError):
-                                await asyncio.to_thread(fh.close)
+                        rehash_digest = await asyncio.to_thread(
+                            _rehash_file, tmp_path, _HASHLIB_BY_LABEL[cd_algo]
+                        )
                     except OSError:
                         logger.exception("file-exchange: upload rehash read failed")
                         return Response(status_code=500)
-                    if rehash.digest() != cd_raw:
+                    if rehash_digest != cd_raw:
                         return Response(status_code=400)
             elif required is not None:
                 return Response(status_code=400)
@@ -347,13 +382,24 @@ def register_upload_route(
             try:
                 await token_store.consume(token)
             except Exception:
+                # At-most-once *delivery*, not at-most-once *deposit*: the
+                # sink already stored these bytes, but the consume failure
+                # left the token live, so a retry by the sender (e.g. on
+                # TCP timeout) will lookup-then-store again. Non-idempotent
+                # sinks need to be aware of this; pvl-core does not retry
+                # the consume internally.
                 logger.warning(
                     "file-exchange: upload token consume failed after store; "
-                    "token may remain usable to TTL"
+                    "token may remain usable to TTL and a sender retry would "
+                    "deposit the same artifact a second time"
                 )
             return Response(status_code=204)
         finally:
             with contextlib.suppress(OSError):
                 await asyncio.to_thread(os.unlink, tmp_path)
 
-    mcp.custom_route(f"{UPLOAD_PREFIX}/{{token}}", methods=["PUT", "POST"])(_handle)
+    # PUT only: ``upload_receiver_mint`` advertises ``method="PUT"`` (a
+    # pvl-core shape decision per ``_UPLOAD_METHOD``), so the route never
+    # needs to honour POST. Accepting it would let clients use a method
+    # pvl-core never minted, which is dead surface.
+    mcp.custom_route(f"{UPLOAD_PREFIX}/{{token}}", methods=["PUT"])(_handle)
