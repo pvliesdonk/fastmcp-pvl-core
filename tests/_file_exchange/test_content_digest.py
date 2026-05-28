@@ -104,3 +104,29 @@ def test_parse_header_preferred_is_case_insensitive():
         preferred=["SHA-256"],
     )
     assert parsed == ("sha-256", raw)
+
+
+def test_satisfies_requirement_none_is_always_true():
+    assert _content_digest.satisfies_requirement("sha-256", None) is True
+    assert _content_digest.satisfies_requirement("anything", None) is True
+
+
+def test_satisfies_requirement_empty_is_always_true():
+    assert _content_digest.satisfies_requirement("sha-256", []) is True
+
+
+def test_satisfies_requirement_exact_match():
+    assert _content_digest.satisfies_requirement("sha-256", ["sha-256"]) is True
+
+
+def test_satisfies_requirement_case_insensitive():
+    assert _content_digest.satisfies_requirement("sha-256", ["SHA-256"]) is True
+    assert _content_digest.satisfies_requirement("SHA-256", ["sha-256"]) is True
+
+
+def test_satisfies_requirement_not_in_list():
+    assert _content_digest.satisfies_requirement("sha-512", ["sha-256"]) is False
+
+
+def test_satisfies_requirement_normalises_whitespace_in_required():
+    assert _content_digest.satisfies_requirement("sha-256", [" sha-256 "]) is True

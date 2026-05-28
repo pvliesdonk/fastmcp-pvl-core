@@ -59,3 +59,17 @@ def parse_header(
         if fallback is None:
             fallback = (label, value)
     return fallback
+
+
+def satisfies_requirement(algo: str, required: Iterable[str] | None) -> bool:
+    """Case-insensitive: does ``algo`` appear in ``required``?
+
+    ``required=None`` or empty means no constraint — always True.
+    ``algo`` and the ``required`` entries are compared after
+    ``str.strip().lower()`` normalisation, so callers can pass an
+    unvalidated wire-derived list without pre-normalising.
+    """
+    if not required:
+        return True
+    needle = algo.strip().lower()
+    return needle in {r.strip().lower() for r in required}
