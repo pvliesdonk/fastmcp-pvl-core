@@ -1,108 +1,13 @@
-"""Matrix rows F1, F2, F3, F4, D4, D5: pure-function helpers in _upload."""
+"""Matrix rows F3, F4: ``_media_range_matches`` (RFC 7231 §3.1.1.1).
 
-import base64
-import hashlib
+Content-Digest helper tests moved to ``test_content_digest.py`` when
+the parse + policy was extracted from ``_upload.py`` into
+``_content_digest.py``.
+"""
 
 import pytest
 
-from fastmcp_pvl_core._file_exchange._upload import (
-    _content_digest_format,
-    _content_digest_parse,
-    _media_range_matches,
-)
-
-
-def test_content_digest_parse_sha256_well_formed():
-    payload = b"hello"
-    raw = hashlib.sha256(payload).digest()
-    b64 = base64.b64encode(raw).decode("ascii")
-    header = f"sha-256=:{b64}:"
-    algo, decoded = _content_digest_parse(header)
-    assert algo == "sha-256"
-    assert decoded == raw
-
-
-def test_content_digest_parse_sha512_well_formed():
-    raw = hashlib.sha512(b"x").digest()
-    b64 = base64.b64encode(raw).decode("ascii")
-    algo, decoded = _content_digest_parse(f"sha-512=:{b64}:")
-    assert algo == "sha-512"
-    assert decoded == raw
-
-
-def test_content_digest_parse_sha384_well_formed():
-    raw = hashlib.sha384(b"x").digest()
-    b64 = base64.b64encode(raw).decode("ascii")
-    algo, decoded = _content_digest_parse(f"sha-384=:{b64}:")
-    assert algo == "sha-384"
-    assert decoded == raw
-
-
-def test_content_digest_parse_multi_algo_dict_returns_first_supported():
-    """RFC 9530 §3: when a dictionary lists multiple algorithms, return the
-    first supported one in order. (sha-256 is supported; sha-3 is not.)"""
-    raw256 = hashlib.sha256(b"x").digest()
-    raw512 = hashlib.sha512(b"x").digest()
-    b256 = base64.b64encode(raw256).decode("ascii")
-    b512 = base64.b64encode(raw512).decode("ascii")
-    parsed = _content_digest_parse(f"sha-256=:{b256}:, sha-512=:{b512}:")
-    assert parsed == ("sha-256", raw256)
-
-
-def test_content_digest_parse_skips_unsupported_then_takes_supported():
-    """RFC 9530 §3 MUST-ignore: unsupported algorithm at first position is
-    skipped, the supported algorithm later in the dictionary is used."""
-    raw256 = hashlib.sha256(b"hello").digest()
-    b256 = base64.b64encode(raw256).decode("ascii")
-    parsed = _content_digest_parse(f"md5=:YWJjZA==:, sha-256=:{b256}:")
-    assert parsed == ("sha-256", raw256)
-
-
-def test_content_digest_parse_all_unsupported_returns_none():
-    """If every dictionary entry is in an unsupported algorithm, return None."""
-    assert _content_digest_parse("md5=:YWJjZA==:, sha-3=:YWJjZA==:") is None
-
-
-def test_content_digest_parse_ignores_sf_parameters():
-    """RFC 8941 §3.2 / RFC 9530 §3: structured-field parameters appended to a
-    dictionary item (``sha-256=:<b64>:;foo=bar``) MUST be ignored, not cause
-    the entry to be rejected."""
-    raw = hashlib.sha256(b"hello").digest()
-    b64 = base64.b64encode(raw).decode("ascii")
-    parsed = _content_digest_parse(f"sha-256=:{b64}:;foo=bar;baz")
-    assert parsed == ("sha-256", raw)
-
-
-def test_content_digest_parse_tolerates_whitespace():
-    raw = hashlib.sha256(b"x").digest()
-    b64 = base64.b64encode(raw).decode("ascii")
-    algo, decoded = _content_digest_parse(f"  sha-256 = :{b64}:  ")
-    assert algo == "sha-256"
-    assert decoded == raw
-
-
-@pytest.mark.parametrize(
-    "header",
-    [
-        "garbage",
-        "sha-256:abcd",  # missing structured-field colons
-        "md5=:YWJjZA==:",  # unsupported algo label
-        "sha-256=::",  # empty value
-        "sha-256=:not-base64!:",
-        "sha-256=:YWJjZA",  # missing trailing colon
-        "",
-    ],
-)
-def test_content_digest_parse_malformed_or_unknown_returns_none(header):
-    """D4 + D5: present-but-unparseable / unsupported-algo -> None."""
-    assert _content_digest_parse(header) is None
-
-
-def test_content_digest_format_round_trips():
-    raw = hashlib.sha256(b"hello").digest()
-    header = _content_digest_format("sha-256", raw)
-    parsed = _content_digest_parse(header)
-    assert parsed == ("sha-256", raw)
+from fastmcp_pvl_core._file_exchange._upload import _media_range_matches
 
 
 @pytest.mark.parametrize(
