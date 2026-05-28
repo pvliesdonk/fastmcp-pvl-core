@@ -37,6 +37,29 @@ def test_digest_verifier_none_declared_no_op():
     assert _staging._digest_verifier(None) == (None, None, False)
 
 
+def test_digest_verifier_no_colon_is_unverifiable():
+    """Pre-existing edge: "sha-256" without colon -> empty hex; treat as
+    unverifiable so the caller raises DIGEST_MISMATCH instead of comparing
+    a real hexdigest against the empty string."""
+    assert _staging._digest_verifier("sha-256") == (None, None, True)
+
+
+def test_digest_verifier_empty_hex_is_unverifiable():
+    """Pre-existing edge: "sha-256:" (trailing colon, empty hex) -> nothing
+    to verify against; unverifiable."""
+    assert _staging._digest_verifier("sha-256:") == (None, None, True)
+
+
+def test_digest_verifier_label_whitespace_is_stripped():
+    """Pre-existing edge: a leading-space label (" sha-256:...") must not
+    cause a valid declaration to be reported as an unsupported algorithm."""
+    declared = " sha-256:" + "0" * 64
+    hasher, expected_hex, unverifiable = _staging._digest_verifier(declared)
+    assert isinstance(hasher, type(hashlib.sha256()))
+    assert expected_hex == "0" * 64
+    assert unverifiable is False
+
+
 def test_write_chunk_writes_and_hashes(tmp_path):
     target = tmp_path / "buf.bin"
     with target.open("wb") as fh:

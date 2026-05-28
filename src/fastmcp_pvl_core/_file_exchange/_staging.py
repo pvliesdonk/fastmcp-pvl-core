@@ -31,14 +31,20 @@ def _digest_verifier(
 ) -> tuple[hashlib._Hash | None, str | None, bool]:
     """Return ``(hasher | None, expected_hex | None, unverifiable)``.
 
-    ``unverifiable`` is True when a digest is declared with an unsupported
-    label — verification must then fail (cannot verify), never silently
-    skip (§15).
+    ``unverifiable`` is True when a digest is declared but cannot be verified
+    against — either the algorithm label is unsupported (e.g. ``md5``) or the
+    declaration is malformed (no colon, empty hex). Verification must then
+    fail (cannot verify), never silently skip (§15).
     """
     if declared is None:
         return None, None, False
-    label, _, expected_hex = declared.partition(":")
-    name = _HASHLIB_BY_LABEL.get(label.lower())
+    label, sep, expected_hex = declared.partition(":")
+    if sep != ":" or not expected_hex:
+        # No colon ("sha-256") or empty hex after the colon ("sha-256:") —
+        # there is nothing to verify against. Treat as unverifiable rather
+        # than letting the empty-string hex compare against a real hexdigest.
+        return None, expected_hex or None, True
+    name = _HASHLIB_BY_LABEL.get(label.strip().lower())
     if name is None:
         return None, expected_hex, True
     return hashlib.new(name), expected_hex.lower(), False
