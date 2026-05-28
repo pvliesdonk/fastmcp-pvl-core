@@ -68,7 +68,7 @@ async def test_mint_expected_round_trips_onto_ticket_and_metadata():
     rec = await store.lookup(token)
     assert rec is not None
     assert rec.metadata["artifact_id"] == "art-3"
-    assert rec.metadata["expected"] == expected.model_dump()
+    assert rec.metadata["expected"] == expected.model_dump(mode="json")
 
 
 async def test_repeated_mint_yields_distinct_tokens_with_same_artifact_id():

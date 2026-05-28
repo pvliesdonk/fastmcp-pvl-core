@@ -62,7 +62,13 @@ async def upload_receiver_mint(
     minted = await token_store.mint(
         {
             "artifact_id": artifact_id,
-            "expected": expected.model_dump() if expected is not None else None,
+            # ``mode="json"`` coerces any forward-compat extra fields
+            # (``_WireBase`` has ``extra="allow"``) to JSON-native
+            # primitives so the KV backend's serialiser never sees a
+            # Python object it cannot handle.
+            "expected": (
+                expected.model_dump(mode="json") if expected is not None else None
+            ),
         },
         ttl=ttl,
         single_use=True,
