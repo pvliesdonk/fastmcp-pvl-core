@@ -5,9 +5,9 @@ This module accrues the upload-transport helpers task by task:
 - ``upload_receiver_mint`` — receiver role: mint a single-use capability
   token and emit an :class:`IntakeTicket` carrying one
   :class:`UploadSink`.
-- ``_content_digest_parse`` / ``_content_digest_format`` / ``_media_range_matches``
-  — RFC 9530 Content-Digest dictionary-entry parse + format, and an RFC 7231
-  media-range matcher used by the route to enforce ``acceptMimeTypes``.
+- ``_media_range_matches`` — RFC 7231 §3.1.1.1 media-range matcher
+  used by the route to enforce ``acceptMimeTypes``. (The Content-Digest
+  parse + policy lives in :mod:`._content_digest`.)
 - ``register_upload_route`` — mount ``PUT <UPLOAD_PREFIX>/{token}``
   on a FastMCP server: streams the body to a temp file, verifies an optional
   ``Content-Digest`` before the sink sees the bytes, deposits to
@@ -25,8 +25,6 @@ for the implementation plan this module is built against.
 from __future__ import annotations
 
 import asyncio
-import base64 as _b64
-import binascii
 import contextlib
 import hashlib
 import logging
@@ -34,6 +32,7 @@ import os
 import tempfile
 from typing import TYPE_CHECKING, Literal, cast
 
+from fastmcp_pvl_core._file_exchange import _content_digest
 from fastmcp_pvl_core._file_exchange._spec import SPEC_VERSION, TICKET_TYPE
 from fastmcp_pvl_core._file_exchange._staging import (
     _HASHLIB_BY_LABEL,
@@ -116,72 +115,6 @@ async def upload_receiver_mint(
             )
         ],
     )
-
-
-def _content_digest_parse(
-    header: str, *, preferred: list[str] | None = None
-) -> tuple[str, bytes] | None:
-    """Parse an RFC 9530 ``Content-Digest`` structured-field dictionary entry.
-
-    Returns ``(algo_label, raw_digest_bytes)`` on success, or ``None`` if no
-    supported, well-formed entry is present. Unsupported algorithms within a
-    dictionary are silently skipped (RFC 9530 §3: a recipient MUST ignore
-    digest values associated with algorithms that it does not support); the
-    function returns the first supported, well-formed entry it finds. ``None``
-    is treated by the caller as a verification failure (``digest-mismatch``),
-    never a silent skip of a header that did declare a known algorithm
-    (matrix rows D4, D5; spec §10.3).
-
-    Per RFC 8941 §3.2 a dictionary item may carry parameters
-    (``sha-256=:<b64>:;foo=bar``); RFC 9530 §3 requires unknown parameters
-    to be ignored, so they are stripped before the byte-sequence boundary
-    check.
-
-    ``preferred``, if given, lists algorithm labels the caller wants to use
-    in preference to any other supported entry — used by the route to honour
-    ``expected.requireDigest`` regardless of header entry ordering. When no
-    ``preferred`` entry parses successfully, the parser falls back to the
-    first supported well-formed entry. The caller decides what to do with
-    that fallback: the route rejects it with 400 when ``requireDigest`` is
-    set (the fallback algorithm is not in the required set, so the request
-    is non-conformant); when ``requireDigest`` is absent, the fallback
-    proceeds to digest verification against the bytes received.
-    """
-    if not header:
-        return None
-    preferred_set = {p.strip().lower() for p in preferred} if preferred else None
-    fallback: tuple[str, bytes] | None = None
-    for entry in header.split(","):
-        entry = entry.strip()
-        if not entry:
-            continue
-        label, sep, rest = entry.partition("=")
-        if sep != "=":
-            continue
-        label = label.strip().lower()
-        if label not in _HASHLIB_BY_LABEL:
-            continue
-        item, _, _ = rest.strip().partition(";")
-        item = item.strip()
-        if not item.startswith(":") or not item.endswith(":") or len(item) < 2:
-            continue
-        b64 = item[1:-1]
-        if not b64:
-            continue
-        try:
-            raw = _b64.b64decode(b64, validate=True)
-        except (binascii.Error, ValueError):
-            continue
-        if preferred_set is not None and label in preferred_set:
-            return label, raw
-        if fallback is None:
-            fallback = (label, raw)
-    return fallback
-
-
-def _content_digest_format(label: str, raw: bytes) -> str:
-    """Format ``(label, raw_digest_bytes)`` as ``algo=:base64:`` per RFC 9530."""
-    return f"{label}=:{_b64.b64encode(raw).decode('ascii')}:"
 
 
 def _media_range_matches(content_type: str, accept: list[str]) -> bool:
@@ -331,17 +264,11 @@ def register_upload_route(
             cd_header = request.headers.get("content-digest")
             required = expected.requireDigest if expected is not None else None
             if cd_header is not None:
-                parsed = _content_digest_parse(cd_header, preferred=required)
+                parsed = _content_digest.parse_header(cd_header, preferred=required)
                 if parsed is None:
                     return Response(status_code=400)
                 cd_algo, cd_raw = parsed
-                # ``cd_algo`` is always lowercase (the parser normalises);
-                # ``required`` comes from ``ArtifactConstraints.requireDigest``
-                # which is an unvalidated ``list[str]`` (no Pydantic-side
-                # normalisation), so lowercase the comparison set too.
-                if required is not None and cd_algo not in {
-                    r.strip().lower() for r in required
-                }:
+                if not _content_digest.satisfies_requirement(cd_algo, required):
                     # The parser tried ``preferred=required`` first, so
                     # arriving here means the client's header contained no
                     # entry whose algorithm is in ``required`` — only a
