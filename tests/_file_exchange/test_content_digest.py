@@ -130,3 +130,17 @@ def test_satisfies_requirement_not_in_list():
 
 def test_satisfies_requirement_normalises_whitespace_in_required():
     assert _content_digest.satisfies_requirement("sha-256", [" sha-256 "]) is True
+
+
+def test_format_header_round_trips_via_parse():
+    raw = hashlib.sha256(b"hello world").digest()
+    header = _content_digest.format_header("sha-256", raw)
+    parsed = _content_digest.parse_header(header)
+    assert parsed == ("sha-256", raw)
+
+
+def test_format_header_shape_matches_rfc_9530():
+    raw = hashlib.sha256(b"x").digest()
+    header = _content_digest.format_header("sha-256", raw)
+    expected = "sha-256=:" + base64.b64encode(raw).decode("ascii") + ":"
+    assert header == expected

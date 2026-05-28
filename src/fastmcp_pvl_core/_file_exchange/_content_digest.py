@@ -16,6 +16,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 
 import http_sf
+from http_sf.dictionary import ser_dictionary as _ser_dictionary
 
 SUPPORTED_ALGORITHMS = frozenset({"sha-256", "sha-384", "sha-512"})
 
@@ -73,3 +74,13 @@ def satisfies_requirement(algo: str, required: Iterable[str] | None) -> bool:
         return True
     needle = algo.strip().lower()
     return needle in {r.strip().lower() for r in required}
+
+
+def format_header(algo: str, raw: bytes) -> str:
+    """Serialise ``(algo, raw)`` as an RFC 9530 Content-Digest value.
+
+    Delegates to http_sf.ser_dictionary for the canonical RFC 8941
+    form. ``algo`` is the lowercase algorithm label
+    (``sha-256``/``sha-384``/``sha-512``); ``raw`` is the digest bytes.
+    """
+    return _ser_dictionary({algo: (raw, {})})
