@@ -17,6 +17,20 @@ def test_supported_algorithms_set():
     )
 
 
+def test_supported_algorithms_match_staging_hashlib_map():
+    """``_content_digest.SUPPORTED_ALGORITHMS`` and
+    ``_staging._HASHLIB_BY_LABEL`` define the same algorithm set
+    independently — the route looks up ``_HASHLIB_BY_LABEL[cd_algo]`` after
+    ``parse_header`` has filtered against ``SUPPORTED_ALGORITHMS``, so the
+    two collections must keep their key sets in sync. Drift would surface
+    as a runtime ``KeyError`` in the rehash branch; this test pins the
+    invariant so a future algorithm addition cannot land on only one
+    side."""
+    from fastmcp_pvl_core._file_exchange import _staging
+
+    assert _content_digest.SUPPORTED_ALGORITHMS == frozenset(_staging._HASHLIB_BY_LABEL)
+
+
 def test_parse_header_single_sha256_entry():
     payload = b"hello"
     raw = hashlib.sha256(payload).digest()

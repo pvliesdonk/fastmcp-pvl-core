@@ -769,6 +769,29 @@ async def test_route_revoke_after_lookup_still_succeeds():
     assert await store.lookup(token) is None
 
 
+async def test_route_consume_raises_still_returns_204():
+    """If ``token_store.consume`` raises after a successful sink store
+    (transient KV failure), the route logs a warning and still returns 204
+    — the bytes are in the sink; pvl-core's at-most-once-delivery contract
+    explicitly tolerates a live token after store success."""
+    sink = _RecordingSink()
+    mcp, store = await _mount(sink)
+    ticket = await _upload.upload_receiver_mint(
+        "art-1", token_store=store, base_url="https://route.test", ttl=120.0
+    )
+    path = ticket.sinks[0].url[len("https://route.test") :]
+
+    async def raising_consume(token):
+        raise RuntimeError("simulated KV transient failure")
+
+    store.consume = raising_consume  # type: ignore[method-assign]
+
+    async with await _client(mcp) as c:
+        resp = await c.put(path, content=b"x", headers={"Content-Type": "text/plain"})
+    assert resp.status_code == 204
+    assert len(sink.calls) == 1
+
+
 async def test_route_client_disconnect_propagates_without_500_response(monkeypatch):
     """starlette.requests.ClientDisconnect during request.stream() must
     propagate, not be caught as a generic OSError and turned into 500."""
