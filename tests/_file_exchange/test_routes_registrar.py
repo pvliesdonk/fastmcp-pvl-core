@@ -42,7 +42,10 @@ def test_registrar_both_none_raises_value_error():
 
 
 def test_registrar_sink_without_config_raises_value_error():
-    """E3: sink requires config (operator size cap)."""
+    """E3: sink requires config (operator size cap). Like the other
+    precondition tests, the registrar must leave the server with zero
+    ``/fx/`` routes — completing the symmetric A7 coverage across all
+    four precondition-failure paths."""
     cfg = _cfg()
     store = build_capability_token_store(cfg)
     mcp = FastMCP("t")
@@ -50,6 +53,8 @@ def test_registrar_sink_without_config_raises_value_error():
         _routes.register_file_exchange_routes(
             mcp, token_store=store, source=None, sink=_Sink(), config=None
         )
+    paths = {r.path for r in mcp.http_app().routes}
+    assert not any(p.startswith("/fx/") for p in paths)
 
 
 def test_registrar_source_only_mounts_download_route():
