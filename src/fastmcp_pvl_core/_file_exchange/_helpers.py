@@ -93,9 +93,9 @@ def register_file_exchange(
 ) -> FileExchangeContext:
     """One-shot file-exchange setup.
 
-    Builds the token store, mounts the routes, and (in a later task)
-    declares the Tasks capability. Returns the context the per-tool
-    helpers consume.
+    Builds the token store, mounts the routes, and declares the
+    Tasks capability (``tasks.requests.tools.call``). Returns the
+    context the per-tool helpers consume.
 
     Kwargs (per CLAUDE.md classification):
 

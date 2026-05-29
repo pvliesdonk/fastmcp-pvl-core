@@ -651,6 +651,10 @@ async def test_sender_filesystem_without_volume_map_raises_transfer_error():
     with pytest.raises(FileExchangeTransferError) as ei:
         await tool.fn(ticket=ticket, key="k")
     assert ei.value.code == TransferErrorCode.NO_SUPPORTED_TRANSPORT
+    # Mirror of the fetcher pin: the error fires from the outer
+    # ``descriptor is None`` branch (filesystem skipped at selection
+    # because there is no volume_map), so transport is None.
+    assert ei.value.transport is None
 
 
 async def test_sender_no_supported_transport_raises_transfer_error():
@@ -724,6 +728,11 @@ async def test_fetcher_no_supported_transport_raises_transfer_error():
     with pytest.raises(FileExchangeTransferError) as ei:
         await tool.fn(handle=handle)
     assert ei.value.code == TransferErrorCode.NO_SUPPORTED_TRANSPORT
+    # ``select_source`` skips UnknownTransportDescriptor via ``continue``
+    # and returns None, so the outer ``descriptor is None`` branch fires
+    # with transport=None. Anchored to catch a refactor that wrongly
+    # forwards the unknown descriptor's transport string here.
+    assert ei.value.transport is None
 
 
 async def test_helpers_inject_task_support_optional():
