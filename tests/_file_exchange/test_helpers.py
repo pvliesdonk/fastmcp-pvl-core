@@ -10,7 +10,11 @@ from fastmcp import FastMCP
 from fastmcp_pvl_core._config import ServerConfig
 from fastmcp_pvl_core._file_exchange import _helpers
 from fastmcp_pvl_core._file_exchange._tokens import CapabilityTokenStore
-from fastmcp_pvl_core._file_exchange._wire import ArtifactMetadata
+from fastmcp_pvl_core._file_exchange._wire import (
+    ArtifactConstraints,
+    ArtifactMetadata,
+    IntakeTicket,
+)
 
 
 class _Sink:
@@ -164,3 +168,62 @@ def test_provider_decorator_without_source_raises_value_error():
         @_helpers.register_file_exchange_provider(mcp, "get_report", fxctx)
         async def get_report(report_id: str) -> tuple[ArtifactMetadata, str]:
             return ArtifactMetadata(), report_id
+
+
+async def test_receiver_decorator_mints_intake_ticket():
+    cfg = _cfg()
+    mcp = FastMCP("t")
+    fxctx = _helpers.register_file_exchange(
+        mcp,
+        config=cfg,
+        base_url="https://route.test",
+        sink=_Sink(),
+    )
+
+    @_helpers.register_file_exchange_receiver(mcp, "accept_report", fxctx)
+    async def accept_report(case_id: str) -> tuple[str, ArtifactConstraints | None]:
+        return f"case-{case_id}-attachment", ArtifactConstraints(maxSize=1024)
+
+    tool = await mcp.get_tool("accept_report")
+    ticket = await tool.fn(case_id="42")
+    assert isinstance(ticket, IntakeTicket)
+    assert ticket.artifactId == "case-42-attachment"
+    assert ticket.expected is not None
+    assert ticket.expected.maxSize == 1024
+    assert len(ticket.sinks) == 1
+    assert ticket.sinks[0].url.startswith("https://route.test/fx/u/")  # type: ignore[union-attr]
+
+
+async def test_receiver_decorator_no_expected_constraints_is_none():
+    cfg = _cfg()
+    mcp = FastMCP("t")
+    fxctx = _helpers.register_file_exchange(
+        mcp,
+        config=cfg,
+        base_url="https://route.test",
+        sink=_Sink(),
+    )
+
+    @_helpers.register_file_exchange_receiver(mcp, "accept_blob", fxctx)
+    async def accept_blob(blob_id: str):
+        return blob_id, None
+
+    tool = await mcp.get_tool("accept_blob")
+    ticket = await tool.fn(blob_id="b1")
+    assert ticket.expected is None
+
+
+def test_receiver_decorator_without_sink_raises_value_error():
+    cfg = _cfg()
+    mcp = FastMCP("t")
+    fxctx = _helpers.register_file_exchange(
+        mcp,
+        config=cfg,
+        base_url="https://my.example",
+        source=_Source(),  # source only; no sink
+    )
+    with pytest.raises(ValueError):
+
+        @_helpers.register_file_exchange_receiver(mcp, "accept_report", fxctx)
+        async def accept_report(case_id: str):
+            return f"c-{case_id}", None

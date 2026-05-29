@@ -23,7 +23,8 @@ from fastmcp_pvl_core._file_exchange._tokens import (
     CapabilityTokenStore,
     build_capability_token_store,
 )
-from fastmcp_pvl_core._file_exchange._wire import TransferHandle
+from fastmcp_pvl_core._file_exchange._upload import upload_receiver_mint
+from fastmcp_pvl_core._file_exchange._wire import IntakeTicket, TransferHandle
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
@@ -144,6 +145,51 @@ def register_file_exchange_provider(
                 base_url=fxctx.base_url,
                 ttl=fxctx.config.file_exchange_token_ttl,
                 single_use=True,
+            )
+
+        # Task 7 adds the taskSupport annotation here.
+        mcp.tool(name=tool_name)(_wrapped)
+        return _wrapped
+
+    return _wrap
+
+
+def register_file_exchange_receiver(
+    mcp: FastMCP,
+    tool_name: str,
+    fxctx: FileExchangeContext,
+) -> Callable[[Callable[..., Awaitable[Any]]], Callable[..., Awaitable[IntakeTicket]]]:
+    """Decorate a downstream ``(artifact_id, expected)`` producer as a receiver tool.
+
+    The decorated function's parameters become the MCP tool's parameters;
+    the decorator mints an :class:`IntakeTicket` from the returned
+    ``(artifact_id, expected)`` and returns *that* as the tool's response.
+    The sink hook is NOT called at mint time — only when the peer PUTs
+    bytes to the minted capability URL.
+
+    Raises ``ValueError`` at decoration time if ``fxctx.sink`` is
+    ``None`` — fail loudly at startup, not at first peer call.
+    """
+    if fxctx.sink is None:
+        raise ValueError(
+            f"register_file_exchange_receiver({tool_name!r}): fxctx has "
+            "no sink — set sink= when calling register_file_exchange"
+        )
+
+    def _wrap(
+        fn: Callable[..., Awaitable[Any]],
+    ) -> Callable[..., Awaitable[IntakeTicket]]:
+        from functools import wraps
+
+        @wraps(fn)
+        async def _wrapped(*args: Any, **kwargs: Any) -> IntakeTicket:
+            artifact_id, expected = await fn(*args, **kwargs)
+            return await upload_receiver_mint(
+                artifact_id,
+                token_store=fxctx.token_store,
+                base_url=fxctx.base_url,
+                ttl=fxctx.config.file_exchange_token_ttl,
+                expected=expected,
             )
 
         # Task 7 adds the taskSupport annotation here.
