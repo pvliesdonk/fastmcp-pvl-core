@@ -42,7 +42,7 @@ from fastmcp_pvl_core._server_info import (
 )
 from fastmcp_pvl_core._subject import get_subject
 
-__version__ = "3.0.1-rc.3"  # PSR overrides at build time
+__version__ = "2.2.0"  # PSR overrides at build time
 
 __all__ = [
     "AuthMode",

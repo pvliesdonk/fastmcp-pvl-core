@@ -3,7 +3,26 @@
 All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [3.0.0] - UNRELEASED
+## [2.2.0] - 2026-05-29
+
+### Note
+
+This release continues the v2.x line. The `v3.0.0-rc.1` /
+`v3.0.1-rc.{1,2,3}` release candidates published to PyPI have been
+**yanked** — every v3.x RC existed only to ship the file-exchange
+extension, in two successive attempts that both failed to converge.
+v3.x is treated as never having existed; v2.2.0 picks up where
+v2.1.0 left off, carrying only the non-file-exchange work that
+landed in between (kv_store factory + dependency bumps).
+
+The second file-exchange attempt (the cleanroom rewrite across
+PRs #139–#176, EPIC #138) is preserved on the
+[`file-exchange-archive`](https://github.com/pvliesdonk/fastmcp-pvl-core/tree/file-exchange-archive)
+branch and the
+[`archive/file-exchange-v0.1`](https://github.com/pvliesdonk/fastmcp-pvl-core/releases/tag/archive%2Ffile-exchange-v0.1)
+tag. A future redesign will ship as a separate package rather than
+inside pvl-core; see the design-principles section of `CLAUDE.md`
+for why the in-tree extension fit the framing poorly.
 
 ### Added
 
