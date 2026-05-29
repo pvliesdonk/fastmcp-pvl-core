@@ -227,3 +227,108 @@ def test_receiver_decorator_without_sink_raises_value_error():
         @_helpers.register_file_exchange_receiver(mcp, "accept_report", fxctx)
         async def accept_report(case_id: str):
             return f"c-{case_id}", None
+
+
+async def test_fetcher_generated_tool_dispatches_to_download_consume(monkeypatch):
+    """The fetcher tool selects a source descriptor and dispatches to the
+    download fetcher when descriptor.transport == "download"."""
+    cfg = _cfg()
+    mcp = FastMCP("t")
+    fxctx = _helpers.register_file_exchange(
+        mcp,
+        config=cfg,
+        base_url="https://route.test",
+        sink=_Sink(),
+    )
+
+    _helpers.register_file_exchange_fetcher(mcp, "consume_transfer", fxctx)
+
+    # Build a TransferHandle with one download descriptor.
+    from datetime import datetime, timezone
+
+    from fastmcp_pvl_core._file_exchange._spec import HANDLE_TYPE, SPEC_VERSION
+    from fastmcp_pvl_core._file_exchange._wire import (
+        DownloadSource,
+        TransferHandle,
+    )
+
+    handle = TransferHandle(
+        type=HANDLE_TYPE,
+        version=SPEC_VERSION,
+        artifact=ArtifactMetadata(size=4),
+        sources=[
+            DownloadSource(
+                transport="download",
+                url="https://peer.test/fx/d/abc",
+                expiresAt=datetime(2099, 1, 1, tzinfo=timezone.utc),
+            )
+        ],
+    )
+
+    captured: dict = {}
+
+    async def fake_dl_fetch(h, d, s, *, config):
+        captured["handle"] = h
+        captured["descriptor"] = d
+        captured["sink"] = s
+        captured["config"] = config
+
+    monkeypatch.setattr(_helpers, "download_fetcher_consume", fake_dl_fetch)
+
+    tool = await mcp.get_tool("consume_transfer")
+    result = await tool.fn(handle=handle)
+    assert result is None
+    assert captured["handle"] is handle
+    assert captured["descriptor"].transport == "download"
+    assert captured["sink"] is fxctx.sink
+    assert captured["config"] is fxctx.config
+
+
+def test_fetcher_without_sink_raises_value_error():
+    cfg = _cfg()
+    mcp = FastMCP("t")
+    fxctx = _helpers.register_file_exchange(
+        mcp,
+        config=cfg,
+        base_url="https://my.example",
+        source=_Source(),  # source only
+    )
+    with pytest.raises(ValueError):
+        _helpers.register_file_exchange_fetcher(mcp, "consume_transfer", fxctx)
+
+
+async def test_fetcher_no_supported_transport_raises_transfer_error():
+    """When ``select_source`` returns None (no descriptor in the handle
+    satisfies pvl-core's known transports), the generated tool raises
+    FileExchangeTransferError(NO_SUPPORTED_TRANSPORT)."""
+    cfg = _cfg()
+    mcp = FastMCP("t")
+    fxctx = _helpers.register_file_exchange(
+        mcp,
+        config=cfg,
+        base_url="https://route.test",
+        sink=_Sink(),
+    )
+    _helpers.register_file_exchange_fetcher(mcp, "consume_transfer", fxctx)
+
+    from fastmcp_pvl_core._file_exchange._codes import TransferErrorCode
+    from fastmcp_pvl_core._file_exchange._errors import (
+        FileExchangeTransferError,
+    )
+    from fastmcp_pvl_core._file_exchange._spec import HANDLE_TYPE, SPEC_VERSION
+    from fastmcp_pvl_core._file_exchange._wire import (
+        TransferHandle,
+        UnknownTransportDescriptor,
+    )
+
+    handle = TransferHandle(
+        type=HANDLE_TYPE,
+        version=SPEC_VERSION,
+        artifact=ArtifactMetadata(size=4),
+        sources=[UnknownTransportDescriptor(transport="future-transport")],
+    )
+
+    tool = await mcp.get_tool("consume_transfer")
+    with pytest.raises(FileExchangeTransferError) as ei:
+        await tool.fn(handle=handle)
+    assert ei.value.code == TransferErrorCode.NO_SUPPORTED_TRANSPORT

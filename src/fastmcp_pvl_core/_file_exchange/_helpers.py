@@ -17,14 +17,25 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from fastmcp_pvl_core._file_exchange._download import download_provider_mint
+from fastmcp_pvl_core._file_exchange._codes import TransferErrorCode
+from fastmcp_pvl_core._file_exchange._download import (
+    download_fetcher_consume,
+    download_provider_mint,
+)
+from fastmcp_pvl_core._file_exchange._errors import FileExchangeTransferError
 from fastmcp_pvl_core._file_exchange._routes import register_file_exchange_routes
+from fastmcp_pvl_core._file_exchange._selection import select_source
 from fastmcp_pvl_core._file_exchange._tokens import (
     CapabilityTokenStore,
     build_capability_token_store,
 )
 from fastmcp_pvl_core._file_exchange._upload import upload_receiver_mint
-from fastmcp_pvl_core._file_exchange._wire import IntakeTicket, TransferHandle
+from fastmcp_pvl_core._file_exchange._wire import (
+    DownloadSource,
+    FilesystemSource,
+    IntakeTicket,
+    TransferHandle,
+)
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
@@ -152,6 +163,80 @@ def register_file_exchange_provider(
         return _wrapped
 
     return _wrap
+
+
+def register_file_exchange_fetcher(
+    mcp: FastMCP,
+    tool_name: str,
+    fxctx: FileExchangeContext,
+) -> None:
+    """Generate and register the file-exchange fetcher tool.
+
+    Not a decorator — pvl-core owns the entire tool body because its
+    input is the spec-defined :class:`TransferHandle` and there is
+    nothing domain-specific for downstream to write. The generated tool
+    selects a usable source descriptor via :func:`select_source` and
+    dispatches to the appropriate per-transport fetcher
+    (``filesystem`` or ``download``). Bytes land in ``fxctx.sink``; the
+    tool returns ``None``.
+
+    Raises ``ValueError`` at registration time if ``fxctx.sink`` is
+    ``None`` — fail loudly at startup, not at first peer call.
+
+    The generated tool raises ``FileExchangeTransferError`` with
+    ``TransferErrorCode.NO_SUPPORTED_TRANSPORT`` (§13) when the
+    submitted handle carries no descriptor satisfying pvl-core's known
+    transports.
+    """
+    if fxctx.sink is None:
+        raise ValueError(
+            f"register_file_exchange_fetcher({tool_name!r}): fxctx has "
+            "no sink — set sink= when calling register_file_exchange"
+        )
+    sink = fxctx.sink  # bind locally so mypy keeps the non-None narrowing
+
+    async def _consume_transfer(handle: TransferHandle) -> None:
+        descriptor = select_source(handle)
+        if descriptor is None:
+            raise FileExchangeTransferError(
+                TransferErrorCode.NO_SUPPORTED_TRANSPORT,
+                transport=None,
+                detail="no usable source in handle",
+            )
+        if isinstance(descriptor, FilesystemSource):
+            # Filesystem fetch requires a ``VolumeMap`` (env-driven, see
+            # ``load_volume_map``) that the umbrella ``FileExchangeContext``
+            # does not yet carry. The Task 5 plan assumed a ``config=``
+            # passthrough; the actual ``filesystem_fetcher_consume`` takes
+            # ``volume_map=``. Until the context grows a ``volume_map``
+            # field (tracked as a Task-5 follow-up), filesystem sources
+            # fall through to NO_SUPPORTED_TRANSPORT here so a stray
+            # filesystem-only handle fails cleanly with a §13 envelope
+            # rather than a TypeError.
+            raise FileExchangeTransferError(
+                TransferErrorCode.NO_SUPPORTED_TRANSPORT,
+                transport="filesystem",
+                detail=(
+                    "filesystem fetch via umbrella helper not yet wired "
+                    "(needs VolumeMap on FileExchangeContext)"
+                ),
+            )
+        elif isinstance(descriptor, DownloadSource):
+            await download_fetcher_consume(
+                handle, descriptor, sink, config=fxctx.config
+            )
+        else:
+            # select_source filters UnknownTransportDescriptor; defensive
+            # guard for any forward-compat wire payload that slips through.
+            raise FileExchangeTransferError(
+                TransferErrorCode.NO_SUPPORTED_TRANSPORT,
+                transport=descriptor.transport,
+                detail=f"unsupported transport {descriptor.transport!r}",
+            )
+
+    _consume_transfer.__name__ = tool_name
+    # Task 7 adds the taskSupport annotation here.
+    mcp.tool(name=tool_name)(_consume_transfer)
 
 
 def register_file_exchange_receiver(
