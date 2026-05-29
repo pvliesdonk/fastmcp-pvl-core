@@ -21,6 +21,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   collide on collection names. (#121)
 - `ServerConfig.kv_store_url` field, loaded from
   `<PREFIX>_KV_STORE_URL`.
+- File-exchange umbrella helpers (#148): `register_file_exchange` setup
+  call plus `register_file_exchange_provider` / `_receiver` / `_fetcher`
+  / `_sender` per-role helpers. Provider and receiver are decorators on
+  downstream-owned tool bodies; fetcher and sender are fully-generated
+  tool registrations. Every helper-registered tool carries the §14
+  `taskSupport="optional"` annotation; the setup call declares the
+  server-level `tasks.requests.tools.call` capability.
+  `FileExchangeContext` carries an optional `volume_map: VolumeMap`
+  so the filesystem transport is opt-in via the setup call.
+- `docs/file-exchange.md` — pvl-core's implementation notes for the
+  file-exchange extension.
+- `docs/file-exchange-adoption.md` — one worked example per role.
 
 ### Changed
 
