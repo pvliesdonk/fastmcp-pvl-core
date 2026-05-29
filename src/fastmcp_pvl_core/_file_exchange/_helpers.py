@@ -56,6 +56,13 @@ if TYPE_CHECKING:
     from fastmcp_pvl_core._file_exchange._paths import VolumeMap
 
 
+# §14: per-tool annotation declaring the file-exchange tool *may* be
+# submitted as a task. ``ToolAnnotations`` has ``additionalProperties=True``
+# (verified empirically), so this unknown key reaches the wire form.
+# Centralised so a future spec-shape change edits one site.
+_TASK_SUPPORT_ANNOTATION: dict[str, str] = {"taskSupport": "optional"}
+
+
 @dataclass(frozen=True)
 class FileExchangeContext:
     """Shared state produced by :func:`register_file_exchange`.
@@ -179,8 +186,7 @@ def register_file_exchange_provider(
                 single_use=True,
             )
 
-        # Task 7 adds the taskSupport annotation here.
-        mcp.tool(name=tool_name)(_wrapped)
+        mcp.tool(name=tool_name, annotations=_TASK_SUPPORT_ANNOTATION)(_wrapped)
         return _wrapped
 
     return _wrap
@@ -261,8 +267,7 @@ def register_file_exchange_fetcher(
             )
 
     _consume_transfer.__name__ = tool_name
-    # Task 7 adds the taskSupport annotation here.
-    mcp.tool(name=tool_name)(_consume_transfer)
+    mcp.tool(name=tool_name, annotations=_TASK_SUPPORT_ANNOTATION)(_consume_transfer)
 
 
 def register_file_exchange_receiver(
@@ -303,8 +308,7 @@ def register_file_exchange_receiver(
                 expected=expected,
             )
 
-        # Task 7 adds the taskSupport annotation here.
-        mcp.tool(name=tool_name)(_wrapped)
+        mcp.tool(name=tool_name, annotations=_TASK_SUPPORT_ANNOTATION)(_wrapped)
         return _wrapped
 
     return _wrap
@@ -385,5 +389,4 @@ def register_file_exchange_sender(
             )
 
     _send_to_receiver.__name__ = tool_name
-    # Task 7 adds the taskSupport annotation here.
-    mcp.tool(name=tool_name)(_send_to_receiver)
+    mcp.tool(name=tool_name, annotations=_TASK_SUPPORT_ANNOTATION)(_send_to_receiver)

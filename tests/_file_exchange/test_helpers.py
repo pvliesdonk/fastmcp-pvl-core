@@ -620,3 +620,38 @@ async def test_fetcher_no_supported_transport_raises_transfer_error():
     with pytest.raises(FileExchangeTransferError) as ei:
         await tool.fn(handle=handle)
     assert ei.value.code == TransferErrorCode.NO_SUPPORTED_TRANSPORT
+
+
+async def test_helpers_inject_task_support_optional():
+    """All four role helpers must annotate the registered tool with
+    ``taskSupport="optional"`` (§14). Verified via the wire form of the
+    tool that FastMCP emits."""
+    cfg = _cfg()
+    mcp = FastMCP("t")
+    fxctx = _helpers.register_file_exchange(
+        mcp,
+        config=cfg,
+        base_url="https://route.test",
+        source=_Source(),
+        sink=_Sink(),
+    )
+
+    @_helpers.register_file_exchange_provider(mcp, "p1", fxctx)
+    async def p1(x: str) -> tuple[ArtifactMetadata, str]:
+        return ArtifactMetadata(), x
+
+    @_helpers.register_file_exchange_receiver(mcp, "r1", fxctx)
+    async def r1(x: str) -> tuple[str, ArtifactConstraints | None]:
+        return x, None
+
+    _helpers.register_file_exchange_fetcher(mcp, "f1", fxctx)
+    _helpers.register_file_exchange_sender(mcp, "s1", fxctx)
+
+    for name in ("p1", "r1", "f1", "s1"):
+        tool = await mcp.get_tool(name)
+        wire = tool.to_mcp_tool().model_dump(exclude_none=True)
+        annotations = wire.get("annotations") or {}
+        assert annotations.get("taskSupport") == "optional", (
+            f"tool {name!r} missing taskSupport annotation; "
+            f"wire annotations: {annotations!r}"
+        )
