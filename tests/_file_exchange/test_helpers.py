@@ -81,3 +81,26 @@ def test_register_file_exchange_source_only_mounts_download_only():
     paths = {r.path for r in mcp.http_app().routes}
     assert any(p.startswith("/fx/d") for p in paths)
     assert not any(p.startswith("/fx/u") for p in paths)
+
+
+def test_register_file_exchange_declares_tasks_capability():
+    """The setup call advertises ``tasks.requests.tools.call`` so peers
+    know the server accepts tools/call as a task submission (§14).
+    Mutates ``mcp.experimental_capabilities`` (FastMCP merges this dict
+    into the wire capability advertisement; this path does not require
+    the ``fastmcp[tasks]`` / ``docket`` extra)."""
+    cfg = _cfg()
+    mcp = FastMCP("t")
+    _helpers.register_file_exchange(
+        mcp,
+        config=cfg,
+        base_url="https://my.example",
+        source=_Source(),
+    )
+    assert (
+        mcp.experimental_capabilities.get("tasks", {})
+        .get("requests", {})
+        .get("tools", {})
+        .get("call")
+        is True
+    )

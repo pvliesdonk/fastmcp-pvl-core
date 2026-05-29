@@ -82,7 +82,15 @@ def register_file_exchange(
         sink=sink,
         config=config,
     )
-    # Task 2 inserts the server-level Tasks capability declaration here.
+    # §14: declare the server-level Tasks capability so peers know this
+    # server accepts tools/call as a task submission. Direct dict mutation
+    # on ``experimental_capabilities`` — FastMCP merges this into the
+    # wire capability advertisement at request time. We deliberately do
+    # NOT set ``_support_tasks_by_default`` because that flips per-tool
+    # ``task=True`` defaults that require the ``fastmcp[tasks]`` extra
+    # (docket scheduler); the helpers here register tools without
+    # ``task=True`` and only need the *capability declaration* per §14.
+    mcp.experimental_capabilities["tasks"] = {"requests": {"tools": {"call": True}}}
     return FileExchangeContext(
         token_store=token_store,
         base_url=base_url,
