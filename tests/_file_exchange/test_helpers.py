@@ -297,6 +297,294 @@ def test_fetcher_without_sink_raises_value_error():
         _helpers.register_file_exchange_fetcher(mcp, "consume_transfer", fxctx)
 
 
+def test_register_file_exchange_volume_map_threads_through():
+    from pathlib import Path
+
+    cfg = _cfg()
+    mcp = FastMCP("t")
+    vm = {"vol": Path("/tmp")}
+    fxctx = _helpers.register_file_exchange(
+        mcp,
+        config=cfg,
+        base_url="https://my.example",
+        source=_Source(),
+        volume_map=vm,
+    )
+    assert fxctx.volume_map is vm
+
+
+def test_register_file_exchange_volume_map_defaults_to_none():
+    cfg = _cfg()
+    mcp = FastMCP("t")
+    fxctx = _helpers.register_file_exchange(
+        mcp,
+        config=cfg,
+        base_url="https://my.example",
+        source=_Source(),
+    )
+    assert fxctx.volume_map is None
+
+
+async def test_fetcher_filesystem_dispatches_with_volume_map(monkeypatch):
+    from pathlib import Path
+
+    from fastmcp_pvl_core._file_exchange._spec import HANDLE_TYPE, SPEC_VERSION
+    from fastmcp_pvl_core._file_exchange._wire import (
+        FilesystemSource,
+        TransferHandle,
+    )
+
+    # Bypass the §9 accessibility precheck — the dispatch is what we're
+    # testing here, not the readability gate (covered in test_filesystem).
+    monkeypatch.setattr(
+        _helpers, "filesystem_source_readable", lambda vm: lambda d: True
+    )
+
+    cfg = _cfg()
+    mcp = FastMCP("t")
+    vm = {"vol": Path("/tmp")}
+    fxctx = _helpers.register_file_exchange(
+        mcp,
+        config=cfg,
+        base_url="https://route.test",
+        sink=_Sink(),
+        volume_map=vm,
+    )
+
+    _helpers.register_file_exchange_fetcher(mcp, "consume_transfer", fxctx)
+
+    handle = TransferHandle(
+        type=HANDLE_TYPE,
+        version=SPEC_VERSION,
+        artifact=ArtifactMetadata(size=4),
+        sources=[FilesystemSource(transport="filesystem", uri="exchange://vol/x.bin")],
+    )
+
+    captured: dict = {}
+
+    async def fake_fs_fetch(h, d, s, *, volume_map):
+        captured["volume_map"] = volume_map
+        captured["sink"] = s
+        captured["descriptor"] = d
+
+    monkeypatch.setattr(_helpers, "filesystem_fetcher_consume", fake_fs_fetch)
+
+    tool = await mcp.get_tool("consume_transfer")
+    await tool.fn(handle=handle)
+    assert captured["volume_map"] is vm
+    assert captured["sink"] is fxctx.sink
+    assert captured["descriptor"].transport == "filesystem"
+
+
+async def test_fetcher_filesystem_without_volume_map_raises_transfer_error():
+    from fastmcp_pvl_core._file_exchange._codes import TransferErrorCode
+    from fastmcp_pvl_core._file_exchange._errors import (
+        FileExchangeTransferError,
+    )
+    from fastmcp_pvl_core._file_exchange._spec import HANDLE_TYPE, SPEC_VERSION
+    from fastmcp_pvl_core._file_exchange._wire import (
+        FilesystemSource,
+        TransferHandle,
+    )
+
+    cfg = _cfg()
+    mcp = FastMCP("t")
+    fxctx = _helpers.register_file_exchange(
+        mcp,
+        config=cfg,
+        base_url="https://route.test",
+        sink=_Sink(),
+    )  # no volume_map
+
+    _helpers.register_file_exchange_fetcher(mcp, "consume_transfer", fxctx)
+
+    handle = TransferHandle(
+        type=HANDLE_TYPE,
+        version=SPEC_VERSION,
+        artifact=ArtifactMetadata(size=4),
+        sources=[FilesystemSource(transport="filesystem", uri="exchange://vol/x.bin")],
+    )
+
+    tool = await mcp.get_tool("consume_transfer")
+    with pytest.raises(FileExchangeTransferError) as ei:
+        await tool.fn(handle=handle)
+    assert ei.value.code == TransferErrorCode.NO_SUPPORTED_TRANSPORT
+
+
+async def test_sender_generated_tool_dispatches_to_upload_consume(monkeypatch):
+    """The sender tool selects a sink descriptor and dispatches to the
+    upload sender when descriptor.transport == "upload"."""
+    cfg = _cfg()
+    mcp = FastMCP("t")
+    fxctx = _helpers.register_file_exchange(
+        mcp,
+        config=cfg,
+        base_url="https://route.test",
+        source=_Source(),
+    )
+
+    _helpers.register_file_exchange_sender(mcp, "send_to_receiver", fxctx)
+
+    from datetime import datetime, timezone
+
+    from fastmcp_pvl_core._file_exchange._spec import SPEC_VERSION, TICKET_TYPE
+    from fastmcp_pvl_core._file_exchange._wire import UploadSink
+
+    ticket = IntakeTicket(
+        type=TICKET_TYPE,
+        version=SPEC_VERSION,
+        artifactId="art-1",
+        sinks=[
+            UploadSink(
+                transport="upload",
+                url="https://peer.test/fx/u/abc",
+                expiresAt=datetime(2099, 1, 1, tzinfo=timezone.utc),
+            )
+        ],
+    )
+
+    captured: dict = {}
+
+    async def fake_up_send(descriptor, source, key, *, config):
+        captured["descriptor"] = descriptor
+        captured["source"] = source
+        captured["key"] = key
+        captured["config"] = config
+
+    monkeypatch.setattr(_helpers, "upload_sender_consume", fake_up_send)
+
+    tool = await mcp.get_tool("send_to_receiver")
+    result = await tool.fn(ticket=ticket, key="local-doc-key")
+    assert result is None
+    assert captured["descriptor"].transport == "upload"
+    assert captured["source"] is fxctx.source
+    assert captured["key"] == "local-doc-key"
+    assert captured["config"] is fxctx.config
+
+
+def test_sender_without_source_raises_value_error():
+    cfg = _cfg()
+    mcp = FastMCP("t")
+    fxctx = _helpers.register_file_exchange(
+        mcp,
+        config=cfg,
+        base_url="https://my.example",
+        sink=_Sink(),  # sink only
+    )
+    with pytest.raises(ValueError):
+        _helpers.register_file_exchange_sender(mcp, "send_to_receiver", fxctx)
+
+
+async def test_sender_filesystem_dispatches_with_volume_map(monkeypatch):
+    from pathlib import Path
+
+    from fastmcp_pvl_core._file_exchange._spec import SPEC_VERSION, TICKET_TYPE
+    from fastmcp_pvl_core._file_exchange._wire import FilesystemSink
+
+    monkeypatch.setattr(_helpers, "filesystem_sink_writable", lambda vm: lambda d: True)
+
+    cfg = _cfg()
+    mcp = FastMCP("t")
+    vm = {"vol": Path("/tmp")}
+    fxctx = _helpers.register_file_exchange(
+        mcp,
+        config=cfg,
+        base_url="https://route.test",
+        source=_Source(),
+        volume_map=vm,
+    )
+
+    _helpers.register_file_exchange_sender(mcp, "send_to_receiver", fxctx)
+
+    ticket = IntakeTicket(
+        type=TICKET_TYPE,
+        version=SPEC_VERSION,
+        artifactId="art-1",
+        sinks=[FilesystemSink(transport="filesystem", uri="exchange://vol/x.bin")],
+    )
+
+    captured: dict = {}
+
+    async def fake_fs_send(sink, source, key, *, volume_map):
+        captured["volume_map"] = volume_map
+        captured["sink"] = sink
+        captured["source"] = source
+        captured["key"] = key
+
+    monkeypatch.setattr(_helpers, "filesystem_sender_consume", fake_fs_send)
+
+    tool = await mcp.get_tool("send_to_receiver")
+    await tool.fn(ticket=ticket, key="k")
+    assert captured["volume_map"] is vm
+    assert captured["source"] is fxctx.source
+    assert captured["key"] == "k"
+    assert captured["sink"].transport == "filesystem"
+
+
+async def test_sender_filesystem_without_volume_map_raises_transfer_error():
+    from fastmcp_pvl_core._file_exchange._codes import TransferErrorCode
+    from fastmcp_pvl_core._file_exchange._errors import (
+        FileExchangeTransferError,
+    )
+    from fastmcp_pvl_core._file_exchange._spec import SPEC_VERSION, TICKET_TYPE
+    from fastmcp_pvl_core._file_exchange._wire import FilesystemSink
+
+    cfg = _cfg()
+    mcp = FastMCP("t")
+    fxctx = _helpers.register_file_exchange(
+        mcp,
+        config=cfg,
+        base_url="https://route.test",
+        source=_Source(),
+    )  # no volume_map
+
+    _helpers.register_file_exchange_sender(mcp, "send_to_receiver", fxctx)
+
+    ticket = IntakeTicket(
+        type=TICKET_TYPE,
+        version=SPEC_VERSION,
+        artifactId="art-1",
+        sinks=[FilesystemSink(transport="filesystem", uri="exchange://vol/x.bin")],
+    )
+
+    tool = await mcp.get_tool("send_to_receiver")
+    with pytest.raises(FileExchangeTransferError) as ei:
+        await tool.fn(ticket=ticket, key="k")
+    assert ei.value.code == TransferErrorCode.NO_SUPPORTED_TRANSPORT
+
+
+async def test_sender_no_supported_transport_raises_transfer_error():
+    """When ``select_sink`` returns None, sender raises NO_SUPPORTED_TRANSPORT."""
+    from fastmcp_pvl_core._file_exchange._codes import TransferErrorCode
+    from fastmcp_pvl_core._file_exchange._errors import (
+        FileExchangeTransferError,
+    )
+    from fastmcp_pvl_core._file_exchange._spec import SPEC_VERSION, TICKET_TYPE
+    from fastmcp_pvl_core._file_exchange._wire import UnknownTransportDescriptor
+
+    cfg = _cfg()
+    mcp = FastMCP("t")
+    fxctx = _helpers.register_file_exchange(
+        mcp,
+        config=cfg,
+        base_url="https://route.test",
+        source=_Source(),
+    )
+    _helpers.register_file_exchange_sender(mcp, "send_to_receiver", fxctx)
+
+    ticket = IntakeTicket(
+        type=TICKET_TYPE,
+        version=SPEC_VERSION,
+        artifactId="art-1",
+        sinks=[UnknownTransportDescriptor(transport="future-transport")],
+    )
+
+    tool = await mcp.get_tool("send_to_receiver")
+    with pytest.raises(FileExchangeTransferError) as ei:
+        await tool.fn(ticket=ticket, key="k")
+    assert ei.value.code == TransferErrorCode.NO_SUPPORTED_TRANSPORT
+
+
 async def test_fetcher_no_supported_transport_raises_transfer_error():
     """When ``select_source`` returns None (no descriptor in the handle
     satisfies pvl-core's known transports), the generated tool raises

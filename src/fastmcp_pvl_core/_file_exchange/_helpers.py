@@ -23,18 +23,29 @@ from fastmcp_pvl_core._file_exchange._download import (
     download_provider_mint,
 )
 from fastmcp_pvl_core._file_exchange._errors import FileExchangeTransferError
+from fastmcp_pvl_core._file_exchange._filesystem import (
+    filesystem_fetcher_consume,
+    filesystem_sender_consume,
+    filesystem_sink_writable,
+    filesystem_source_readable,
+)
 from fastmcp_pvl_core._file_exchange._routes import register_file_exchange_routes
-from fastmcp_pvl_core._file_exchange._selection import select_source
+from fastmcp_pvl_core._file_exchange._selection import select_sink, select_source
 from fastmcp_pvl_core._file_exchange._tokens import (
     CapabilityTokenStore,
     build_capability_token_store,
 )
-from fastmcp_pvl_core._file_exchange._upload import upload_receiver_mint
+from fastmcp_pvl_core._file_exchange._upload import (
+    upload_receiver_mint,
+    upload_sender_consume,
+)
 from fastmcp_pvl_core._file_exchange._wire import (
     DownloadSource,
+    FilesystemSink,
     FilesystemSource,
     IntakeTicket,
     TransferHandle,
+    UploadSink,
 )
 
 if TYPE_CHECKING:
@@ -42,6 +53,7 @@ if TYPE_CHECKING:
 
     from fastmcp_pvl_core._config import ServerConfig
     from fastmcp_pvl_core._file_exchange._hooks import ArtifactSink, ArtifactSource
+    from fastmcp_pvl_core._file_exchange._paths import VolumeMap
 
 
 @dataclass(frozen=True)
@@ -59,6 +71,7 @@ class FileExchangeContext:
     config: ServerConfig
     source: ArtifactSource | None
     sink: ArtifactSink | None
+    volume_map: VolumeMap | None = None
 
 
 def register_file_exchange(
@@ -68,6 +81,7 @@ def register_file_exchange(
     base_url: str,
     source: ArtifactSource | None = None,
     sink: ArtifactSink | None = None,
+    volume_map: VolumeMap | None = None,
 ) -> FileExchangeContext:
     """One-shot file-exchange setup.
 
@@ -83,6 +97,12 @@ def register_file_exchange(
       if any provider or sender helper will be registered later.
     - ``sink`` (**hook**): downstream's :class:`ArtifactSink` — required if
       any receiver or fetcher helper will be registered later.
+    - ``volume_map`` (**hook**): mapping of filesystem-transport volume
+      names to mount roots — required only if a peer ever selects a
+      ``filesystem`` descriptor through the fetcher or sender helper. A
+      ``None`` here is fine for HTTP-only deployments; a runtime
+      ``NO_SUPPORTED_TRANSPORT`` surfaces if a filesystem descriptor is
+      actually selected without a configured map.
 
     Mounting validation (``source``-or-``sink``, ``sink``-needs-``config``)
     is delegated to :func:`register_file_exchange_routes`; the per-tool
@@ -112,6 +132,7 @@ def register_file_exchange(
         config=config,
         source=source,
         sink=sink,
+        volume_map=volume_map,
     )
 
 
@@ -196,7 +217,12 @@ def register_file_exchange_fetcher(
     sink = fxctx.sink  # bind locally so mypy keeps the non-None narrowing
 
     async def _consume_transfer(handle: TransferHandle) -> None:
-        descriptor = select_source(handle)
+        is_accessible = (
+            filesystem_source_readable(fxctx.volume_map)
+            if fxctx.volume_map is not None
+            else None
+        )
+        descriptor = select_source(handle, is_accessible=is_accessible)
         if descriptor is None:
             raise FileExchangeTransferError(
                 TransferErrorCode.NO_SUPPORTED_TRANSPORT,
@@ -204,22 +230,22 @@ def register_file_exchange_fetcher(
                 detail="no usable source in handle",
             )
         if isinstance(descriptor, FilesystemSource):
-            # Filesystem fetch requires a ``VolumeMap`` (env-driven, see
-            # ``load_volume_map``) that the umbrella ``FileExchangeContext``
-            # does not yet carry. The Task 5 plan assumed a ``config=``
-            # passthrough; the actual ``filesystem_fetcher_consume`` takes
-            # ``volume_map=``. Until the context grows a ``volume_map``
-            # field (tracked as a Task-5 follow-up), filesystem sources
-            # fall through to NO_SUPPORTED_TRANSPORT here so a stray
-            # filesystem-only handle fails cleanly with a §13 envelope
-            # rather than a TypeError.
-            raise FileExchangeTransferError(
-                TransferErrorCode.NO_SUPPORTED_TRANSPORT,
-                transport="filesystem",
-                detail=(
-                    "filesystem fetch via umbrella helper not yet wired "
-                    "(needs VolumeMap on FileExchangeContext)"
-                ),
+            # Filesystem support is opt-in at register_file_exchange time
+            # via volume_map=. If a filesystem descriptor was selected but
+            # no volume_map was configured, the server cannot satisfy the
+            # transfer — surface a §13 NO_SUPPORTED_TRANSPORT so the peer
+            # gets a clean envelope rather than an internal TypeError.
+            if fxctx.volume_map is None:
+                raise FileExchangeTransferError(
+                    TransferErrorCode.NO_SUPPORTED_TRANSPORT,
+                    transport="filesystem",
+                    detail=(
+                        "filesystem transport requires a volume_map at "
+                        "register_file_exchange time"
+                    ),
+                )
+            await filesystem_fetcher_consume(
+                handle, descriptor, sink, volume_map=fxctx.volume_map
             )
         elif isinstance(descriptor, DownloadSource):
             await download_fetcher_consume(
@@ -282,3 +308,82 @@ def register_file_exchange_receiver(
         return _wrapped
 
     return _wrap
+
+
+def register_file_exchange_sender(
+    mcp: FastMCP,
+    tool_name: str,
+    fxctx: FileExchangeContext,
+) -> None:
+    """Generate and register the file-exchange sender tool.
+
+    Symmetric counterpart to :func:`register_file_exchange_fetcher` for
+    the push direction. Not a decorator — pvl-core owns the entire tool
+    body because its inputs are the spec-defined :class:`IntakeTicket`
+    plus a downstream-supplied ``key`` (the local identifier for the
+    artifact being sent). The generated tool selects a usable sink
+    descriptor via :func:`select_sink` and dispatches to the
+    appropriate per-transport sender (``filesystem`` or ``upload``).
+    Bytes are pulled from ``fxctx.source``; the tool returns ``None``.
+
+    Raises ``ValueError`` at registration time if ``fxctx.source`` is
+    ``None`` — fail loudly at startup, not at first peer call.
+
+    The generated tool raises ``FileExchangeTransferError`` with
+    ``TransferErrorCode.NO_SUPPORTED_TRANSPORT`` (§13) when the
+    submitted ticket carries no descriptor satisfying pvl-core's known
+    transports, or when a filesystem descriptor is selected but
+    ``fxctx.volume_map`` was not configured at setup.
+    """
+    if fxctx.source is None:
+        raise ValueError(
+            f"register_file_exchange_sender({tool_name!r}): fxctx has "
+            "no source — set source= when calling register_file_exchange"
+        )
+    source = fxctx.source  # bind locally so mypy keeps the non-None narrowing
+
+    async def _send_to_receiver(ticket: IntakeTicket, key: str) -> None:
+        is_accessible = (
+            filesystem_sink_writable(fxctx.volume_map)
+            if fxctx.volume_map is not None
+            else None
+        )
+        descriptor = select_sink(ticket, is_accessible=is_accessible)
+        if descriptor is None:
+            raise FileExchangeTransferError(
+                TransferErrorCode.NO_SUPPORTED_TRANSPORT,
+                transport=None,
+                detail="no usable sink in ticket",
+            )
+        if isinstance(descriptor, FilesystemSink):
+            # Filesystem support is opt-in at register_file_exchange time
+            # via volume_map=. If a filesystem descriptor was selected but
+            # no volume_map was configured, the server cannot satisfy the
+            # transfer — surface a §13 NO_SUPPORTED_TRANSPORT so the peer
+            # gets a clean envelope rather than an internal TypeError.
+            if fxctx.volume_map is None:
+                raise FileExchangeTransferError(
+                    TransferErrorCode.NO_SUPPORTED_TRANSPORT,
+                    transport="filesystem",
+                    detail=(
+                        "filesystem transport requires a volume_map at "
+                        "register_file_exchange time"
+                    ),
+                )
+            await filesystem_sender_consume(
+                descriptor, source, key, volume_map=fxctx.volume_map
+            )
+        elif isinstance(descriptor, UploadSink):
+            await upload_sender_consume(descriptor, source, key, config=fxctx.config)
+        else:
+            # select_sink filters UnknownTransportDescriptor; defensive
+            # guard for any forward-compat wire payload that slips through.
+            raise FileExchangeTransferError(
+                TransferErrorCode.NO_SUPPORTED_TRANSPORT,
+                transport=descriptor.transport,
+                detail=f"unsupported transport {descriptor.transport!r}",
+            )
+
+    _send_to_receiver.__name__ = tool_name
+    # Task 7 adds the taskSupport annotation here.
+    mcp.tool(name=tool_name)(_send_to_receiver)
