@@ -3,7 +3,7 @@
 All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [2.2.0] - 2026-05-29
+## [2.3.0] - 2026-05-29
 
 ### Note
 
@@ -11,9 +11,11 @@ This release continues the v2.x line. The `v3.0.0-rc.1` /
 `v3.0.1-rc.{1,2,3}` release candidates published to PyPI have been
 **yanked** — every v3.x RC existed only to ship the file-exchange
 extension, in two successive attempts that both failed to converge.
-v3.x is treated as never having existed; v2.2.0 picks up where
-v2.1.0 left off, carrying only the non-file-exchange work that
-landed in between (kv_store factory + dependency bumps).
+v3.x is treated as never having existed; v2.3.0 picks up the v2.x
+line, carrying the non-file-exchange work that landed since v2.1.0
+(kv_store factory + dependency bumps). The 2.2.0 number is skipped
+to avoid colliding with the parked-FX placeholder version that
+briefly sat in `pyproject.toml`.
 
 The second file-exchange attempt (the cleanroom rewrite across
 PRs #139–#176, EPIC #138) is preserved on the
