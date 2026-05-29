@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import BinaryIO
 
+import pytest
 from fastmcp import FastMCP
 
 from fastmcp_pvl_core._config import ServerConfig
@@ -104,3 +105,62 @@ def test_register_file_exchange_declares_tasks_capability():
         .get("call")
         is True
     )
+
+
+async def test_provider_decorator_mints_transfer_handle():
+    """The decorated tool returns a TransferHandle whose download
+    descriptor's url is the minted capability URL; the source hook is
+    NOT called at mint time."""
+    cfg = _cfg()
+    mcp = FastMCP("t")
+    source_calls: list[str] = []
+
+    class _RecSource:
+        async def open_artifact(self, key):  # pragma: no cover - mint only
+            source_calls.append(key)
+            raise AssertionError
+
+    fxctx = _helpers.register_file_exchange(
+        mcp,
+        config=cfg,
+        base_url="https://route.test",
+        source=_RecSource(),
+    )
+
+    captured_args: dict = {}
+
+    @_helpers.register_file_exchange_provider(mcp, "get_report", fxctx)
+    async def get_report(report_id: str) -> tuple[ArtifactMetadata, str]:
+        captured_args["report_id"] = report_id
+        return ArtifactMetadata(size=11, mimeType="application/pdf"), report_id
+
+    # Resolve the registered tool and invoke it.
+    tool = await mcp.get_tool("get_report")
+    handle = await tool.fn(report_id="rpt-1")
+    from fastmcp_pvl_core._file_exchange._wire import TransferHandle
+
+    assert isinstance(handle, TransferHandle)
+    assert handle.artifact.size == 11
+    assert handle.artifact.mimeType == "application/pdf"
+    assert len(handle.sources) == 1
+    download_url = handle.sources[0].url  # type: ignore[union-attr]
+    assert download_url.startswith("https://route.test/fx/d/")
+    assert source_calls == []
+    # The user function received its domain arg.
+    assert captured_args["report_id"] == "rpt-1"
+
+
+def test_provider_decorator_without_source_raises_value_error():
+    cfg = _cfg()
+    mcp = FastMCP("t")
+    fxctx = _helpers.register_file_exchange(
+        mcp,
+        config=cfg,
+        base_url="https://my.example",
+        sink=_Sink(),  # sink only; no source
+    )
+    with pytest.raises(ValueError):
+
+        @_helpers.register_file_exchange_provider(mcp, "get_report", fxctx)
+        async def get_report(report_id: str) -> tuple[ArtifactMetadata, str]:
+            return ArtifactMetadata(), report_id

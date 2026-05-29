@@ -13,14 +13,17 @@ for the architecture and the per-role contracts.
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
+from fastmcp_pvl_core._file_exchange._download import download_provider_mint
 from fastmcp_pvl_core._file_exchange._routes import register_file_exchange_routes
 from fastmcp_pvl_core._file_exchange._tokens import (
     CapabilityTokenStore,
     build_capability_token_store,
 )
+from fastmcp_pvl_core._file_exchange._wire import TransferHandle
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
@@ -98,3 +101,53 @@ def register_file_exchange(
         source=source,
         sink=sink,
     )
+
+
+def register_file_exchange_provider(
+    mcp: FastMCP,
+    tool_name: str,
+    fxctx: FileExchangeContext,
+) -> Callable[
+    [Callable[..., Awaitable[Any]]], Callable[..., Awaitable[TransferHandle]]
+]:
+    """Decorate a downstream ``(metadata, key)`` producer as a provider tool.
+
+    The decorated function's parameters become the MCP tool's parameters;
+    the decorator mints a :class:`TransferHandle` from the returned
+    ``(metadata, key)`` and returns *that* as the tool's response. The
+    source hook is NOT called at mint time — only when the peer fetches
+    the minted capability URL.
+
+    Raises ``ValueError`` at decoration time if ``fxctx.source`` is
+    ``None`` — fail loudly at startup, not at first peer call.
+    """
+    if fxctx.source is None:
+        raise ValueError(
+            f"register_file_exchange_provider({tool_name!r}): fxctx has "
+            "no source — set source= when calling register_file_exchange"
+        )
+
+    def _wrap(
+        fn: Callable[..., Awaitable[Any]],
+    ) -> Callable[..., Awaitable[TransferHandle]]:
+        # Wrapper preserves the inner signature (so the MCP tool schema
+        # comes from ``fn`` directly) and mints the handle on the way out.
+        from functools import wraps
+
+        @wraps(fn)
+        async def _wrapped(*args: Any, **kwargs: Any) -> TransferHandle:
+            metadata, key = await fn(*args, **kwargs)
+            return await download_provider_mint(
+                metadata,
+                key,
+                token_store=fxctx.token_store,
+                base_url=fxctx.base_url,
+                ttl=fxctx.config.file_exchange_token_ttl,
+                single_use=True,
+            )
+
+        # Task 7 adds the taskSupport annotation here.
+        mcp.tool(name=tool_name)(_wrapped)
+        return _wrapped
+
+    return _wrap
