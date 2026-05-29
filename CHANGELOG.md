@@ -3,19 +3,39 @@
 All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [2.3.0] - 2026-05-29
+## [3.0.0] - 2026-05-29
 
 ### Note
 
-This release continues the v2.x line. The `v3.0.0-rc.1` /
-`v3.0.1-rc.{1,2,3}` release candidates published to PyPI have been
-**yanked** — every v3.x RC existed only to ship the file-exchange
-extension, in two successive attempts that both failed to converge.
-v3.x is treated as never having existed; v2.3.0 picks up the v2.x
-line, carrying the non-file-exchange work that landed since v2.1.0
-(kv_store factory + dependency bumps). The 2.2.0 number is skipped
-to avoid colliding with the parked-FX placeholder version that
-briefly sat in `pyproject.toml`.
+The previously-published `v3.0.0-rc.1` / `v3.0.1-rc.{1,2,3}` release
+candidates have been **yanked from PyPI**. Every v3.x RC existed only
+to ship the file-exchange extension, across two successive attempts
+that failed to converge. The file-exchange work has been parked off
+main (see below); this v3.0.0 final ships the post-park v2.x line
+with no file-exchange code.
+
+The version landed as `3.0.0` (not `2.2.0` or `2.3.0` as the planning
+notes suggested) because python-semantic-release detected two
+`BREAKING CHANGE` (`!`) commits between v2.1.0 and the park point —
+`docs(spec)!: add http_upload transfer method` (#82) and
+`refactor(file-exchange)!: audit register_file_exchange kwargs`
+(#81). Both refer to file-exchange APIs that no longer exist in
+this release, so the major bump is vacuous in practice, but PSR
+cannot tell that from commit messages alone. Rather than rewrite
+history to suppress the bump, the v3.0.0 number is accepted; v2.2.0
+and v2.3.0 are skipped.
+
+### Removed
+
+- The file-exchange extension (cleanroom rewrite across PRs
+  #139–#176, EPIC #138) has been parked off main. Work is preserved
+  on the
+  [`file-exchange-archive`](https://github.com/pvliesdonk/fastmcp-pvl-core/tree/file-exchange-archive)
+  branch and the
+  [`archive/file-exchange-v0.1`](https://github.com/pvliesdonk/fastmcp-pvl-core/tree/archive/file-exchange-v0.1)
+  tag. A future redesign will ship as a separate package rather than
+  inside pvl-core; see the design-principles section of `CLAUDE.md`
+  for why the in-tree extension fit the framing poorly.
 
 The second file-exchange attempt (the cleanroom rewrite across
 PRs #139–#176, EPIC #138) is preserved on the
