@@ -170,6 +170,55 @@ def test_provider_decorator_without_source_raises_value_error():
             return ArtifactMetadata(), report_id
 
 
+async def test_provider_decorator_preserves_inner_signature_in_wire_schema():
+    """``@wraps(fn)`` is load-bearing for the MCP tool schema: the inner
+    function's parameters must reach the wire ``inputSchema``. Without
+    this anchor, a future FastMCP-introspection change that stopped
+    following ``__wrapped__`` would silently strip every domain arg."""
+    cfg = _cfg()
+    mcp = FastMCP("t")
+    fxctx = _helpers.register_file_exchange(
+        mcp,
+        config=cfg,
+        base_url="https://route.test",
+        source=_Source(),
+    )
+
+    @_helpers.register_file_exchange_provider(mcp, "get_report", fxctx)
+    async def get_report(report_id: str) -> tuple[ArtifactMetadata, str]:
+        return ArtifactMetadata(), report_id
+
+    tool = await mcp.get_tool("get_report")
+    wire = tool.to_mcp_tool().model_dump(exclude_none=True)
+    assert "report_id" in wire["inputSchema"]["properties"]
+
+
+async def test_provider_decorator_non_tuple_return_raises_type_error():
+    """A downstream that accidentally returns a single value (e.g. a
+    bare TransferHandle, mis-reading the contract) must get an
+    actionable error naming the helper, not a bare
+    ``ValueError: too many values to unpack``."""
+    cfg = _cfg()
+    mcp = FastMCP("t")
+    fxctx = _helpers.register_file_exchange(
+        mcp,
+        config=cfg,
+        base_url="https://route.test",
+        source=_Source(),
+    )
+
+    @_helpers.register_file_exchange_provider(mcp, "get_report", fxctx)
+    async def get_report(report_id: str):
+        return "not-a-tuple"
+
+    tool = await mcp.get_tool("get_report")
+    with pytest.raises(TypeError) as ei:
+        await tool.fn(report_id="rpt-1")
+    msg = str(ei.value)
+    assert "register_file_exchange_provider" in msg
+    assert "get_report" in msg
+
+
 async def test_receiver_decorator_mints_intake_ticket():
     cfg = _cfg()
     mcp = FastMCP("t")
@@ -227,6 +276,52 @@ def test_receiver_decorator_without_sink_raises_value_error():
         @_helpers.register_file_exchange_receiver(mcp, "accept_report", fxctx)
         async def accept_report(case_id: str):
             return f"c-{case_id}", None
+
+
+async def test_receiver_decorator_preserves_inner_signature_in_wire_schema():
+    """Mirror of the provider check: the receiver decorator's
+    ``@wraps(fn)`` must propagate the inner function's params into
+    the MCP tool's ``inputSchema``."""
+    cfg = _cfg()
+    mcp = FastMCP("t")
+    fxctx = _helpers.register_file_exchange(
+        mcp,
+        config=cfg,
+        base_url="https://route.test",
+        sink=_Sink(),
+    )
+
+    @_helpers.register_file_exchange_receiver(mcp, "accept_report", fxctx)
+    async def accept_report(case_id: str):
+        return f"case-{case_id}", None
+
+    tool = await mcp.get_tool("accept_report")
+    wire = tool.to_mcp_tool().model_dump(exclude_none=True)
+    assert "case_id" in wire["inputSchema"]["properties"]
+
+
+async def test_receiver_decorator_non_tuple_return_raises_type_error():
+    """Mirror of the provider check: a downstream returning a single
+    value gets a TypeError naming the helper, not a bare unpack error."""
+    cfg = _cfg()
+    mcp = FastMCP("t")
+    fxctx = _helpers.register_file_exchange(
+        mcp,
+        config=cfg,
+        base_url="https://route.test",
+        sink=_Sink(),
+    )
+
+    @_helpers.register_file_exchange_receiver(mcp, "accept_report", fxctx)
+    async def accept_report(case_id: str):
+        return "not-a-tuple"
+
+    tool = await mcp.get_tool("accept_report")
+    with pytest.raises(TypeError) as ei:
+        await tool.fn(case_id="42")
+    msg = str(ei.value)
+    assert "register_file_exchange_receiver" in msg
+    assert "accept_report" in msg
 
 
 async def test_fetcher_generated_tool_dispatches_to_download_consume(monkeypatch):
@@ -409,6 +504,11 @@ async def test_fetcher_filesystem_without_volume_map_raises_transfer_error():
     with pytest.raises(FileExchangeTransferError) as ei:
         await tool.fn(handle=handle)
     assert ei.value.code == TransferErrorCode.NO_SUPPORTED_TRANSPORT
+    # The error originates from the outer ``descriptor is None`` branch
+    # (filesystem was skipped at selection because there is no volume_map),
+    # so ``transport`` is None — not "filesystem". Anchored against a
+    # future refactor that incorrectly sets transport on this branch.
+    assert ei.value.transport is None
 
 
 async def test_sender_generated_tool_dispatches_to_upload_consume(monkeypatch):
@@ -583,6 +683,10 @@ async def test_sender_no_supported_transport_raises_transfer_error():
     with pytest.raises(FileExchangeTransferError) as ei:
         await tool.fn(ticket=ticket, key="k")
     assert ei.value.code == TransferErrorCode.NO_SUPPORTED_TRANSPORT
+    # Mirror of the fetcher pin: the error fires from the outer
+    # ``descriptor is None`` branch (filesystem skipped at selection
+    # because there is no volume_map), so transport is None.
+    assert ei.value.transport is None
 
 
 async def test_fetcher_no_supported_transport_raises_transfer_error():
