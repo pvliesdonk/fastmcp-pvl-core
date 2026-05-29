@@ -32,6 +32,14 @@ from fastmcp_pvl_core._file_exchange._filesystem import (
     filesystem_sink_writable,
     filesystem_source_readable,
 )
+from fastmcp_pvl_core._file_exchange._helpers import (
+    FileExchangeContext,
+    register_file_exchange,
+    register_file_exchange_fetcher,
+    register_file_exchange_provider,
+    register_file_exchange_receiver,
+    register_file_exchange_sender,
+)
 from fastmcp_pvl_core._file_exchange._hooks import (
     ArtifactSink,
     ArtifactSource,
@@ -98,6 +106,7 @@ __all__ = [
     "CapabilityTokenStore",
     "DownloadSource",
     "FileExchangeCapability",
+    "FileExchangeContext",
     "FileExchangeTransferError",
     "FilesystemSink",
     "FilesystemSource",
@@ -140,7 +149,12 @@ __all__ = [
     "filesystem_sink_writable",
     "filesystem_source_readable",
     "load_volume_map",
+    "register_file_exchange",
+    "register_file_exchange_fetcher",
+    "register_file_exchange_provider",
+    "register_file_exchange_receiver",
     "register_file_exchange_routes",
+    "register_file_exchange_sender",
     "resolve_filesystem_uri",
     "select_sink",
     "select_source",

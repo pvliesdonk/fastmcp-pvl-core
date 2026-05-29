@@ -181,3 +181,18 @@ def test_upload_data_plane_names_reexported():
     # UPLOAD_PREFIX and _UPLOAD_METHOD are internal route shape.
     assert not hasattr(file_exchange, "UPLOAD_PREFIX")
     assert not hasattr(file_exchange, "_UPLOAD_METHOD")
+
+
+def test_file_exchange_umbrella_helpers_reexported():
+    from fastmcp_pvl_core import file_exchange
+
+    for name in (
+        "FileExchangeContext",
+        "register_file_exchange",
+        "register_file_exchange_provider",
+        "register_file_exchange_receiver",
+        "register_file_exchange_fetcher",
+        "register_file_exchange_sender",
+    ):
+        assert hasattr(file_exchange, name), name
+        assert name in file_exchange.__all__, name
