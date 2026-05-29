@@ -121,6 +121,46 @@ env/config helpers) and the CLI parser helpers consumed by downstream
 `server.py` entrypoints. Modules prefixed with `_` are internal and
 may change without a major-version bump.
 
+## File-exchange extension
+
+`fastmcp-pvl-core` ships the shared implementation of the
+[`mcp-file-exchange-ext`](https://github.com/pvliesdonk/mcp-file-exchange-ext)
+v0.1 protocol — capability-URL-based transfer of artifact bytes between
+MCP servers. Four roles:
+
+- **Provider**: this server *offers* an artifact via a tool; the response
+  carries a `TransferHandle`.
+- **Fetcher**: this server *pulls* an artifact handed to it by a peer.
+- **Receiver**: this server *accepts* an artifact via a tool; the response
+  carries an `IntakeTicket`.
+- **Sender**: this server *pushes* an artifact to a peer.
+
+Minimal wire-up:
+
+```python
+from fastmcp import FastMCP
+from fastmcp_pvl_core import file_exchange
+
+mcp = FastMCP("my-server")
+config = ...  # ServerConfig
+
+fxctx = file_exchange.register_file_exchange(
+    mcp,
+    config=config,
+    base_url="https://my-server.example",
+    source=my_source,
+)
+
+@file_exchange.register_file_exchange_provider(mcp, "get_report", fxctx)
+async def get_report(report_id: str):
+    meta = await lookup_meta(report_id)
+    return meta, report_id
+```
+
+See [`docs/file-exchange.md`](docs/file-exchange.md) for the implementation
+notes and [`docs/file-exchange-adoption.md`](docs/file-exchange-adoption.md)
+for one worked example per role.
+
 ## Install
 
 ```bash
