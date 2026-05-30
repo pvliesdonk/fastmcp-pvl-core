@@ -40,7 +40,7 @@ from fastmcp_pvl_core._server_info import (
     UpstreamResult,
     register_server_info_tool,
 )
-from fastmcp_pvl_core._subject import get_subject
+from fastmcp_pvl_core._subject import get_claims, get_subject
 
 __version__ = "3.0.0"  # PSR overrides at build time
 
@@ -67,6 +67,7 @@ __all__ = [
     "compute_app_domain",
     "configure_logging_from_env",
     "env",
+    "get_claims",
     "get_subject",
     "load_acl",
     "make_acl_authorizer",

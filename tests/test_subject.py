@@ -13,8 +13,11 @@ import pytest
 from fastmcp_pvl_core import (
     ServerConfig,
     build_auth,
+    get_claims,
     get_subject,
 )
+
+_UNSET = object()
 
 
 class _FakeAccessToken:
@@ -23,10 +26,10 @@ class _FakeAccessToken:
     def __init__(
         self,
         client_id: str | None = None,
-        claims: dict[str, Any] | None = None,
+        claims: object = _UNSET,
     ) -> None:
         self.client_id = client_id
-        self.claims = claims or {}
+        self.claims = {} if claims is _UNSET else claims
 
 
 @pytest.fixture
@@ -180,6 +183,46 @@ class TestExplicitContextIsolation:
 
         assert observed["a"] == "local"
         assert observed["b"] is None
+
+
+class TestGetClaims:
+    def test_returns_claims_dict_when_token_has_claims(self, patch_get_access_token):
+        claims = {"sub": "u1", "name": "Alice", "email": "alice@example.com"}
+        with patch_get_access_token(_FakeAccessToken(claims=claims)):
+            assert get_claims() == claims
+
+    def test_returns_empty_dict_when_token_has_no_claims(self, patch_get_access_token):
+        with patch_get_access_token(_FakeAccessToken(client_id="x", claims={})):
+            assert get_claims() == {}
+
+    def test_returns_empty_dict_when_claims_field_is_none(self, patch_get_access_token):
+        with patch_get_access_token(_FakeAccessToken(claims=None)):
+            assert get_claims() == {}
+
+    def test_returns_empty_dict_when_claims_field_is_non_dict(
+        self, patch_get_access_token
+    ):
+        with patch_get_access_token(_FakeAccessToken(claims=["unexpected"])):
+            assert get_claims() == {}
+
+    def test_returns_none_when_no_token_in_auth_mode(self, patch_get_access_token):
+        build_auth(ServerConfig(bearer_token="t"))
+        with patch_get_access_token(None):
+            assert get_claims() is None
+
+    def test_returns_none_when_no_token_in_no_auth_mode(self, patch_get_access_token):
+        # Unlike get_subject(), get_claims() always returns None when there is
+        # no token — there are no claims to return regardless of auth mode.
+        build_auth(ServerConfig())
+        with patch_get_access_token(None):
+            assert get_claims() is None
+
+    def test_returns_full_dict_including_non_string_values(
+        self, patch_get_access_token
+    ):
+        claims = {"sub": "u1", "groups": ["admin", "editor"], "exp": 9999999999}
+        with patch_get_access_token(_FakeAccessToken(claims=claims)):
+            assert get_claims() == claims
 
 
 # Note: ``multi`` mode is not exercised here. When a token is present,

@@ -16,6 +16,8 @@ from typing import TYPE_CHECKING
 from fastmcp.server.dependencies import get_access_token
 
 if TYPE_CHECKING:
+    from typing import Any
+
     # Imported only for typing; runtime import would create a cycle
     # (``_auth`` imports ``set_current_auth_mode`` from this module).
     from fastmcp_pvl_core._auth import AuthMode
@@ -57,16 +59,39 @@ def set_current_auth_mode(mode: AuthMode | None) -> None:
     _current_auth_mode.set(mode)
 
 
+def _extract_claims(access_token: object) -> dict[str, Any]:
+    raw_claims = getattr(access_token, "claims", None)
+    return raw_claims if isinstance(raw_claims, dict) else {}
+
+
+def get_claims() -> dict[str, Any] | None:
+    """Return the full claims dict for the current request, or ``None``.
+
+    Returns the raw claims from FastMCP's access token when one is
+    present for the current request. Returns ``{}`` when a token is
+    present but carries no claims. Returns ``None`` when no token is
+    present (regardless of auth mode).
+
+    Downstream callers read whichever standard OIDC claims they need
+    (``name``, ``email``, ``sub``, etc.) without pvl-core knowing which
+    ones matter to their domain.
+    """
+    access_token = get_access_token()
+    if access_token is None:
+        return None
+    return _extract_claims(access_token)
+
+
 def get_subject() -> str | None:
     """Return the subject of the current request, or ``None``.
 
     Resolution order:
 
     1. If FastMCP's :func:`get_access_token` returns a token, prefer
-       ``token.claims["sub"]`` (OIDC's standard subject claim); fall
-       back to ``token.client_id`` when ``sub`` is absent or non-string.
-       The builders normalise ``client_id`` per bearer mode (mapped
-       subject for ``bearer-mapped``, ``bearer_default_subject`` for
+       ``claims["sub"]`` (OIDC's standard subject claim); fall back to
+       ``token.client_id`` when ``sub`` is absent or non-string. The
+       builders normalise ``client_id`` per bearer mode (mapped subject
+       for ``bearer-mapped``, ``bearer_default_subject`` for
        ``bearer-single``).
     2. If there is no access token and ``set_current_auth_mode`` was
        called with ``"none"``, return the literal ``"local"``.
@@ -76,8 +101,7 @@ def get_subject() -> str | None:
     access_token = get_access_token()
     if access_token is None:
         return "local" if _current_auth_mode.get() == "none" else None
-    raw_claims = getattr(access_token, "claims", None)
-    claims = raw_claims if isinstance(raw_claims, dict) else {}
+    claims = _extract_claims(access_token)
     sub = claims.get("sub")
     if isinstance(sub, str) and sub:
         return sub
