@@ -9,7 +9,7 @@ try:
     from fastmcp.server.providers.addressing import hash_tool, hashed_backend_name
 except ImportError as exc:
     raise ImportError(
-        "fastmcp.server.providers.addressing and fastmcp.apps.config are required "
+        "fastmcp.apps.config and fastmcp.server.providers.addressing are required "
         "(fastmcp >= 3.3.1). Pin fastmcp accordingly in pyproject.toml."
     ) from exc
 
@@ -56,4 +56,4 @@ def client_supports_apps(ctx: Context) -> bool:
     downstream does not import UI_EXTENSION_ID from fastmcp internals.
     Returns False when called outside a request context.
     """
-    return ctx.client_supports_extension(UI_EXTENSION_ID)
+    return bool(ctx.client_supports_extension(UI_EXTENSION_ID))

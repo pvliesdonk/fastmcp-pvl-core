@@ -84,24 +84,27 @@ class TestClientSupportsApps:
 
 
 class TestImportErrorGuard:
-    def test_import_error_message_names_version(self):
+    def _suppress_and_reimport(self, suppress_key: str) -> None:
         import importlib
 
-        addressing_key = "fastmcp.server.providers.addressing"
         apps_module_key = "fastmcp_pvl_core._apps"
-
-        # Pop _apps so it re-imports from scratch; suppress the private module
-        saved_addressing = sys.modules.get(addressing_key)
+        saved_module = sys.modules.get(suppress_key)
         saved_apps_module = sys.modules.pop(apps_module_key, None)
 
         try:
-            sys.modules[addressing_key] = None  # type: ignore[assignment]
+            sys.modules[suppress_key] = None  # type: ignore[assignment]
             with pytest.raises(ImportError, match="3.3.1"):
-                importlib.import_module("fastmcp_pvl_core._apps")
+                importlib.import_module(apps_module_key)
         finally:
-            if saved_addressing is not None:
-                sys.modules[addressing_key] = saved_addressing
+            if saved_module is not None:
+                sys.modules[suppress_key] = saved_module
             else:
-                sys.modules.pop(addressing_key, None)
+                sys.modules.pop(suppress_key, None)
             if saved_apps_module is not None:
                 sys.modules[apps_module_key] = saved_apps_module
+
+    def test_addressing_absent_raises_with_version(self):
+        self._suppress_and_reimport("fastmcp.server.providers.addressing")
+
+    def test_apps_config_absent_raises_with_version(self):
+        self._suppress_and_reimport("fastmcp.apps.config")
