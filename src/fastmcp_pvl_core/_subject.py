@@ -59,6 +59,11 @@ def set_current_auth_mode(mode: AuthMode | None) -> None:
     _current_auth_mode.set(mode)
 
 
+def _extract_claims(access_token: object) -> dict[str, Any]:
+    raw_claims = getattr(access_token, "claims", None)
+    return raw_claims if isinstance(raw_claims, dict) else {}
+
+
 def get_claims() -> dict[str, Any] | None:
     """Return the full claims dict for the current request, or ``None``.
 
@@ -74,8 +79,7 @@ def get_claims() -> dict[str, Any] | None:
     access_token = get_access_token()
     if access_token is None:
         return None
-    raw_claims = getattr(access_token, "claims", None)
-    return raw_claims if isinstance(raw_claims, dict) else {}
+    return _extract_claims(access_token)
 
 
 def get_subject() -> str | None:
@@ -97,7 +101,7 @@ def get_subject() -> str | None:
     access_token = get_access_token()
     if access_token is None:
         return "local" if _current_auth_mode.get() == "none" else None
-    claims = get_claims() or {}
+    claims = _extract_claims(access_token)
     sub = claims.get("sub")
     if isinstance(sub, str) and sub:
         return sub

@@ -17,6 +17,8 @@ from fastmcp_pvl_core import (
     get_subject,
 )
 
+_UNSET = object()
+
 
 class _FakeAccessToken:
     """Minimal stand-in for fastmcp.server.auth.AccessToken."""
@@ -24,10 +26,10 @@ class _FakeAccessToken:
     def __init__(
         self,
         client_id: str | None = None,
-        claims: dict[str, Any] | None = None,
+        claims: object = _UNSET,
     ) -> None:
         self.client_id = client_id
-        self.claims = claims or {}
+        self.claims = {} if claims is _UNSET else claims
 
 
 @pytest.fixture
@@ -194,9 +196,13 @@ class TestGetClaims:
             assert get_claims() == {}
 
     def test_returns_empty_dict_when_claims_field_is_none(self, patch_get_access_token):
-        token = _FakeAccessToken()
-        token.claims = None  # type: ignore[assignment]
-        with patch_get_access_token(token):
+        with patch_get_access_token(_FakeAccessToken(claims=None)):
+            assert get_claims() == {}
+
+    def test_returns_empty_dict_when_claims_field_is_non_dict(
+        self, patch_get_access_token
+    ):
+        with patch_get_access_token(_FakeAccessToken(claims=["unexpected"])):
             assert get_claims() == {}
 
     def test_returns_none_when_no_token_in_auth_mode(self, patch_get_access_token):
