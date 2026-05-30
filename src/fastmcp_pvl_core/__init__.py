@@ -5,6 +5,7 @@ middleware wiring, logging setup, config helpers, and server
 factory building blocks without duplicating them per repo.
 """
 
+from fastmcp_pvl_core._apps import app_tool_address, app_tool_meta, client_supports_apps
 from fastmcp_pvl_core._auth import (
     AuthMode,
     build_auth,
@@ -56,6 +57,8 @@ __all__ = [
     "Transport",
     "UpstreamProvider",
     "UpstreamResult",
+    "app_tool_address",
+    "app_tool_meta",
     "build_auth",
     "build_bearer_auth",
     "build_event_store",
@@ -64,6 +67,7 @@ __all__ = [
     "build_oidc_proxy_auth",
     "build_remote_auth",
     "check_authorization",
+    "client_supports_apps",
     "compute_app_domain",
     "configure_logging_from_env",
     "env",
