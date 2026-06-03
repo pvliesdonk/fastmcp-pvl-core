@@ -152,9 +152,10 @@ def test_debugpy_missing_logs_warning(
     # Pass the trailing-underscore prefix form so this also guards the
     # double-underscore normalisation of _debug.py's own ``port_var``: after
     # the env_int convergence, the import-failure message is the only remaining
-    # consumer of that ``rstrip('_')`` construction (the port-validation
-    # warning's var-name now comes from env_int / _resolve_key, guarded
-    # separately by test_trailing_underscore_prefix_normalised).
+    # consumer of ``port_var`` (the port-validation warning's var-name now
+    # comes from env_int / _resolve_key, guarded separately by
+    # test_trailing_underscore_prefix_normalised; ``wait_var`` builds its own
+    # name for the DEBUG_WAIT message).
     with caplog.at_level(logging.WARNING, logger="fastmcp_pvl_core"):
         maybe_start_debugpy(f"{_PREFIX}_")
 
