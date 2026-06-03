@@ -70,6 +70,20 @@ silently changing an operator's configured value is a footgun.
 - Soft mode logs the **same message text** at `WARNING` via a module logger
   (`logging.getLogger("fastmcp_pvl_core._env")`), suffixed `— using default <default>`.
 
+### Accept-set (shape decision, recorded during review)
+
+The helpers **delegate to Python's `int()` / `float()`** and accept whatever those
+accept — including PEP 515 underscore separators (`"1_000"` → `1000`), a leading
+sign, and (for `float` only) scientific notation (`"1e3"` → `1000.0`). This is a
+deliberate shape decision: rejecting underscores alone would be incoherent while
+still accepting `1e3`/`+5`/non-ASCII digits, and a true "plain decimal only"
+contract would need a regex for no real benefit (readable large numbers like
+`10_000_000` are a plus for downstream byte/size limits). The accept-set is
+**documented in both docstrings and pinned by characterization tests** so it is an
+explicit, regression-protected contract rather than an implicit consequence of the
+stdlib. `int()`/`float()` reject leading/trailing/doubled underscores themselves,
+so `"_1"` / `"1__0"` are still invalid.
+
 ### Small refactor
 
 Extract `_resolve_key(prefix, name) -> str` (`f"{prefix.rstrip('_')}_{name}"`) and use

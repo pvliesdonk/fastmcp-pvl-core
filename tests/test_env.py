@@ -123,6 +123,14 @@ class TestEnvInt:
             env_int("MYAPP", "N", 8000, maximum=65535, strict=True)
         assert "<= 65535" in str(exc.value)
 
+    def test_above_maximum_soft_warns_and_defaults(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ):
+        monkeypatch.setenv("MYAPP_N", "70000")
+        with caplog.at_level(logging.WARNING):
+            assert env_int("MYAPP", "N", 8000, maximum=65535) == 8000
+        assert _warnings(caplog)
+
     def test_boundaries_are_inclusive(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setenv("MYAPP_N", "1")
         assert env_int("MYAPP", "N", minimum=1, maximum=65535) == 1
@@ -132,6 +140,12 @@ class TestEnvInt:
     def test_no_bounds_accepts_any_integer(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setenv("MYAPP_N", "-1000000")
         assert env_int("MYAPP", "N") == -1000000
+
+    def test_accepts_pep515_underscores(self, monkeypatch: pytest.MonkeyPatch):
+        # Documented accept-set: env_int delegates to int(), which accepts
+        # PEP 515 underscore separators. Pinned so the contract is explicit.
+        monkeypatch.setenv("MYAPP_N", "1_000")
+        assert env_int("MYAPP", "N") == 1000
 
     def test_trailing_underscore_prefix(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setenv("MYAPP_N", "5")
@@ -228,6 +242,18 @@ class TestEnvFloat:
         assert env_float("MYAPP", "X", minimum=0.0, maximum=1.0) == 0.0
         monkeypatch.setenv("MYAPP_X", "1.0")
         assert env_float("MYAPP", "X", minimum=0.0, maximum=1.0) == 1.0
+
+    def test_accepts_pep515_underscores(self, monkeypatch: pytest.MonkeyPatch):
+        # Documented accept-set: env_float delegates to float(), which accepts
+        # PEP 515 underscore separators. Pinned so the contract is explicit.
+        monkeypatch.setenv("MYAPP_X", "1_000.5")
+        assert env_float("MYAPP", "X") == 1000.5
+
+    def test_accepts_scientific_notation(self, monkeypatch: pytest.MonkeyPatch):
+        # Documented accept-set: float() accepts scientific notation, unlike
+        # int() (env_int rejects "1e3"). Pinned to lock the int/float asymmetry.
+        monkeypatch.setenv("MYAPP_X", "1e3")
+        assert env_float("MYAPP", "X") == 1000.0
 
 
 class TestParseBool:

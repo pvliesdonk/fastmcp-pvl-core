@@ -126,6 +126,12 @@ def env_int(
 ) -> int | None:
     """Read ``{PREFIX}_{NAME}`` as an integer, with a default and optional bounds.
 
+    The value is parsed with Python's :func:`int`, so it accepts the same
+    forms — a leading sign and PEP 515 underscore separators (``"1_000"`` →
+    ``1000``).  A non-integer string is invalid, including a float literal
+    (``"42.5"``) or scientific notation (``"1e3"``); use :func:`env_float`
+    for those.
+
     Args:
         prefix: Env var prefix (trailing underscore optional).
         name: Variable name (without prefix).
@@ -194,9 +200,11 @@ def env_float(
 ) -> float | None:
     """Read ``{PREFIX}_{NAME}`` as a float, with a default and optional bounds.
 
-    Behaves like :func:`env_int` but parses a floating-point value.  Non-finite
-    values (``nan``, ``inf``, ``-inf``) are rejected as invalid, since a config
-    value is expected to be finite.
+    Behaves like :func:`env_int` but parses with Python's :func:`float`, so it
+    accepts the same forms — a leading sign, PEP 515 underscore separators
+    (``"1_000.5"``), and scientific notation (``"1e3"`` → ``1000.0``).
+    Non-finite values (``nan``, ``inf``, ``-inf``) are rejected as invalid,
+    since a config value is expected to be finite.
 
     Args:
         prefix: Env var prefix (trailing underscore optional).
