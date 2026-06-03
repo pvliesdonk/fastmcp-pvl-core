@@ -103,6 +103,16 @@ class TestEnvInt:
         assert "MYAPP_N" in str(exc.value)
         assert "abc" in str(exc.value)
 
+    def test_strict_parse_error_chains_value_error(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        # The ConfigurationError chains the underlying int() ValueError
+        # (raise ... from cause), so the low-level reason stays attached.
+        monkeypatch.setenv("MYAPP_N", "abc")
+        with pytest.raises(ConfigurationError) as exc:
+            env_int("MYAPP", "N", strict=True)
+        assert isinstance(exc.value.__cause__, ValueError)
+
     def test_soft_reject_without_default_returns_none(
         self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
     ):
@@ -254,6 +264,17 @@ class TestEnvFloat:
         monkeypatch.setenv("MYAPP_X", value)
         with pytest.raises(ConfigurationError) as exc:
             env_float("MYAPP", "X", strict=True)
+        assert "finite" in str(exc.value)
+
+    def test_non_finite_rejected_before_bounds(self, monkeypatch: pytest.MonkeyPatch):
+        # Ordering invariant: the finite check runs *before* _check_bounds.
+        # nan compares False to every bound (nan < 0.0 and nan > 5.0 are both
+        # False), so were the order reversed it would slip through the bounds
+        # and be returned as a config value. Pinned so a reorder fails here:
+        # with bounds set, a non-finite value is still rejected as "finite".
+        monkeypatch.setenv("MYAPP_X", "nan")
+        with pytest.raises(ConfigurationError) as exc:
+            env_float("MYAPP", "X", 1.0, minimum=0.0, maximum=5.0, strict=True)
         assert "finite" in str(exc.value)
 
     def test_below_minimum_soft_warns_and_defaults(

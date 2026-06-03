@@ -55,16 +55,20 @@ def _reject(
     *,
     default: _Number | None,
     strict: bool,
+    cause: Exception | None = None,
 ) -> _Number | None:
     """Reject a malformed or out-of-range value.
 
     In ``strict`` mode raises :class:`ConfigurationError`; otherwise logs a
     ``WARNING`` and returns *default*.  *requirement* is the human phrase
     completing ``{KEY} must ...`` (e.g. ``"be an integer"``, ``"be >= 1"``).
+    *cause* is the originating ``ValueError`` on the parse path; it is chained
+    into the raised error (``raise ... from cause``) so the low-level reason
+    stays attached, and is ``None`` on the bounds / non-finite paths.
     """
     message = f"{key} must {requirement}; got {got!r}"
     if strict:
-        raise ConfigurationError(message)
+        raise ConfigurationError(message) from cause
     logger.warning("%s — using default %r", message, default)
     return default
 
@@ -160,8 +164,10 @@ def env_int(
     key = _resolve_key(prefix, name)
     try:
         value = int(raw)
-    except ValueError:
-        return _reject(key, "be an integer", raw, default=default, strict=strict)
+    except ValueError as exc:
+        return _reject(
+            key, "be an integer", raw, default=default, strict=strict, cause=exc
+        )
     return _check_bounds(
         key, value, default=default, strict=strict, minimum=minimum, maximum=maximum
     )
@@ -241,8 +247,10 @@ def env_float(
     key = _resolve_key(prefix, name)
     try:
         value = float(raw)
-    except ValueError:
-        return _reject(key, "be a number", raw, default=default, strict=strict)
+    except ValueError as exc:
+        return _reject(
+            key, "be a number", raw, default=default, strict=strict, cause=exc
+        )
     if not math.isfinite(value):
         return _reject(key, "be a finite number", raw, default=default, strict=strict)
     return _check_bounds(
