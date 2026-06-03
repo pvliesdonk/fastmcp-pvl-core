@@ -149,13 +149,20 @@ def test_debugpy_missing_logs_warning(
     # Force ImportError when the helper tries to import debugpy.
     monkeypatch.setitem(sys.modules, "debugpy", None)
 
+    # Pass the trailing-underscore prefix form so this also guards the
+    # double-underscore normalisation of _debug.py's own ``port_var``: after
+    # the env_int convergence, the import-failure message is the only remaining
+    # consumer of that ``rstrip('_')`` construction (the port-validation
+    # warning's var-name now comes from env_int / _resolve_key, guarded
+    # separately by test_trailing_underscore_prefix_normalised).
     with caplog.at_level(logging.WARNING, logger="fastmcp_pvl_core"):
-        maybe_start_debugpy(_PREFIX)
+        maybe_start_debugpy(f"{_PREFIX}_")
 
     msgs = " ".join(rec.message for rec in caplog.records)
     assert "debugpy" in msgs
     # The hint should point at the install path so the operator can act on it.
     assert "extra" in msgs.lower() or "install" in msgs.lower()
+    assert f"{_PREFIX}_DEBUG_PORT" in msgs and f"{_PREFIX}__DEBUG_PORT" not in msgs
 
 
 def test_happy_path_calls_listen(
