@@ -25,7 +25,14 @@ from fastmcp_pvl_core._authorization import (
 from fastmcp_pvl_core._cli import make_serve_parser, normalise_http_path
 from fastmcp_pvl_core._config import ServerConfig, Transport
 from fastmcp_pvl_core._debug import maybe_start_debugpy
-from fastmcp_pvl_core._env import env, parse_bool, parse_list, parse_scopes
+from fastmcp_pvl_core._env import (
+    env,
+    env_float,
+    env_int,
+    parse_bool,
+    parse_list,
+    parse_scopes,
+)
 from fastmcp_pvl_core._errors import ConfigurationError
 from fastmcp_pvl_core._factory import (
     build_event_store,
@@ -71,6 +78,8 @@ __all__ = [
     "compute_app_domain",
     "configure_logging_from_env",
     "env",
+    "env_float",
+    "env_int",
     "get_claims",
     "get_subject",
     "load_acl",

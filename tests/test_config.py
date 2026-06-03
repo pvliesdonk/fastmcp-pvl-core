@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from fastmcp_pvl_core import ServerConfig, build_bearer_auth
+from fastmcp_pvl_core import ConfigurationError, ServerConfig, build_bearer_auth
 
 
 class TestServerConfigDefaults:
@@ -59,6 +59,32 @@ class TestServerConfigFromEnv:
         config = ServerConfig.from_env("MYAPP")
         assert config.host == "0.0.0.0"
         assert config.port == 9000
+
+    def test_port_unset_defaults_to_8000(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.delenv("MYAPP_PORT", raising=False)
+        assert ServerConfig.from_env("MYAPP").port == 8000
+
+    def test_malformed_port_raises_configuration_error(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.setenv("MYAPP_PORT", "abc")
+        with pytest.raises(ConfigurationError) as exc:
+            ServerConfig.from_env("MYAPP")
+        assert "MYAPP_PORT" in str(exc.value)
+
+    @pytest.mark.parametrize("raw", ["0", "-1", "70000"])
+    def test_out_of_range_port_raises_configuration_error(
+        self, raw: str, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.setenv("MYAPP_PORT", raw)
+        with pytest.raises(ConfigurationError) as exc:
+            ServerConfig.from_env("MYAPP")
+        assert "MYAPP_PORT" in str(exc.value)
+
+    @pytest.mark.parametrize("raw", ["1", "65535"])
+    def test_boundary_ports_accepted(self, raw: str, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setenv("MYAPP_PORT", raw)
+        assert ServerConfig.from_env("MYAPP").port == int(raw)
 
     def test_reads_bearer_token(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setenv("MYAPP_BEARER_TOKEN", "secret")

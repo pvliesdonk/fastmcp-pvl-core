@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
-from fastmcp_pvl_core._env import env, parse_bool, parse_scopes
+from fastmcp_pvl_core._env import env, env_int, parse_bool, parse_scopes
 
 Transport = Literal["stdio", "http", "sse"]
 
@@ -91,14 +91,21 @@ class ServerConfig:
         """Load all fields from ``{env_prefix}_*`` environment variables.
 
         Unknown values for ``TRANSPORT`` silently fall back to ``"stdio"``
-        rather than raising.  This matches the rest of the env-reading
-        helpers, which prefer permissive defaults over hard failures.
+        rather than raising — string fields prefer permissive defaults.
+        ``PORT``, by contrast, is parsed strictly via :func:`env_int`: a
+        non-integer or out-of-``1..65535`` value raises
+        :class:`ConfigurationError` naming the var, so an operator typo
+        fails fast at load instead of binding an invalid port later.
 
         Args:
             env_prefix: Env var prefix, no trailing underscore needed.
 
         Returns:
             A populated :class:`ServerConfig` instance.
+
+        Raises:
+            ConfigurationError: If ``{env_prefix}_PORT`` is set to a
+                non-integer or out-of-``1..65535`` value.
         """
         transport_raw = env(env_prefix, "TRANSPORT", "stdio")
         transport: Transport
@@ -110,7 +117,6 @@ class ServerConfig:
             transport = "stdio"
 
         host = env(env_prefix, "HOST", "127.0.0.1")
-        port_str = env(env_prefix, "PORT", "8000")
 
         scopes_raw = env(env_prefix, "OIDC_REQUIRED_SCOPES")
         scopes = tuple(parse_scopes(scopes_raw) or ())
@@ -134,7 +140,9 @@ class ServerConfig:
         return cls(
             transport=transport,
             host=host,
-            port=int(port_str),
+            port=env_int(
+                env_prefix, "PORT", 8000, strict=True, minimum=1, maximum=65535
+            ),
             base_url=env(env_prefix, "BASE_URL"),
             bearer_token=env(env_prefix, "BEARER_TOKEN"),
             oidc_config_url=env(env_prefix, "OIDC_CONFIG_URL"),
