@@ -142,7 +142,10 @@ def env_int(
             default.
         strict: When ``True``, an invalid or out-of-range value raises
             :class:`ConfigurationError` naming the var.  When ``False`` (the
-            default), it logs a ``WARNING`` and returns *default*.
+            default), it logs a ``WARNING`` and returns *default* — which is
+            ``None`` when no default was supplied, so in soft mode an invalid
+            value yields ``None`` (still warned).  Use ``strict=True`` when an
+            invalid value must fail hard rather than degrade to ``None``.
         minimum: Inclusive lower bound; values below it are rejected.
         maximum: Inclusive upper bound; values above it are rejected.
 
@@ -220,7 +223,10 @@ def env_float(
             default.
         strict: When ``True``, an invalid or out-of-range value raises
             :class:`ConfigurationError` naming the var.  When ``False`` (the
-            default), it logs a ``WARNING`` and returns *default*.
+            default), it logs a ``WARNING`` and returns *default* — which is
+            ``None`` when no default was supplied, so in soft mode an invalid
+            value yields ``None`` (still warned).  Use ``strict=True`` when an
+            invalid value must fail hard rather than degrade to ``None``.
         minimum: Inclusive lower bound; values below it are rejected.
         maximum: Inclusive upper bound; values above it are rejected.
 

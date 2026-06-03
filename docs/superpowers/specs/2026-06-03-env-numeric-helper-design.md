@@ -115,6 +115,26 @@ This is a deliberate **behavior change** — the live scope of #159:
 `port == 0` is rejected: a server *listen* port of 0 (OS-ephemeral) is a
 misconfiguration for an addressable MCP server.
 
+### Versioning (deliberate `feat:`/minor, not breaking)
+
+Although this tightens `from_env`'s PORT handling — malformed input now raises
+`ConfigurationError` (not a bare `ValueError`; note `ConfigurationError` is **not**
+a `ValueError` subclass) and `0`/negative/`>65535` now raise instead of being
+accepted — it ships as a non-breaking **minor** (`feat:`), not a major. Rationale,
+recorded so the choice is visible to review and not a missing-`BREAKING CHANGE`
+oversight:
+
+- The old behaviour was never a documented contract: the bare `int(port_str)`
+  `ValueError` was incidental, and out-of-range acceptance was the latent bug
+  #159 was filed to fix. Tightening validation of *invalid* input is the
+  hardening #159 explicitly asked for, not a redesign of a promised API.
+- The consumers are the coordinated `pvliesdonk/*-mcp` family; none binds a
+  non-`1..65535` PORT. No external contract relies on the old exception type.
+
+This is the maintainer's semver decision. A reviewer (or `python-semantic-release`)
+expecting a `BREAKING CHANGE` marker for an exception-type change should read this
+note as the deliberate, accepted answer rather than an omission.
+
 ### Exports
 
 `env_float`, `env_int` added to `__init__.py` import and `__all__` in alphabetical
