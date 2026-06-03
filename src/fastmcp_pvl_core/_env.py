@@ -6,8 +6,21 @@ through :func:`env` to keep naming consistent.
 
 from __future__ import annotations
 
+import logging
+import math
 import os
-from typing import overload
+from typing import TypeVar, overload
+
+from fastmcp_pvl_core._errors import ConfigurationError
+
+logger = logging.getLogger(__name__)
+
+_Number = TypeVar("_Number", int, float)
+
+
+def _resolve_key(prefix: str, name: str) -> str:
+    """Build the ``{PREFIX}_{NAME}`` env var key (trailing ``_`` on prefix optional)."""
+    return f"{prefix.rstrip('_')}_{name}"
 
 
 @overload
@@ -27,12 +40,222 @@ def env(prefix: str, name: str, default: str | None = None) -> str | None:
     Returns:
         The env var value stripped of whitespace, or ``default``.
     """
-    key = f"{prefix.rstrip('_')}_{name}"
+    key = _resolve_key(prefix, name)
     raw = os.environ.get(key)
     if raw is None:
         return default
     value = raw.strip()
     return value or default
+
+
+def _reject(
+    key: str,
+    requirement: str,
+    got: object,
+    *,
+    default: _Number | None,
+    strict: bool,
+    cause: Exception | None = None,
+) -> _Number | None:
+    """Reject a malformed or out-of-range value.
+
+    In ``strict`` mode raises :class:`ConfigurationError`; otherwise logs a
+    ``WARNING`` and returns *default*.  *requirement* is the human phrase
+    completing ``{KEY} must ...`` (e.g. ``"be an integer"``, ``"be >= 1"``).
+    *cause* is the originating ``ValueError`` on the parse path; it is chained
+    into the raised error (``raise ... from cause``) so the low-level reason
+    stays attached, and is ``None`` on the bounds / non-finite paths.
+    """
+    message = f"{key} must {requirement}; got {got!r}"
+    if strict:
+        raise ConfigurationError(message) from cause
+    logger.warning("%s — using default %r", message, default)
+    return default
+
+
+def _check_bounds(
+    key: str,
+    value: _Number,
+    *,
+    default: _Number | None,
+    strict: bool,
+    minimum: _Number | None,
+    maximum: _Number | None,
+) -> _Number | None:
+    """Return *value* if within the inclusive bounds, else reject it."""
+    if minimum is not None and value < minimum:
+        return _reject(key, f"be >= {minimum}", value, default=default, strict=strict)
+    if maximum is not None and value > maximum:
+        return _reject(key, f"be <= {maximum}", value, default=default, strict=strict)
+    return value
+
+
+@overload
+def env_int(
+    prefix: str,
+    name: str,
+    *,
+    strict: bool = ...,
+    minimum: int | None = ...,
+    maximum: int | None = ...,
+) -> int | None: ...
+@overload
+def env_int(
+    prefix: str,
+    name: str,
+    default: int,
+    *,
+    strict: bool = ...,
+    minimum: int | None = ...,
+    maximum: int | None = ...,
+) -> int: ...
+@overload
+def env_int(
+    prefix: str,
+    name: str,
+    default: None,
+    *,
+    strict: bool = ...,
+    minimum: int | None = ...,
+    maximum: int | None = ...,
+) -> int | None: ...
+def env_int(
+    prefix: str,
+    name: str,
+    default: int | None = None,
+    *,
+    strict: bool = False,
+    minimum: int | None = None,
+    maximum: int | None = None,
+) -> int | None:
+    """Read ``{PREFIX}_{NAME}`` as an integer, with a default and optional bounds.
+
+    The value is parsed with Python's :func:`int`, so it accepts the same
+    forms — a leading sign and PEP 515 underscore separators (``"1_000"`` →
+    ``1000``).  A non-integer string is invalid, including a float literal
+    (``"42.5"``) or scientific notation (``"1e3"``); use :func:`env_float`
+    for those.
+
+    Args:
+        prefix: Env var prefix (trailing underscore optional).
+        name: Variable name (without prefix).
+        default: The trusted fallback, returned **as-is and never itself
+            bounds-checked**, when the var is unset/blank and — in soft mode —
+            when the value is invalid or out of range.  ``minimum``/``maximum``
+            validate the operator's env value, not this developer-supplied
+            default.
+        strict: When ``True``, an invalid or out-of-range value raises
+            :class:`ConfigurationError` naming the var.  When ``False`` (the
+            default), it logs a ``WARNING`` and returns *default* — which is
+            ``None`` when no default was supplied, so in soft mode an invalid
+            value yields ``None`` (still warned).  Use ``strict=True`` when an
+            invalid value must fail hard rather than degrade to ``None``.
+        minimum: Inclusive lower bound; values below it are rejected.
+        maximum: Inclusive upper bound; values above it are rejected.
+
+    Returns:
+        The parsed integer, or *default* when unset/blank (or, in soft mode,
+        when the value is invalid or out of range).  An unset var never warns
+        or raises.
+    """
+    raw = env(prefix, name)
+    if raw is None:
+        return default
+    key = _resolve_key(prefix, name)
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        return _reject(
+            key, "be an integer", raw, default=default, strict=strict, cause=exc
+        )
+    return _check_bounds(
+        key, value, default=default, strict=strict, minimum=minimum, maximum=maximum
+    )
+
+
+@overload
+def env_float(
+    prefix: str,
+    name: str,
+    *,
+    strict: bool = ...,
+    minimum: float | None = ...,
+    maximum: float | None = ...,
+) -> float | None: ...
+@overload
+def env_float(
+    prefix: str,
+    name: str,
+    default: float,
+    *,
+    strict: bool = ...,
+    minimum: float | None = ...,
+    maximum: float | None = ...,
+) -> float: ...
+@overload
+def env_float(
+    prefix: str,
+    name: str,
+    default: None,
+    *,
+    strict: bool = ...,
+    minimum: float | None = ...,
+    maximum: float | None = ...,
+) -> float | None: ...
+def env_float(
+    prefix: str,
+    name: str,
+    default: float | None = None,
+    *,
+    strict: bool = False,
+    minimum: float | None = None,
+    maximum: float | None = None,
+) -> float | None:
+    """Read ``{PREFIX}_{NAME}`` as a float, with a default and optional bounds.
+
+    Behaves like :func:`env_int` but parses with Python's :func:`float`, so it
+    accepts the same forms — a leading sign, PEP 515 underscore separators
+    (``"1_000.5"``), and scientific notation (``"1e3"`` → ``1000.0``).
+    Non-finite values (``nan``, ``inf``, ``-inf``) are rejected as invalid,
+    since a config value is expected to be finite.
+
+    Args:
+        prefix: Env var prefix (trailing underscore optional).
+        name: Variable name (without prefix).
+        default: The trusted fallback, returned **as-is and never itself
+            bounds-checked**, when the var is unset/blank and — in soft mode —
+            when the value is invalid or out of range.  ``minimum``/``maximum``
+            validate the operator's env value, not this developer-supplied
+            default.
+        strict: When ``True``, an invalid or out-of-range value raises
+            :class:`ConfigurationError` naming the var.  When ``False`` (the
+            default), it logs a ``WARNING`` and returns *default* — which is
+            ``None`` when no default was supplied, so in soft mode an invalid
+            value yields ``None`` (still warned).  Use ``strict=True`` when an
+            invalid value must fail hard rather than degrade to ``None``.
+        minimum: Inclusive lower bound; values below it are rejected.
+        maximum: Inclusive upper bound; values above it are rejected.
+
+    Returns:
+        The parsed float, or *default* when unset/blank (or, in soft mode,
+        when the value is invalid or out of range).  An unset var never warns
+        or raises.
+    """
+    raw = env(prefix, name)
+    if raw is None:
+        return default
+    key = _resolve_key(prefix, name)
+    try:
+        value = float(raw)
+    except ValueError as exc:
+        return _reject(
+            key, "be a number", raw, default=default, strict=strict, cause=exc
+        )
+    if not math.isfinite(value):
+        return _reject(key, "be a finite number", raw, default=default, strict=strict)
+    return _check_bounds(
+        key, value, default=default, strict=strict, minimum=minimum, maximum=maximum
+    )
 
 
 def parse_bool(value: str) -> bool:
