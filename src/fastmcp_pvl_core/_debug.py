@@ -43,7 +43,7 @@ from __future__ import annotations
 
 import logging
 
-from fastmcp_pvl_core._env import env, parse_bool
+from fastmcp_pvl_core._env import env, env_int, parse_bool
 
 logger = logging.getLogger(__name__)
 
@@ -101,31 +101,13 @@ def maybe_start_debugpy(env_prefix: str) -> None:
         return
 
     port_var = f"{env_prefix.rstrip('_')}_DEBUG_PORT"
-    raw = env(env_prefix, "DEBUG_PORT")
-    if raw is None:
-        return
-
-    try:
-        port = int(raw)
-    except ValueError:
-        logger.warning(
-            "%s=%r is not a valid integer; debugpy listener not started.",
-            port_var,
-            raw,
-        )
-        return
-
-    # All forms of zero (``0``, ``00``, ``-0``, ``+0``, surrounded by
-    # whitespace) are the documented disable form — silent no-op.
-    if port == 0:
-        return
-
-    if not 1 <= port <= 65535:
-        logger.warning(
-            "%s=%d is outside 1..65535; debugpy listener not started.",
-            port_var,
-            port,
-        )
+    # Soft-mode parse + validate: a non-numeric, negative, or >65535 value
+    # logs a WARNING naming the var and returns None; unset/blank also returns
+    # None. ``minimum=0`` keeps every documented "parses to 0" disable form
+    # (``0``, ``00``, ``-0``, ``+0``, whitespace-wrapped) valid and unwarned,
+    # so it falls through to the silent no-op below alongside the None cases.
+    port = env_int(env_prefix, "DEBUG_PORT", minimum=0, maximum=65535)
+    if port is None or port == 0:
         return
 
     try:

@@ -63,7 +63,7 @@ def test_no_op_when_debug_port_parses_to_zero(
     monkeypatch.setenv(f"{_PREFIX}_DEBUG_PORT", raw)
     fake = _install_fake_debugpy(monkeypatch)
 
-    with caplog.at_level(logging.DEBUG, logger="fastmcp_pvl_core._debug"):
+    with caplog.at_level(logging.DEBUG, logger="fastmcp_pvl_core"):
         maybe_start_debugpy(_PREFIX)
 
     assert fake.calls == []
@@ -80,7 +80,7 @@ def test_no_op_when_debug_port_blank(
     monkeypatch.setenv(f"{_PREFIX}_DEBUG_PORT", "   ")
     fake = _install_fake_debugpy(monkeypatch)
 
-    with caplog.at_level(logging.DEBUG, logger="fastmcp_pvl_core._debug"):
+    with caplog.at_level(logging.DEBUG, logger="fastmcp_pvl_core"):
         maybe_start_debugpy(_PREFIX)
 
     assert fake.calls == []
@@ -97,7 +97,7 @@ def test_invalid_port_logs_warning_and_no_ops(
     monkeypatch.setenv(f"{_PREFIX}_DEBUG_PORT", "not-a-number")
     fake = _install_fake_debugpy(monkeypatch)
 
-    with caplog.at_level(logging.WARNING, logger="fastmcp_pvl_core._debug"):
+    with caplog.at_level(logging.WARNING, logger="fastmcp_pvl_core"):
         maybe_start_debugpy(_PREFIX)
 
     assert fake.calls == []
@@ -114,11 +114,14 @@ def test_out_of_range_port_logs_warning_and_no_ops(
     monkeypatch.setenv(f"{_PREFIX}_DEBUG_PORT", "70000")
     fake = _install_fake_debugpy(monkeypatch)
 
-    with caplog.at_level(logging.WARNING, logger="fastmcp_pvl_core._debug"):
+    with caplog.at_level(logging.WARNING, logger="fastmcp_pvl_core"):
         maybe_start_debugpy(_PREFIX)
 
     assert fake.calls == []
-    assert any(rec.levelno == logging.WARNING for rec in caplog.records)
+    assert any(
+        f"{_PREFIX}_DEBUG_PORT" in rec.message and rec.levelno == logging.WARNING
+        for rec in caplog.records
+    )
 
 
 def test_negative_port_logs_warning_and_no_ops(
@@ -128,11 +131,14 @@ def test_negative_port_logs_warning_and_no_ops(
     monkeypatch.setenv(f"{_PREFIX}_DEBUG_PORT", "-1")
     fake = _install_fake_debugpy(monkeypatch)
 
-    with caplog.at_level(logging.WARNING, logger="fastmcp_pvl_core._debug"):
+    with caplog.at_level(logging.WARNING, logger="fastmcp_pvl_core"):
         maybe_start_debugpy(_PREFIX)
 
     assert fake.calls == []
-    assert any(rec.levelno == logging.WARNING for rec in caplog.records)
+    assert any(
+        f"{_PREFIX}_DEBUG_PORT" in rec.message and rec.levelno == logging.WARNING
+        for rec in caplog.records
+    )
 
 
 def test_debugpy_missing_logs_warning(
@@ -143,13 +149,21 @@ def test_debugpy_missing_logs_warning(
     # Force ImportError when the helper tries to import debugpy.
     monkeypatch.setitem(sys.modules, "debugpy", None)
 
-    with caplog.at_level(logging.WARNING, logger="fastmcp_pvl_core._debug"):
-        maybe_start_debugpy(_PREFIX)
+    # Pass the trailing-underscore prefix form so this also guards the
+    # double-underscore normalisation of _debug.py's own ``port_var``: after
+    # the env_int convergence, the import-failure message is the only remaining
+    # consumer of ``port_var`` (the port-validation warning's var-name now
+    # comes from env_int / _resolve_key, guarded separately by
+    # test_trailing_underscore_prefix_normalised; ``wait_var`` builds its own
+    # name for the DEBUG_WAIT message).
+    with caplog.at_level(logging.WARNING, logger="fastmcp_pvl_core"):
+        maybe_start_debugpy(f"{_PREFIX}_")
 
     msgs = " ".join(rec.message for rec in caplog.records)
     assert "debugpy" in msgs
     # The hint should point at the install path so the operator can act on it.
     assert "extra" in msgs.lower() or "install" in msgs.lower()
+    assert f"{_PREFIX}_DEBUG_PORT" in msgs and f"{_PREFIX}__DEBUG_PORT" not in msgs
 
 
 def test_happy_path_calls_listen(
@@ -159,7 +173,7 @@ def test_happy_path_calls_listen(
     monkeypatch.setenv(f"{_PREFIX}_DEBUG_PORT", "5678")
     fake = _install_fake_debugpy(monkeypatch)
 
-    with caplog.at_level(logging.INFO, logger="fastmcp_pvl_core._debug"):
+    with caplog.at_level(logging.INFO, logger="fastmcp_pvl_core"):
         maybe_start_debugpy(_PREFIX)
 
     assert fake.calls == [("listen", ("0.0.0.0", 5678))]
@@ -215,7 +229,7 @@ def test_wait_for_client_failure_logs_warning_and_continues(
     fake.wait_for_client = wait_boom  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "debugpy", fake)
 
-    with caplog.at_level(logging.WARNING, logger="fastmcp_pvl_core._debug"):
+    with caplog.at_level(logging.WARNING, logger="fastmcp_pvl_core"):
         maybe_start_debugpy(_PREFIX)  # must not raise
 
     assert any(
@@ -303,7 +317,7 @@ def test_listen_failure_logs_warning_and_continues(
     fake.wait_for_client = lambda: None  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "debugpy", fake)
 
-    with caplog.at_level(logging.WARNING, logger="fastmcp_pvl_core._debug"):
+    with caplog.at_level(logging.WARNING, logger="fastmcp_pvl_core"):
         maybe_start_debugpy(_PREFIX)  # must not raise
 
     assert any(
@@ -348,13 +362,14 @@ def test_trailing_underscore_prefix_normalised(
     # Caller may pass ``"MY_APP_"`` (with trailing underscore) — env
     # lookup AND log var-name must agree on the canonical
     # ``MY_APP_DEBUG_PORT`` form, not produce ``MY_APP__DEBUG_PORT``.
-    # Regression guard against drift between ``_env.env``'s
-    # ``rstrip('_')`` normalisation and the ``port_var`` /
-    # ``wait_var`` constructions in ``_debug.py``.
+    # Regression guard against double-underscore drift: the DEBUG_PORT
+    # warning's var-name now comes from ``env_int`` (via ``_resolve_key``'s
+    # ``rstrip('_')``); ``_debug.py`` still builds ``port_var`` / ``wait_var``
+    # with its own ``rstrip('_')`` for the other messages.
     monkeypatch.setenv(f"{_PREFIX}_DEBUG_PORT", "not-a-number")
     fake = _install_fake_debugpy(monkeypatch)
 
-    with caplog.at_level(logging.WARNING, logger="fastmcp_pvl_core._debug"):
+    with caplog.at_level(logging.WARNING, logger="fastmcp_pvl_core"):
         maybe_start_debugpy(f"{_PREFIX}_")
 
     assert fake.calls == []
@@ -379,7 +394,7 @@ def test_unprefixed_env_vars_no_longer_honored(
     monkeypatch.setenv("DEBUG_WAIT", "true")
     fake = _install_fake_debugpy(monkeypatch)
 
-    with caplog.at_level(logging.DEBUG, logger="fastmcp_pvl_core._debug"):
+    with caplog.at_level(logging.DEBUG, logger="fastmcp_pvl_core"):
         maybe_start_debugpy(_PREFIX)
 
     assert fake.calls == []
