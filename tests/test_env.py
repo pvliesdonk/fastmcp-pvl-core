@@ -200,7 +200,7 @@ class TestEnvFloat:
             assert env_float("MYAPP", "X", 1.0) == 1.0
         assert _warnings(caplog)
 
-    @pytest.mark.parametrize("value", ["nan", "inf", "-inf"])
+    @pytest.mark.parametrize("value", ["nan", "inf", "-inf", "Infinity"])
     def test_non_finite_strict_raises(
         self, value: str, monkeypatch: pytest.MonkeyPatch
     ):
