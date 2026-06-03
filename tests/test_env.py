@@ -103,6 +103,18 @@ class TestEnvInt:
         assert "MYAPP_N" in str(exc.value)
         assert "abc" in str(exc.value)
 
+    def test_soft_reject_without_default_returns_none(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ):
+        # Soft mode + no default: an invalid value yields None (still warns).
+        # The int|None overload makes None a first-class "no usable value"
+        # outcome — the numeric analog of env() -> None. A caller wanting an
+        # invalid value to fail hard uses strict=True instead.
+        monkeypatch.setenv("MYAPP_N", "abc")
+        with caplog.at_level(logging.WARNING):
+            assert env_int("MYAPP", "N") is None
+        assert _warnings(caplog)
+
     def test_below_minimum_soft_warns_and_defaults(
         self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
     ):
@@ -213,6 +225,15 @@ class TestEnvFloat:
         with pytest.raises(ConfigurationError) as exc:
             env_float("MYAPP", "X", strict=True)
         assert "MYAPP_X" in str(exc.value)
+
+    def test_soft_reject_without_default_returns_none(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ):
+        # See TestEnvInt: soft + no default + invalid -> None (warns), not a raise.
+        monkeypatch.setenv("MYAPP_X", "abc")
+        with caplog.at_level(logging.WARNING):
+            assert env_float("MYAPP", "X") is None
+        assert _warnings(caplog)
 
     @pytest.mark.parametrize("value", ["nan", "inf", "-inf", "Infinity"])
     def test_non_finite_soft_warns_and_defaults(
