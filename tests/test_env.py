@@ -235,6 +235,14 @@ class TestEnvFloat:
             env_float("MYAPP", "X", strict=True)
         assert "finite" in str(exc.value)
 
+    def test_below_minimum_soft_warns_and_defaults(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ):
+        monkeypatch.setenv("MYAPP_X", "-0.5")
+        with caplog.at_level(logging.WARNING):
+            assert env_float("MYAPP", "X", 1.0, minimum=0.0) == 1.0
+        assert _warnings(caplog)
+
     def test_below_minimum_strict_raises(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setenv("MYAPP_X", "-0.5")
         with pytest.raises(ConfigurationError) as exc:
@@ -248,6 +256,12 @@ class TestEnvFloat:
         with caplog.at_level(logging.WARNING):
             assert env_float("MYAPP", "X", 1.0, maximum=5.0) == 1.0
         assert _warnings(caplog)
+
+    def test_above_maximum_strict_raises(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setenv("MYAPP_X", "9.9")
+        with pytest.raises(ConfigurationError) as exc:
+            env_float("MYAPP", "X", 1.0, maximum=5.0, strict=True)
+        assert "<= 5" in str(exc.value)
 
     def test_boundaries_are_inclusive(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setenv("MYAPP_X", "0.0")
