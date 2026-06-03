@@ -135,8 +135,11 @@ def env_int(
     Args:
         prefix: Env var prefix (trailing underscore optional).
         name: Variable name (without prefix).
-        default: Returned when the var is unset/blank, and (in soft mode) when
-            the value is invalid.
+        default: The trusted fallback, returned **as-is and never itself
+            bounds-checked**, when the var is unset/blank and — in soft mode —
+            when the value is invalid or out of range.  ``minimum``/``maximum``
+            validate the operator's env value, not this developer-supplied
+            default.
         strict: When ``True``, an invalid or out-of-range value raises
             :class:`ConfigurationError` naming the var.  When ``False`` (the
             default), it logs a ``WARNING`` and returns *default*.
@@ -144,8 +147,9 @@ def env_int(
         maximum: Inclusive upper bound; values above it are rejected.
 
     Returns:
-        The parsed integer, or *default* when unset/blank (or invalid in soft
-        mode).  An unset var never warns or raises.
+        The parsed integer, or *default* when unset/blank (or, in soft mode,
+        when the value is invalid or out of range).  An unset var never warns
+        or raises.
     """
     raw = env(prefix, name)
     if raw is None:
@@ -209,8 +213,11 @@ def env_float(
     Args:
         prefix: Env var prefix (trailing underscore optional).
         name: Variable name (without prefix).
-        default: Returned when the var is unset/blank, and (in soft mode) when
-            the value is invalid.
+        default: The trusted fallback, returned **as-is and never itself
+            bounds-checked**, when the var is unset/blank and — in soft mode —
+            when the value is invalid or out of range.  ``minimum``/``maximum``
+            validate the operator's env value, not this developer-supplied
+            default.
         strict: When ``True``, an invalid or out-of-range value raises
             :class:`ConfigurationError` naming the var.  When ``False`` (the
             default), it logs a ``WARNING`` and returns *default*.
@@ -218,8 +225,9 @@ def env_float(
         maximum: Inclusive upper bound; values above it are rejected.
 
     Returns:
-        The parsed float, or *default* when unset/blank (or invalid in soft
-        mode).  An unset var never warns or raises.
+        The parsed float, or *default* when unset/blank (or, in soft mode,
+        when the value is invalid or out of range).  An unset var never warns
+        or raises.
     """
     raw = env(prefix, name)
     if raw is None:

@@ -131,6 +131,18 @@ class TestEnvInt:
             assert env_int("MYAPP", "N", 8000, maximum=65535) == 8000
         assert _warnings(caplog)
 
+    def test_soft_default_is_not_bounds_checked(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ):
+        # Contract: the default is the trusted developer fallback, returned
+        # as-is on the soft reject path. minimum/maximum validate the operator's
+        # env value, NOT the default — so a default that itself violates the
+        # bounds is still returned (with the warning for the rejected value).
+        monkeypatch.setenv("MYAPP_N", "70000")
+        with caplog.at_level(logging.WARNING):
+            assert env_int("MYAPP", "N", 0, minimum=1, maximum=65535) == 0
+        assert _warnings(caplog)
+
     def test_boundaries_are_inclusive(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setenv("MYAPP_N", "1")
         assert env_int("MYAPP", "N", minimum=1, maximum=65535) == 1

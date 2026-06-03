@@ -56,7 +56,10 @@ raise/warn only fires on malformed-when-set, never on a simply-absent var).
 
 `minimum` / `maximum` are inclusive and **reject** out-of-range values (treated
 identically to malformed: soft warns + default, strict raises). No clamping/coercion —
-silently changing an operator's configured value is a footgun.
+silently changing an operator's configured value is a footgun. The bounds validate the
+**operator's env value only**; the developer-supplied `default` is the trusted fallback
+and is returned as-is (never re-validated against the bounds), consistent with the
+unset path.
 
 ### Errors and messages
 
@@ -76,7 +79,8 @@ The helpers **delegate to Python's `int()` / `float()`** and accept whatever tho
 accept — including PEP 515 underscore separators (`"1_000"` → `1000`), a leading
 sign, and (for `float` only) scientific notation (`"1e3"` → `1000.0`). This is a
 deliberate shape decision: rejecting underscores alone would be incoherent while
-still accepting `1e3`/`+5`/non-ASCII digits, and a true "plain decimal only"
+still accepting `+5`/non-ASCII digits (and, for `float`, `1e3`), and a true "plain
+decimal only"
 contract would need a regex for no real benefit (readable large numbers like
 `10_000_000` are a plus for downstream byte/size limits). The accept-set is
 **documented in both docstrings and pinned by characterization tests** so it is an
