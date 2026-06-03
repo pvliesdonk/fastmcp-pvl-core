@@ -97,7 +97,7 @@ def test_invalid_port_logs_warning_and_no_ops(
     monkeypatch.setenv(f"{_PREFIX}_DEBUG_PORT", "not-a-number")
     fake = _install_fake_debugpy(monkeypatch)
 
-    with caplog.at_level(logging.WARNING, logger="fastmcp_pvl_core._debug"):
+    with caplog.at_level(logging.WARNING, logger="fastmcp_pvl_core._env"):
         maybe_start_debugpy(_PREFIX)
 
     assert fake.calls == []
@@ -114,11 +114,14 @@ def test_out_of_range_port_logs_warning_and_no_ops(
     monkeypatch.setenv(f"{_PREFIX}_DEBUG_PORT", "70000")
     fake = _install_fake_debugpy(monkeypatch)
 
-    with caplog.at_level(logging.WARNING, logger="fastmcp_pvl_core._debug"):
+    with caplog.at_level(logging.WARNING, logger="fastmcp_pvl_core._env"):
         maybe_start_debugpy(_PREFIX)
 
     assert fake.calls == []
-    assert any(rec.levelno == logging.WARNING for rec in caplog.records)
+    assert any(
+        f"{_PREFIX}_DEBUG_PORT" in rec.message and rec.levelno == logging.WARNING
+        for rec in caplog.records
+    )
 
 
 def test_negative_port_logs_warning_and_no_ops(
@@ -128,11 +131,14 @@ def test_negative_port_logs_warning_and_no_ops(
     monkeypatch.setenv(f"{_PREFIX}_DEBUG_PORT", "-1")
     fake = _install_fake_debugpy(monkeypatch)
 
-    with caplog.at_level(logging.WARNING, logger="fastmcp_pvl_core._debug"):
+    with caplog.at_level(logging.WARNING, logger="fastmcp_pvl_core._env"):
         maybe_start_debugpy(_PREFIX)
 
     assert fake.calls == []
-    assert any(rec.levelno == logging.WARNING for rec in caplog.records)
+    assert any(
+        f"{_PREFIX}_DEBUG_PORT" in rec.message and rec.levelno == logging.WARNING
+        for rec in caplog.records
+    )
 
 
 def test_debugpy_missing_logs_warning(
@@ -348,13 +354,14 @@ def test_trailing_underscore_prefix_normalised(
     # Caller may pass ``"MY_APP_"`` (with trailing underscore) — env
     # lookup AND log var-name must agree on the canonical
     # ``MY_APP_DEBUG_PORT`` form, not produce ``MY_APP__DEBUG_PORT``.
-    # Regression guard against drift between ``_env.env``'s
-    # ``rstrip('_')`` normalisation and the ``port_var`` /
-    # ``wait_var`` constructions in ``_debug.py``.
+    # Regression guard against double-underscore drift: the DEBUG_PORT
+    # warning's var-name now comes from ``env_int`` (via ``_resolve_key``'s
+    # ``rstrip('_')``); ``_debug.py`` still builds ``port_var`` / ``wait_var``
+    # with its own ``rstrip('_')`` for the other messages.
     monkeypatch.setenv(f"{_PREFIX}_DEBUG_PORT", "not-a-number")
     fake = _install_fake_debugpy(monkeypatch)
 
-    with caplog.at_level(logging.WARNING, logger="fastmcp_pvl_core._debug"):
+    with caplog.at_level(logging.WARNING, logger="fastmcp_pvl_core._env"):
         maybe_start_debugpy(f"{_PREFIX}_")
 
     assert fake.calls == []
