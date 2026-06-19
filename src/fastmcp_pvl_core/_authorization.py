@@ -14,6 +14,7 @@ See ``docs/specs/authorization-submodule.md`` for the design rationale.
 
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 import sys
@@ -804,3 +805,27 @@ def make_acl_check(
         return "*" in granted or scope in granted
 
     return check
+
+
+def any_check(*checks: AuthCheck) -> AuthCheck:
+    """Combine checks with OR (native ``AuthMiddleware`` uses AND).
+
+    Returns an async check that passes if any sub-check passes,
+    short-circuiting on the first ``True``. Sub-checks may be sync or
+    async; coroutine results are awaited. Used for ``multi`` mode where a
+    bearer caller satisfies the ACL check and an OIDC caller satisfies
+    the claims check.
+    """
+    if not checks:
+        raise ValueError("any_check requires at least one check")
+
+    async def combined(ctx: AuthContext) -> bool:
+        for check in checks:
+            result = check(ctx)
+            if inspect.isawaitable(result):
+                result = await result
+            if result:
+                return True
+        return False
+
+    return combined
