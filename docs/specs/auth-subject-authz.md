@@ -20,11 +20,12 @@ Once a real subject exists across all auth modes, downstream code wants a
 uniform `get_subject()` extractor so it stops poking at the auth context
 directly.
 
-A follow-on optional `authorization` submodule (subject + scope →
-allow/deny middleware, ACL TOML loader, and `check_authorization`
-helper) is described separately in
-[`authorization-submodule.md`](authorization-submodule.md). The
-implementation closes [issue #37](https://github.com/pvliesdonk/fastmcp-pvl-core/issues/37).
+Authorization — turning "who is this?" into "are they allowed to do
+X?" — is provided separately by native FastMCP `AuthCheck` factories
+(`make_acl_check` for subject→scope, `make_claims_check` for
+claim→scope, and `any_check` to combine them), wired via
+`AuthMiddleware`. See the "Authorization" section of the
+[README](../../README.md) for the wiring and per-mode coverage.
 
 ## Scope
 
@@ -275,12 +276,12 @@ PRs open as draft. Flip to ready only after CI green and bot LGTM bodies
 driver: needs per-user attribution for ACLs and audit metadata. Likely
 future consumers: any multi-tenant MCP server in the PVL ecosystem.
 
-The downstream `authorization` submodule — the optional middleware /
-loader / `check_authorization` helper — is described in
-[`authorization-submodule.md`](authorization-submodule.md) and closes
-issue #37.
+Authorization for these consumers is provided by the native
+`AuthCheck` factories (`make_acl_check` / `make_claims_check` /
+`any_check`) described in the README "Authorization" section.
 
 ## See also
 
-- [`authorization-submodule.md`](authorization-submodule.md) — the
-  optional authorization submodule design (issue #37).
+- [README "Authorization" section](../../README.md) — the native
+  `AuthCheck` factories (`make_acl_check`, `make_claims_check`,
+  `any_check`) that provide per-subject / per-claim authorization.

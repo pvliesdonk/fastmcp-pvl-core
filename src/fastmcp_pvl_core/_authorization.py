@@ -326,7 +326,10 @@ def any_check(*checks: AuthCheck) -> AuthCheck:
     short-circuiting on the first ``True``. Sub-checks may be sync or
     async; coroutine results are awaited. Used for ``multi`` mode where a
     bearer caller satisfies the ACL check and an OIDC caller satisfies
-    the claims check.
+    the claims check. Sub-checks must signal deny by returning ``False``
+    rather than raising; a sub-check that raises propagates out of
+    ``any_check`` and short-circuits the OR, so the remaining checks are
+    not tried.
     """
     if not checks:
         raise ValueError("any_check requires at least one check")
