@@ -21,7 +21,10 @@ from collections.abc import Callable, Mapping
 from collections.abc import Set as AbstractSet
 from contextvars import ContextVar
 from pathlib import Path
-from typing import Any, TypeAlias
+from typing import TYPE_CHECKING, Any, TypeAlias
+
+if TYPE_CHECKING:
+    from fastmcp.server.auth import AuthCheck, AuthContext
 
 from fastmcp.exceptions import PromptError, ResourceError, ToolError
 from fastmcp.server.middleware import Middleware, MiddlewareContext
@@ -611,3 +614,84 @@ class AuthorizationMiddleware(Middleware):
         """Filter prompt listings by what the caller can retrieve."""
         prompts = await call_next(context)
         return self._filter_components(prompts)
+
+
+# ---------------------------------------------------------------------------
+# Native AuthCheck helpers (FastMCP 3.3+)
+# ---------------------------------------------------------------------------
+
+
+def _resolve_required(required: str | None, component: object) -> str | None:
+    """Resolve the required scope: explicit arg, else component meta.
+
+    Returns ``None`` when no scope is required (component is
+    unrestricted). An invalid ``meta["required_scope"]`` (present but not
+    a non-empty string) is logged and treated as unrestricted, matching
+    the opt-in posture.
+    """
+    if required is not None:
+        required = required.strip()
+        return required or None
+    meta = getattr(component, "meta", None) or {}
+    value = meta.get("required_scope")
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        logger.warning(
+            "authz_meta_invalid required_scope=%r — expected non-empty "
+            "string; treating as unrestricted",
+            value,
+        )
+        return None
+    return value.strip()
+
+
+def _subject_of(token: object) -> str | None:
+    """Resolve the caller subject from a token.
+
+    Prefers the OIDC ``sub`` claim; falls back to ``client_id`` (the
+    bearer-mode subject). Mirrors ``fastmcp_pvl_core.get_subject``'s
+    resolution rule so the ACL keys identically across modes. (Kept local
+    to avoid coupling to the ambient ``get_access_token`` path that
+    ``get_subject`` uses.)
+    """
+    claims = getattr(token, "claims", None)
+    if isinstance(claims, dict):
+        sub = claims.get("sub")
+        if isinstance(sub, str) and sub:
+            return sub
+    client_id = getattr(token, "client_id", None)
+    if isinstance(client_id, str) and client_id:
+        return client_id
+    return None
+
+
+def make_acl_check(
+    acl: Mapping[str, AbstractSet[str]],
+    required: str | None = None,
+) -> AuthCheck:
+    """Build a native ``AuthCheck`` enforcing a subject→scope ACL.
+
+    The returned check reads the caller subject from ``ctx.token``
+    (``sub`` claim, else ``client_id``) and the required scope from
+    ``required=`` or ``ctx.component.meta["required_scope"]``. This is
+    the only authz primitive usable in bearer modes, which carry no
+    OIDC claims. ``acl`` is captured by reference.
+    """
+
+    def check(ctx: AuthContext) -> bool:
+        token = ctx.token
+        if token is None:
+            return False
+        scope = _resolve_required(required, ctx.component)
+        if scope is None:
+            return True
+        subject = _subject_of(token)
+        if subject is None:
+            return False
+        granted = acl.get(subject)
+        if granted is None:
+            return False
+        return "*" in granted or scope in granted
+
+    return check
