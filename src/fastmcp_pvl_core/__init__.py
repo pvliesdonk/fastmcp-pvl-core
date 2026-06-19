@@ -15,12 +15,11 @@ from fastmcp_pvl_core._auth import (
     resolve_auth_mode,
 )
 from fastmcp_pvl_core._authorization import (
-    AuthorizationMiddleware,
-    Authorizer,
-    AuthzDenied,
-    check_authorization,
+    any_check,
     load_acl,
-    make_acl_authorizer,
+    make_acl_check,
+    make_claims_check,
+    parse_claim_grants,
 )
 from fastmcp_pvl_core._cli import make_serve_parser, normalise_http_path
 from fastmcp_pvl_core._config import ServerConfig, Transport
@@ -54,9 +53,6 @@ __version__ = "3.2.0"  # PSR overrides at build time
 
 __all__ = [
     "AuthMode",
-    "AuthorizationMiddleware",
-    "Authorizer",
-    "AuthzDenied",
     "ConfigurationError",
     "IconSpec",
     "SecretMaskFilter",
@@ -64,6 +60,7 @@ __all__ = [
     "Transport",
     "UpstreamProvider",
     "UpstreamResult",
+    "any_check",
     "app_tool_address",
     "app_tool_meta",
     "build_auth",
@@ -73,7 +70,6 @@ __all__ = [
     "build_kv_store",
     "build_oidc_proxy_auth",
     "build_remote_auth",
-    "check_authorization",
     "client_supports_apps",
     "compute_app_domain",
     "configure_logging_from_env",
@@ -83,12 +79,14 @@ __all__ = [
     "get_claims",
     "get_subject",
     "load_acl",
-    "make_acl_authorizer",
+    "make_acl_check",
+    "make_claims_check",
     "make_icon",
     "make_serve_parser",
     "maybe_start_debugpy",
     "normalise_http_path",
     "parse_bool",
+    "parse_claim_grants",
     "parse_list",
     "parse_scopes",
     "register_server_info_tool",

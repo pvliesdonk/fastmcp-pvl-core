@@ -250,61 +250,70 @@ Resolution order:
 3. **No token, auth required:** returns `None` — caller decides whether
    to fall back or error.
 
-### Authorization (opt-in) — `AuthorizationMiddleware`
+### Authorization (opt-in) — native auth checks
 
-Tools, resources, and prompts can opt into per-subject access control by
-setting `meta={"required_scope": "<scope>"}` at registration. A
-configured `AuthorizationMiddleware` enforces the static check and
-filters `list_*` responses to what the caller can use:
+pvl-core builds on FastMCP's native authorization (`AuthCheck` +
+`AuthMiddleware`). It ships factories for the two checks the framework
+has no built-in for — subject→scope (the only per-token authz available
+in bearer modes) and claim→scope (group/role authz for OIDC modes) —
+plus an OR-combinator for `multi` mode. Scope- and tag-based patterns
+use FastMCP's own `require_scopes` / `restrict_tag`.
+
+Components opt in with `meta={"required_scope": "<scope>"}`; the checks
+read it. Components without it are unrestricted.
 
 ```python
+import os
 from pathlib import Path
+from fastmcp import FastMCP
+from fastmcp.server.middleware import AuthMiddleware
 from fastmcp_pvl_core import (
-    AuthorizationMiddleware, load_acl, make_acl_authorizer, check_authorization,
+    make_acl_check, make_claims_check, any_check, load_acl, parse_claim_grants,
 )
 
-authorizer = make_acl_authorizer(load_acl(Path("/etc/my-app/acl.toml")))
-mcp.add_middleware(AuthorizationMiddleware(authorizer=authorizer))
+# OIDC mode — claim-based (identity: name IdP groups to match scopes)
+mcp = FastMCP(..., middleware=[AuthMiddleware(auth=make_claims_check("groups"))])
+
+# bearer mode — static subject ACL
+mcp = FastMCP(..., middleware=[AuthMiddleware(auth=make_acl_check(load_acl(Path("/etc/my-app/acl.toml"))))])
+
+# multi mode — OR of both
+raw = os.environ.get("MY_APP_AUTHZ_GRANTS")
+grants = parse_claim_grants(raw) if raw else None
+mcp = FastMCP(..., middleware=[AuthMiddleware(auth=any_check(
+    make_acl_check(load_acl(Path("/etc/my-app/acl.toml"))),
+    make_claims_check(os.environ["MY_APP_AUTHZ_CLAIM"], grants),
+))])
 
 @mcp.tool(meta={"required_scope": "write"})
-async def edit_document(project_id: str, doc_id: str, body: str) -> None:
-    # Coarse "write" gate already passed at middleware. Per-project gate here:
-    check_authorization(f"write:{project_id}")
-    ...
+async def edit_document(...): ...
 ```
 
-ACL TOML schema (loaded by `load_acl`):
+ACL TOML schema (`load_acl`) and inline-JSON grants (`parse_claim_grants`):
 
 ```toml
 [subjects]
 "user:alice@example.com" = ["read", "write"]
-"user:admin@example.com" = ["*"]              # wildcard scope
-"service:ci-bot"         = ["read"]
-"local"                  = ["*"]              # stdio mode
+"user:admin@example.com" = ["*"]          # wildcard scope
+```
+
+```json
+{"app-writers": ["read", "write"], "app-admins": ["*"]}
 ```
 
 Key properties:
 
-- **Opt-in per component.** Tools / resources / prompts without
-  `meta["required_scope"]` are unrestricted regardless of caller.
-- **`*` is the only library-treated special scope** ("any required
-  scope passes"). All other scopes are opaque strings; downstream chooses
-  the vocabulary.
-- **Subject-side wildcards (`*` as an ACL key) are rejected at load
-  time.**
-- **`load_acl` fails fast** with `ConfigurationError` on every malformed
-  condition — never silent denial.
-- **ACL is loaded once at startup.** Restart to pick up changes.
-- **Authorization scopes are application-level** and distinct from the
-  OAuth scopes carried in tokens.
-- **Subject is logged on every deny** at WARNING. The wire-side payload
-  *omits* the subject by default to limit cross-user info disclosure;
-  pass `AuthorizationMiddleware(..., expose_subject_in_error=True)` to
-  include it (e.g. for internal-only servers).
-
-For the full design rationale and deviations from the originating
-issue, see
-[`docs/specs/authorization-submodule.md`](docs/specs/authorization-submodule.md).
+- **Claim vs scope.** Claim-based authz reads OIDC *claims* (`groups`,
+  `roles`) — the user's IdP-issued permissions — not OAuth *scopes*
+  (which describe the client/token grant). Bearer tokens carry no usable
+  claims, so use `make_acl_check` there.
+- **Opt-in per component** via `meta["required_scope"]`; absent ⇒
+  unrestricted.
+- **`*` is the only special scope** ("any required scope passes").
+- **Loaders fail fast** with `ConfigurationError`; never silent denial.
+- **Loaded once at startup.** Restart to pick up changes.
+- **stdio/`none` mode skips checks** (no token) — authz is meaningful
+  only under an `AuthProvider`.
 
 ### Remote debugging in containers
 
