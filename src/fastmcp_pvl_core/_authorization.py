@@ -666,6 +666,115 @@ def _subject_of(token: object) -> str | None:
     return None
 
 
+def _extract_claim_values(claims: object, claim: str) -> set[str]:
+    """Normalise a claim's value to a set of strings (lenient).
+
+    Scalar string -> ``{value}`` (never whitespace-split). List/tuple/set
+    -> its string elements only. Any other shape (absent, int, bool,
+    None, dict, empty list) -> empty set. A request is never failed on an
+    unexpected claim shape.
+    """
+    if not isinstance(claims, dict):
+        return set()
+    value = claims.get(claim)
+    if isinstance(value, str):
+        return {value}
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return {v for v in value if isinstance(v, str)}
+    return set()
+
+
+def make_claims_check(
+    claim: str,
+    grants: Mapping[str, AbstractSet[str]] | None = None,
+    required: str | None = None,
+) -> AuthCheck:
+    """Build a native ``AuthCheck`` enforcing a claim→scope grant.
+
+    Reads ``claim`` from ``ctx.token.claims``. With ``grants=None`` the
+    caller is granted exactly the string values in the claim (identity).
+    With ``grants`` supplied, those values are mapped through the table
+    and unioned. OIDC modes only — bearer tokens carry no usable claims.
+    Required scope resolves from ``required=`` or
+    ``ctx.component.meta["required_scope"]``.
+    """
+    claim = claim.strip()
+    if not claim:
+        raise ValueError("claim must be a non-empty string")
+
+    def check(ctx: AuthContext) -> bool:
+        token = ctx.token
+        if token is None:
+            return False
+        scope = _resolve_required(required, ctx.component)
+        if scope is None:
+            return True
+        values = _extract_claim_values(getattr(token, "claims", None), claim)
+        if grants is None:
+            granted: set[str] = set(values)
+        else:
+            granted = set()
+            for value in values:
+                mapped = grants.get(value)
+                if mapped is not None:
+                    granted |= set(mapped)
+        return "*" in granted or scope in granted
+
+    return check
+
+
+def parse_claim_grants(raw: str) -> dict[str, frozenset[str]]:
+    """Parse an inline-JSON claim-value→scopes map. Fail-fast.
+
+    Schema: a JSON object mapping each claim value (e.g. a group name) to
+    an array of scope strings. Empty object is permitted (deny-everyone).
+    Mirrors ``load_acl``'s value validation. Raises
+    :class:`ConfigurationError` on every malformed condition.
+    """
+    try:
+        data = json.loads(raw)
+    except (json.JSONDecodeError, ValueError) as exc:
+        raise ConfigurationError(
+            f"claim grants could not be parsed as JSON: {exc}"
+        ) from exc
+    if not isinstance(data, dict):
+        raise ConfigurationError(
+            "claim grants must be a JSON object mapping claim values to "
+            f"scope arrays; got {type(data).__name__}"
+        )
+    result: dict[str, frozenset[str]] = {}
+    for key, scopes in data.items():
+        # JSON object keys are always strings.
+        if not key.strip():
+            raise ConfigurationError(
+                "claim grants: claim-value key is empty or whitespace-only"
+            )
+        if key == "*":
+            raise ConfigurationError(
+                'claim grants: "*" as a claim-value key is not allowed '
+                "(global key wildcards collapse the model)"
+            )
+        if not isinstance(scopes, list):
+            raise ConfigurationError(
+                f"claim grants: value for {key!r} must be an array of scope "
+                f"strings; got {type(scopes).__name__}"
+            )
+        cleaned: set[str] = set()
+        for scope in scopes:
+            if not isinstance(scope, str):
+                raise ConfigurationError(
+                    f"claim grants: {key!r}: scope must be a string; got "
+                    f"{type(scope).__name__}"
+                )
+            if not scope.strip():
+                raise ConfigurationError(
+                    f"claim grants: {key!r}: scope is empty or whitespace-only"
+                )
+            cleaned.add(scope.strip())
+        result[key] = frozenset(cleaned)
+    return result
+
+
 def make_acl_check(
     acl: Mapping[str, AbstractSet[str]],
     required: str | None = None,
