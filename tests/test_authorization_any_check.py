@@ -49,3 +49,22 @@ async def test_awaits_async_sub_checks() -> None:
 
     check = any_check(lambda ctx: False, async_true)
     assert await check(_ctx()) is True
+
+
+async def test_raising_sub_check_propagates_and_stops_remaining() -> None:
+    # Documented contract: a raising sub-check propagates out of any_check
+    # and short-circuits the OR — a later check that would allow is never
+    # reached (deny-safe; never silently falls through to an allow).
+    calls: list[int] = []
+
+    def raises(ctx: AuthContext) -> bool:
+        raise RuntimeError("sub-check error")
+
+    def second(ctx: AuthContext) -> bool:
+        calls.append(2)
+        return True
+
+    check = any_check(raises, second)
+    with pytest.raises(RuntimeError, match="sub-check error"):
+        await check(_ctx())
+    assert calls == []

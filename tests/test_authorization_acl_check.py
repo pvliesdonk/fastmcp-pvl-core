@@ -82,3 +82,14 @@ def test_invalid_meta_treated_unrestricted(caplog: pytest.LogCaptureFixture) -> 
     with caplog.at_level("WARNING", logger="fastmcp_pvl_core._authorization"):
         assert check(ctx) is True
     assert "authz_meta_invalid" in caplog.text
+
+
+def test_acl_captured_by_reference_not_copied() -> None:
+    # The docstring promises the ACL is captured by reference: a mutation
+    # after construction must be visible to the check (reload semantics).
+    acl: dict[str, frozenset[str]] = {"user:alice": frozenset({"read"})}
+    check = make_acl_check(acl)
+    ctx = _ctx(_FakeToken(claims={"sub": "user:bob"}), {"required_scope": "read"})
+    assert check(ctx) is False  # bob not in ACL yet
+    acl["user:bob"] = frozenset({"read"})
+    assert check(ctx) is True  # now visible via the captured reference

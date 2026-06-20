@@ -153,8 +153,9 @@ def _resolve_required(component: object) -> str | None:
         return None
     if not isinstance(value, str) or not value.strip():
         logger.warning(
-            "authz_meta_invalid required_scope=%r — expected non-empty "
-            "string; treating as unrestricted",
+            "authz_meta_invalid component=%s required_scope=%r — expected "
+            "non-empty string; treating as unrestricted",
+            getattr(component, "name", None) or type(component).__name__,
             value,
         )
         return None

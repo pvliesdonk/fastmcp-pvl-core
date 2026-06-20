@@ -312,8 +312,13 @@ Key properties:
 - **`*` is the only special scope** ("any required scope passes").
 - **Loaders fail fast** with `ConfigurationError`; never silent denial.
 - **Loaded once at startup.** Restart to pick up changes.
-- **stdio/`none` mode skips checks** (no token) — authz is meaningful
-  only under an `AuthProvider`.
+- **`stdio` transport bypasses checks entirely** — FastMCP's
+  `AuthMiddleware` short-circuits before the token is inspected (there is
+  no OAuth concept over stdio).
+- **`none` auth mode produces no token** — a component requiring a scope
+  is denied (`token is None`), while a component without
+  `meta["required_scope"]` stays accessible. Authz is meaningful only
+  under an `AuthProvider`.
 
 ### Remote debugging in containers
 

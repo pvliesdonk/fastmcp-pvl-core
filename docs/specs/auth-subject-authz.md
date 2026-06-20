@@ -21,11 +21,10 @@ uniform `get_subject()` extractor so it stops poking at the auth context
 directly.
 
 Authorization — turning "who is this?" into "are they allowed to do
-X?" — is provided separately by native FastMCP `AuthCheck` factories
-(`make_acl_check` for subject→scope, `make_claims_check` for
-claim→scope, and `any_check` to combine them), wired via
-`AuthMiddleware`. See the "Authorization" section of the
-[README](../../README.md) for the wiring and per-mode coverage.
+X?" — is layered separately, as an opt-in policy over the caller
+identity this document defines (subject→scope and claim→scope
+enforcement). The pvl-core wiring and per-mode coverage live in the
+"Authorization" section of the [README](../../README.md).
 
 ## Scope
 
@@ -276,12 +275,11 @@ PRs open as draft. Flip to ready only after CI green and bot LGTM bodies
 driver: needs per-user attribution for ACLs and audit metadata. Likely
 future consumers: any multi-tenant MCP server in the PVL ecosystem.
 
-Authorization for these consumers is provided by the native
-`AuthCheck` factories (`make_acl_check` / `make_claims_check` /
-`any_check`) described in the README "Authorization" section.
+Authorization for these consumers is layered on top of the subject
+identity defined here; see the README "Authorization" section.
 
 ## See also
 
-- [README "Authorization" section](../../README.md) — the native
-  `AuthCheck` factories (`make_acl_check`, `make_claims_check`,
-  `any_check`) that provide per-subject / per-claim authorization.
+- [README "Authorization" section](../../README.md) — the opt-in
+  per-subject / per-claim authorization layered on the caller identity
+  this document defines.
