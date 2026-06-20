@@ -70,10 +70,10 @@ def test_no_required_scope_meta_is_unrestricted() -> None:
     assert check(ctx) is True
 
 
-def test_explicit_required_arg_overrides_meta() -> None:
-    check = make_acl_check({"user:alice": frozenset({"admin"})}, required="admin")
-    ctx = _ctx(_FakeToken(claims={"sub": "user:alice"}), {"required_scope": "write"})
-    assert check(ctx) is True
+def test_unrestricted_component_allowed_without_token() -> None:
+    # No required_scope => unrestricted regardless of caller, even with no token.
+    check = make_acl_check({})
+    assert check(_ctx(None, meta={})) is True
 
 
 def test_invalid_meta_treated_unrestricted(caplog: pytest.LogCaptureFixture) -> None:

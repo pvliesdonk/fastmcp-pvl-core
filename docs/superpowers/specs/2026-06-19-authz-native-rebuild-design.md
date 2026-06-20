@@ -105,32 +105,36 @@ Re-exported from `fastmcp_pvl_core`, living in `_authorization.py`:
 
 | Symbol | Kind | Purpose |
 |---|---|---|
-| `make_acl_check` | function | `(acl, required=None) -> AuthCheck`. Subject→scope, reads `ctx.token` (`sub` claim, else `client_id`). Covers every mode incl. bearer. |
-| `make_claims_check` | function | `(claim, grants=None, required=None) -> AuthCheck`. Claim→scope, reads `ctx.token.claims`. OIDC modes only. |
+| `make_acl_check` | function | `(acl) -> AuthCheck`. Subject→scope, reads `ctx.token` (`sub` claim, else `client_id`). Covers every mode incl. bearer. |
+| `make_claims_check` | function | `(claim, grants=None) -> AuthCheck`. Claim→scope, reads `ctx.token.claims`. OIDC modes only. |
 | `any_check` | function | `(*checks) -> AuthCheck`. OR-combinator (native combines with AND); for `multi` mode. |
 | `load_acl` | function | Unchanged TOML loader: `(path) -> dict[str, frozenset[str]]`. |
 | `parse_claim_grants` | function | New inline-JSON loader: `(raw) -> dict[str, frozenset[str]]`. |
 
 Each check honours the `meta["required_scope"]` convention: it reads
-the required scope from `required=` if passed, else
-`ctx.component.meta.get("required_scope")`; if neither yields a scope,
-the component is **unrestricted** (returns `True`) — opt-in, matching
-the old behaviour. The convention thus survives; only its *consumer*
-changes (a native check instead of bespoke middleware).
+the required scope from `ctx.component.meta.get("required_scope")`; if
+that yields no scope, the component is **unrestricted** (returns `True`,
+regardless of caller/token) — opt-in, matching the old behaviour. The
+required scope comes *solely* from the component annotation — pvl-core
+does not offer a per-check `required=` override of that shape decision
+(it would be the forbidden "third bucket" under `CLAUDE.md`'s
+kwarg-classification rule). The convention thus survives; only its
+*consumer* changes (a native check instead of bespoke middleware).
 
 ### `make_acl_check`
 
 ```python
 def make_acl_check(
     acl: Mapping[str, AbstractSet[str]],
-    required: str | None = None,
 ) -> AuthCheck: ...
 ```
 
 Returned check `(ctx: AuthContext) -> bool`:
 
-1. `ctx.token is None` → `False`.
-2. resolve `required_scope` (see meta rule above); none → `True`.
+1. resolve `required_scope` (see meta rule above); none → `True`
+   (unrestricted regardless of caller — checked before the token so an
+   unannotated component is open even with no token).
+2. `ctx.token is None` → `False`.
 3. `subject` = `ctx.token.claims.get("sub")` if a non-empty string,
    else `ctx.token.client_id`. (Same `sub`→`client_id` resolution as
    `get_subject`, so the ACL keys identically across OIDC and bearer.)
@@ -146,18 +150,22 @@ Returned check `(ctx: AuthContext) -> bool`:
 def make_claims_check(
     claim: str,
     grants: Mapping[str, AbstractSet[str]] | None = None,
-    required: str | None = None,
 ) -> AuthCheck: ...
 ```
 
 `claim` stripped; empty → `ValueError` at construction. Returned check:
 
-1. `ctx.token is None` → `False`.
-2. resolve `required_scope`; none → `True`.
+1. resolve `required_scope`; none → `True` (unrestricted, checked before
+   the token).
+2. `ctx.token is None` → `False`.
 3. `values = _extract_claim_values(ctx.token.claims, claim)` (matrix below).
-4. `granted = values` if `grants is None` (identity) else the union of
-   `grants[v]` over `v in values` present in `grants`.
-5. allow iff `"*" in granted or required_scope in granted`.
+4. `granted = {v for v in values if v != "*"}` if `grants is None`
+   (identity — `"*"` excluded so an untrusted claim value cannot trigger
+   the wildcard) else the union of `grants[v]` over `v in values` present
+   in `grants`.
+5. allow iff `"*" in granted or required_scope in granted` (the `"*"`
+   wildcard can therefore only originate from the operator's `grants`
+   table, never from a raw claim).
 
 **Claim-value extraction (runtime token data — lenient, never fail a
 request on IdP shape):**
@@ -285,8 +293,8 @@ removed code.
 
 | File | Coverage |
 |---|---|
-| `tests/test_authorization_acl_check.py` | `make_acl_check`: subject from `sub`-claim vs `client_id` fallback; allow/deny by grant membership; `"*"` wildcard; unknown subject deny; `ctx.token is None` deny; non-string subject deny; `required=` arg vs `meta["required_scope"]` vs neither (unrestricted); invalid meta (non-string) treated unrestricted + warns. |
-| `tests/test_authorization_claims_check.py` | `make_claims_check`: blank `claim` → `ValueError`; identity allow/deny; translation union; `"*"` grant; full claim-extraction matrix; no-token deny; `required=`/meta/none resolution. |
+| `tests/test_authorization_acl_check.py` | `make_acl_check`: subject from `sub`-claim vs `client_id` fallback; allow/deny by grant membership; `"*"` wildcard; unknown subject deny; `ctx.token is None` deny; unrestricted component allowed even without a token; non-string subject deny; `meta["required_scope"]` present vs absent (unrestricted); invalid meta (non-string) treated unrestricted + warns. |
+| `tests/test_authorization_claims_check.py` | `make_claims_check`: blank `claim` → `ValueError`; identity allow/deny; translation union; operator `"*"` grant passes; a `"*"` *claim value* does NOT grant universal access; full claim-extraction matrix; no-token deny; `meta`/absent (unrestricted) resolution. |
 | `tests/test_authorization_any_check.py` | `any_check`: zero checks → `ValueError`; OR semantics; short-circuit; sync+async sub-checks both awaited; all-deny → deny. |
 | `tests/test_authorization_loaders.py` | `load_acl` (kept cases) + `parse_claim_grants` (full strict matrix above). |
 | `tests/conftest.py` | drop `_reset_authorizer` (no ambient authorizer anymore). |

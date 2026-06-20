@@ -4,9 +4,10 @@ Downstream MCP servers that need to enforce per-subject access control
 on their tools, resources, or prompts can opt in by:
 
 1. Annotating components with ``meta={"required_scope": "<scope>"}``.
-2. Building a native ``AuthCheck`` via :func:`make_acl_check` (bearer/ACL
-   mode), :func:`make_claims_check` (OIDC claim mode), or
-   :func:`any_check` (OR-combinator for ``multi`` mode).
+2. Building a native ``AuthCheck`` via :func:`make_acl_check`
+   (subject→scope ACL; any mode that produces a token),
+   :func:`make_claims_check` (OIDC claim→scope), or :func:`any_check`
+   (OR-combinator for ``multi`` mode).
 3. Installing FastMCP's ``AuthMiddleware(auth=<check>)`` in the server's
    middleware stack.
 """
@@ -134,17 +135,18 @@ def load_acl(path: Path) -> dict[str, frozenset[str]]:
 # ---------------------------------------------------------------------------
 
 
-def _resolve_required(required: str | None, component: object) -> str | None:
-    """Resolve the required scope: explicit arg, else component meta.
+def _resolve_required(component: object) -> str | None:
+    """Resolve the required scope from the component's ``meta``.
 
-    Returns ``None`` when no scope is required (component is
-    unrestricted). An invalid ``meta["required_scope"]`` (present but not
-    a non-empty string) is logged and treated as unrestricted, matching
-    the opt-in posture.
+    Returns ``None`` when no scope is required — the opt-in posture:
+    components without a ``meta["required_scope"]`` are unrestricted
+    (accessible to any caller). An invalid ``required_scope`` (present
+    but not a non-empty string) is logged and treated as unrestricted.
+
+    The required scope comes solely from the component annotation;
+    pvl-core does not offer a per-check override of that shape decision
+    (see ``CLAUDE.md``'s kwarg-classification rule).
     """
-    if required is not None:
-        required = required.strip()
-        return required or None
     meta = getattr(component, "meta", None) or {}
     value = meta.get("required_scope")
     if value is None:
@@ -163,10 +165,14 @@ def _subject_of(token: object) -> str | None:
     """Resolve the caller subject from a token.
 
     Prefers the OIDC ``sub`` claim; falls back to ``client_id`` (the
-    bearer-mode subject). Mirrors ``fastmcp_pvl_core.get_subject``'s
-    resolution rule so the ACL keys identically across modes. (Kept local
-    to avoid coupling to the ambient ``get_access_token`` path that
-    ``get_subject`` uses.)
+    bearer-mode subject). Uses the same ``sub``→``client_id`` rule as
+    ``fastmcp_pvl_core.get_subject`` so the ACL keys consistently across
+    OIDC and bearer modes. (Kept local to avoid coupling to the ambient
+    ``get_access_token`` path that ``get_subject`` uses.) Unlike
+    ``get_subject`` it does not synthesise a ``"local"`` subject for the
+    no-token / stdio case: a ``None`` token yields ``None`` here and the
+    check denies, since authorization is meaningful only under an
+    ``AuthProvider``.
     """
     claims = getattr(token, "claims", None)
     if isinstance(claims, dict):
@@ -200,7 +206,6 @@ def _extract_claim_values(claims: object, claim: str) -> set[str]:
 def make_claims_check(
     claim: str,
     grants: Mapping[str, AbstractSet[str]] | None = None,
-    required: str | None = None,
 ) -> AuthCheck:
     """Build a native ``AuthCheck`` enforcing a claim→scope grant.
 
@@ -208,23 +213,31 @@ def make_claims_check(
     caller is granted exactly the string values in the claim (identity).
     With ``grants`` supplied, those values are mapped through the table
     and unioned. OIDC modes only — bearer tokens carry no usable claims.
-    Required scope resolves from ``required=`` or
-    ``ctx.component.meta["required_scope"]``.
+    The required scope is read from
+    ``ctx.component.meta["required_scope"]``; components without it are
+    unrestricted.
+
+    The ``"*"`` wildcard ("any required scope passes") is honoured only
+    when it comes from an operator-supplied ``grants`` table, never from a
+    raw claim value — a token whose claim literally contains ``"*"``
+    cannot escalate to universal access.
     """
     claim = claim.strip()
     if not claim:
         raise ValueError("claim must be a non-empty string")
 
     def check(ctx: AuthContext) -> bool:
+        scope = _resolve_required(ctx.component)
+        if scope is None:
+            return True
         token = ctx.token
         if token is None:
             return False
-        scope = _resolve_required(required, ctx.component)
-        if scope is None:
-            return True
         values = _extract_claim_values(getattr(token, "claims", None), claim)
         if grants is None:
-            granted: set[str] = set(values)
+            # Identity mode: claim values are the granted scopes. Exclude
+            # "*" so an untrusted claim value cannot trigger the wildcard.
+            granted: set[str] = {v for v in values if v != "*"}
         else:
             granted = set()
             for value in values:
@@ -290,24 +303,26 @@ def parse_claim_grants(raw: str) -> dict[str, frozenset[str]]:
 
 def make_acl_check(
     acl: Mapping[str, AbstractSet[str]],
-    required: str | None = None,
 ) -> AuthCheck:
     """Build a native ``AuthCheck`` enforcing a subject→scope ACL.
 
     The returned check reads the caller subject from ``ctx.token``
     (``sub`` claim, else ``client_id``) and the required scope from
-    ``required=`` or ``ctx.component.meta["required_scope"]``. This is
-    the only authz primitive usable in bearer modes, which carry no
-    OIDC claims. ``acl`` is captured by reference.
+    ``ctx.component.meta["required_scope"]``. It works in any mode that
+    produces a token — keyed by ``sub`` under OIDC, by ``client_id``
+    under bearer. It is the *only* authz primitive available in bearer
+    modes (which carry no OIDC claims), but is equally usable under OIDC
+    when the ACL keys match the token's ``sub``. ``acl`` is captured by
+    reference.
     """
 
     def check(ctx: AuthContext) -> bool:
+        scope = _resolve_required(ctx.component)
+        if scope is None:
+            return True
         token = ctx.token
         if token is None:
             return False
-        scope = _resolve_required(required, ctx.component)
-        if scope is None:
-            return True
         subject = _subject_of(token)
         if subject is None:
             return False

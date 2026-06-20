@@ -101,3 +101,19 @@ def test_no_token_denies() -> None:
 def test_no_required_scope_is_unrestricted() -> None:
     check = make_claims_check("groups")
     assert check(_ctx({"groups": []}, meta={})) is True
+
+
+def test_star_claim_value_does_not_grant_universal_access() -> None:
+    # Identity mode: a literal "*" in the claim must NOT trigger the
+    # wildcard — that sentinel is honoured only from operator grants.
+    check = make_claims_check("groups")
+    ctx = _ctx({"groups": ["*"]}, {"required_scope": "write"})
+    assert check(ctx) is False
+
+
+def test_star_grant_value_still_grants_via_operator_table() -> None:
+    # Translation mode: "*" supplied by the operator grants table IS the
+    # wildcard and passes any required scope.
+    check = make_claims_check("groups", {"admins": frozenset({"*"})})
+    ctx = _ctx({"groups": ["admins"]}, {"required_scope": "write"})
+    assert check(ctx) is True
