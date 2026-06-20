@@ -1,30 +1,30 @@
-"""Authorization primitives: middleware, annotation convention, ACL loader.
+"""Authorization primitives: native auth checks, ACL loader, claims support.
 
 Downstream MCP servers that need to enforce per-subject access control
 on their tools, resources, or prompts can opt in by:
 
 1. Annotating components with ``meta={"required_scope": "<scope>"}``.
-2. Building an :data:`Authorizer` (typically via :func:`load_acl` +
-   :func:`make_acl_authorizer`).
-3. Installing :class:`AuthorizationMiddleware` after
-   :func:`fastmcp_pvl_core.wire_middleware_stack`.
-
-See ``docs/specs/authorization-submodule.md`` for the design rationale.
+2. Building a native ``AuthCheck`` via :func:`make_acl_check`
+   (subject→scope ACL; any mode that produces a token),
+   :func:`make_claims_check` (OIDC claim→scope), or :func:`any_check`
+   (OR-combinator over multiple checks, e.g. for ``multi`` mode).
+3. Installing ``AuthMiddleware(auth=<check>)`` — imported from
+   ``fastmcp.server.middleware`` — in the server's middleware stack.
 """
 
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 import sys
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from collections.abc import Set as AbstractSet
-from contextvars import ContextVar
 from pathlib import Path
-from typing import Any, TypeAlias
+from typing import TYPE_CHECKING
 
-from fastmcp.exceptions import PromptError, ResourceError, ToolError
-from fastmcp.server.middleware import Middleware, MiddlewareContext
+if TYPE_CHECKING:
+    from fastmcp.server.auth import AuthCheck, AuthContext
 
 if sys.version_info >= (3, 11):
     import tomllib
@@ -35,84 +35,12 @@ else:  # pragma: no cover - fallback for Python 3.10
     import tomli as tomllib  # type: ignore[import-not-found,unused-ignore]
 
 from fastmcp_pvl_core._errors import ConfigurationError
-from fastmcp_pvl_core._subject import get_subject
 
 # ---------------------------------------------------------------------------
-# Public types
+# Module-level logger
 # ---------------------------------------------------------------------------
 
-Authorizer: TypeAlias = Callable[[str | None, str], bool]
-"""Decision callable: ``(subject, required_scope) -> bool``.
-
-Returns ``True`` to allow, ``False`` to deny.  ``None`` subject means
-"no caller identity available" — typical authorizers deny that case.
-
-This is a :class:`TypeAlias`, not a ``Protocol``.  The Protocol upgrade
-across this and other Callable seams in the package is tracked in
-issue #60.
-"""
-
-
-# ---------------------------------------------------------------------------
-# AuthzDenied exception
-# ---------------------------------------------------------------------------
-
-
-class AuthzDenied(Exception):  # noqa: N818
-    """Raised by :func:`check_authorization` when the authorizer denies.
-
-    The :class:`AuthorizationMiddleware` catches this around
-    ``call_next`` and re-raises as the per-operation MCP error
-    (:class:`fastmcp.exceptions.ToolError` for a tool body,
-    :class:`~fastmcp.exceptions.ResourceError` for a resource handler,
-    :class:`~fastmcp.exceptions.PromptError` for a prompt handler).
-
-    If the middleware is *not* installed, this propagates as a plain
-    :class:`Exception` and surfaces as a generic MCP error.
-    """
-
-    subject: str | None
-    required_scope: str
-
-    def __init__(self, *, subject: str | None, required_scope: str) -> None:
-        super().__init__(
-            f"authorization denied: subject={subject!r} "
-            f"required_scope={required_scope!r}"
-        )
-        self.subject = subject
-        self.required_scope = required_scope
-
-
-# ---------------------------------------------------------------------------
-# Ambient authorizer (ContextVar plumbing)
-# ---------------------------------------------------------------------------
-
-_current_authorizer: ContextVar[Authorizer | None] = ContextVar(
-    "fastmcp_pvl_core_current_authorizer",
-    default=None,
-)
-"""Per-context pointer to the active authorizer.
-
-Set by :class:`AuthorizationMiddleware.__init__`; read by
-:func:`check_authorization` when its ``authorizer=`` kwarg is omitted.
-Same pattern as ``_current_auth_mode`` in :mod:`_subject`; same
-composition caveat (last writer wins; operators wishing to compose
-multiple :class:`AuthorizationMiddleware` instances on distinct
-contexts must wrap each install in
-``contextvars.copy_context().run(...)``).
-"""
-
-
-def set_current_authorizer(authorizer: Authorizer | None) -> None:
-    """Record the active authorizer for the current context.
-
-    Called by :class:`AuthorizationMiddleware.__init__`.  Tests that
-    exercise :func:`check_authorization` without going through the
-    middleware may call this directly.  Passing ``None`` resets the
-    pointer (useful between tests).
-    """
-    _current_authorizer.set(authorizer)
-
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # ACL TOML loader
@@ -134,7 +62,7 @@ def load_acl(path: Path) -> dict[str, frozenset[str]]:
         "user:alice@example.com" = ["read", "write"]
         "user:admin@example.com" = ["*"]
 
-    The ``*`` scope is interpreted by :func:`make_acl_authorizer` as
+    The ``*`` scope is interpreted by :func:`make_acl_check` as
     "any required scope passes".  No subject-side wildcard.
 
     Args:
@@ -203,411 +131,254 @@ def load_acl(path: Path) -> dict[str, frozenset[str]]:
 
 
 # ---------------------------------------------------------------------------
-# ACL → Authorizer bridge
+# Native AuthCheck helpers (FastMCP >=3.3.1)
 # ---------------------------------------------------------------------------
 
 
-def make_acl_authorizer(acl: Mapping[str, AbstractSet[str]]) -> Authorizer:
-    """Bridge a ``{subject: scopes}`` mapping to an :data:`Authorizer`.
+def _resolve_required(component: object) -> str | None:
+    """Resolve the required scope from the component's ``meta``.
 
-    Allow rules:
+    Returns ``None`` when no scope is required — the opt-in posture:
+    components without a ``meta["required_scope"]`` are unrestricted
+    (accessible to any caller). An invalid ``required_scope`` (present
+    but not a non-empty string) is logged and treated as unrestricted.
 
-    - ``subject is None`` → deny.
-    - Subject not in ``acl`` → deny.
-    - ``"*"`` in the subject's grants → allow any required scope.
-    - Otherwise → allow iff ``required_scope`` is in the grants.
+    The required scope comes solely from the component annotation;
+    pvl-core does not offer a per-check override of that shape decision
+    (see ``CLAUDE.md``'s kwarg-classification rule).
+    """
+    meta = getattr(component, "meta", None) or {}
+    value = meta.get("required_scope")
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        logger.warning(
+            "authz_meta_invalid component=%s required_scope=%r — expected "
+            "non-empty string; treating as unrestricted",
+            getattr(component, "name", None) or type(component).__name__,
+            value,
+        )
+        return None
+    return value.strip()
 
-    The mapping is captured by reference, not copied.  A downstream that
-    mutates the dict in place sees the change reflected by the closure
-    (intentional; the recommended pattern is rebuild + reassign, but
-    reference-capture lets advanced consumers wire reload semantics
-    without changing this signature).
 
-    Args:
-        acl: Mapping from subject string to a set of granted scope strings.
+def _subject_of(token: object) -> str | None:
+    """Resolve the caller subject from a token.
 
-    Returns:
-        An :data:`Authorizer` callable.
+    Applies the same ``sub``→``client_id`` priority as
+    ``fastmcp_pvl_core.get_subject`` (prefer the OIDC ``sub`` claim, fall
+    back to the bearer ``client_id``) so the ACL keys consistently across
+    OIDC and bearer modes — but **diverges** from ``get_subject`` on the
+    no-token / stdio case: it does *not* synthesise a ``"local"``
+    subject. A ``None`` token yields ``None`` here and the check denies,
+    since authorization is meaningful only under an ``AuthProvider``
+    (an ACL entry keyed ``"local"`` therefore never matches). Kept local
+    to avoid coupling to the ambient ``get_access_token`` path that
+    ``get_subject`` uses.
+    """
+    claims = getattr(token, "claims", None)
+    if isinstance(claims, dict):
+        sub = claims.get("sub")
+        if isinstance(sub, str) and sub:
+            return sub
+    client_id = getattr(token, "client_id", None)
+    if isinstance(client_id, str) and client_id:
+        return client_id
+    return None
+
+
+def _extract_claim_values(claims: object, claim: str) -> set[str]:
+    """Normalise a claim's value to a set of strings (lenient).
+
+    Scalar string -> ``{value}`` (never whitespace-split).
+    List/tuple/set/frozenset -> its string elements only. Any other shape
+    (absent, int, bool, None, dict, empty list) -> empty set. A request
+    is never failed on an unexpected claim shape.
+    """
+    if not isinstance(claims, dict):
+        return set()
+    value = claims.get(claim)
+    if isinstance(value, str):
+        return {value}
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return {v for v in value if isinstance(v, str)}
+    return set()
+
+
+def make_claims_check(
+    claim: str,
+    grants: Mapping[str, AbstractSet[str]] | None = None,
+) -> AuthCheck:
+    """Build a native ``AuthCheck`` enforcing a claim→scope grant.
+
+    Reads ``claim`` from ``ctx.token.claims``. With ``grants=None`` the
+    caller is granted exactly the string values in the claim (identity).
+    With ``grants`` supplied, those values are mapped through the table
+    and unioned. Intended for OIDC modes: bearer tokens carry no OIDC
+    claims (``sub``, ``groups``, ``roles``, …) — only the verifier's
+    ``client_id`` / ``scopes`` echo — so claim→scope mapping is not
+    meaningful there; use :func:`make_acl_check` for bearer modes. The
+    required scope is read from ``ctx.component.meta["required_scope"]``;
+    components without it are unrestricted.
+
+    The ``"*"`` wildcard ("any required scope passes") is honoured only
+    when it comes from an operator-supplied ``grants`` table, never from a
+    raw claim value — a token whose claim literally contains ``"*"``
+    cannot escalate to universal access.
+    """
+    claim = claim.strip()
+    if not claim:
+        raise ValueError("claim must be a non-empty string")
+    # ``parse_claim_grants`` rejects a "*" key; enforce the same at the
+    # factory boundary so a hand-built grants dict cannot let an untrusted
+    # claim value of "*" escalate to universal access. The "*" wildcard
+    # belongs in a grant's scope *list*, never its key.
+    if grants is not None and "*" in grants:
+        raise ValueError(
+            '"*" is not a valid grants key (it would let an untrusted '
+            'claim value of "*" pass any required scope)'
+        )
+
+    def check(ctx: AuthContext) -> bool:
+        scope = _resolve_required(ctx.component)
+        if scope is None:
+            return True
+        token = ctx.token
+        if token is None:
+            return False
+        values = _extract_claim_values(getattr(token, "claims", None), claim)
+        if grants is None:
+            # Identity mode: claim values are the granted scopes. Exclude
+            # "*" so an untrusted claim value cannot trigger the wildcard.
+            granted: set[str] = {v for v in values if v != "*"}
+        else:
+            granted = set()
+            for value in values:
+                mapped = grants.get(value)
+                if mapped is not None:
+                    granted |= set(mapped)
+        return "*" in granted or scope in granted
+
+    return check
+
+
+def parse_claim_grants(raw: str) -> dict[str, frozenset[str]]:
+    """Parse an inline-JSON claim-value→scopes map. Fail-fast.
+
+    Schema: a JSON object mapping each claim value (e.g. a group name) to
+    an array of scope strings. Empty object is permitted (deny-everyone).
+    Mirrors ``load_acl``'s value validation. Raises
+    :class:`ConfigurationError` on every malformed condition.
+    """
+    try:
+        data = json.loads(raw)
+    except (json.JSONDecodeError, ValueError) as exc:
+        raise ConfigurationError(
+            f"claim grants could not be parsed as JSON: {exc}"
+        ) from exc
+    if not isinstance(data, dict):
+        raise ConfigurationError(
+            "claim grants must be a JSON object mapping claim values to "
+            f"scope arrays; got {type(data).__name__}"
+        )
+    result: dict[str, frozenset[str]] = {}
+    for key, scopes in data.items():
+        # JSON object keys are always strings.
+        if not key.strip():
+            raise ConfigurationError(
+                "claim grants: claim-value key is empty or whitespace-only"
+            )
+        if key == "*":
+            raise ConfigurationError(
+                'claim grants: "*" as a claim-value key is not allowed '
+                "(global key wildcards collapse the model)"
+            )
+        if not isinstance(scopes, list):
+            raise ConfigurationError(
+                f"claim grants: value for {key!r} must be an array of scope "
+                f"strings; got {type(scopes).__name__}"
+            )
+        cleaned: set[str] = set()
+        for scope in scopes:
+            if not isinstance(scope, str):
+                raise ConfigurationError(
+                    f"claim grants: {key!r}: scope must be a string; got "
+                    f"{type(scope).__name__}"
+                )
+            if not scope.strip():
+                raise ConfigurationError(
+                    f"claim grants: {key!r}: scope is empty or whitespace-only"
+                )
+            cleaned.add(scope.strip())
+        result[key] = frozenset(cleaned)
+    return result
+
+
+def make_acl_check(
+    acl: Mapping[str, AbstractSet[str]],
+) -> AuthCheck:
+    """Build a native ``AuthCheck`` enforcing a subject→scope ACL.
+
+    The returned check reads the caller subject from ``ctx.token``
+    (``sub`` claim, else ``client_id``) and the required scope from
+    ``ctx.component.meta["required_scope"]``. It works in any mode that
+    produces a token — keyed by ``sub`` under OIDC, by ``client_id``
+    under bearer. It is the *only* authz primitive available in bearer
+    modes (which carry no OIDC claims), but is equally usable under OIDC
+    when the ACL keys match the token's ``sub``. ``acl`` is captured by
+    reference.
     """
 
-    def authorize(subject: str | None, required_scope: str) -> bool:
+    def check(ctx: AuthContext) -> bool:
+        scope = _resolve_required(ctx.component)
+        if scope is None:
+            return True
+        token = ctx.token
+        if token is None:
+            return False
+        subject = _subject_of(token)
         if subject is None:
             return False
         granted = acl.get(subject)
         if granted is None:
             return False
-        return "*" in granted or required_scope in granted
+        return "*" in granted or scope in granted
 
-    return authorize
-
-
-# ---------------------------------------------------------------------------
-# check_authorization (escape-hatch helper)
-# ---------------------------------------------------------------------------
+    return check
 
 
-def check_authorization(
-    required_scope: str,
-    *,
-    authorizer: Authorizer | None = None,
-    subject: str | None = None,
-) -> None:
-    """Imperative authz check for use inside a tool / resource / prompt body.
+def any_check(*checks: AuthCheck) -> AuthCheck:
+    """Combine checks with OR (native ``AuthMiddleware`` uses AND).
 
-    Resolution order:
-
-    1. ``authorizer`` argument if given.
-    2. The ambient :data:`_current_authorizer` (set by
-       :class:`AuthorizationMiddleware.__init__`).
-    3. Otherwise raise :class:`RuntimeError`.
-
-    Subject resolution:
-
-    - ``subject`` used as-is when a non-``None`` value is passed.
-    - When omitted (or ``None``), :func:`fastmcp_pvl_core.get_subject`
-      is called.  ``get_subject`` itself may return ``None`` if no auth
-      context is available — that ``None`` is then forwarded to the
-      authorizer, which typically denies it.
-
-    Scope normalisation:
-
-    The ``required_scope`` is stripped of surrounding whitespace before
-    the authorizer is called.  Passing an empty or whitespace-only scope
-    raises :class:`ValueError`.
-
-    Args:
-        required_scope: Scope string to require, e.g. ``"write"`` or
-            ``"read:project-foo"``.
-        authorizer: Override the ambient authorizer.  Useful when the
-            middleware isn't installed but a code path still wants the
-            check.
-        subject: Override the ``get_subject()`` lookup.  Both omitting
-            the argument and explicitly passing ``None`` trigger
-            :func:`get_subject`; to force ``None`` to the authorizer (the
-            "no auth context" test case), patch :func:`get_subject` directly
-            or use :func:`make_acl_authorizer` (which returns ``False`` on
-            ``None`` subject) and call it directly.
-
-    Raises:
-        AuthzDenied: when the authorizer returns ``False``.
-        RuntimeError: when no authorizer is reachable (neither ambient
-            nor explicit).
-        ValueError: when ``required_scope`` is empty or whitespace-only.
+    Returns an async check that passes if any sub-check passes,
+    short-circuiting on the first ``True``. Sub-checks may be sync or
+    async; coroutine results are awaited. Used for ``multi`` mode where a
+    bearer caller satisfies the ACL check and an OIDC caller satisfies
+    the claims check. Sub-checks must signal deny by returning ``False``
+    rather than raising; a sub-check that raises is logged at WARNING and
+    propagates out of ``any_check``, short-circuiting the OR (the
+    remaining checks are not tried). Re-raising keeps the deny-safe
+    posture — an errored check never silently falls through to a later
+    allow — while the log makes an unexpected sub-check failure
+    distinguishable from a deliberate deny.
     """
-    required_scope = required_scope.strip()
-    if not required_scope:
-        raise ValueError("required_scope must be a non-empty string")
+    if not checks:
+        raise ValueError("any_check requires at least one check")
 
-    if authorizer is None:
-        authorizer = _current_authorizer.get()
-        if authorizer is None:
-            raise RuntimeError(
-                "no authorizer in context; install AuthorizationMiddleware "
-                "or pass authorizer= explicitly to check_authorization()"
-            )
-
-    resolved_subject = subject if subject is not None else get_subject()
-
-    if not authorizer(resolved_subject, required_scope):
-        raise AuthzDenied(subject=resolved_subject, required_scope=required_scope)
-
-
-# ---------------------------------------------------------------------------
-# AuthorizationMiddleware
-# ---------------------------------------------------------------------------
-
-
-logger = logging.getLogger(__name__)
-
-
-class AuthorizationMiddleware(Middleware):
-    """fastmcp middleware that enforces ``meta["required_scope"]`` on components.
-
-    Tools, resources, and prompts opt in by setting
-    ``meta={"required_scope": "<scope>"}`` at registration.  Components
-    without the meta key are unrestricted.
-
-    See ``docs/specs/authorization-submodule.md`` for the full design.
-    """
-
-    def __init__(
-        self,
-        *,
-        authorizer: Authorizer,
-        expose_subject_in_error: bool = False,
-    ) -> None:
-        """Construct the middleware and publish the authorizer ambient.
-
-        Args:
-            authorizer: Decision callable.  Saved on the instance and
-                also written to the package-internal
-                ``_current_authorizer`` :class:`ContextVar` so that
-                :func:`check_authorization` calls inside tool bodies
-                find it without an explicit ``authorizer=`` kwarg.
-            expose_subject_in_error: When ``True``, the wire-side deny
-                payload includes the ``subject`` key.  Defaults to
-                ``False`` (multi-user disclosure risk).  The subject is
-                always logged at WARNING regardless.
-        """
-        self._authorizer = authorizer
-        self._expose_subject = expose_subject_in_error
-        set_current_authorizer(authorizer)
-
-    def _format_deny_payload(self, *, subject: str | None, required_scope: str) -> str:
-        """Render the JSON-encoded deny payload for the wire.
-
-        When ``expose_subject_in_error`` is ``True`` and the subject is
-        ``None``, the payload includes ``"subject": null``.  Downstream code
-        that consumes the payload should defend against this case.
-        """
-        body: dict[str, Any] = {
-            "code": "authz_denied",
-            "required_scope": required_scope,
-        }
-        if self._expose_subject:
-            body["subject"] = subject
-        return json.dumps(body, separators=(",", ":"))
-
-    def _log_deny(
-        self, *, kind: str, name: str, subject: str | None, required_scope: str
-    ) -> None:
-        """Log an authz denial at WARNING (subject always included in logs)."""
-        logger.warning(
-            "authz_denied kind=%s name=%s subject=%r required_scope=%r",
-            kind,
-            name,
-            subject,
-            required_scope,
-        )
-
-    def _enforce_static(
-        self,
-        *,
-        kind: str,
-        name: str,
-        meta: Mapping[str, Any],
-        error_cls: type[Exception],
-    ) -> None:
-        """Run the static ``meta["required_scope"]`` check.
-
-        Raises ``error_cls`` (constructed with the JSON deny payload) on
-        deny.  Does nothing when meta has no requirement.
-        """
-        required = meta.get("required_scope")
-        if required is None:
-            return
-        if not isinstance(required, str) or not required.strip():
-            logger.warning(
-                "authz_meta_invalid kind=%s name=%s required_scope=%r — "
-                "expected non-empty string; treating as unrestricted",
-                kind,
-                name,
-                required,
-            )
-            return
-        required = required.strip()
-        subject = get_subject()
-        if not self._authorizer(subject, required):
-            self._log_deny(
-                kind=kind, name=name, subject=subject, required_scope=required
-            )
-            raise error_cls(
-                self._format_deny_payload(subject=subject, required_scope=required)
-            )
-
-    async def _call_with_authz_translation(
-        self,
-        *,
-        kind: str,
-        name: str,
-        error_cls: type[Exception],
-        call_next: Any,
-        context: MiddlewareContext,
-    ) -> Any:
-        """Run ``call_next`` and translate AuthzDenied to ``error_cls``."""
-        try:
-            return await call_next(context)
-        except AuthzDenied as exc:
-            self._log_deny(
-                kind=kind,
-                name=name,
-                subject=exc.subject,
-                required_scope=exc.required_scope,
-            )
-            raise error_cls(
-                self._format_deny_payload(
-                    subject=exc.subject,
-                    required_scope=exc.required_scope,
-                )
-            ) from None
-
-    def _filter_components(self, components: list[Any]) -> list[Any]:
-        """Drop components whose ``meta["required_scope"]`` denies the caller."""
-        subject = get_subject()
-        kept: list[Any] = []
-        for component in components:
-            meta = getattr(component, "meta", None) or {}
-            required = meta.get("required_scope")
-            if required is None:
-                kept.append(component)
-                continue
-            if not isinstance(required, str) or not required.strip():
+    async def combined(ctx: AuthContext) -> bool:
+        for check in checks:
+            try:
+                result = check(ctx)
+                if inspect.isawaitable(result):
+                    result = await result
+            except Exception:
                 logger.warning(
-                    "authz_meta_invalid component=%r required_scope=%r — "
-                    "expected non-empty string; treating as unrestricted",
-                    component,
-                    required,
+                    "any_check sub-check raised; propagating (treated as deny)",
+                    exc_info=True,
                 )
-                kept.append(component)
-                continue
-            required = required.strip()
-            if self._authorizer(subject, required):
-                kept.append(component)
-        return kept
+                raise
+            if result:
+                return True
+        return False
 
-    async def on_call_tool(self, context: MiddlewareContext, call_next: Any) -> Any:
-        """Enforce ``required_scope`` on tool calls."""
-        if context.fastmcp_context is None:
-            raise RuntimeError(
-                "AuthorizationMiddleware.on_call_tool: fastmcp_context is None; "
-                "ensure the middleware is installed on a FastMCP server"
-            )
-        # NOTE: lookup failure path skips the static meta check. See
-        # docs/specs/authorization-submodule.md (AuthorizationMiddleware
-        # section, "When the inner-component lookup ... raises").
-        try:
-            tool = await context.fastmcp_context.fastmcp.get_tool(context.message.name)
-        except Exception as exc:  # noqa: BLE001 — defensive, logged
-            logger.warning(
-                "tool lookup failed during authz check; falling through name=%s exc=%r",
-                context.message.name,
-                exc,
-            )
-            return await self._call_with_authz_translation(
-                kind="tool",
-                name=context.message.name,
-                error_cls=ToolError,
-                call_next=call_next,
-                context=context,
-            )
-        self._enforce_static(
-            kind="tool",
-            name=context.message.name,
-            meta=getattr(tool, "meta", None) or {},
-            error_cls=ToolError,
-        )
-        return await self._call_with_authz_translation(
-            kind="tool",
-            name=context.message.name,
-            error_cls=ToolError,
-            call_next=call_next,
-            context=context,
-        )
-
-    async def on_read_resource(self, context: MiddlewareContext, call_next: Any) -> Any:
-        """Enforce ``required_scope`` on resource reads."""
-        if context.fastmcp_context is None:
-            raise RuntimeError(
-                "AuthorizationMiddleware.on_read_resource: fastmcp_context is None; "
-                "ensure the middleware is installed on a FastMCP server"
-            )
-        # NOTE: lookup failure path skips the static meta check. See
-        # docs/specs/authorization-submodule.md (AuthorizationMiddleware
-        # section, "When the inner-component lookup ... raises").
-        try:
-            resource = await context.fastmcp_context.fastmcp.get_resource(
-                context.message.uri
-            )
-        except Exception as exc:  # noqa: BLE001 — defensive, logged
-            logger.warning(
-                "resource lookup failed during authz check; falling through "
-                "uri=%s exc=%r",
-                context.message.uri,
-                exc,
-            )
-            return await self._call_with_authz_translation(
-                kind="resource",
-                name=str(context.message.uri),
-                error_cls=ResourceError,
-                call_next=call_next,
-                context=context,
-            )
-        self._enforce_static(
-            kind="resource",
-            name=str(context.message.uri),
-            meta=getattr(resource, "meta", None) or {},
-            error_cls=ResourceError,
-        )
-        return await self._call_with_authz_translation(
-            kind="resource",
-            name=str(context.message.uri),
-            error_cls=ResourceError,
-            call_next=call_next,
-            context=context,
-        )
-
-    async def on_get_prompt(self, context: MiddlewareContext, call_next: Any) -> Any:
-        """Enforce ``required_scope`` on prompt retrievals."""
-        if context.fastmcp_context is None:
-            raise RuntimeError(
-                "AuthorizationMiddleware.on_get_prompt: fastmcp_context is None; "
-                "ensure the middleware is installed on a FastMCP server"
-            )
-        # NOTE: lookup failure path skips the static meta check. See
-        # docs/specs/authorization-submodule.md (AuthorizationMiddleware
-        # section, "When the inner-component lookup ... raises").
-        try:
-            prompt = await context.fastmcp_context.fastmcp.get_prompt(
-                context.message.name
-            )
-        except Exception as exc:  # noqa: BLE001 — defensive, logged
-            logger.warning(
-                "prompt lookup failed during authz check; falling through "
-                "name=%s exc=%r",
-                context.message.name,
-                exc,
-            )
-            return await self._call_with_authz_translation(
-                kind="prompt",
-                name=context.message.name,
-                error_cls=PromptError,
-                call_next=call_next,
-                context=context,
-            )
-        self._enforce_static(
-            kind="prompt",
-            name=context.message.name,
-            meta=getattr(prompt, "meta", None) or {},
-            error_cls=PromptError,
-        )
-        return await self._call_with_authz_translation(
-            kind="prompt",
-            name=context.message.name,
-            error_cls=PromptError,
-            call_next=call_next,
-            context=context,
-        )
-
-    async def on_list_tools(self, context: MiddlewareContext, call_next: Any) -> Any:
-        """Filter tool listings by what the caller can call."""
-        tools = await call_next(context)
-        return self._filter_components(tools)
-
-    async def on_list_resources(
-        self, context: MiddlewareContext, call_next: Any
-    ) -> Any:
-        """Filter resource listings by what the caller can read."""
-        resources = await call_next(context)
-        return self._filter_components(resources)
-
-    async def on_list_resource_templates(
-        self, context: MiddlewareContext, call_next: Any
-    ) -> Any:
-        """Filter resource template listings by what the caller can read."""
-        templates = await call_next(context)
-        return self._filter_components(templates)
-
-    async def on_list_prompts(self, context: MiddlewareContext, call_next: Any) -> Any:
-        """Filter prompt listings by what the caller can retrieve."""
-        prompts = await call_next(context)
-        return self._filter_components(prompts)
+    return combined
