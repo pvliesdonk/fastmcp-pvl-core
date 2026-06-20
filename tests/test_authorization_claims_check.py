@@ -33,6 +33,13 @@ def test_blank_claim_raises() -> None:
         make_claims_check("   ")
 
 
+def test_star_grants_key_rejected_at_construction() -> None:
+    # A hand-built grants dict must not be able to map a literal "*" claim
+    # value to scopes (would mirror the escalation parse_claim_grants blocks).
+    with pytest.raises(ValueError, match="not a valid grants key"):
+        make_claims_check("groups", {"*": frozenset({"admin"})})
+
+
 def test_identity_allows_when_claim_contains_scope() -> None:
     check = make_claims_check("groups")
     ctx = _ctx({"groups": ["read", "write"]}, {"required_scope": "write"})

@@ -7,9 +7,9 @@ on their tools, resources, or prompts can opt in by:
 2. Building a native ``AuthCheck`` via :func:`make_acl_check`
    (subject→scope ACL; any mode that produces a token),
    :func:`make_claims_check` (OIDC claim→scope), or :func:`any_check`
-   (OR-combinator for ``multi`` mode).
-3. Installing FastMCP's ``AuthMiddleware(auth=<check>)`` in the server's
-   middleware stack.
+   (OR-combinator over multiple checks, e.g. for ``multi`` mode).
+3. Installing ``AuthMiddleware(auth=<check>)`` — imported from
+   ``fastmcp.server.middleware`` — in the server's middleware stack.
 """
 
 from __future__ import annotations
@@ -131,7 +131,7 @@ def load_acl(path: Path) -> dict[str, frozenset[str]]:
 
 
 # ---------------------------------------------------------------------------
-# Native AuthCheck helpers (FastMCP 3.3+)
+# Native AuthCheck helpers (FastMCP >=3.3.1)
 # ---------------------------------------------------------------------------
 
 
@@ -165,15 +165,16 @@ def _resolve_required(component: object) -> str | None:
 def _subject_of(token: object) -> str | None:
     """Resolve the caller subject from a token.
 
-    Prefers the OIDC ``sub`` claim; falls back to ``client_id`` (the
-    bearer-mode subject). Uses the same ``sub``→``client_id`` rule as
-    ``fastmcp_pvl_core.get_subject`` so the ACL keys consistently across
-    OIDC and bearer modes. (Kept local to avoid coupling to the ambient
-    ``get_access_token`` path that ``get_subject`` uses.) Unlike
-    ``get_subject`` it does not synthesise a ``"local"`` subject for the
-    no-token / stdio case: a ``None`` token yields ``None`` here and the
-    check denies, since authorization is meaningful only under an
-    ``AuthProvider``.
+    Applies the same ``sub``→``client_id`` priority as
+    ``fastmcp_pvl_core.get_subject`` (prefer the OIDC ``sub`` claim, fall
+    back to the bearer ``client_id``) so the ACL keys consistently across
+    OIDC and bearer modes — but **diverges** from ``get_subject`` on the
+    no-token / stdio case: it does *not* synthesise a ``"local"``
+    subject. A ``None`` token yields ``None`` here and the check denies,
+    since authorization is meaningful only under an ``AuthProvider``
+    (an ACL entry keyed ``"local"`` therefore never matches). Kept local
+    to avoid coupling to the ambient ``get_access_token`` path that
+    ``get_subject`` uses.
     """
     claims = getattr(token, "claims", None)
     if isinstance(claims, dict):
@@ -189,10 +190,10 @@ def _subject_of(token: object) -> str | None:
 def _extract_claim_values(claims: object, claim: str) -> set[str]:
     """Normalise a claim's value to a set of strings (lenient).
 
-    Scalar string -> ``{value}`` (never whitespace-split). List/tuple/set
-    -> its string elements only. Any other shape (absent, int, bool,
-    None, dict, empty list) -> empty set. A request is never failed on an
-    unexpected claim shape.
+    Scalar string -> ``{value}`` (never whitespace-split).
+    List/tuple/set/frozenset -> its string elements only. Any other shape
+    (absent, int, bool, None, dict, empty list) -> empty set. A request
+    is never failed on an unexpected claim shape.
     """
     if not isinstance(claims, dict):
         return set()
@@ -226,6 +227,15 @@ def make_claims_check(
     claim = claim.strip()
     if not claim:
         raise ValueError("claim must be a non-empty string")
+    # ``parse_claim_grants`` rejects a "*" key; enforce the same at the
+    # factory boundary so a hand-built grants dict cannot let an untrusted
+    # claim value of "*" escalate to universal access. The "*" wildcard
+    # belongs in a grant's scope *list*, never its key.
+    if grants is not None and "*" in grants:
+        raise ValueError(
+            '"*" is not a valid grants key (it would let an untrusted '
+            'claim value of "*" pass any required scope)'
+        )
 
     def check(ctx: AuthContext) -> bool:
         scope = _resolve_required(ctx.component)
