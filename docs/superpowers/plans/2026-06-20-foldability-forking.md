@@ -22,7 +22,7 @@
 
 ## File Structure
 
-- `src/fastmcp_pvl_core/*.py` — modified: absolute self-imports → relative (12 files).
+- `src/fastmcp_pvl_core/*.py` — modified: absolute self-imports → relative (11 files; `_logging.py` nets to unchanged — its one match is a docstring example that is converted then reverted).
 - `docs/forking.md` — created: the forker-facing guide.
 - `README.md` — modified: one pointer to `docs/forking.md` near design principles.
 - `CLAUDE.md` (project root, contributor guidance) — modified: new "Keep pvl-core cleanly foldable" directive.
