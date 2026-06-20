@@ -109,6 +109,9 @@ is to correct pvl-core centrally — one change, every downstream follows
 files the issue against pvl-core; it does not fork the behaviour and
 reimplement it locally.
 
+> Planning to fork and cut the dependency? See [docs/forking.md](docs/forking.md)
+> for the fold-in recipe and what a single-server fork can safely collapse.
+
 ## API stability
 
 This package is stable at 2.x and follows
