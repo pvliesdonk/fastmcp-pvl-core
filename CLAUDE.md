@@ -21,7 +21,8 @@ concerns so the server family stays coherent as it grows.
 ## The framing principle
 
 Shape decisions live in pvl-core. Downstream contributes
-domain-specific logic only. Five facets in detail.
+domain-specific logic only. Five facets in detail; a sixth keeps the
+exit clean for forks that leave the family.
 
 ### Shape decisions live in pvl-core
 

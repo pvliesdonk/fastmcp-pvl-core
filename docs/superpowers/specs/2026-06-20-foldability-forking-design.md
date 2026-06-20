@@ -66,19 +66,23 @@ hygiene rather than intent:
 | CLI `prog` | OK — parameterized | `make_serve_parser(prog=...)`; no console-script under pvl-core's dist name. |
 | Public API surface | OK — narrow | Single `__init__` re-export with `__all__`; internals `_`-prefixed. |
 | `__version__` | OK — literal | A string in `__init__.py`, not read from dist metadata; survives vendoring (reports stale name cosmetically). |
-| Intra-package imports | **friction — 30 absolute** | `from fastmcp_pvl_core._x import …` (15 in `__init__.py`'s re-export block, 15 across 11 sibling modules), 0 relative. The one real obstacle. |
+| Intra-package imports | **friction — 29 absolute** | `from fastmcp_pvl_core._x import …` (15 in `__init__.py`'s re-export block, 14 across 10 sibling modules), 0 relative. The one real obstacle. (A 30th `from fastmcp_pvl_core` line in a `_logging.py` docstring example is downstream-facing usage, not an import.) |
 
 The single high-leverage change is the last row.
 
 ## 4. Deliverable 1 — relative intra-package imports (code)
 
-Convert the 30 absolute self-import statements (across 12 files) inside
+Convert the 29 absolute self-import statements (across 11 files) inside
 `src/fastmcp_pvl_core/` to relative imports:
 
 - `src/fastmcp_pvl_core/__init__.py` — the 15 re-export statements
   (`from fastmcp_pvl_core._apps import …` → `from ._apps import …`).
-- The 15 cross-module imports across 11 sibling modules
+- The 14 cross-module imports across 10 sibling modules
   (`from fastmcp_pvl_core._x import …` → `from ._x import …`).
+
+One further `from fastmcp_pvl_core import SecretMaskFilter` appears in a
+`_logging.py` docstring code example — downstream-facing usage, not an
+intra-package import — and is left unchanged.
 
 **Out of scope of this change:** test files keep their absolute
 `fastmcp_pvl_core` imports — tests are *external consumers* of the package and
