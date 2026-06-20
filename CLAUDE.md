@@ -127,7 +127,8 @@ compromise.
 Contributors preserve:
 
 - **Relative intra-package imports** (`from ._x import …`) so a fold-in is a
-  directory rename, not a find-replace.
+  directory rename, not a find-replace. (Docstring code examples that show
+  *downstream* usage stay absolute — they are not intra-package imports.)
 - **No self-name lookups** — never resolve pvl-core's own distribution name or
   package resources at runtime (`importlib.metadata.version(...)`,
   `importlib.resources.files("fastmcp_pvl_core")`). Naming the package in

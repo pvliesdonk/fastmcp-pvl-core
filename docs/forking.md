@@ -77,6 +77,9 @@ look fully its own. Search-and-replace at your leisure:
   `_kv_store.py` (shown when an optional extra is missing).
 - The `"file an issue against fastmcp-pvl-core"` pointer in the
   FastMCP-internal-API `RuntimeError` in `_icons.py`.
+- The `from fastmcp_pvl_core import SecretMaskFilter` usage example in the
+  `SecretMaskFilter` docstring in `_logging.py` — a downstream-facing import
+  path; point it at your vendored package name.
 - Sphinx-style docstring cross-references (`:class:`~fastmcp_pvl_core....``) and
   the `fastmcp_pvl_core_current_auth_mode` ContextVar name, if you rename the
   package for real.

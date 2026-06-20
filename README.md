@@ -110,7 +110,7 @@ is to correct pvl-core centrally — one change, every downstream follows
 files the issue against pvl-core; it does not fork the behaviour and
 reimplement it locally.
 
-### Keep pvl-core foldable
+### Keep pvl-core cleanly foldable
 
 A fork is not a downstream. The MIT licence lets anyone vendor
 pvl-core into their own tree — to take over a single server when the
