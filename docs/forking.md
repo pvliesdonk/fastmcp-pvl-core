@@ -74,7 +74,9 @@ look fully its own. Search-and-replace at your leisure:
 
 - The version label in `_server_info.py` (reports `fastmcp-pvl-core` + version).
 - The `pip install fastmcp-pvl-core[...]` hints in `_debug.py`, `_auth.py`,
-  `_kv_store.py`, `_icons.py` (shown when an optional extra is missing).
+  `_kv_store.py` (shown when an optional extra is missing).
+- The `"file an issue against fastmcp-pvl-core"` pointer in the
+  FastMCP-internal-API `RuntimeError` in `_icons.py`.
 - Sphinx-style docstring cross-references (`:class:`~fastmcp_pvl_core....``) and
   the `fastmcp_pvl_core_current_auth_mode` ContextVar name, if you rename the
   package for real.
