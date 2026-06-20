@@ -59,6 +59,17 @@ def test_falls_back_to_client_id_when_no_sub_claim() -> None:
     assert check(ctx) is True
 
 
+def test_sub_claim_takes_priority_over_client_id() -> None:
+    # Security contract: the OIDC `sub` wins over `client_id`, so a caller
+    # cannot key off a client_id when a (different) sub is present.
+    check = make_acl_check({"oidc:subject": frozenset({"read"})})
+    ctx = _ctx(
+        _FakeToken(client_id="oidc:subject", claims={"sub": "someone:else"}),
+        {"required_scope": "read"},
+    )
+    assert check(ctx) is False  # keyed by sub="someone:else", not the client_id
+
+
 def test_no_token_denies() -> None:
     check = make_acl_check({"user:alice": frozenset({"write"})})
     assert check(_ctx(None, {"required_scope": "write"})) is False

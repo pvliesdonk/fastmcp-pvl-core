@@ -315,10 +315,11 @@ Key properties:
 - **`stdio` transport bypasses checks entirely** — FastMCP's
   `AuthMiddleware` short-circuits before the token is inspected (there is
   no OAuth concept over stdio).
-- **`none` auth mode produces no token** — a component requiring a scope
-  is denied (`token is None`), while a component without
-  `meta["required_scope"]` stays accessible. Authz is meaningful only
-  under an `AuthProvider`.
+- **Authorization is meaningful only under an `AuthProvider`.** With no
+  provider configured there is no token for the checks to read and
+  FastMCP does not run auth-check enforcement, so these checks gate
+  access only when authentication is actually configured — don't rely on
+  them as a control otherwise.
 
 ### Remote debugging in containers
 

@@ -286,10 +286,17 @@ re-exports, and the docs:
 
 mypy-strict + ruff gates. Tests patch `AuthContext` with a fake token
 (no live server needed); `AuthContext` is a plain dataclass
-(`.token`, `.component`). The old `tests/test_authorization_*.py` files
-are **rewritten** to assert the new state (not deleted, not silently
-patched), per the repo's removal discipline for tests exercising
-removed code.
+(`.token`, `.component`). The old per-concept test files
+(`test_authorization_authorizer.py`, `test_authorization_check.py`,
+`test_authorization_middleware.py`) are **replaced** by new per-symbol
+files (`test_authorization_acl_check.py`,
+`test_authorization_claims_check.py`, `test_authorization_any_check.py`,
+`test_authorization_grants_parser.py`) that assert the new state. This
+satisfies the repo's removal discipline (coverage of the removed
+behaviour is not silently dropped — it is rewritten to cover the
+replacement symbols, and expanded); the file layout changes because the
+old symbols no longer exist to test. `test_authorization_loader.py`
+(for the kept `load_acl`) is retained unchanged.
 
 | File | Coverage |
 |---|---|
