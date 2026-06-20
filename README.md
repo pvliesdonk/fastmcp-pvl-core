@@ -27,7 +27,8 @@ classification test that follows from it.
 `fastmcp-pvl-core` is not a buffet of helpers downstream picks from
 à la carte. It is the load-bearing layer that fixes the shape of
 cross-cutting concerns across the server family so the family stays
-coherent as it grows. Five principles follow from that role.
+coherent as it grows. Five principles follow from that role; a
+sixth keeps the exit clean for forks that leave the family.
 
 ### Shape decisions live in pvl-core
 
@@ -108,6 +109,23 @@ is to correct pvl-core centrally — one change, every downstream follows
 — or to evolve the spec. A downstream that believes pvl-core is wrong
 files the issue against pvl-core; it does not fork the behaviour and
 reimplement it locally.
+
+### Keep pvl-core cleanly foldable
+
+A fork is not a downstream. The MIT licence lets anyone vendor
+pvl-core into their own tree — to take over a single server when the
+family is no longer maintained, or to run their own opinionated
+variant. That exit ramp is kept cheap on purpose: the seams that make
+pvl-core foldable (relative intra-package imports, no runtime lookups
+of its own package name, identity passed in rather than hard-coded, a
+narrow public surface) are the same seams that keep it a clean
+load-bearing layer. Foldability is a modularity property, not a
+coherence compromise — and never an excuse to flatten pvl-core's own
+abstractions "in case someone forks"; collapsing those is fork-side
+work.
+
+> Planning to fork and cut the dependency? See [docs/forking.md](docs/forking.md)
+> for the fold-in recipe and what a single-server fork can safely collapse.
 
 ## API stability
 

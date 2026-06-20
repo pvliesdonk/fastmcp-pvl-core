@@ -21,7 +21,8 @@ concerns so the server family stays coherent as it grows.
 ## The framing principle
 
 Shape decisions live in pvl-core. Downstream contributes
-domain-specific logic only. Five facets in detail.
+domain-specific logic only. Five facets in detail; a sixth keeps the
+exit clean for forks that leave the family.
 
 ### Shape decisions live in pvl-core
 
@@ -112,6 +113,37 @@ downstream follows — or to evolve the spec. A downstream that believes
 pvl-core is wrong files against pvl-core; it does not fork the
 behaviour and reimplement. "pvl-core is wrong, so I'll do it myself" is
 the failure this principle exists to prevent.
+
+### Keep pvl-core cleanly foldable
+
+A fork is not a downstream. MIT lets anyone vendor pvl-core into their own tree
+— to take over a single server when the fleet is no longer maintained, or to run
+their own opinionated variant. We keep that exit ramp cheap: credible
+foldability lowers the cost of depending on pvl-core in the first place, and the
+seams that make the package vendorable are the same seams that keep it a clean
+load-bearing layer. Foldability is a modularity property, not a coherence
+compromise.
+
+Contributors preserve:
+
+- **Relative intra-package imports** (`from ._x import …`) so a fold-in is a
+  directory rename, not a find-replace. (Docstring code examples that show
+  *downstream* usage stay absolute — they are not intra-package imports.)
+- **No self-name lookups** — never resolve pvl-core's own distribution name or
+  package resources at runtime (`importlib.metadata.version(...)`,
+  `importlib.resources.files("fastmcp_pvl_core")`). Naming the package in
+  human-facing text (install hints, log/error messages, docstring
+  cross-references) is fine; the prohibition is on *runtime* resolution of the
+  name, not on mentioning it in prose.
+- **Parameterized identity** — env prefixes, CLI `prog`, and similar
+  caller-facing identity stay arguments, never hard-coded to pvl-core's name.
+- **A narrow public surface** — the `__init__` re-export with `__all__` is the
+  contract; internals stay `_`-prefixed.
+
+This does **not** authorize pre-flattening abstractions "in case someone forks."
+The factory/`Build*` layer, the `env(prefix, name)` indirection, and the
+optional extras exist because pvl-core serves the whole family; collapsing them
+is fork-side work documented in `docs/forking.md`, never done in pvl-core.
 
 ## Practical consequences
 

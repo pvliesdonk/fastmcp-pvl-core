@@ -24,9 +24,9 @@ else:  # pragma: no cover - fallback for Python 3.10
     import tomli as tomllib  # type: ignore[import-not-found,unused-ignore]
     from typing_extensions import assert_never
 
-from fastmcp_pvl_core._config import ServerConfig
-from fastmcp_pvl_core._errors import ConfigurationError
-from fastmcp_pvl_core._subject import set_current_auth_mode
+from ._config import ServerConfig
+from ._errors import ConfigurationError
+from ._subject import set_current_auth_mode
 
 if TYPE_CHECKING:
     from fastmcp.server.auth import (

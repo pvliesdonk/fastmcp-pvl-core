@@ -20,7 +20,7 @@ if TYPE_CHECKING:
 
     # Imported only for typing; runtime import would create a cycle
     # (``_auth`` imports ``set_current_auth_mode`` from this module).
-    from fastmcp_pvl_core._auth import AuthMode
+    from ._auth import AuthMode
 
 # Per-context pointer to the auth mode resolved at server startup.
 # ``build_auth`` calls ``set_current_auth_mode`` once after resolving
