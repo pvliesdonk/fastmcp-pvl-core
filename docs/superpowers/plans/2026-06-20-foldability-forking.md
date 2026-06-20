@@ -57,9 +57,9 @@ lowers the cost of depending on pvl-core in the first place.
 
 ## Deliverables
 
-1. Convert the 30 absolute intra-package imports in `src/fastmcp_pvl_core/` to
+1. Convert the 29 absolute intra-package imports in `src/fastmcp_pvl_core/` to
    relative imports, so a fold-in is a directory rename rather than a
-   30-site find-replace. Behavior-preserving; tests keep absolute imports.
+   29-site find-replace. Behavior-preserving; tests keep absolute imports.
 2. Add `docs/forking.md` — fold-vs-pin tradeoff, fold-in recipe,
    bring-the-tests, collapsible-seams map, cosmetic scrub list.
 3. Add a "Keep pvl-core cleanly foldable" directive to the contributor
@@ -143,19 +143,16 @@ This issue is **not** closed by this PR.
 - Consumes: nothing.
 - Produces: identical public API; `import fastmcp_pvl_core` and all `from fastmcp_pvl_core import …` from *outside* the package still resolve unchanged.
 
-**The exact set of import statements to convert** (30 statements, 12 files). Two transform rules, both anchored to lines starting (after optional indentation) with `from fastmcp_pvl_core`:
+**The exact set.** The anchored grep `^[[:space:]]*from fastmcp_pvl_core` matches **30 lines**: 29 real import statements (15 in `__init__.py`, 14 across 10 sibling modules) plus **one docstring usage example** at `_logging.py:80` that is downstream-facing, not an import. The sed below cannot distinguish that docstring line — it too begins, after indentation, with `from fastmcp_pvl_core` — so the sed rewrites all 30 and Step 2b reverts the one docstring line. Two transform rules:
 
 - **Rule A (dotted submodule):** `from fastmcp_pvl_core._X import …` → `from ._X import …`
 - **Rule B (package-level):** `from fastmcp_pvl_core import …` → `from . import …`
 
-Rule B covers exactly these 4 deferred/package-level imports (do NOT miss them — Rule A's pattern skips them):
-- `_logging.py:80  from fastmcp_pvl_core import SecretMaskFilter`
-- `_server_info.py:105  from fastmcp_pvl_core import __version__ as core_version`
+Rule B covers exactly **one** real import: `_server_info.py:105  from fastmcp_pvl_core import __version__ as core_version`. (The other Rule-B-shaped line, `_logging.py:80`, is the docstring example handled by Step 2b. All other self-imports are dotted → Rule A.)
 
-(The other Rule-B-shaped lines are dotted and handled by Rule A.)
-
-**MUST NOT touch** — these contain `fastmcp_pvl_core` but are NOT imports (docstrings, a runtime ContextVar name, a JSON example string). Leave them exactly as-is:
-- `_factory.py:90` `:class:`~fastmcp_pvl_core.ServerConfig`` (docstring)
+**MUST stay absolute** — these contain `fastmcp_pvl_core` but are NOT intra-package imports; they must read with the absolute name at the end of this task:
+- `_logging.py:80` `from fastmcp_pvl_core import SecretMaskFilter` — a **docstring usage example** (downstream-facing); the sed rewrites it, Step 2b reverts it. This is the only one of these the sed touches.
+- `_factory.py:90` `:class:`~fastmcp_pvl_core.ServerConfig`` (docstring) — mid-line, sed never matches it.
 - `_authorization.py:169` ``fastmcp_pvl_core.get_subject`` (docstring)
 - `_server_info.py:60` `"core_version": "<fastmcp_pvl_core.__version__>"` (JSON example)
 - `_config.py:73, _config.py:131` `:func:` docstring refs
@@ -163,14 +160,14 @@ Rule B covers exactly these 4 deferred/package-level imports (do NOT miss them �
 - `_subject.py:54` `:func:` docstring ref
 - `_logging_middleware.py:9` `:func:` docstring ref
 
-- [ ] **Step 1: Snapshot the import lines before changing (baseline for diff review)**
+- [ ] **Step 1: Snapshot the matching lines before changing (baseline for diff review)**
 
 ```bash
 grep -rnE '^[[:space:]]*from fastmcp_pvl_core' src/fastmcp_pvl_core/*.py | tee /tmp/foldability_imports_before.txt
-wc -l < /tmp/foldability_imports_before.txt   # expect 30
+wc -l < /tmp/foldability_imports_before.txt   # expect 30 (29 imports + the _logging.py:80 docstring example)
 ```
 
-- [ ] **Step 2: Apply Rule A then Rule B, anchored to import lines only**
+- [ ] **Step 2: Apply Rule A then Rule B**
 
 ```bash
 # Rule A: dotted submodule imports -> single-dot relative
@@ -179,18 +176,27 @@ sed -i -E 's/^([[:space:]]*)from fastmcp_pvl_core\./\1from ./' src/fastmcp_pvl_c
 sed -i -E 's/^([[:space:]]*)from fastmcp_pvl_core import/\1from . import/' src/fastmcp_pvl_core/*.py
 ```
 
-Both `sed` patterns are anchored to `^[[:space:]]*from fastmcp_pvl_core`, so docstring/string occurrences (which never start with `from fastmcp_pvl_core`) are untouched.
+The anchor `^[[:space:]]*from fastmcp_pvl_core` also matches the indented `_logging.py:80` docstring line, so the sed rewrites it along with the 29 real imports. Mid-line occurrences (Sphinx xrefs, the JSON example, the ContextVar string) never start a line with `from fastmcp_pvl_core` and are untouched.
 
-- [ ] **Step 3: Verify no absolute self-import statements remain, and preserved refs survived**
+- [ ] **Step 2b: Revert the `_logging.py:80` docstring example back to absolute**
 
 ```bash
-# Expect EMPTY — no import statement references the absolute package name:
+# Restore the downstream-facing usage example — it is not an intra-package import
+# (a fork repoints it later, per docs/forking.md's cosmetic scrub list):
+sed -i -E 's/^([[:space:]]*)from \. import SecretMaskFilter/\1from fastmcp_pvl_core import SecretMaskFilter/' src/fastmcp_pvl_core/_logging.py
+grep -n 'from fastmcp_pvl_core import SecretMaskFilter' src/fastmcp_pvl_core/_logging.py   # expect line 80
+```
+
+- [ ] **Step 3: Verify only the docstring example keeps the absolute name**
+
+```bash
+# Expect EXACTLY ONE match — _logging.py:80, the reverted docstring example:
 grep -rnE '^[[:space:]]*(from fastmcp_pvl_core|import fastmcp_pvl_core)' src/fastmcp_pvl_core/*.py
-# Expect the 8 docstring/string refs STILL present (unchanged):
+# Expect the docstring/ContextVar/JSON refs STILL present (unchanged):
 grep -rn 'fastmcp_pvl_core' src/fastmcp_pvl_core/*.py
 ```
 
-First grep MUST print nothing. Second grep MUST still show the docstring/ContextVar/JSON lines from the MUST-NOT-touch list (proof we did not over-reach).
+First grep MUST print exactly one line (`_logging.py:80`). Second grep MUST still show the docstring/ContextVar/JSON refs from the MUST-stay-absolute list (proof we did not over-reach).
 
 - [ ] **Step 4: Run the full local-checks block**
 
@@ -211,7 +217,7 @@ git add src/fastmcp_pvl_core/
 git commit -m "$(cat <<'EOF'
 refactor: use relative intra-package imports for foldability
 
-Convert the 30 absolute `from fastmcp_pvl_core...` self-imports in src/ to
+Convert the 29 absolute `from fastmcp_pvl_core...` self-imports in src/ to
 relative imports so a fork can vendor the package by renaming the directory
 rather than find-replacing the package name across every module. Behavior
 preserving; tests (external consumers) keep absolute imports. Docstring
@@ -464,7 +470,7 @@ Enables a fork to vendor pvl-core by directory rename, and documents the full
 disentanglement.
 
 ## Changes
-- Relative intra-package imports (30 statements, behavior-preserving).
+- Relative intra-package imports (29 statements, behavior-preserving).
 - `docs/forking.md` — pin-vs-fold, fold-in recipe, bring-the-tests,
   collapsible-seams map, cosmetic scrub list.
 - `CLAUDE.md` — "keep pvl-core foldable" directive (forbids pre-flattening).
