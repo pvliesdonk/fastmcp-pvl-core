@@ -77,7 +77,7 @@ class SecretMaskFilter(logging.Filter):
     modules that log request/response details at ``DEBUG`` level::
 
         import logging
-        from . import SecretMaskFilter
+        from fastmcp_pvl_core import SecretMaskFilter
 
         logger = logging.getLogger(__name__)
         logger.addFilter(SecretMaskFilter())
