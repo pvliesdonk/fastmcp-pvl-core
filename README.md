@@ -313,13 +313,13 @@ Key properties:
 - **Loaders fail fast** with `ConfigurationError`; never silent denial.
 - **Loaded once at startup.** Restart to pick up changes.
 - **`stdio` transport bypasses checks entirely** — FastMCP's
-  `AuthMiddleware` short-circuits before the token is inspected (there is
-  no OAuth concept over stdio).
-- **Authorization is meaningful only under an `AuthProvider`.** With no
-  provider configured there is no token for the checks to read and
-  FastMCP does not run auth-check enforcement, so these checks gate
-  access only when authentication is actually configured — don't rely on
-  them as a control otherwise.
+  `AuthMiddleware` short-circuits for stdio (no OAuth concept there), so
+  every component is reachable.
+- **On HTTP, install these checks only alongside an `AuthProvider`.**
+  `AuthMiddleware` still runs without one, but every request then carries
+  no token, so a component with `meta["required_scope"]` is denied
+  outright (unannotated ones stay open). Authorization is meaningful only
+  when authentication is configured.
 
 ### Remote debugging in containers
 

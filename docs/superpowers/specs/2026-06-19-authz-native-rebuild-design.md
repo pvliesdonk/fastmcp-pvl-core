@@ -87,15 +87,19 @@ OIDC claims.** Therefore:
 This is why the ACL is **kept** (rebuilt as a native check), and why
 `multi` mode needs an **OR** of the two checks.
 
-**`none` / stdio mode.** FastMCP skips auth checks entirely when there
-is no token (stdio, or HTTP with no `AuthProvider`), so components are
-unrestricted there — the checks are never invoked. This intentionally
-drops the old middleware's `"local"`-subject ACL path (where
-`get_subject()` returned `"local"` and the ACL could grant it).
-Authorization is now meaningful only when an `AuthProvider` is
-configured; local/stdio is treated as trusted. The defensive
-`ctx.token is None → deny` branch in each check therefore only guards
-the unreachable-in-normal-flow case, never the stdio path.
+**`none` / stdio mode.** FastMCP's `AuthMiddleware` skips checks **only**
+for the stdio transport (`_current_transport == "stdio"`) — there every
+component is reachable. On HTTP it always runs the checks, with
+`token = get_access_token()`; when no `AuthProvider` is configured that
+token is `None`, so a component requiring a scope is **denied** and an
+unannotated one passes (scope resolved before the token guard). The
+`ctx.token is None → deny` branch is therefore *reachable* on
+HTTP-without-provider — it is not dead code. This intentionally drops
+the old middleware's `"local"`-subject ACL path (where `get_subject()`
+returned `"local"` and the ACL could grant it): a no-token caller now
+denies rather than resolving to `"local"`. Practically, install these
+checks alongside a real `AuthProvider`; running them provider-less on
+HTTP locks out every protected component.
 
 ## Design
 

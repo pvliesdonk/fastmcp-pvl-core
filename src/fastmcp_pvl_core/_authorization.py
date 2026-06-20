@@ -214,10 +214,12 @@ def make_claims_check(
     Reads ``claim`` from ``ctx.token.claims``. With ``grants=None`` the
     caller is granted exactly the string values in the claim (identity).
     With ``grants`` supplied, those values are mapped through the table
-    and unioned. OIDC modes only — bearer tokens carry no usable claims.
-    The required scope is read from
-    ``ctx.component.meta["required_scope"]``; components without it are
-    unrestricted.
+    and unioned. Intended for OIDC modes: bearer tokens carry no OIDC
+    claims (``sub``, ``groups``, ``roles``, …) — only the verifier's
+    ``client_id`` / ``scopes`` echo — so claim→scope mapping is not
+    meaningful there; use :func:`make_acl_check` for bearer modes. The
+    required scope is read from ``ctx.component.meta["required_scope"]``;
+    components without it are unrestricted.
 
     The ``"*"`` wildcard ("any required scope passes") is honoured only
     when it comes from an operator-supplied ``grants`` table, never from a
