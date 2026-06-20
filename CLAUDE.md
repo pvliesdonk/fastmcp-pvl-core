@@ -129,8 +129,10 @@ Contributors preserve:
   directory rename, not a find-replace.
 - **No self-name lookups** — never resolve pvl-core's own distribution name or
   package resources at runtime (`importlib.metadata.version(...)`,
-  `importlib.resources.files("fastmcp_pvl_core")`). Package-name string literals
-  stay confined to human-facing hints.
+  `importlib.resources.files("fastmcp_pvl_core")`). Naming the package in
+  human-facing text (install hints, log/error messages, docstring
+  cross-references) is fine; the prohibition is on *runtime* resolution of the
+  name, not on mentioning it in prose.
 - **Parameterized identity** — env prefixes, CLI `prog`, and similar
   caller-facing identity stay arguments, never hard-coded to pvl-core's name.
 - **A narrow public surface** — the `__init__` re-export with `__all__` is the

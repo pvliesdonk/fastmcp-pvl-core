@@ -133,8 +133,9 @@ which is reserved for wire-format interop specs. Sections:
 
 5. **Cosmetic scrub list.** The self-name string literals to search-and-replace:
    the `_server_info.py` version label and the `pip install fastmcp-pvl-core[...]`
-   optional-extra hints scattered across `_debug.py`, `_auth.py`, `_kv_store.py`,
-   and `_icons.py`. None are functional; all are human-facing text.
+   optional-extra hints in `_debug.py`, `_auth.py`, and `_kv_store.py` (plus the
+   "file an issue against fastmcp-pvl-core" pointer in `_icons.py`'s RuntimeError).
+   None are functional; all are human-facing text.
 
 The guide gets a one-line pointer from `README.md` near the design-principles
 section.
