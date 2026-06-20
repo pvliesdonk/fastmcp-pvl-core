@@ -31,7 +31,7 @@ pvl-core uses relative intra-package imports, so folding is a directory rename
 cp -r path/to/fastmcp_pvl_core  src/myfork/_core
 
 # 2. Update YOUR code's imports from the dependency to the vendored package:
-#    from fastmcp_pvl_core import build_app   ->   from myfork._core import build_app
+#    from fastmcp_pvl_core import wire_middleware_stack   ->   from myfork._core import wire_middleware_stack
 grep -rl 'fastmcp_pvl_core' src/myfork --include='*.py'   # find your call sites
 #    ...then rewrite those `from fastmcp_pvl_core` references to `from myfork._core`.
 
