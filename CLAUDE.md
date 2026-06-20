@@ -113,6 +113,34 @@ pvl-core is wrong files against pvl-core; it does not fork the
 behaviour and reimplement. "pvl-core is wrong, so I'll do it myself" is
 the failure this principle exists to prevent.
 
+### Keep pvl-core cleanly foldable
+
+A fork is not a downstream. MIT lets anyone vendor pvl-core into their own tree
+— to take over a single server when the fleet is no longer maintained, or to run
+their own opinionated variant. We keep that exit ramp cheap: credible
+foldability lowers the cost of depending on pvl-core in the first place, and the
+seams that make the package vendorable are the same seams that keep it a clean
+load-bearing layer. Foldability is a modularity property, not a coherence
+compromise.
+
+Contributors preserve:
+
+- **Relative intra-package imports** (`from ._x import …`) so a fold-in is a
+  directory rename, not a find-replace.
+- **No self-name lookups** — never resolve pvl-core's own distribution name or
+  package resources at runtime (`importlib.metadata.version(...)`,
+  `importlib.resources.files("fastmcp_pvl_core")`). Package-name string literals
+  stay confined to human-facing hints.
+- **Parameterized identity** — env prefixes, CLI `prog`, and similar
+  caller-facing identity stay arguments, never hard-coded to pvl-core's name.
+- **A narrow public surface** — the `__init__` re-export with `__all__` is the
+  contract; internals stay `_`-prefixed.
+
+This does **not** authorize pre-flattening abstractions "in case someone forks."
+The factory/`Build*` layer, the `env(prefix, name)` indirection, and the
+optional extras exist because pvl-core serves the whole family; collapsing them
+is fork-side work documented in `docs/forking.md`, never done in pvl-core.
+
 ## Practical consequences
 
 - **Adding a new `register_*` helper or `Build*` factory**: every
