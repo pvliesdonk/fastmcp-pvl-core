@@ -17,6 +17,12 @@ def test_zero_checks_raises() -> None:
         any_check()
 
 
+async def test_single_check_passthrough() -> None:
+    # any_check(one) is a valid spelling (async-normalises a lone check).
+    assert await any_check(lambda ctx: True)(_ctx()) is True
+    assert await any_check(lambda ctx: False)(_ctx()) is False
+
+
 async def test_true_when_any_passes() -> None:
     check = any_check(lambda ctx: False, lambda ctx: True)
     assert await check(_ctx()) is True

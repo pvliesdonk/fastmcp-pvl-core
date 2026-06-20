@@ -282,7 +282,7 @@ raw = os.environ.get("MY_APP_AUTHZ_GRANTS")
 grants = parse_claim_grants(raw) if raw else None
 mcp = FastMCP(..., middleware=[AuthMiddleware(auth=any_check(
     make_acl_check(load_acl(Path("/etc/my-app/acl.toml"))),
-    make_claims_check(os.environ["MY_APP_AUTHZ_CLAIM"], grants),
+    make_claims_check(os.environ.get("MY_APP_AUTHZ_CLAIM", "groups"), grants),
 ))])
 
 @mcp.tool(meta={"required_scope": "write"})

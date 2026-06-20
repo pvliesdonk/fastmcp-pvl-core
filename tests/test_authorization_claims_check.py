@@ -124,3 +124,14 @@ def test_star_grant_value_still_grants_via_operator_table() -> None:
     check = make_claims_check("groups", {"admins": frozenset({"*"})})
     ctx = _ctx({"groups": ["admins"]}, {"required_scope": "write"})
     assert check(ctx) is True
+
+
+def test_token_present_but_claims_not_a_dict_denies() -> None:
+    # A token exists but its `.claims` is None (some providers) — the
+    # non-dict guard yields no values, so a scoped component is denied.
+    check = make_claims_check("groups")
+    token = _FakeToken(claims=None)  # type: ignore[arg-type]
+    ctx = AuthContext(
+        token=token, component=_FakeComponent(meta={"required_scope": "read"})
+    )
+    assert check(ctx) is False

@@ -355,18 +355,28 @@ def any_check(*checks: AuthCheck) -> AuthCheck:
     async; coroutine results are awaited. Used for ``multi`` mode where a
     bearer caller satisfies the ACL check and an OIDC caller satisfies
     the claims check. Sub-checks must signal deny by returning ``False``
-    rather than raising; a sub-check that raises propagates out of
-    ``any_check`` and short-circuits the OR, so the remaining checks are
-    not tried.
+    rather than raising; a sub-check that raises is logged at WARNING and
+    propagates out of ``any_check``, short-circuiting the OR (the
+    remaining checks are not tried). Re-raising keeps the deny-safe
+    posture — an errored check never silently falls through to a later
+    allow — while the log makes an unexpected sub-check failure
+    distinguishable from a deliberate deny.
     """
     if not checks:
         raise ValueError("any_check requires at least one check")
 
     async def combined(ctx: AuthContext) -> bool:
         for check in checks:
-            result = check(ctx)
-            if inspect.isawaitable(result):
-                result = await result
+            try:
+                result = check(ctx)
+                if inspect.isawaitable(result):
+                    result = await result
+            except Exception:
+                logger.warning(
+                    "any_check sub-check raised; propagating (treated as deny)",
+                    exc_info=True,
+                )
+                raise
             if result:
                 return True
         return False
