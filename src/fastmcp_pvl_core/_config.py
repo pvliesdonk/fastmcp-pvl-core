@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
-from fastmcp_pvl_core._env import env, env_int, parse_bool, parse_scopes
+from ._env import env, env_int, parse_bool, parse_scopes
 
 Transport = Literal["stdio", "http", "sse"]
 

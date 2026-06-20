@@ -22,7 +22,7 @@ import logging
 from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
-from fastmcp_pvl_core._config import ServerConfig
+from ._config import ServerConfig
 
 if TYPE_CHECKING:
     from fastmcp.server.event_store import EventStore
@@ -104,7 +104,7 @@ def build_event_store(env_prefix: str, config: ServerConfig) -> EventStore:
     # use this helper.
     from fastmcp.server.event_store import EventStore as _EventStore
 
-    from fastmcp_pvl_core._kv_store import build_kv_store
+    from ._kv_store import build_kv_store
 
     del env_prefix  # accepted for API compatibility; not consumed here
 

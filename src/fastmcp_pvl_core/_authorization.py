@@ -34,7 +34,7 @@ else:  # pragma: no cover - fallback for Python 3.10
     # ``tomli`` is installed and the ignore would otherwise be flagged.
     import tomli as tomllib  # type: ignore[import-not-found,unused-ignore]
 
-from fastmcp_pvl_core._errors import ConfigurationError
+from ._errors import ConfigurationError
 
 # ---------------------------------------------------------------------------
 # Module-level logger

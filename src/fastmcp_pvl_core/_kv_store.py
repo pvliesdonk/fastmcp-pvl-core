@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 from urllib.parse import parse_qs, urlparse
 
-from fastmcp_pvl_core._config import ServerConfig
+from ._config import ServerConfig
 
 if TYPE_CHECKING:
     from key_value.aio.protocols.key_value import AsyncKeyValue

@@ -12,8 +12,8 @@ import os
 
 from fastmcp import FastMCP
 
-from fastmcp_pvl_core._env import parse_bool
-from fastmcp_pvl_core._logging_middleware import RequestLoggingMiddleware
+from ._env import parse_bool
+from ._logging_middleware import RequestLoggingMiddleware
 
 
 def wire_middleware_stack(mcp: FastMCP) -> None:

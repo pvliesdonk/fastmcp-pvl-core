@@ -43,7 +43,7 @@ from __future__ import annotations
 
 import logging
 
-from fastmcp_pvl_core._env import env, env_int, parse_bool
+from ._env import env, env_int, parse_bool
 
 logger = logging.getLogger(__name__)
 

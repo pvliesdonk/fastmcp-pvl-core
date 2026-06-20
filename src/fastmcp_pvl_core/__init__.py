@@ -5,8 +5,8 @@ middleware wiring, logging setup, config helpers, and server
 factory building blocks without duplicating them per repo.
 """
 
-from fastmcp_pvl_core._apps import app_tool_address, app_tool_meta, client_supports_apps
-from fastmcp_pvl_core._auth import (
+from ._apps import app_tool_address, app_tool_meta, client_supports_apps
+from ._auth import (
     AuthMode,
     build_auth,
     build_bearer_auth,
@@ -14,17 +14,17 @@ from fastmcp_pvl_core._auth import (
     build_remote_auth,
     resolve_auth_mode,
 )
-from fastmcp_pvl_core._authorization import (
+from ._authorization import (
     any_check,
     load_acl,
     make_acl_check,
     make_claims_check,
     parse_claim_grants,
 )
-from fastmcp_pvl_core._cli import make_serve_parser, normalise_http_path
-from fastmcp_pvl_core._config import ServerConfig, Transport
-from fastmcp_pvl_core._debug import maybe_start_debugpy
-from fastmcp_pvl_core._env import (
+from ._cli import make_serve_parser, normalise_http_path
+from ._config import ServerConfig, Transport
+from ._debug import maybe_start_debugpy
+from ._env import (
     env,
     env_float,
     env_int,
@@ -32,22 +32,22 @@ from fastmcp_pvl_core._env import (
     parse_list,
     parse_scopes,
 )
-from fastmcp_pvl_core._errors import ConfigurationError
-from fastmcp_pvl_core._factory import (
+from ._errors import ConfigurationError
+from ._factory import (
     build_event_store,
     build_instructions,
     compute_app_domain,
 )
-from fastmcp_pvl_core._icons import IconSpec, make_icon, register_tool_icons
-from fastmcp_pvl_core._kv_store import build_kv_store
-from fastmcp_pvl_core._logging import SecretMaskFilter, configure_logging_from_env
-from fastmcp_pvl_core._middleware import wire_middleware_stack
-from fastmcp_pvl_core._server_info import (
+from ._icons import IconSpec, make_icon, register_tool_icons
+from ._kv_store import build_kv_store
+from ._logging import SecretMaskFilter, configure_logging_from_env
+from ._middleware import wire_middleware_stack
+from ._server_info import (
     UpstreamProvider,
     UpstreamResult,
     register_server_info_tool,
 )
-from fastmcp_pvl_core._subject import get_claims, get_subject
+from ._subject import get_claims, get_subject
 
 __version__ = "4.0.0"  # PSR overrides at build time
 

@@ -11,7 +11,7 @@ import math
 import os
 from typing import TypeVar, overload
 
-from fastmcp_pvl_core._errors import ConfigurationError
+from ._errors import ConfigurationError
 
 logger = logging.getLogger(__name__)
 

@@ -102,7 +102,7 @@ def register_server_info_tool(
     # for the mcp.types import.
     from mcp.types import ToolAnnotations
 
-    from fastmcp_pvl_core import __version__ as core_version
+    from . import __version__ as core_version
 
     default_description = (
         f"Report wrapper and upstream version info for {server_name}. "
