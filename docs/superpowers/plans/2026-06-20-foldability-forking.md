@@ -322,7 +322,12 @@ look fully its own. Search-and-replace at your leisure:
 
 - The version label in `_server_info.py` (reports `fastmcp-pvl-core` + version).
 - The `pip install fastmcp-pvl-core[...]` hints in `_debug.py`, `_auth.py`,
-  `_kv_store.py`, `_icons.py` (shown when an optional extra is missing).
+  `_kv_store.py` (shown when an optional extra is missing).
+- The `"file an issue against fastmcp-pvl-core"` pointer in the
+  FastMCP-internal-API `RuntimeError` in `_icons.py`.
+- The `from fastmcp_pvl_core import SecretMaskFilter` usage example in the
+  `SecretMaskFilter` docstring in `_logging.py` — a downstream-facing import
+  path; point it at your vendored package name.
 - Sphinx-style docstring cross-references (`:class:`~fastmcp_pvl_core....``) and
   the `fastmcp_pvl_core_current_auth_mode` ContextVar name, if you rename the
   package for real.
@@ -400,11 +405,14 @@ compromise.
 Contributors preserve:
 
 - **Relative intra-package imports** (`from ._x import …`) so a fold-in is a
-  directory rename, not a find-replace.
+  directory rename, not a find-replace. (Docstring code examples that show
+  *downstream* usage stay absolute — they are not intra-package imports.)
 - **No self-name lookups** — never resolve pvl-core's own distribution name or
   package resources at runtime (`importlib.metadata.version(...)`,
-  `importlib.resources.files("fastmcp_pvl_core")`). Package-name string literals
-  stay confined to human-facing hints.
+  `importlib.resources.files("fastmcp_pvl_core")`). Naming the package in
+  human-facing text (install hints, log/error messages, docstring
+  cross-references) is fine; the prohibition is on *runtime* resolution of the
+  name, not on mentioning it in prose.
 - **Parameterized identity** — env prefixes, CLI `prog`, and similar
   caller-facing identity stay arguments, never hard-coded to pvl-core's name.
 - **A narrow public surface** — the `__init__` re-export with `__all__` is the
