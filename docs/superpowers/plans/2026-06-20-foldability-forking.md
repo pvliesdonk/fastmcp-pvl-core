@@ -77,7 +77,7 @@ EOF
 )"
 ```
 
-Record the issue number returned as `PVLCORE_ISSUE`.
+The pvl-core issue created here is **#194** — the `Refs`/`Closes` lines below use it.
 
 - [ ] **Step 3: Create the template detach issue** (filed into the template repo, NOT implemented here)
 
@@ -218,14 +218,14 @@ preserving; tests (external consumers) keep absolute imports. Docstring
 cross-references and the auth-mode ContextVar name are intentionally left
 unchanged.
 
-Refs #PVLCORE_ISSUE
+Refs #194
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 EOF
 )"
 ```
 
-Replace `#PVLCORE_ISSUE` with the number from Task 0.
+(`#194` is the Task 0 issue.)
 
 ---
 
@@ -360,7 +360,7 @@ test-vendoring step, the collapsible-seams map (which abstractions a
 single-server fork may flatten), and the cosmetic scrub list. Link it from the
 README design-principles section.
 
-Refs #PVLCORE_ISSUE
+Refs #194
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 EOF
@@ -430,7 +430,7 @@ self-name lookups, parameterized identity, narrow public surface) so it does not
 regress, while explicitly forbidding pre-flattening of abstractions — that stays
 fork-side, documented in docs/forking.md.
 
-Refs #PVLCORE_ISSUE
+Refs #194
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 EOF
@@ -472,7 +472,7 @@ disentanglement.
 The copier-template detach (the fork's other half) is tracked separately in
 fastmcp-server-template.
 
-Closes #PVLCORE_ISSUE
+Closes #194
 
 Design: docs/superpowers/specs/2026-06-20-foldability-forking-design.md
 
@@ -483,7 +483,7 @@ EOF
 )"
 ```
 
-Replace `#PVLCORE_ISSUE`. Do NOT merge (human-only).
+Do NOT merge (human-only).
 
 ---
 
@@ -497,7 +497,7 @@ Replace `#PVLCORE_ISSUE`. Do NOT merge (human-only).
 - Spec §8 (plumbing: pvl-core issue, template issue) → Task 0. ✓
 - Spec §9 (testing: suite green; doc accuracy) → Task 1 Step 4, Task 2 Step 3, Task 4 Step 1. ✓
 
-**Placeholder scan:** `#PVLCORE_ISSUE` is an intentional fill-in (issue number unknown until Task 0 runs) and is flagged at each use. No TBD/TODO/"handle edge cases". Doc and directive content are complete verbatim.
+**Placeholder scan:** issue references resolved to `#194` (created in Task 0). No TBD/TODO/"handle edge cases". Doc and directive content are complete verbatim.
 
 **Type/identifier consistency:** No new code symbols introduced (refactor preserves the public API). The MUST-NOT-touch list and the two sed rules are mutually exclusive by anchor (`^\s*from fastmcp_pvl_core`), verified in Task 1 Step 3.
 
