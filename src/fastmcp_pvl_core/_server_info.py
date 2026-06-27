@@ -49,6 +49,7 @@ def register_server_info_tool(
     upstream_label: str = "upstream",
     tool_name: str = "get_server_info",
     description: str | None = None,
+    title: str | None = None,
 ) -> None:
     """Register a ``get_server_info`` tool on a FastMCP instance.
 
@@ -87,6 +88,10 @@ def register_server_info_tool(
             built-in description that mentions the wrapper name.  Pass
             ``""`` to register an empty description; only ``None`` triggers
             the default.
+        title: Human-readable ``annotations.title`` for the tool, used as
+            the label by title-aware MCP clients (e.g. VS Code) instead of
+            the raw tool name.  Defaults to ``"Server Info"``; pass ``""``
+            to register an empty title; only ``None`` triggers the default.
 
     Raises:
         ValueError: If ``upstream_label`` collides with a reserved payload
@@ -148,5 +153,8 @@ def register_server_info_tool(
     mcp.tool(
         name=tool_name,
         description=default_description if description is None else description,
-        annotations=ToolAnnotations(readOnlyHint=True),
+        annotations=ToolAnnotations(
+            readOnlyHint=True,
+            title="Server Info" if title is None else title,
+        ),
     )(get_server_info)
