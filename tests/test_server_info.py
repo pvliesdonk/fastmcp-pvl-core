@@ -173,6 +173,46 @@ class TestRegisterServerInfoTool:
         assert target.annotations is not None
         assert target.annotations.readOnlyHint is True
 
+    async def test_tool_has_default_title(self):
+        """Title-aware clients (e.g. VS Code) need a human-readable label."""
+        mcp = FastMCP("t")
+        register_server_info_tool(
+            mcp,
+            server_version="1.0.0",
+            server_name="my-mcp",
+        )
+        tools = await mcp.list_tools()
+        target = next(t for t in tools if t.name == "get_server_info")
+        assert target.annotations is not None
+        assert target.annotations.title == "Server Info"
+
+    async def test_custom_title(self):
+        mcp = FastMCP("t")
+        register_server_info_tool(
+            mcp,
+            server_version="1.0.0",
+            server_name="my-mcp",
+            title="About This Server",
+        )
+        tools = await mcp.list_tools()
+        target = next(t for t in tools if t.name == "get_server_info")
+        assert target.annotations is not None
+        assert target.annotations.title == "About This Server"
+
+    async def test_empty_string_title_not_replaced_by_default(self):
+        """Only None triggers the default; an explicit "" stays empty."""
+        mcp = FastMCP("t")
+        register_server_info_tool(
+            mcp,
+            server_version="1.0.0",
+            server_name="my-mcp",
+            title="",
+        )
+        tools = await mcp.list_tools()
+        target = next(t for t in tools if t.name == "get_server_info")
+        assert target.annotations is not None
+        assert target.annotations.title == ""
+
     async def test_custom_description(self):
         mcp = FastMCP("t")
         register_server_info_tool(
