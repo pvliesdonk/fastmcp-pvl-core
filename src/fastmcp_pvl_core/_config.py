@@ -159,3 +159,50 @@ class ServerConfig:
             bearer_tokens_file=bearer_tokens_file,
             bearer_default_subject=bearer_default_subject,
         )
+
+
+# The env-var suffixes ``ServerConfig.from_env`` reads (the part after a
+# project's ``{PREFIX}_``). Kept in lockstep with ``from_env`` by
+# ``test_config.py::TestServerConfigEnvSuffixes``, which AST-scans ``from_env``
+# for ``env``/``env_int``/``env_float`` calls whose suffix is a string literal
+# and fails if such a read is added/removed/renamed without updating this set.
+# Keep every ``from_env`` read in the ``env(prefix, "LITERAL")`` form: a suffix
+# built from a variable or passed by keyword would not be seen by the scan.
+_SERVER_CONFIG_ENV_SUFFIXES: frozenset[str] = frozenset(
+    {
+        "TRANSPORT",
+        "HOST",
+        "PORT",
+        "BASE_URL",
+        "BEARER_TOKEN",
+        "BEARER_TOKENS_FILE",
+        "BEARER_DEFAULT_SUBJECT",
+        "OIDC_CONFIG_URL",
+        "OIDC_CLIENT_ID",
+        "OIDC_CLIENT_SECRET",
+        "OIDC_AUDIENCE",
+        "OIDC_REQUIRED_SCOPES",
+        "OIDC_JWT_SIGNING_KEY",
+        "OIDC_VERIFY_ACCESS_TOKEN",
+        "KV_STORE_URL",
+        "EVENT_STORE_URL",
+        "APP_DOMAIN",
+        "AUTH_MODE",
+    }
+)
+
+
+def server_config_env_suffixes() -> frozenset[str]:
+    """Return the env-var suffixes :meth:`ServerConfig.from_env` reads.
+
+    Each suffix is the part after a project's ``{PREFIX}_`` (e.g. ``BASE_URL``
+    for ``MYAPP_BASE_URL``), so a consumer can check whether a given
+    ``{PREFIX}_{SUFFIX}`` variable is part of the upstream ``ServerConfig``
+    surface — for instance to detect drift between a config-wizard spec and the
+    real config surface.
+
+    Excludes native ``FASTMCP_*`` variables and consumer-specific
+    (``ProjectConfig``) variables: it is purely the ``ServerConfig.from_env``
+    surface.
+    """
+    return _SERVER_CONFIG_ENV_SUFFIXES

@@ -199,3 +199,63 @@ class TestServerConfigFromEnv:
         monkeypatch.delenv("MYAPP_BEARER_DEFAULT_SUBJECT", raising=False)
         config = ServerConfig.from_env("MYAPP")
         assert config.bearer_default_subject == "bearer-anon"
+
+
+def _suffixes_read_by_from_env() -> set[str]:
+    """The literal env suffixes ``ServerConfig.from_env`` actually reads.
+
+    Statically extracts the second positional argument of each
+    ``env``/``env_int``/``env_float`` call in ``from_env``'s source **whose
+    suffix is a string literal** (calls with a variable, keyword, or
+    attribute-form suffix are skipped), so the test reflects the literal read
+    surface rather than a hand-copied list.
+    """
+    import ast
+    import inspect
+    import textwrap
+
+    src = textwrap.dedent(inspect.getsource(ServerConfig.from_env))
+    read_funcs = {"env", "env_int", "env_float"}
+    found: set[str] = set()
+    for node in ast.walk(ast.parse(src)):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id in read_funcs
+            and len(node.args) >= 2
+            and isinstance(node.args[1], ast.Constant)
+            and isinstance(node.args[1].value, str)
+        ):
+            found.add(node.args[1].value)
+    return found
+
+
+class TestServerConfigEnvSuffixes:
+    def test_returns_frozenset_with_known_suffixes(self):
+        from fastmcp_pvl_core import server_config_env_suffixes
+
+        suffixes = server_config_env_suffixes()
+        assert isinstance(suffixes, frozenset)
+        # Representative members across the categories from_env reads.
+        assert {
+            "TRANSPORT",
+            "HOST",
+            "PORT",
+            "BASE_URL",
+            "BEARER_TOKEN",
+            "OIDC_CONFIG_URL",
+            "KV_STORE_URL",
+            "AUTH_MODE",
+        } <= suffixes
+
+    def test_matches_what_from_env_actually_reads(self):
+        """Anti-drift: the declared set must equal the literal suffixes from_env reads.
+
+        A literal-string read added/removed/renamed in ``from_env`` without
+        updating the declared set fails here. (A suffix built from a variable or
+        passed by keyword is invisible to the scan — see
+        ``_suffixes_read_by_from_env``.)
+        """
+        from fastmcp_pvl_core import server_config_env_suffixes
+
+        assert server_config_env_suffixes() == _suffixes_read_by_from_env()
