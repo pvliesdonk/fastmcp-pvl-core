@@ -22,7 +22,7 @@ from ._authorization import (
     parse_claim_grants,
 )
 from ._cli import make_serve_parser, normalise_http_path
-from ._config import ServerConfig, Transport
+from ._config import ServerConfig, Transport, server_config_env_suffixes
 from ._debug import maybe_start_debugpy
 from ._env import (
     env,
@@ -92,5 +92,6 @@ __all__ = [
     "register_server_info_tool",
     "register_tool_icons",
     "resolve_auth_mode",
+    "server_config_env_suffixes",
     "wire_middleware_stack",
 ]
