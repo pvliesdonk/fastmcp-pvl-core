@@ -113,6 +113,98 @@ accepted as-is.
 """
 
 
+def _resolve_static_dir(static_dir: str | Path) -> Path:
+    """Resolve and validate ``static_dir``, returning the absolute path.
+
+    Raises:
+        FileNotFoundError: the directory does not exist.
+        NotADirectoryError: the path exists but is not a directory.
+    """
+    base_dir = Path(static_dir).resolve()
+    if not base_dir.exists():
+        raise FileNotFoundError(f"static_dir does not exist: {base_dir}")
+    if not base_dir.is_dir():
+        raise NotADirectoryError(f"static_dir is not a directory: {base_dir}")
+    return base_dir
+
+
+def _index_tools_by_name(mcp: FastMCP) -> dict[str, list[Tool]]:
+    """Group a FastMCP instance's registered tools by tool name.
+
+    ``local_provider`` is the public access point on FastMCP; ``_components``
+    is its internal store keyed as ``"<prefix>:<name>@<version>"`` (the ``@``
+    is always present; version is empty for unversioned tools). FastMCP does
+    not expose a public sync ``tools`` accessor today, so we go one level
+    deep — the public async ``list_tools()`` would force callers to be async,
+    which is heavier than the maintenance risk of one private attr. Verified
+    against fastmcp >=3,<4 (see pyproject.toml).
+
+    Raises:
+        RuntimeError: FastMCP's internal component API changed (the guard
+            turns a future rename into an actionable error rather than a
+            bare ``AttributeError`` that looks like a caller bug).
+    """
+    # Imported lazily so callers that never use this helper don't pay for
+    # the fastmcp.tools import at package load time.
+    from fastmcp.tools.base import Tool
+
+    try:
+        components = mcp.local_provider._components
+    except AttributeError as exc:
+        raise RuntimeError(
+            "FastMCP internal API changed: cannot enumerate tools via "
+            "local_provider._components. Please file an issue against "
+            "fastmcp-pvl-core."
+        ) from exc
+
+    tools_by_name: dict[str, list[Tool]] = {}
+    for component in components.values():
+        if isinstance(component, Tool):
+            tools_by_name.setdefault(component.name, []).append(component)
+    return tools_by_name
+
+
+def _resolve_icon_entry(entry: str | Path, base_dir: Path, tool_name: str) -> Icon:
+    """Resolve one icon filename to an :class:`Icon`.
+
+    Relative paths are resolved under *base_dir* and must not escape it via
+    ``..``; absolute paths bypass *base_dir* by design (see the
+    :data:`IconSpec` docstring — the caller takes responsibility for what's
+    outside ``static_dir``). *tool_name* is used only for error-message
+    context.
+
+    Raises:
+        ValueError: a relative path escapes *base_dir*, or the file has an
+            unsupported extension.
+        FileNotFoundError: the referenced icon file does not exist.
+    """
+    entry_path = Path(entry)
+    if entry_path.is_absolute():
+        path = entry_path
+    else:
+        # Relative paths must stay inside static_dir; resolving collapses
+        # ``..`` so we can check containment after the fact.
+        path = (base_dir / entry_path).resolve()
+        if not _is_within(path, base_dir):
+            raise ValueError(
+                f"Icon path {str(entry)!r} for tool {tool_name!r} "
+                f"escapes static_dir ({base_dir})"
+            )
+
+    # Let make_icon do the read; that's the only place that touches the file,
+    # so any FileNotFoundError or ValueError comes straight from there and we
+    # wrap it once with the tool-name context the caller needs. This also
+    # closes the TOCTOU window that an ``is_file()`` pre-check would leave open.
+    try:
+        return make_icon(path)
+    except FileNotFoundError as exc:
+        raise FileNotFoundError(
+            f"Icon file for tool {tool_name!r} not found: {path}"
+        ) from exc
+    except ValueError as exc:
+        raise ValueError(f"Tool {tool_name!r}: {exc}") from exc
+
+
 def register_tool_icons(
     mcp: FastMCP,
     mapping: Mapping[str, IconSpec],
@@ -156,39 +248,12 @@ def register_tool_icons(
             file is missing.
         NotADirectoryError: If ``static_dir`` exists but is not a directory.
     """
-    # Imported lazily so callers that never use this helper don't pay for
-    # the fastmcp.tools import at package load time.
-    from fastmcp.tools.base import Tool
+    base_dir = _resolve_static_dir(static_dir)
+    tools_by_name = _index_tools_by_name(mcp)
 
-    base_dir = Path(static_dir).resolve()
-    if not base_dir.exists():
-        raise FileNotFoundError(f"static_dir does not exist: {base_dir}")
-    if not base_dir.is_dir():
-        raise NotADirectoryError(f"static_dir is not a directory: {base_dir}")
-
-    # ``local_provider`` is the public access point on FastMCP; ``_components``
-    # is its internal store keyed as ``"<prefix>:<name>@<version>"`` (the ``@``
-    # is always present; version is empty for unversioned tools). FastMCP does
-    # not expose a public sync ``tools`` accessor today, so we go one level
-    # deep — the public async ``list_tools()`` would force this helper to be
-    # async, which is heavier than the maintenance risk of one private attr.
-    # Verified against fastmcp >=3,<4 (see pyproject.toml). The guard turns a
-    # future rename into an actionable error rather than a bare AttributeError
-    # that looks like a caller bug.
-    try:
-        components = mcp.local_provider._components
-    except AttributeError as exc:
-        raise RuntimeError(
-            "FastMCP internal API changed: cannot enumerate tools via "
-            "local_provider._components. Please file an issue against "
-            "fastmcp-pvl-core."
-        ) from exc
-
-    tools_by_name: dict[str, list[Tool]] = {}
-    for component in components.values():
-        if isinstance(component, Tool):
-            tools_by_name.setdefault(component.name, []).append(component)
-
+    # Resolve and validate every entry first; the apply loop below only runs
+    # once nothing can fail, so a missing file or unknown tool name aborts
+    # without leaving a half-applied state (the atomicity contract above).
     resolved: list[tuple[str, list[Tool], list[Icon], list[str]]] = []
 
     for tool_name, files in mapping.items():
@@ -205,38 +270,8 @@ def register_tool_icons(
         else:
             entries = list(files)
 
-        icons: list[Icon] = []
-        display: list[str] = []
-        for entry in entries:
-            entry_path = Path(entry)
-            if entry_path.is_absolute():
-                # Absolute paths bypass static_dir resolution by design — see
-                # ``IconSpec`` docstring.  Caller takes responsibility for
-                # what's outside static_dir.
-                path = entry_path
-            else:
-                # Relative paths must stay inside static_dir; resolving
-                # collapses ``..`` so we can check containment after the fact.
-                path = (base_dir / entry_path).resolve()
-                if not _is_within(path, base_dir):
-                    raise ValueError(
-                        f"Icon path {str(entry)!r} for tool {tool_name!r} "
-                        f"escapes static_dir ({base_dir})"
-                    )
-            # Let make_icon do the read; that's the only place that touches
-            # the file, so any FileNotFoundError or ValueError comes straight
-            # from there and we wrap it once with the tool-name context the
-            # caller needs.  This also closes the TOCTOU window that an
-            # ``is_file()`` pre-check would have left open.
-            try:
-                icons.append(make_icon(path))
-            except FileNotFoundError as exc:
-                raise FileNotFoundError(
-                    f"Icon file for tool {tool_name!r} not found: {path}"
-                ) from exc
-            except ValueError as exc:
-                raise ValueError(f"Tool {tool_name!r}: {exc}") from exc
-            display.append(str(entry))
+        icons = [_resolve_icon_entry(entry, base_dir, tool_name) for entry in entries]
+        display = [str(entry) for entry in entries]
         resolved.append((tool_name, targets, icons, display))
 
     for tool_name, targets, icons, filenames in resolved:
