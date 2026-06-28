@@ -1,0 +1,65 @@
+# Pre-commit hooks that mirror CI (.github/workflows/ci.yml).
+#
+# Each hook invokes its tool through `uv run`, so the tool versions come
+# from the uv lockfile — the same source CI resolves from. This pins
+# pre-commit to CI by construction: there is no separately versioned
+# ruff/mypy/pytest that can drift out of sync with the pipeline.
+#
+# Hooks use `always_run: true` (not a `types` filter) because CI runs
+# these checks on every push regardless of which files changed — a
+# dependency bump touching only pyproject.toml/uv.lock can still break
+# mypy or the test suite. A `types: [python]` filter would skip the hooks
+# on such a changeset and let it sail through to a red CI, defeating the
+# point. `pass_filenames: false` means each hook runs against the whole
+# tree, so the changed-file list is irrelevant anyway.
+#
+# Every hook pins its `stages:` explicitly. Without it, pre-commit
+# defaults a hook to all stages, so the fast checks would also re-run at
+# push time (right before pytest) — wasteful and contrary to the split
+# below. Fast checks (lint, format, type) run only at the `pre-commit`
+# stage; the slower test suite runs only at the `pre-push` stage — gated
+# before code leaves the machine, but not re-run on every commit. The
+# pytest hook omits CI's `--cov` flags: coverage XML is a CI upload
+# artifact, not a local pass/fail gate.
+#
+# Install once per clone:  uv run pre-commit install
+default_install_hook_types: [pre-commit, pre-push]
+
+repos:
+  - repo: local
+    hooks:
+      - id: ruff-check
+        name: ruff check
+        entry: uv run ruff check .
+        language: system
+        always_run: true
+        pass_filenames: false
+        require_serial: true
+        stages: [pre-commit]
+
+      - id: ruff-format
+        name: ruff format --check
+        entry: uv run ruff format --check .
+        language: system
+        always_run: true
+        pass_filenames: false
+        require_serial: true
+        stages: [pre-commit]
+
+      - id: mypy
+        name: mypy src/
+        entry: uv run mypy src/
+        language: system
+        always_run: true
+        pass_filenames: false
+        require_serial: true
+        stages: [pre-commit]
+
+      - id: pytest
+        name: pytest
+        entry: uv run pytest -x -q
+        language: system
+        always_run: true
+        pass_filenames: false
+        require_serial: true
+        stages: [pre-push]
