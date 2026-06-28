@@ -11,3 +11,8 @@ build/
 coverage.xml
 .claude/
 .superpowers/
+
+# Local codebase-intelligence tooling: regenerated index cache and a
+# machine-specific MCP server registration (absolute checkout path).
+.repowise/
+.mcp.json
