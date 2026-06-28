@@ -56,6 +56,29 @@ def _is_valid_override(value: str) -> TypeGuard[Literal["remote", "oidc-proxy"]]
     return value in _VALID_MODES
 
 
+def _resolve_explicit_override(
+    raw: str | None,
+) -> Literal["remote", "oidc-proxy"] | None:
+    """Resolve the ``AUTH_MODE`` override to a valid OIDC mode, or ``None``.
+
+    The override only accepts ``remote`` or ``oidc-proxy`` (case- and
+    whitespace-insensitive). An empty/unset value yields ``None``
+    silently; any other non-empty value yields ``None`` with a warning.
+    Callers fall back to auto-detection whenever this returns ``None``.
+    """
+    explicit = (raw or "").strip().lower()
+    if not explicit:
+        return None
+    if _is_valid_override(explicit):
+        logger.info("auth_mode=%s (explicit via AUTH_MODE)", explicit)
+        return explicit
+    logger.warning(
+        "auth_mode_unknown value=%r — ignoring, falling back to auto-detection",
+        explicit,
+    )
+    return None
+
+
 def resolve_auth_mode(config: ServerConfig) -> AuthMode:
     """Decide which auth flavor to use based on configured fields.
 
@@ -86,15 +109,9 @@ def resolve_auth_mode(config: ServerConfig) -> AuthMode:
     Returns:
         One of the six :data:`AuthMode` literals.
     """
-    explicit = (config.auth_mode or "").strip().lower()
-    if explicit:
-        if _is_valid_override(explicit):
-            logger.info("auth_mode=%s (explicit via AUTH_MODE)", explicit)
-            return explicit
-        logger.warning(
-            "auth_mode_unknown value=%r — ignoring, falling back to auto-detection",
-            explicit,
-        )
+    override = _resolve_explicit_override(config.auth_mode)
+    if override is not None:
+        return override
 
     has_mapped_bearer = config.bearer_tokens_file is not None
     has_single_bearer = bool(config.bearer_token) and not has_mapped_bearer
@@ -127,6 +144,39 @@ def resolve_auth_mode(config: ServerConfig) -> AuthMode:
     if oidc_mode is not None:
         return oidc_mode
     return "none"
+
+
+def _coerce_token_subject(path: Path, token: str, subject: object) -> str:
+    """Validate one ``token -> subject`` row, returning the subject string.
+
+    Args:
+        path: Source file, used only for error messages.
+        token: The TOML table key (always a string per TOML).
+        subject: The raw TOML value for *token*.
+
+    Raises:
+        ConfigurationError: blank token key, nested-table subject,
+            non-string subject, or empty/whitespace-only subject.
+    """
+    # TOML keys are always strings, so just check they're non-blank.
+    if not token.strip():
+        raise ConfigurationError(
+            f"bearer tokens file at {path}: token key is empty or whitespace-only"
+        )
+    if isinstance(subject, dict):
+        raise ConfigurationError(
+            f"bearer tokens file at {path}: token entry is a "
+            f"nested table — quote token strings as "
+            f'\'"<token>" = "<subject>"\''
+        )
+    if not isinstance(subject, str):
+        raise ConfigurationError(
+            f"bearer tokens file at {path}: subject must be a "
+            f"string, got {type(subject).__name__}"
+        )
+    if not subject.strip():
+        raise ConfigurationError(f"bearer tokens file at {path}: subject is empty")
+    return subject
 
 
 def _load_bearer_tokens(path: Path) -> dict[str, str]:
@@ -168,25 +218,7 @@ def _load_bearer_tokens(path: Path) -> dict[str, str]:
         )
     result: dict[str, str] = {}
     for token, subject in tokens.items():
-        # TOML keys are always strings, so just check they're non-blank.
-        if not token.strip():
-            raise ConfigurationError(
-                f"bearer tokens file at {path}: token key is empty or whitespace-only"
-            )
-        if isinstance(subject, dict):
-            raise ConfigurationError(
-                f"bearer tokens file at {path}: token entry is a "
-                f"nested table — quote token strings as "
-                f'\'"<token>" = "<subject>"\''
-            )
-        if not isinstance(subject, str):
-            raise ConfigurationError(
-                f"bearer tokens file at {path}: subject must be a "
-                f"string, got {type(subject).__name__}"
-            )
-        if not subject.strip():
-            raise ConfigurationError(f"bearer tokens file at {path}: subject is empty")
-        result[token] = subject
+        result[token] = _coerce_token_subject(path, token, subject)
     return result
 
 
@@ -255,6 +287,33 @@ def build_bearer_auth(config: ServerConfig) -> StaticTokenVerifier | None:
     )
 
 
+def _warn_oidc_caveats(
+    *, required_scopes: list[str], verify_id_token: bool, signing_key: str | None
+) -> None:
+    """Emit operator warnings for misconfiguration-prone OIDC-proxy settings.
+
+    Warns when id_token verification is on but ``openid`` is absent from
+    *required_scopes* (the id_token may never be issued), and when no JWT
+    signing key is set on Linux (tokens are invalidated on every restart).
+    """
+    if verify_id_token and "openid" not in required_scopes:
+        logger.warning(
+            "oidc_proxy_auth_scope_warning "
+            "verify_id_token=True missing_scope=openid — "
+            "the id_token may be absent from the token response; "
+            "add 'openid' to required_scopes or set "
+            "oidc_verify_access_token=True"
+        )
+
+    if signing_key is None and sys.platform.startswith("linux"):
+        logger.warning(
+            "oidc_proxy_auth_ephemeral_signing_key "
+            "oidc_jwt_signing_key=<unset> — tokens will be invalidated on "
+            "every server restart; configure OIDC_JWT_SIGNING_KEY in "
+            "production"
+        )
+
+
 def build_oidc_proxy_auth(config: ServerConfig) -> OIDCProxy | None:
     """Build an :class:`OIDCProxy` provider, or return ``None``.
 
@@ -303,22 +362,11 @@ def build_oidc_proxy_auth(config: ServerConfig) -> OIDCProxy | None:
     verify_access_token = config.oidc_verify_access_token
     verify_id_token = not verify_access_token
 
-    if verify_id_token and "openid" not in required_scopes:
-        logger.warning(
-            "oidc_proxy_auth_scope_warning "
-            "verify_id_token=True missing_scope=openid — "
-            "the id_token may be absent from the token response; "
-            "add 'openid' to required_scopes or set "
-            "oidc_verify_access_token=True"
-        )
-
-    if config.oidc_jwt_signing_key is None and sys.platform.startswith("linux"):
-        logger.warning(
-            "oidc_proxy_auth_ephemeral_signing_key "
-            "oidc_jwt_signing_key=<unset> — tokens will be invalidated on "
-            "every server restart; configure OIDC_JWT_SIGNING_KEY in "
-            "production"
-        )
+    _warn_oidc_caveats(
+        required_scopes=required_scopes,
+        verify_id_token=verify_id_token,
+        signing_key=config.oidc_jwt_signing_key,
+    )
 
     from fastmcp.server.auth.oidc_proxy import OIDCProxy
 

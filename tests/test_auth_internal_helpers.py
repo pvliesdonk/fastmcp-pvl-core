@@ -1,0 +1,157 @@
+"""Unit tests for the internal helpers extracted from ``_auth.py``.
+
+These cover the three helpers carved out of the high-complexity builders
+(``resolve_auth_mode``, ``_load_bearer_tokens``, ``build_oidc_proxy_auth``)
+directly, at a finer grain than the public-builder tests exercise them.
+"""
+
+from __future__ import annotations
+
+import logging
+import sys
+from pathlib import Path
+
+import pytest
+
+from fastmcp_pvl_core._auth import (
+    _coerce_token_subject,
+    _resolve_explicit_override,
+    _warn_oidc_caveats,
+)
+from fastmcp_pvl_core._errors import ConfigurationError
+
+# --------------------------------------------------------------------------
+# _resolve_explicit_override
+# --------------------------------------------------------------------------
+
+
+def test_override_none_returns_none() -> None:
+    assert _resolve_explicit_override(None) is None
+
+
+@pytest.mark.parametrize("raw", ["", "   ", "\t\n"])
+def test_override_blank_returns_none_without_warning(
+    raw: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    with caplog.at_level(logging.WARNING, logger="fastmcp_pvl_core._auth"):
+        assert _resolve_explicit_override(raw) is None
+    assert not [r for r in caplog.records if "auth_mode_unknown" in r.getMessage()]
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("remote", "remote"),
+        ("oidc-proxy", "oidc-proxy"),
+        ("  REMOTE  ", "remote"),
+        ("OIDC-Proxy", "oidc-proxy"),
+    ],
+)
+def test_override_valid_is_normalised(raw: str, expected: str) -> None:
+    assert _resolve_explicit_override(raw) == expected
+
+
+@pytest.mark.parametrize("raw", ["bearer-single", "multi", "none", "garbage"])
+def test_override_invalid_returns_none_and_warns(
+    raw: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    with caplog.at_level(logging.WARNING, logger="fastmcp_pvl_core._auth"):
+        assert _resolve_explicit_override(raw) is None
+    assert [r for r in caplog.records if "auth_mode_unknown" in r.getMessage()]
+
+
+# --------------------------------------------------------------------------
+# _coerce_token_subject
+# --------------------------------------------------------------------------
+
+_P = Path("/tmp/tokens.toml")
+
+
+def test_coerce_subject_valid_returns_subject() -> None:
+    assert _coerce_token_subject(_P, "tok", "alice") == "alice"
+
+
+def test_coerce_subject_blank_token_key_raises() -> None:
+    with pytest.raises(ConfigurationError, match="token key is empty"):
+        _coerce_token_subject(_P, "   ", "alice")
+
+
+def test_coerce_subject_nested_table_raises() -> None:
+    with pytest.raises(ConfigurationError, match="nested table"):
+        _coerce_token_subject(_P, "tok", {"sub": "alice"})
+
+
+def test_coerce_subject_non_string_raises() -> None:
+    with pytest.raises(ConfigurationError, match="must be a string"):
+        _coerce_token_subject(_P, "tok", 123)
+
+
+def test_coerce_subject_empty_string_raises() -> None:
+    with pytest.raises(ConfigurationError, match="subject is empty"):
+        _coerce_token_subject(_P, "tok", "   ")
+
+
+# --------------------------------------------------------------------------
+# _warn_oidc_caveats
+# --------------------------------------------------------------------------
+
+
+def test_caveats_warns_missing_openid_scope(caplog: pytest.LogCaptureFixture) -> None:
+    with caplog.at_level(logging.WARNING, logger="fastmcp_pvl_core._auth"):
+        _warn_oidc_caveats(
+            required_scopes=["email"], verify_id_token=True, signing_key="k"
+        )
+    assert [r for r in caplog.records if "scope_warning" in r.getMessage()]
+
+
+def test_caveats_no_scope_warning_when_openid_present(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    with caplog.at_level(logging.WARNING, logger="fastmcp_pvl_core._auth"):
+        _warn_oidc_caveats(
+            required_scopes=["openid"], verify_id_token=True, signing_key="k"
+        )
+    assert not [r for r in caplog.records if "scope_warning" in r.getMessage()]
+
+
+def test_caveats_no_scope_warning_when_verifying_access_token(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    with caplog.at_level(logging.WARNING, logger="fastmcp_pvl_core._auth"):
+        _warn_oidc_caveats(
+            required_scopes=["email"], verify_id_token=False, signing_key="k"
+        )
+    assert not [r for r in caplog.records if "scope_warning" in r.getMessage()]
+
+
+def test_caveats_warns_ephemeral_key_on_linux(
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(sys, "platform", "linux")
+    with caplog.at_level(logging.WARNING, logger="fastmcp_pvl_core._auth"):
+        _warn_oidc_caveats(
+            required_scopes=["openid"], verify_id_token=True, signing_key=None
+        )
+    assert [r for r in caplog.records if "ephemeral_signing_key" in r.getMessage()]
+
+
+def test_caveats_no_ephemeral_warning_when_key_set(
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(sys, "platform", "linux")
+    with caplog.at_level(logging.WARNING, logger="fastmcp_pvl_core._auth"):
+        _warn_oidc_caveats(
+            required_scopes=["openid"], verify_id_token=True, signing_key="k"
+        )
+    assert not [r for r in caplog.records if "ephemeral_signing_key" in r.getMessage()]
+
+
+def test_caveats_no_ephemeral_warning_off_linux(
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(sys, "platform", "darwin")
+    with caplog.at_level(logging.WARNING, logger="fastmcp_pvl_core._auth"):
+        _warn_oidc_caveats(
+            required_scopes=["openid"], verify_id_token=True, signing_key=None
+        )
+    assert not [r for r in caplog.records if "ephemeral_signing_key" in r.getMessage()]
