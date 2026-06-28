@@ -52,6 +52,7 @@ dev = [
   "mypy>=1.11",
   "diff-cover>=9",
   "httpx>=0.27",
+  "pre-commit>=3.5",
 ]
 
 [tool.hatch.build.targets.wheel]

@@ -172,6 +172,17 @@ uv run mypy src
 
 CI runs the same checks on Python 3.10 through 3.13.
 
+These checks are also wired into `.pre-commit-config.yaml`, which runs
+them through `uv run` so the tool versions match CI's. Install the hooks
+once per clone so they fire automatically:
+
+```bash
+uv run pre-commit install   # default_install_hook_types covers commit + push
+```
+
+Lint, format, and type checks run only at commit time; the test suite
+runs only at push time.
+
 ## Related
 
 - [`fastmcp-server-template`](https://github.com/pvliesdonk/fastmcp-server-template)
