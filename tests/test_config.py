@@ -13,7 +13,7 @@ from fastmcp_pvl_core import (
     build_bearer_auth,
     domain_env_suffixes,
 )
-from fastmcp_pvl_core._env import env, env_int
+from fastmcp_pvl_core._env import env, env_float, env_int
 
 # ---------------------------------------------------------------------------
 # Module-level fixture classes for TestDomainEnvSuffixes
@@ -39,10 +39,68 @@ class _ModuleComposed:
     @classmethod
     def from_env(cls, prefix: str = "X") -> _ModuleComposed:
         _ = env(prefix, "MODULE_TOP")
+        _ = env_float(prefix, "FLOAT_VAR", 1.0)
         return cls(
             section=_ModuleSection.from_env(prefix),
             server=ServerConfig.from_env(prefix),
         )
+
+
+# ---------------------------------------------------------------------------
+# Fixtures for item E: Optional[Sub] / Sub|None via get_args path
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class _ModuleOptSection:
+    n: int = 0
+
+    @classmethod
+    def from_env(cls, prefix: str) -> _ModuleOptSection:
+        return cls(n=env_int(prefix, "MODULE_OPT_SEC", 0))
+
+
+@dataclass(frozen=True)
+class _ModuleComposedOptional:
+    section: _ModuleOptSection | None = None
+    server: ServerConfig = field(default_factory=ServerConfig)
+
+    @classmethod
+    def from_env(cls, prefix: str = "X") -> _ModuleComposedOptional:
+        _ = env(prefix, "MODULE_OPT_TOP")
+        return cls(section=_ModuleOptSection.from_env(prefix))
+
+
+# ---------------------------------------------------------------------------
+# Fixtures for item G: module-scope mutual cycle to exercise visited guard
+#
+# _ModuleCycleA is defined first; _ModuleCycleB references it via a
+# string-annotated field (from __future__ import annotations at file top)
+# whose default is None — no default_factory ordering issue. At module scope
+# both classes are fully defined by the time get_type_hints runs, so the
+# A↔B cycle resolves in both directions and the visited-set is what
+# terminates the walk.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class _ModuleCycleA:
+    b: _ModuleCycleB | None = None
+
+    @classmethod
+    def from_env(cls, prefix: str = "X") -> _ModuleCycleA:
+        _ = env(prefix, "CYCLE_A")
+        return cls()
+
+
+@dataclass(frozen=True)
+class _ModuleCycleB:
+    a: _ModuleCycleA | None = None
+
+    @classmethod
+    def from_env(cls, prefix: str = "X") -> _ModuleCycleB:
+        _ = env(prefix, "CYCLE_B")
+        return cls()
 
 
 class TestServerConfigDefaults:
@@ -298,7 +356,7 @@ class TestServerConfigEnvSuffixes:
 
 
 class TestDomainEnvSuffixes:
-    def test_flat_config_returns_own_reads(self):
+    def test_flat_config_returns_own_reads(self) -> None:
         """A config that reads only in its own from_env (no sub-configs)."""
         from dataclasses import dataclass, field
 
@@ -316,7 +374,7 @@ class TestDomainEnvSuffixes:
 
         assert domain_env_suffixes(Flat) == frozenset({"WIDGET", "GADGET"})
 
-    def test_recurses_into_subconfigs_and_excludes_server(self):
+    def test_recurses_into_subconfigs_and_excludes_server(self) -> None:
         """Sub-config reads are collected; the ServerConfig field is not."""
         from dataclasses import dataclass, field
 
@@ -348,7 +406,7 @@ class TestDomainEnvSuffixes:
         # ServerConfig's own suffixes are NOT folded in here.
         assert "TRANSPORT" not in result
 
-    def test_cycle_safe(self):
+    def test_cycle_safe(self) -> None:
         """A reference cycle between sections does not infinite-loop."""
         from dataclasses import dataclass, field
 
@@ -381,3 +439,22 @@ class TestDomainEnvSuffixes:
         result = domain_env_suffixes(_ModuleComposed)
         assert {"MODULE_TOP", "MODULE_SECTION_N"} <= result
         assert "TRANSPORT" not in result
+
+    def test_env_float_suffix_is_collected(self) -> None:
+        """env_float reads are discovered by the AST scan (declared in read_funcs)."""
+        result = domain_env_suffixes(_ModuleComposed)
+        assert "FLOAT_VAR" in result
+
+    def test_optional_subconfig_discovered_via_get_args(self) -> None:
+        """Optional[Sub]/Sub|None at module scope: get_type_hints resolves to a
+        Union (not a plain type), so the inner type is found via get_args."""
+        result = domain_env_suffixes(_ModuleComposedOptional)
+        assert {"MODULE_OPT_TOP", "MODULE_OPT_SEC"} <= result
+        assert "TRANSPORT" not in result
+
+    def test_module_scope_cycle_hits_visited_guard(self) -> None:
+        """A↔B mutual references at module scope resolve via get_type_hints in
+        both directions; the visited-set (not a resolution failure) is what
+        terminates the walk."""
+        result = domain_env_suffixes(_ModuleCycleA)
+        assert {"CYCLE_A", "CYCLE_B"} <= result

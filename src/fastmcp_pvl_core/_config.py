@@ -11,6 +11,7 @@ from __future__ import annotations
 import ast
 import dataclasses
 import inspect
+import logging
 import textwrap
 import typing
 from dataclasses import dataclass, field
@@ -18,6 +19,8 @@ from pathlib import Path
 from typing import Literal
 
 from ._env import env, env_int, parse_bool, parse_scopes
+
+logger = logging.getLogger(__name__)
 
 Transport = Literal["stdio", "http", "sse"]
 
@@ -228,12 +231,19 @@ def domain_env_suffixes(config_cls: type) -> frozenset[str]:
     Recursion is depth-first with a visited-set, so nested sections and
     reference cycles terminate. Only literal-string suffixes are seen — a
     suffix built from a variable or passed by keyword is invisible; keep reads
-    in the ``env(prefix, "LITERAL")`` form. Sub-config types are discovered via
-    two mechanisms: (1) primary — resolved annotations from
-    :func:`typing.get_type_hints` (works when the config is defined at module
-    scope); (2) fallback — a field's ``default_factory`` when the annotation
-    cannot be resolved (e.g. a config defined inside a local scope under
-    ``from __future__ import annotations``).
+    in the ``env(prefix, "LITERAL")`` form (a renamed import ``env as _env``
+    or attribute-form call ``mod.env(prefix, "X")`` is also invisible).
+    Sub-config types are discovered via two mechanisms:
+
+    * **Primary** — a field whose resolved annotation is a plain dataclass type
+      (the usual module-level case) is recursed directly.
+    * **Fallback** — when the resolved annotation is *not* a plain type — either
+      a generic alias like ``Optional[Section]`` / ``Section | None`` (even when
+      :func:`typing.get_type_hints` succeeded) or still a bare string because
+      resolution failed — the field's ``default_factory`` (if present) and
+      :func:`typing.get_args` of the annotation supply the candidate sub-config
+      type(s).  A field with neither a resolvable type nor a ``default_factory``
+      is skipped.
 
     Args:
         config_cls: The domain config dataclass (its ``from_env`` classmethod is
@@ -268,7 +278,17 @@ def domain_env_suffixes(config_cls: type) -> frozenset[str]:
             _literals_in(cls)
         try:
             hints = typing.get_type_hints(cls)
-        except Exception:  # noqa: BLE001 — unresolved hint: scan top level only
+        except NameError:
+            # Stringified annotation (from __future__ import annotations)
+            # referencing a name not resolvable from the class's module
+            # globals (e.g. a locally-scoped config). Fall back to
+            # default_factory discovery below. Any other resolution failure
+            # propagates — a genuinely broken config must surface, not yield a
+            # silently-incomplete suffix set in a drift gate.
+            logger.debug(
+                "domain_env_suffixes hint_resolution_failed cls=%s",
+                getattr(cls, "__name__", cls),
+            )
             hints = {}
         for f in dataclasses.fields(cls):
             ftype = hints.get(f.name, f.type)
@@ -280,13 +300,14 @@ def domain_env_suffixes(config_cls: type) -> frozenset[str]:
             candidates: tuple[object, ...]
             factory: object = f.default_factory
             if not isinstance(ftype, type) and factory is not dataclasses.MISSING:
-                # Primary discovery failed (ftype is still a string under
-                # stringified annotations).  ``factory`` is the real discovery
-                # source here.  ``get_args`` can only extract the inner type of
-                # e.g. ``Optional[Section]`` when the annotation has already
-                # been resolved to an object; on a bare string it returns ``()``
-                # and is therefore a no-op — the walk falls entirely to
-                # ``factory``.
+                # ftype is not a plain type. Two sub-cases land here:
+                #  (a) get_type_hints succeeded but returned a generic alias
+                #      (Optional[Section], Section | None): get_args(ftype) yields
+                #      the inner type(s) (Section, NoneType).
+                #  (b) resolution failed and ftype is still a bare string:
+                #      get_args(ftype) returns () and default_factory is the only
+                #      discovery source.
+                # A field with neither a factory nor an args-bearing alias is skipped.
                 candidates = (factory, *typing.get_args(ftype))
             else:
                 candidates = (ftype, *typing.get_args(ftype))
