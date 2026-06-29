@@ -11,7 +11,6 @@ from __future__ import annotations
 import ast
 import dataclasses
 import inspect
-import logging
 import textwrap
 import typing
 from dataclasses import dataclass, field
@@ -19,8 +18,6 @@ from pathlib import Path
 from typing import Literal
 
 from ._env import env, env_int, parse_bool, parse_scopes
-
-logger = logging.getLogger(__name__)
 
 Transport = Literal["stdio", "http", "sse"]
 
@@ -220,34 +217,28 @@ def domain_env_suffixes(config_cls: type) -> frozenset[str]:
     """Return the ``{PREFIX}_``-stripped env suffixes a domain config reads.
 
     AST-scans ``config_cls.from_env`` for ``env``/``env_int``/``env_float``
-    calls whose suffix is a string literal, then recurses into the config's
-    dataclass fields whose resolved type is itself a dataclass exposing a
-    ``from_env`` classmethod — so a config that delegates env reads to
-    sub-config *sections* (each with its own ``from_env``) reports its full
-    surface. The composed :class:`ServerConfig` field is skipped (its surface
-    is :func:`server_config_env_suffixes`). A flat config with no sub-config
-    fields scans only its own ``from_env``.
+    calls whose suffix is a string literal, and recurses into the config's
+    dataclass fields whose resolved type — or a type argument of it, e.g. the
+    inner ``Section`` of ``Optional[Section]`` or the element type of
+    ``list[Section]`` — is a dataclass exposing a ``from_env`` classmethod. So
+    a config that delegates env reads to sub-config *sections* reports its full
+    surface. The composed :class:`ServerConfig` field is excluded (its surface
+    is :func:`server_config_env_suffixes`); a flat config with no sub-config
+    fields scans only its own ``from_env``. Recursion is depth-first with a
+    visited-set, so reference cycles and a type shared by two fields terminate
+    and de-duplicate.
 
-    Recursion is depth-first with a visited-set, so nested sections and
-    reference cycles terminate. Only literal-string suffixes are seen — a
-    suffix built from a variable or passed by keyword is invisible; keep reads
-    in the ``env(prefix, "LITERAL")`` form (a renamed import ``env as _env``
-    or attribute-form call ``mod.env(prefix, "X")`` is also invisible).
-    Sub-config types are discovered via two mechanisms:
-
-    * **Primary** — a field whose resolved annotation is a plain dataclass type
-      (the usual module-level case) is recursed directly.
-    * **Fallback** — when the resolved annotation is *not* a plain type — either
-      a generic alias like ``Optional[Section]`` / ``Section | None`` (even when
-      :func:`typing.get_type_hints` succeeded) or still a bare string because
-      resolution failed — the field's ``default_factory`` (if present) and
-      :func:`typing.get_args` of the annotation supply the candidate sub-config
-      type(s).  A field with neither a resolvable type nor a ``default_factory``
-      is skipped.
+    Field types are resolved with :func:`typing.get_type_hints`, so the config
+    and its sub-configs must be defined at module scope (the normal case); a
+    resolution failure propagates rather than yielding a silently-incomplete
+    set in a drift gate. Only unqualified ``env(prefix, "LITERAL")`` reads are
+    seen — a renamed import (``env as _e``), an attribute-form call
+    (``mod.env(...)``), or a variable/keyword-form suffix is invisible to the
+    scan; keep reads in the literal ``env(prefix, "LITERAL")`` form.
 
     Args:
-        config_cls: The domain config dataclass (its ``from_env`` classmethod is
-            the scan root).
+        config_cls: The domain config dataclass; its ``from_env`` classmethod
+            is the scan root.
 
     Returns:
         The frozenset of literal env suffixes read by ``config_cls.from_env``
@@ -258,7 +249,13 @@ def domain_env_suffixes(config_cls: type) -> frozenset[str]:
     visited: set[type] = set()
 
     def _literals_in(cls: type) -> None:
-        src = textwrap.dedent(inspect.getsource(cls.from_env))  # type: ignore[attr-defined]  # cls is a dataclass type; from_env is guarded by hasattr above
+        try:
+            src = textwrap.dedent(inspect.getsource(cls.from_env))  # type: ignore[attr-defined]
+        except OSError as exc:  # source unavailable (compiled/frozen/dynamic class)
+            raise OSError(
+                f"domain_env_suffixes: cannot read source for "
+                f"{cls.__qualname__}.from_env: {exc}"
+            ) from exc
         for node in ast.walk(ast.parse(src)):
             if (
                 isinstance(node, ast.Call)
@@ -276,42 +273,10 @@ def domain_env_suffixes(config_cls: type) -> frozenset[str]:
         visited.add(cls)
         if hasattr(cls, "from_env"):
             _literals_in(cls)
-        try:
-            hints = typing.get_type_hints(cls)
-        except NameError:
-            # Stringified annotation (from __future__ import annotations)
-            # referencing a name not resolvable from the class's module
-            # globals (e.g. a locally-scoped config). Fall back to
-            # default_factory discovery below. Any other resolution failure
-            # propagates — a genuinely broken config must surface, not yield a
-            # silently-incomplete suffix set in a drift gate.
-            logger.debug(
-                "domain_env_suffixes hint_resolution_failed cls=%s",
-                getattr(cls, "__name__", cls),
-            )
-            hints = {}
+        hints = typing.get_type_hints(cls)
         for f in dataclasses.fields(cls):
-            ftype = hints.get(f.name, f.type)
-            # When ``from __future__ import annotations`` is active and the type
-            # is locally defined (e.g. inside a test method), ``get_type_hints``
-            # may fail and ``f.type`` is a plain string.  Fall back to
-            # ``f.default_factory`` when it is a type, so that the common
-            # ``field(default_factory=SomeSubConfig)`` pattern is still visited.
-            candidates: tuple[object, ...]
-            factory: object = f.default_factory
-            if not isinstance(ftype, type) and factory is not dataclasses.MISSING:
-                # ftype is not a plain type. Two sub-cases land here:
-                #  (a) get_type_hints succeeded but returned a generic alias
-                #      (Optional[Section], Section | None): get_args(ftype) yields
-                #      the inner type(s) (Section, NoneType).
-                #  (b) resolution failed and ftype is still a bare string:
-                #      get_args(ftype) returns () and default_factory is the only
-                #      discovery source.
-                # A field with neither a factory nor an args-bearing alias is skipped.
-                candidates = (factory, *typing.get_args(ftype))
-            else:
-                candidates = (ftype, *typing.get_args(ftype))
-            for candidate in candidates:
+            resolved = hints.get(f.name, f.type)
+            for candidate in (resolved, *typing.get_args(resolved)):
                 if (
                     isinstance(candidate, type)
                     and dataclasses.is_dataclass(candidate)

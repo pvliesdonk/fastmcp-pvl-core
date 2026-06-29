@@ -12,94 +12,102 @@ from fastmcp_pvl_core import (
     ServerConfig,
     build_bearer_auth,
     domain_env_suffixes,
+    env,
+    env_float,
+    env_int,
 )
-from fastmcp_pvl_core._env import env, env_float, env_int
 
 # ---------------------------------------------------------------------------
 # Module-level fixture classes for TestDomainEnvSuffixes
 # (defined at module scope so typing.get_type_hints can resolve them —
-# the primary discovery path used by real production configs).
+# the only shape real configs take).
 # ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
-class _ModuleSection:
-    n: int = 0
-
+class _Sec:
     @classmethod
-    def from_env(cls, prefix: str) -> _ModuleSection:
-        return cls(n=env_int(prefix, "MODULE_SECTION_N", 0))
-
-
-@dataclass(frozen=True)
-class _ModuleComposed:
-    section: _ModuleSection = field(default_factory=_ModuleSection)
-    server: ServerConfig = field(default_factory=ServerConfig)
-
-    @classmethod
-    def from_env(cls, prefix: str = "X") -> _ModuleComposed:
-        _ = env(prefix, "MODULE_TOP")
-        _ = env_float(prefix, "FLOAT_VAR", 1.0)
-        return cls(
-            section=_ModuleSection.from_env(prefix),
-            server=ServerConfig.from_env(prefix),
-        )
-
-
-# ---------------------------------------------------------------------------
-# Fixtures for item E: Optional[Sub] / Sub|None via get_args path
-# ---------------------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class _ModuleOptSection:
-    n: int = 0
-
-    @classmethod
-    def from_env(cls, prefix: str) -> _ModuleOptSection:
-        return cls(n=env_int(prefix, "MODULE_OPT_SEC", 0))
-
-
-@dataclass(frozen=True)
-class _ModuleComposedOptional:
-    section: _ModuleOptSection | None = None
-    server: ServerConfig = field(default_factory=ServerConfig)
-
-    @classmethod
-    def from_env(cls, prefix: str = "X") -> _ModuleComposedOptional:
-        _ = env(prefix, "MODULE_OPT_TOP")
-        return cls(section=_ModuleOptSection.from_env(prefix))
-
-
-# ---------------------------------------------------------------------------
-# Fixtures for item G: module-scope mutual cycle to exercise visited guard
-#
-# _ModuleCycleA is defined first; _ModuleCycleB references it via a
-# string-annotated field (from __future__ import annotations at file top)
-# whose default is None — no default_factory ordering issue. At module scope
-# both classes are fully defined by the time get_type_hints runs, so the
-# A↔B cycle resolves in both directions and the visited-set is what
-# terminates the walk.
-# ---------------------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class _ModuleCycleA:
-    b: _ModuleCycleB | None = None
-
-    @classmethod
-    def from_env(cls, prefix: str = "X") -> _ModuleCycleA:
-        _ = env(prefix, "CYCLE_A")
+    def from_env(cls, prefix: str) -> _Sec:
+        _ = env(prefix, "SEC_TOKEN")
+        _ = env_int(prefix, "SEC_COUNT", 0)
         return cls()
 
 
 @dataclass(frozen=True)
-class _ModuleCycleB:
-    a: _ModuleCycleA | None = None
+class _Flat:
+    server: ServerConfig = field(default_factory=ServerConfig)
 
     @classmethod
-    def from_env(cls, prefix: str = "X") -> _ModuleCycleB:
-        _ = env(prefix, "CYCLE_B")
+    def from_env(cls, prefix: str = "X") -> _Flat:
+        _ = env(prefix, "FLAT_S")
+        _ = env_int(prefix, "FLAT_I", 0)
+        _ = env_float(prefix, "FLAT_F", 1.0)
+        return cls()
+
+
+@dataclass(frozen=True)
+class _Composed:
+    sec: _Sec = field(default_factory=_Sec)
+    server: ServerConfig = field(default_factory=ServerConfig)
+
+    @classmethod
+    def from_env(cls, prefix: str = "X") -> _Composed:
+        _ = env(prefix, "TOP")
+        return cls(sec=_Sec.from_env(prefix), server=ServerConfig.from_env(prefix))
+
+
+@dataclass(frozen=True)
+class _OptComposed:
+    sec: _Sec | None = None
+
+    @classmethod
+    def from_env(cls, prefix: str = "X") -> _OptComposed:
+        _ = env(prefix, "OPT_TOP")
+        return cls()
+
+
+@dataclass(frozen=True)
+class _CycA:
+    b: _CycB | None = None
+
+    @classmethod
+    def from_env(cls, prefix: str = "X") -> _CycA:
+        _ = env(prefix, "CYC_A")
+        return cls()
+
+
+@dataclass(frozen=True)
+class _CycB:
+    a: _CycA | None = None
+
+    @classmethod
+    def from_env(cls, prefix: str = "X") -> _CycB:
+        _ = env(prefix, "CYC_B")
+        return cls()
+
+
+@dataclass(frozen=True)
+class _TwoFields:
+    x: _Sec = field(default_factory=_Sec)
+    y: _Sec = field(default_factory=_Sec)
+
+    @classmethod
+    def from_env(cls, prefix: str = "X") -> _TwoFields:
+        return cls()
+
+
+@dataclass(frozen=True)
+class _Plain:
+    v: int = 0
+
+
+@dataclass(frozen=True)
+class _HasPlain:
+    p: _Plain = field(default_factory=_Plain)
+
+    @classmethod
+    def from_env(cls, prefix: str = "X") -> _HasPlain:
+        _ = env(prefix, "HP_TOP")
         return cls()
 
 
@@ -356,105 +364,37 @@ class TestServerConfigEnvSuffixes:
 
 
 class TestDomainEnvSuffixes:
-    def test_flat_config_returns_own_reads(self) -> None:
-        """A config that reads only in its own from_env (no sub-configs)."""
-        from dataclasses import dataclass, field
+    def test_flat_exact_surface_and_all_read_funcs(self) -> None:
+        """Flat config: env/env_int/env_float all matched, ServerConfig excluded."""
+        assert domain_env_suffixes(_Flat) == frozenset({"FLAT_S", "FLAT_I", "FLAT_F"})
 
-        from fastmcp_pvl_core import ServerConfig, domain_env_suffixes, env
-
-        @dataclass(frozen=True)
-        class Flat:
-            server: ServerConfig = field(default_factory=ServerConfig)
-
-            @classmethod
-            def from_env(cls, prefix: str = "X") -> Flat:
-                _ = env(prefix, "WIDGET")
-                _ = env(prefix, "GADGET")
-                return cls()
-
-        assert domain_env_suffixes(Flat) == frozenset({"WIDGET", "GADGET"})
-
-    def test_recurses_into_subconfigs_and_excludes_server(self) -> None:
-        """Sub-config reads are collected; the ServerConfig field is not."""
-        from dataclasses import dataclass, field
-
-        from fastmcp_pvl_core import ServerConfig, domain_env_suffixes, env, env_int
-
-        @dataclass(frozen=True)
-        class Section:
-            n: int = 0
-
-            @classmethod
-            def from_env(cls, prefix: str) -> Section:
-                return cls(n=env_int(prefix, "SECTION_N", 0))
-
-        @dataclass(frozen=True)
-        class Composed:
-            section: Section = field(default_factory=Section)
-            server: ServerConfig = field(default_factory=ServerConfig)
-
-            @classmethod
-            def from_env(cls, prefix: str = "X") -> Composed:
-                _ = env(prefix, "TOP_LEVEL")
-                return cls(
-                    section=Section.from_env(prefix),
-                    server=ServerConfig.from_env(prefix),
-                )
-
-        result = domain_env_suffixes(Composed)
-        assert {"TOP_LEVEL", "SECTION_N"} <= result
-        # ServerConfig's own suffixes are NOT folded in here.
-        assert "TRANSPORT" not in result
-
-    def test_cycle_safe(self) -> None:
-        """A reference cycle between sections does not infinite-loop."""
-        from dataclasses import dataclass, field
-
-        from fastmcp_pvl_core import domain_env_suffixes, env
-
-        @dataclass(frozen=True)
-        class A:
-            b: B | None = None
-
-            @classmethod
-            def from_env(cls, prefix: str = "X") -> A:
-                _ = env(prefix, "A_VAR")
-                return cls()
-
-        @dataclass(frozen=True)
-        class B:
-            a: A = field(default_factory=A)
-
-            @classmethod
-            def from_env(cls, prefix: str = "X") -> B:
-                _ = env(prefix, "B_VAR")
-                return cls()
-
-        assert {"A_VAR", "B_VAR"} <= domain_env_suffixes(B)
-
-    def test_primary_get_type_hints_path_module_level(self) -> None:
-        """Module-level config: recursion resolves via get_type_hints, not the
-        default_factory fallback. Proves the production path (real configs are
-        module-level) and ServerConfig exclusion through that path."""
-        result = domain_env_suffixes(_ModuleComposed)
-        assert {"MODULE_TOP", "MODULE_SECTION_N"} <= result
-        assert "TRANSPORT" not in result
-
-    def test_env_float_suffix_is_collected(self) -> None:
-        """env_float reads are discovered by the AST scan (declared in read_funcs)."""
-        result = domain_env_suffixes(_ModuleComposed)
-        assert "FLOAT_VAR" in result
+    def test_recurses_into_subconfig_excludes_server(self) -> None:
+        """Sub-config reads collected exactly; the ServerConfig field is not."""
+        assert domain_env_suffixes(_Composed) == frozenset(
+            {"TOP", "SEC_TOKEN", "SEC_COUNT"}
+        )
+        assert "TRANSPORT" not in domain_env_suffixes(_Composed)
 
     def test_optional_subconfig_discovered_via_get_args(self) -> None:
-        """Optional[Sub]/Sub|None at module scope: get_type_hints resolves to a
-        Union (not a plain type), so the inner type is found via get_args."""
-        result = domain_env_suffixes(_ModuleComposedOptional)
-        assert {"MODULE_OPT_TOP", "MODULE_OPT_SEC"} <= result
-        assert "TRANSPORT" not in result
+        """Optional[Sub]/Sub|None resolves to a Union; the inner type is found
+        via typing.get_args (no default_factory needed)."""
+        assert domain_env_suffixes(_OptComposed) == frozenset(
+            {"OPT_TOP", "SEC_TOKEN", "SEC_COUNT"}
+        )
 
-    def test_module_scope_cycle_hits_visited_guard(self) -> None:
-        """A↔B mutual references at module scope resolve via get_type_hints in
-        both directions; the visited-set (not a resolution failure) is what
-        terminates the walk."""
-        result = domain_env_suffixes(_ModuleCycleA)
-        assert {"CYCLE_A", "CYCLE_B"} <= result
+    def test_module_scope_cycle_terminates_via_visited(self) -> None:
+        """A<->B mutual references resolve via get_type_hints in both directions;
+        the visited-set is what terminates the walk."""
+        assert domain_env_suffixes(_CycA) == frozenset({"CYC_A", "CYC_B"})
+
+    def test_same_type_two_fields_deduped(self) -> None:
+        """A type referenced by two fields is scanned once (visited-set)."""
+        assert domain_env_suffixes(_TwoFields) == frozenset({"SEC_TOKEN", "SEC_COUNT"})
+
+    def test_dataclass_field_without_from_env_is_skipped(self) -> None:
+        """A dataclass field lacking from_env is not scanned and does not crash."""
+        assert domain_env_suffixes(_HasPlain) == frozenset({"HP_TOP"})
+
+    def test_server_config_as_root_returns_empty(self) -> None:
+        """ServerConfig as root yields empty; use server_config_env_suffixes."""
+        assert domain_env_suffixes(ServerConfig) == frozenset()
