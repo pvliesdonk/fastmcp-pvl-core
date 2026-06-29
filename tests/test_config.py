@@ -2,11 +2,141 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import pytest
 
-from fastmcp_pvl_core import ConfigurationError, ServerConfig, build_bearer_auth
+from fastmcp_pvl_core import (
+    ConfigurationError,
+    ServerConfig,
+    build_bearer_auth,
+    domain_env_suffixes,
+    env,
+    env_float,
+    env_int,
+)
+
+# ---------------------------------------------------------------------------
+# Module-level fixture classes for TestDomainEnvSuffixes
+# (defined at module scope so typing.get_type_hints can resolve them —
+# the only shape real configs take).
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class _Sec:
+    @classmethod
+    def from_env(cls, prefix: str) -> _Sec:
+        _ = env(prefix, "SEC_TOKEN")
+        _ = env_int(prefix, "SEC_COUNT", 0)
+        return cls()
+
+
+@dataclass(frozen=True)
+class _Flat:
+    server: ServerConfig = field(default_factory=ServerConfig)
+
+    @classmethod
+    def from_env(cls, prefix: str = "X") -> _Flat:
+        _ = env(prefix, "FLAT_S")
+        _ = env_int(prefix, "FLAT_I", 0)
+        _ = env_float(prefix, "FLAT_F", 1.0)
+        return cls()
+
+
+@dataclass(frozen=True)
+class _Composed:
+    sec: _Sec = field(default_factory=_Sec)
+    server: ServerConfig = field(default_factory=ServerConfig)
+
+    @classmethod
+    def from_env(cls, prefix: str = "X") -> _Composed:
+        _ = env(prefix, "TOP")
+        return cls(sec=_Sec.from_env(prefix), server=ServerConfig.from_env(prefix))
+
+
+@dataclass(frozen=True)
+class _OptComposed:
+    sec: _Sec | None = None
+
+    @classmethod
+    def from_env(cls, prefix: str = "X") -> _OptComposed:
+        _ = env(prefix, "OPT_TOP")
+        return cls()
+
+
+@dataclass(frozen=True)
+class _CycA:
+    b: _CycB | None = None
+
+    @classmethod
+    def from_env(cls, prefix: str = "X") -> _CycA:
+        _ = env(prefix, "CYC_A")
+        return cls()
+
+
+@dataclass(frozen=True)
+class _CycB:
+    a: _CycA | None = None
+
+    @classmethod
+    def from_env(cls, prefix: str = "X") -> _CycB:
+        _ = env(prefix, "CYC_B")
+        return cls()
+
+
+@dataclass(frozen=True)
+class _TwoFields:
+    x: _Sec = field(default_factory=_Sec)
+    y: _Sec = field(default_factory=_Sec)
+
+    @classmethod
+    def from_env(cls, prefix: str = "X") -> _TwoFields:
+        return cls()
+
+
+@dataclass(frozen=True)
+class _Plain:
+    v: int = 0
+
+
+@dataclass(frozen=True)
+class _HasPlain:
+    p: _Plain = field(default_factory=_Plain)
+
+    @classmethod
+    def from_env(cls, prefix: str = "X") -> _HasPlain:
+        _ = env(prefix, "HP_TOP")
+        return cls()
+
+
+@dataclass(frozen=True)
+class _SubForList:
+    @classmethod
+    def from_env(cls, prefix: str) -> _SubForList:
+        _ = env(prefix, "LIST_SUB")
+        return cls()
+
+
+@dataclass(frozen=True)
+class _ListTypedField:
+    subs: list[_SubForList] = field(default_factory=list)
+
+    @classmethod
+    def from_env(cls, prefix: str = "X") -> _ListTypedField:
+        _ = env(prefix, "LIST_TOP")
+        return cls()
+
+
+@dataclass(frozen=True)
+class _BadRef:
+    x: NonExistentType = 0  # type: ignore[name-defined]  # noqa: F821 — unresolvable on purpose
+
+    @classmethod
+    def from_env(cls, prefix: str = "X") -> _BadRef:
+        _ = env(prefix, "BAD")
+        return cls()
 
 
 class TestServerConfigDefaults:
@@ -259,3 +389,76 @@ class TestServerConfigEnvSuffixes:
         from fastmcp_pvl_core import server_config_env_suffixes
 
         assert server_config_env_suffixes() == _suffixes_read_by_from_env()
+
+
+class TestDomainEnvSuffixes:
+    def test_flat_exact_surface_and_all_read_funcs(self) -> None:
+        """Flat config: env/env_int/env_float all matched, ServerConfig excluded."""
+        assert domain_env_suffixes(_Flat) == frozenset({"FLAT_S", "FLAT_I", "FLAT_F"})
+
+    def test_recurses_into_subconfig_excludes_server(self) -> None:
+        """Sub-config reads collected exactly; the ServerConfig field is not."""
+        assert domain_env_suffixes(_Composed) == frozenset(
+            {"TOP", "SEC_TOKEN", "SEC_COUNT"}
+        )
+        assert "TRANSPORT" not in domain_env_suffixes(_Composed)
+
+    def test_optional_subconfig_discovered_via_get_args(self) -> None:
+        """Optional[Sub]/Sub|None resolves to a Union; the inner type is found
+        via typing.get_args (no default_factory needed)."""
+        assert domain_env_suffixes(_OptComposed) == frozenset(
+            {"OPT_TOP", "SEC_TOKEN", "SEC_COUNT"}
+        )
+
+    def test_module_scope_cycle_terminates_via_visited(self) -> None:
+        """A<->B mutual references resolve via get_type_hints in both directions;
+        the visited-set is what terminates the walk."""
+        assert domain_env_suffixes(_CycA) == frozenset({"CYC_A", "CYC_B"})
+
+    def test_same_type_two_fields_deduped(self) -> None:
+        """A type referenced by two fields is scanned once (visited-set)."""
+        assert domain_env_suffixes(_TwoFields) == frozenset({"SEC_TOKEN", "SEC_COUNT"})
+
+    def test_dataclass_field_without_from_env_is_skipped(self) -> None:
+        """A dataclass field lacking from_env is not scanned and does not crash."""
+        assert domain_env_suffixes(_HasPlain) == frozenset({"HP_TOP"})
+
+    def test_server_config_as_root_returns_empty(self) -> None:
+        """ServerConfig as root yields empty; use server_config_env_suffixes."""
+        assert domain_env_suffixes(ServerConfig) == frozenset()
+
+    def test_non_dataclass_input_raises_typeerror(self) -> None:
+        """A non-dataclass argument is a caller error, not a silent empty result."""
+        with pytest.raises(TypeError, match="dataclass"):
+            domain_env_suffixes(int)
+
+    def test_dataclass_instance_raises_typeerror(self) -> None:
+        """An instance (vs the class) is rejected — is_dataclass alone accepts both."""
+        with pytest.raises(TypeError, match="dataclass"):
+            domain_env_suffixes(_Flat())  # type: ignore[arg-type]
+
+    def test_list_subconfig_field_traversed(self) -> None:
+        """list[Sub] fields are traversed via get_args (one level)."""
+        assert domain_env_suffixes(_ListTypedField) == frozenset(
+            {"LIST_TOP", "LIST_SUB"}
+        )
+
+    def test_source_unavailable_raises_oserror_with_context(self) -> None:
+        """A class whose from_env source can't be read raises OSError naming it."""
+        ns: dict[str, object] = {}
+        exec(  # noqa: S102 — building a source-less class on purpose
+            "from dataclasses import dataclass\n"
+            "@dataclass\n"
+            "class ExecCfg:\n"
+            "    @classmethod\n"
+            "    def from_env(cls, prefix='X'):\n"
+            "        return cls()\n",
+            ns,
+        )
+        with pytest.raises(OSError, match="ExecCfg.from_env"):
+            domain_env_suffixes(ns["ExecCfg"])  # type: ignore[arg-type]
+
+    def test_unresolvable_forward_ref_raises_nameerror(self) -> None:
+        """An annotation not importable at module scope propagates as NameError."""
+        with pytest.raises(NameError, match="domain_env_suffixes"):
+            domain_env_suffixes(_BadRef)

@@ -8,6 +8,8 @@ MCP Apps domain.
 
 from __future__ import annotations
 
+import dataclasses
+import typing
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
@@ -206,3 +208,112 @@ def server_config_env_suffixes() -> frozenset[str]:
     surface.
     """
     return _SERVER_CONFIG_ENV_SUFFIXES
+
+
+def domain_env_suffixes(config_cls: type) -> frozenset[str]:
+    """Return the ``{PREFIX}_``-stripped env suffixes a domain config reads.
+
+    AST-scans ``config_cls.from_env`` for ``env``/``env_int``/``env_float``
+    calls whose suffix is a string literal, and recurses into the config's
+    dataclass fields whose resolved type — or a type argument of it, e.g. the
+    inner ``Section`` of ``Optional[Section]`` or the element type of
+    ``list[Section]`` — is a dataclass exposing a ``from_env`` classmethod. So
+    a config that delegates env reads to sub-config *sections* reports its full
+    surface. The composed :class:`ServerConfig` field is excluded (its surface
+    is :func:`server_config_env_suffixes`); a flat config with no sub-config
+    fields scans only its own ``from_env``. Recursion is depth-first with a
+    visited-set, so reference cycles and a type shared by two fields terminate
+    and de-duplicate.
+
+    Field types are resolved with :func:`typing.get_type_hints`, so the config
+    and its sub-configs must be defined at module scope (the normal case); a
+    resolution failure propagates rather than yielding a silently-incomplete
+    set in a drift gate. Only unqualified ``env(prefix, "LITERAL")`` reads are
+    seen — a renamed import (``env as _e``), an attribute-form call
+    (``mod.env(...)``), or a variable/keyword-form suffix is invisible to the
+    scan; keep reads in the literal ``env(prefix, "LITERAL")`` form.
+
+    Only one level of :func:`typing.get_args` is expanded — ``list[Section]``
+    (element type) and ``Section | None`` (direct union member) are traversed,
+    but a nested container generic such as ``list[Optional[Section]]`` is not.
+
+    Args:
+        config_cls: The domain config dataclass; its ``from_env`` classmethod
+            is the scan root.
+
+    Returns:
+        The frozenset of literal env suffixes read by ``config_cls.from_env``
+        and its sub-config sections, excluding the :class:`ServerConfig` field.
+
+    Raises:
+        TypeError: If ``config_cls`` is not a dataclass.
+        OSError: If a sub-config's ``from_env`` source cannot be read
+            (compiled, frozen, or dynamically-defined class).
+        NameError: If a field annotation cannot be resolved at
+            :func:`typing.get_type_hints` time — the config or a sub-config
+            is not defined at module scope, or contains a broken forward
+            reference.
+    """
+    import ast
+    import inspect
+    import textwrap
+
+    # ``is_dataclass`` is true for instances too; require the class itself so a
+    # mistakenly-passed instance fails loudly rather than silently scanning.
+    if not isinstance(config_cls, type) or not dataclasses.is_dataclass(config_cls):
+        raise TypeError(
+            f"domain_env_suffixes: expected a dataclass type, got {config_cls!r}"
+        )
+
+    read_funcs = {"env", "env_int", "env_float"}
+    found: set[str] = set()
+    visited: set[type] = set()
+
+    def _literals_in(cls: type) -> None:
+        try:
+            src = textwrap.dedent(inspect.getsource(cls.from_env))  # type: ignore[attr-defined]
+        except (OSError, TypeError) as exc:  # source unreadable / not a Python function
+            # Re-raise preserving the original type (OSError vs TypeError) with
+            # class context, so a type error isn't masqueraded as I/O.
+            raise type(exc)(
+                f"domain_env_suffixes: cannot read source for "
+                f"{cls.__qualname__}.from_env: {exc}"
+            ) from exc
+        for node in ast.walk(ast.parse(src)):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id in read_funcs
+                and len(node.args) >= 2
+                and isinstance(node.args[1], ast.Constant)
+                and isinstance(node.args[1].value, str)
+            ):
+                found.add(node.args[1].value)
+
+    def _visit(cls: type) -> None:
+        if cls in visited or cls is ServerConfig or not dataclasses.is_dataclass(cls):
+            return
+        visited.add(cls)
+        if hasattr(cls, "from_env"):
+            _literals_in(cls)
+        try:
+            hints = typing.get_type_hints(cls)
+        except NameError as exc:
+            raise NameError(
+                f"domain_env_suffixes: cannot resolve type hints for "
+                f"{cls.__qualname__} — annotations must be importable at module "
+                f"scope: {exc}"
+            ) from exc
+        for f in dataclasses.fields(cls):
+            resolved = hints.get(f.name, f.type)
+            for candidate in (resolved, *typing.get_args(resolved)):
+                if (
+                    isinstance(candidate, type)
+                    and dataclasses.is_dataclass(candidate)
+                    and candidate is not ServerConfig
+                    and hasattr(candidate, "from_env")
+                ):
+                    _visit(candidate)
+
+    _visit(config_cls)
+    return frozenset(found)
