@@ -22,7 +22,12 @@ from ._authorization import (
     parse_claim_grants,
 )
 from ._cli import make_serve_parser, normalise_http_path
-from ._config import ServerConfig, Transport, server_config_env_suffixes
+from ._config import (
+    ServerConfig,
+    Transport,
+    domain_env_suffixes,
+    server_config_env_suffixes,
+)
 from ._debug import maybe_start_debugpy
 from ._env import (
     env,
@@ -73,6 +78,7 @@ __all__ = [
     "client_supports_apps",
     "compute_app_domain",
     "configure_logging_from_env",
+    "domain_env_suffixes",
     "env",
     "env_float",
     "env_int",

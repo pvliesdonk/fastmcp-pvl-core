@@ -259,3 +259,81 @@ class TestServerConfigEnvSuffixes:
         from fastmcp_pvl_core import server_config_env_suffixes
 
         assert server_config_env_suffixes() == _suffixes_read_by_from_env()
+
+
+class TestDomainEnvSuffixes:
+    def test_flat_config_returns_own_reads(self):
+        """A config that reads only in its own from_env (no sub-configs)."""
+        from dataclasses import dataclass, field
+
+        from fastmcp_pvl_core import ServerConfig, domain_env_suffixes, env
+
+        @dataclass(frozen=True)
+        class Flat:
+            server: ServerConfig = field(default_factory=ServerConfig)
+
+            @classmethod
+            def from_env(cls, prefix: str = "X") -> Flat:
+                _ = env(prefix, "WIDGET")
+                _ = env(prefix, "GADGET")
+                return cls()
+
+        assert domain_env_suffixes(Flat) == frozenset({"WIDGET", "GADGET"})
+
+    def test_recurses_into_subconfigs_and_excludes_server(self):
+        """Sub-config reads are collected; the ServerConfig field is not."""
+        from dataclasses import dataclass, field
+
+        from fastmcp_pvl_core import ServerConfig, domain_env_suffixes, env, env_int
+
+        @dataclass(frozen=True)
+        class Section:
+            n: int = 0
+
+            @classmethod
+            def from_env(cls, prefix: str) -> Section:
+                return cls(n=env_int(prefix, "SECTION_N", 0))
+
+        @dataclass(frozen=True)
+        class Composed:
+            section: Section = field(default_factory=Section)
+            server: ServerConfig = field(default_factory=ServerConfig)
+
+            @classmethod
+            def from_env(cls, prefix: str = "X") -> Composed:
+                _ = env(prefix, "TOP_LEVEL")
+                return cls(
+                    section=Section.from_env(prefix),
+                    server=ServerConfig.from_env(prefix),
+                )
+
+        result = domain_env_suffixes(Composed)
+        assert {"TOP_LEVEL", "SECTION_N"} <= result
+        # ServerConfig's own suffixes are NOT folded in here.
+        assert "TRANSPORT" not in result
+
+    def test_cycle_safe(self):
+        """A reference cycle between sections does not infinite-loop."""
+        from dataclasses import dataclass, field
+
+        from fastmcp_pvl_core import domain_env_suffixes, env
+
+        @dataclass(frozen=True)
+        class A:
+            b: B | None = None
+
+            @classmethod
+            def from_env(cls, prefix: str = "X") -> A:
+                _ = env(prefix, "A_VAR")
+                return cls()
+
+        @dataclass(frozen=True)
+        class B:
+            a: A = field(default_factory=A)
+
+            @classmethod
+            def from_env(cls, prefix: str = "X") -> B:
+                _ = env(prefix, "B_VAR")
+                return cls()
+
+        assert {"A_VAR", "B_VAR"} <= domain_env_suffixes(B)

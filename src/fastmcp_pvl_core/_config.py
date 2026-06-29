@@ -8,6 +8,11 @@ MCP Apps domain.
 
 from __future__ import annotations
 
+import ast
+import dataclasses
+import inspect
+import textwrap
+import typing
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
@@ -206,3 +211,83 @@ def server_config_env_suffixes() -> frozenset[str]:
     surface.
     """
     return _SERVER_CONFIG_ENV_SUFFIXES
+
+
+def domain_env_suffixes(config_cls: type) -> frozenset[str]:
+    """Return the ``{PREFIX}_``-stripped env suffixes a domain config reads.
+
+    AST-scans ``config_cls.from_env`` for ``env``/``env_int``/``env_float``
+    calls whose suffix is a string literal, then recurses into the config's
+    dataclass fields whose resolved type is itself a dataclass exposing a
+    ``from_env`` classmethod — so a config that delegates env reads to
+    sub-config *sections* (each with its own ``from_env``) reports its full
+    surface. The composed :class:`ServerConfig` field is skipped (its surface
+    is :func:`server_config_env_suffixes`). A flat config with no sub-config
+    fields scans only its own ``from_env``.
+
+    Recursion is depth-first with a visited-set, so nested sections and
+    reference cycles terminate. Only literal-string suffixes are seen — a
+    suffix built from a variable or passed by keyword is invisible; keep reads
+    in the ``env(prefix, "LITERAL")`` form. Sub-config types must be resolvable
+    via :func:`typing.get_type_hints` (importable in the config module's
+    namespace), which matters under ``from __future__ import annotations``.
+
+    Args:
+        config_cls: The domain config dataclass (its ``from_env`` classmethod is
+            the scan root).
+
+    Returns:
+        The frozenset of literal env suffixes read by ``config_cls.from_env``
+        and its sub-config sections, excluding the :class:`ServerConfig` field.
+    """
+    read_funcs = {"env", "env_int", "env_float"}
+    found: set[str] = set()
+    visited: set[type] = set()
+
+    def _literals_in(cls: type) -> None:
+        src = textwrap.dedent(inspect.getsource(cls.from_env))  # type: ignore[attr-defined]
+        for node in ast.walk(ast.parse(src)):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id in read_funcs
+                and len(node.args) >= 2
+                and isinstance(node.args[1], ast.Constant)
+                and isinstance(node.args[1].value, str)
+            ):
+                found.add(node.args[1].value)
+
+    def _visit(cls: type) -> None:
+        if cls in visited or cls is ServerConfig or not dataclasses.is_dataclass(cls):
+            return
+        visited.add(cls)
+        if hasattr(cls, "from_env"):
+            _literals_in(cls)
+        try:
+            hints = typing.get_type_hints(cls)
+        except Exception:  # noqa: BLE001 — unresolved hint: scan top level only
+            hints = {}
+        for f in dataclasses.fields(cls):
+            ftype = hints.get(f.name, f.type)
+            # When ``from __future__ import annotations`` is active and the type
+            # is locally defined (e.g. inside a test method), ``get_type_hints``
+            # may fail and ``f.type`` is a plain string.  Fall back to
+            # ``f.default_factory`` when it is a type, so that the common
+            # ``field(default_factory=SomeSubConfig)`` pattern is still visited.
+            candidates: tuple[object, ...]
+            factory: object = f.default_factory
+            if not isinstance(ftype, type) and factory is not dataclasses.MISSING:
+                candidates = (factory, *typing.get_args(ftype))
+            else:
+                candidates = (ftype, *typing.get_args(ftype))
+            for candidate in candidates:
+                if (
+                    isinstance(candidate, type)
+                    and dataclasses.is_dataclass(candidate)
+                    and candidate is not ServerConfig
+                    and hasattr(candidate, "from_env")
+                ):
+                    _visit(candidate)
+
+    _visit(config_cls)
+    return frozenset(found)
