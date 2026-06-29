@@ -228,9 +228,12 @@ def domain_env_suffixes(config_cls: type) -> frozenset[str]:
     Recursion is depth-first with a visited-set, so nested sections and
     reference cycles terminate. Only literal-string suffixes are seen — a
     suffix built from a variable or passed by keyword is invisible; keep reads
-    in the ``env(prefix, "LITERAL")`` form. Sub-config types must be resolvable
-    via :func:`typing.get_type_hints` (importable in the config module's
-    namespace), which matters under ``from __future__ import annotations``.
+    in the ``env(prefix, "LITERAL")`` form. Sub-config types are discovered via
+    two mechanisms: (1) primary — resolved annotations from
+    :func:`typing.get_type_hints` (works when the config is defined at module
+    scope); (2) fallback — a field's ``default_factory`` when the annotation
+    cannot be resolved (e.g. a config defined inside a local scope under
+    ``from __future__ import annotations``).
 
     Args:
         config_cls: The domain config dataclass (its ``from_env`` classmethod is
@@ -245,7 +248,7 @@ def domain_env_suffixes(config_cls: type) -> frozenset[str]:
     visited: set[type] = set()
 
     def _literals_in(cls: type) -> None:
-        src = textwrap.dedent(inspect.getsource(cls.from_env))  # type: ignore[attr-defined]
+        src = textwrap.dedent(inspect.getsource(cls.from_env))  # type: ignore[attr-defined]  # cls is a dataclass type; from_env is guarded by hasattr above
         for node in ast.walk(ast.parse(src)):
             if (
                 isinstance(node, ast.Call)
@@ -277,6 +280,13 @@ def domain_env_suffixes(config_cls: type) -> frozenset[str]:
             candidates: tuple[object, ...]
             factory: object = f.default_factory
             if not isinstance(ftype, type) and factory is not dataclasses.MISSING:
+                # Primary discovery failed (ftype is still a string under
+                # stringified annotations).  ``factory`` is the real discovery
+                # source here.  ``get_args`` can only extract the inner type of
+                # e.g. ``Optional[Section]`` when the annotation has already
+                # been resolved to an object; on a bare string it returns ``()``
+                # and is therefore a no-op — the walk falls entirely to
+                # ``factory``.
                 candidates = (factory, *typing.get_args(ftype))
             else:
                 candidates = (ftype, *typing.get_args(ftype))

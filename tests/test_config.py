@@ -2,11 +2,47 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import pytest
 
-from fastmcp_pvl_core import ConfigurationError, ServerConfig, build_bearer_auth
+from fastmcp_pvl_core import (
+    ConfigurationError,
+    ServerConfig,
+    build_bearer_auth,
+    domain_env_suffixes,
+)
+from fastmcp_pvl_core._env import env, env_int
+
+# ---------------------------------------------------------------------------
+# Module-level fixture classes for TestDomainEnvSuffixes
+# (defined at module scope so typing.get_type_hints can resolve them —
+# the primary discovery path used by real production configs).
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class _ModuleSection:
+    n: int = 0
+
+    @classmethod
+    def from_env(cls, prefix: str) -> _ModuleSection:
+        return cls(n=env_int(prefix, "MODULE_SECTION_N", 0))
+
+
+@dataclass(frozen=True)
+class _ModuleComposed:
+    section: _ModuleSection = field(default_factory=_ModuleSection)
+    server: ServerConfig = field(default_factory=ServerConfig)
+
+    @classmethod
+    def from_env(cls, prefix: str = "X") -> _ModuleComposed:
+        _ = env(prefix, "MODULE_TOP")
+        return cls(
+            section=_ModuleSection.from_env(prefix),
+            server=ServerConfig.from_env(prefix),
+        )
 
 
 class TestServerConfigDefaults:
@@ -337,3 +373,11 @@ class TestDomainEnvSuffixes:
                 return cls()
 
         assert {"A_VAR", "B_VAR"} <= domain_env_suffixes(B)
+
+    def test_primary_get_type_hints_path_module_level(self) -> None:
+        """Module-level config: recursion resolves via get_type_hints, not the
+        default_factory fallback. Proves the production path (real configs are
+        module-level) and ServerConfig exclusion through that path."""
+        result = domain_env_suffixes(_ModuleComposed)
+        assert {"MODULE_TOP", "MODULE_SECTION_N"} <= result
+        assert "TRANSPORT" not in result
