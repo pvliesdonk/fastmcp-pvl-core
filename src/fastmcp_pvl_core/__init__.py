@@ -54,7 +54,7 @@ from ._server_info import (
 )
 from ._subject import get_claims, get_subject
 
-__version__ = "4.2.0"  # PSR overrides at build time
+__version__ = "4.3.0"  # PSR overrides at build time
 
 __all__ = [
     "AuthMode",
