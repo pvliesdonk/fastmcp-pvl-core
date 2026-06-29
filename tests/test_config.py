@@ -432,6 +432,11 @@ class TestDomainEnvSuffixes:
         with pytest.raises(TypeError, match="dataclass"):
             domain_env_suffixes(int)
 
+    def test_dataclass_instance_raises_typeerror(self) -> None:
+        """An instance (vs the class) is rejected — is_dataclass alone accepts both."""
+        with pytest.raises(TypeError, match="dataclass"):
+            domain_env_suffixes(_Flat())  # type: ignore[arg-type]
+
     def test_list_subconfig_field_traversed(self) -> None:
         """list[Sub] fields are traversed via get_args (one level)."""
         assert domain_env_suffixes(_ListTypedField) == frozenset(

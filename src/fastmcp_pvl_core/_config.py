@@ -258,7 +258,9 @@ def domain_env_suffixes(config_cls: type) -> frozenset[str]:
     import inspect
     import textwrap
 
-    if not dataclasses.is_dataclass(config_cls):
+    # ``is_dataclass`` is true for instances too; require the class itself so a
+    # mistakenly-passed instance fails loudly rather than silently scanning.
+    if not isinstance(config_cls, type) or not dataclasses.is_dataclass(config_cls):
         raise TypeError(
             f"domain_env_suffixes: expected a dataclass type, got {config_cls!r}"
         )
@@ -271,7 +273,9 @@ def domain_env_suffixes(config_cls: type) -> frozenset[str]:
         try:
             src = textwrap.dedent(inspect.getsource(cls.from_env))  # type: ignore[attr-defined]
         except (OSError, TypeError) as exc:  # source unreadable / not a Python function
-            raise OSError(
+            # Re-raise preserving the original type (OSError vs TypeError) with
+            # class context, so a type error isn't masqueraded as I/O.
+            raise type(exc)(
                 f"domain_env_suffixes: cannot read source for "
                 f"{cls.__qualname__}.from_env: {exc}"
             ) from exc
