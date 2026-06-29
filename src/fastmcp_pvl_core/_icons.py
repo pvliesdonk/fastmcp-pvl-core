@@ -173,6 +173,10 @@ def _resolve_icon_entry(entry: str | Path, base_dir: Path, tool_name: str) -> Ic
     outside ``static_dir``). *tool_name* is used only for error-message
     context.
 
+    *base_dir* must already be absolute and resolved (the output of
+    :func:`_resolve_static_dir`); the containment check via :func:`_is_within`
+    relies on it being normalised.
+
     Raises:
         ValueError: a relative path escapes *base_dir*, or the file has an
             unsupported extension.

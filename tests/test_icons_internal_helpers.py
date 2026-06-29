@@ -128,11 +128,17 @@ def test_index_unknown_tool_absent() -> None:
 
 
 def test_index_raises_runtime_error_on_api_change() -> None:
-    class _NotFastMCP:
-        pass
+    # Mirror the documented failure mode: ``local_provider`` is present but
+    # ``_components`` is gone (a rename), so the AttributeError fires at the
+    # ``._components`` access the guard describes — not at ``.local_provider``.
+    class _FakeProvider:
+        pass  # no _components attribute
+
+    class _FakeMCP:
+        local_provider = _FakeProvider()
 
     with pytest.raises(RuntimeError, match="FastMCP internal API changed"):
-        _index_tools_by_name(_NotFastMCP())  # type: ignore[arg-type]
+        _index_tools_by_name(_FakeMCP())  # type: ignore[arg-type]
 
 
 # --------------------------------------------------------------------------
