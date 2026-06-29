@@ -111,6 +111,34 @@ class _HasPlain:
         return cls()
 
 
+@dataclass(frozen=True)
+class _SubForList:
+    @classmethod
+    def from_env(cls, prefix: str) -> _SubForList:
+        _ = env(prefix, "LIST_SUB")
+        return cls()
+
+
+@dataclass(frozen=True)
+class _ListTypedField:
+    subs: list[_SubForList] = field(default_factory=list)
+
+    @classmethod
+    def from_env(cls, prefix: str = "X") -> _ListTypedField:
+        _ = env(prefix, "LIST_TOP")
+        return cls()
+
+
+@dataclass(frozen=True)
+class _BadRef:
+    x: NonExistentType = 0  # type: ignore[name-defined]  # noqa: F821 — unresolvable on purpose
+
+    @classmethod
+    def from_env(cls, prefix: str = "X") -> _BadRef:
+        _ = env(prefix, "BAD")
+        return cls()
+
+
 class TestServerConfigDefaults:
     def test_default_transport_is_stdio(self):
         config = ServerConfig()
@@ -398,3 +426,34 @@ class TestDomainEnvSuffixes:
     def test_server_config_as_root_returns_empty(self) -> None:
         """ServerConfig as root yields empty; use server_config_env_suffixes."""
         assert domain_env_suffixes(ServerConfig) == frozenset()
+
+    def test_non_dataclass_input_raises_typeerror(self) -> None:
+        """A non-dataclass argument is a caller error, not a silent empty result."""
+        with pytest.raises(TypeError, match="dataclass"):
+            domain_env_suffixes(int)
+
+    def test_list_subconfig_field_traversed(self) -> None:
+        """list[Sub] fields are traversed via get_args (one level)."""
+        assert domain_env_suffixes(_ListTypedField) == frozenset(
+            {"LIST_TOP", "LIST_SUB"}
+        )
+
+    def test_source_unavailable_raises_oserror_with_context(self) -> None:
+        """A class whose from_env source can't be read raises OSError naming it."""
+        ns: dict[str, object] = {}
+        exec(  # noqa: S102 — building a source-less class on purpose
+            "from dataclasses import dataclass\n"
+            "@dataclass\n"
+            "class ExecCfg:\n"
+            "    @classmethod\n"
+            "    def from_env(cls, prefix='X'):\n"
+            "        return cls()\n",
+            ns,
+        )
+        with pytest.raises(OSError, match="ExecCfg.from_env"):
+            domain_env_suffixes(ns["ExecCfg"])  # type: ignore[arg-type]
+
+    def test_unresolvable_forward_ref_raises_nameerror(self) -> None:
+        """An annotation not importable at module scope propagates as NameError."""
+        with pytest.raises(NameError, match="domain_env_suffixes"):
+            domain_env_suffixes(_BadRef)

@@ -8,10 +8,7 @@ MCP Apps domain.
 
 from __future__ import annotations
 
-import ast
 import dataclasses
-import inspect
-import textwrap
 import typing
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -236,6 +233,10 @@ def domain_env_suffixes(config_cls: type) -> frozenset[str]:
     (``mod.env(...)``), or a variable/keyword-form suffix is invisible to the
     scan; keep reads in the literal ``env(prefix, "LITERAL")`` form.
 
+    Only one level of :func:`typing.get_args` is expanded — ``list[Section]``
+    (element type) and ``Section | None`` (direct union member) are traversed,
+    but a nested container generic such as ``list[Optional[Section]]`` is not.
+
     Args:
         config_cls: The domain config dataclass; its ``from_env`` classmethod
             is the scan root.
@@ -243,7 +244,25 @@ def domain_env_suffixes(config_cls: type) -> frozenset[str]:
     Returns:
         The frozenset of literal env suffixes read by ``config_cls.from_env``
         and its sub-config sections, excluding the :class:`ServerConfig` field.
+
+    Raises:
+        TypeError: If ``config_cls`` is not a dataclass.
+        OSError: If a sub-config's ``from_env`` source cannot be read
+            (compiled, frozen, or dynamically-defined class).
+        NameError: If a field annotation cannot be resolved at
+            :func:`typing.get_type_hints` time — the config or a sub-config
+            is not defined at module scope, or contains a broken forward
+            reference.
     """
+    import ast
+    import inspect
+    import textwrap
+
+    if not dataclasses.is_dataclass(config_cls):
+        raise TypeError(
+            f"domain_env_suffixes: expected a dataclass type, got {config_cls!r}"
+        )
+
     read_funcs = {"env", "env_int", "env_float"}
     found: set[str] = set()
     visited: set[type] = set()
@@ -251,7 +270,7 @@ def domain_env_suffixes(config_cls: type) -> frozenset[str]:
     def _literals_in(cls: type) -> None:
         try:
             src = textwrap.dedent(inspect.getsource(cls.from_env))  # type: ignore[attr-defined]
-        except OSError as exc:  # source unavailable (compiled/frozen/dynamic class)
+        except (OSError, TypeError) as exc:  # source unreadable / not a Python function
             raise OSError(
                 f"domain_env_suffixes: cannot read source for "
                 f"{cls.__qualname__}.from_env: {exc}"
@@ -273,7 +292,14 @@ def domain_env_suffixes(config_cls: type) -> frozenset[str]:
         visited.add(cls)
         if hasattr(cls, "from_env"):
             _literals_in(cls)
-        hints = typing.get_type_hints(cls)
+        try:
+            hints = typing.get_type_hints(cls)
+        except NameError as exc:
+            raise NameError(
+                f"domain_env_suffixes: cannot resolve type hints for "
+                f"{cls.__qualname__} — annotations must be importable at module "
+                f"scope: {exc}"
+            ) from exc
         for f in dataclasses.fields(cls):
             resolved = hints.get(f.name, f.type)
             for candidate in (resolved, *typing.get_args(resolved)):
