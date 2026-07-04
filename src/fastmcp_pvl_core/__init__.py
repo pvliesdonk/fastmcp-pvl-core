@@ -53,12 +53,14 @@ from ._server_info import (
     register_server_info_tool,
 )
 from ._subject import get_claims, get_subject
+from ._transfer import FetchResult, fetch_url
 
 __version__ = "4.3.0"  # PSR overrides at build time
 
 __all__ = [
     "AuthMode",
     "ConfigurationError",
+    "FetchResult",
     "IconSpec",
     "SecretMaskFilter",
     "ServerConfig",
@@ -82,6 +84,7 @@ __all__ = [
     "env",
     "env_float",
     "env_int",
+    "fetch_url",
     "get_claims",
     "get_subject",
     "load_acl",
