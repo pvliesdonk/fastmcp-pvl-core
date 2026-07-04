@@ -15,8 +15,8 @@ Hardening (lifted from ``markdown-vault-mcp``'s proven fetch, ADR §8):
   in the ``Host`` header and TLS SNI). This closes the TOCTOU window between
   validation and connect. Fails **closed** on any resolution error.
 - **No redirects** — a 3xx response is refused (never followed to a possibly
-  internal target). The explicit ``is_redirect`` check refuses every 3xx up
-  front with a purpose-specific error, rather than letting a redirect surface
+  internal target). An explicit ``300 <= status < 400`` check refuses every 3xx
+  up front with a purpose-specific error, rather than letting a redirect surface
   later as httpx's generic status error.
 - **No ambient environment** — the client runs with ``trust_env=False`` so an
   ``HTTP(S)_PROXY`` env var cannot divert the request past the pinned IP and
@@ -254,7 +254,14 @@ async def fetch_url(
     hostname = parsed.hostname
     if not hostname:
         raise ValueError("The fetch URL has no host.")
-    port = parsed.port or _SCHEME_DEFAULT_PORTS[parsed.scheme]
+    # `is not None` (not truthiness): an explicit port 0 must be kept, not
+    # silently coerced to the scheme default.
+    explicit_port = parsed.port
+    port = (
+        explicit_port
+        if explicit_port is not None
+        else _SCHEME_DEFAULT_PORTS[parsed.scheme]
+    )
 
     # Resolve + validate now and pin the resulting IP into the connection: the
     # address validated here is the one actually dialled. Fails closed.
@@ -264,15 +271,19 @@ async def fetch_url(
     # TLS SNI so vhost routing and certificate verification still work. Any
     # userinfo in the original URL is intentionally dropped (never relayed).
     ip_host = _bracket_host(pinned_ip)
-    pinned_netloc = f"{ip_host}:{parsed.port}" if parsed.port else ip_host
+    pinned_netloc = (
+        f"{ip_host}:{explicit_port}" if explicit_port is not None else ip_host
+    )
     pinned_url = urlunparse(parsed._replace(netloc=pinned_netloc))
     # The Host header carries the real hostname; bracket it if it is an IPv6
     # literal (urlparse hands it back unbracketed) so the header is well-formed.
     host_for_header = _bracket_host(hostname)
-    if parsed.port is None or parsed.port == _SCHEME_DEFAULT_PORTS.get(parsed.scheme):
+    if explicit_port is None or explicit_port == _SCHEME_DEFAULT_PORTS.get(
+        parsed.scheme
+    ):
         host_header = host_for_header
     else:
-        host_header = f"{host_for_header}:{parsed.port}"
+        host_header = f"{host_for_header}:{explicit_port}"
 
     chunks: list[bytes] = []
     downloaded = 0
@@ -294,7 +305,11 @@ async def fetch_url(
             extensions={"sni_hostname": hostname},
         ) as response,
     ):
-        if response.is_redirect:
+        # Refuse every 3xx explicitly by status range. (httpx's `is_redirect`
+        # is equivalent — True for all 300-399 in supported versions — but its
+        # semantics are easy to misread as Location-gated, so the range check is
+        # self-evidently "all 3xx".)
+        if 300 <= response.status_code < 400:
             raise ValueError(
                 f"Refusing the 3xx redirect response from {_redact_url(url)} "
                 "(redirects are not followed)."

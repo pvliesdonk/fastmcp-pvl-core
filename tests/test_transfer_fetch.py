@@ -255,6 +255,36 @@ async def test_fetch_url_does_not_follow_redirects() -> None:
     assert "pass" not in msg
 
 
+@pytest.mark.parametrize("code", [300, 302, 304, 307, 308])
+async def test_fetch_url_refuses_3xx_without_location(code: int) -> None:
+    # Every 3xx is refused by status range — including a Location-less 3xx
+    # (e.g. 304, or a bare 302 without a Location header). This locks that the
+    # refusal does not depend on a Location header being present.
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(code)  # no Location header
+
+    with pytest.raises(ValueError):
+        await fetch_url(f"http://{PUBLIC_V4}/x", transport=_transport(handler))
+    assert len(seen) == 1  # refused before any second dial
+
+
+async def test_fetch_url_keeps_explicit_port_zero() -> None:
+    # An explicit port 0 must be dialled as 0, not silently coerced to the
+    # scheme default (80). Uses `is not None`, not truthiness, in the port logic.
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, content=b"ok")
+
+    await fetch_url(f"http://{PUBLIC_V4}:0/x", transport=_transport(handler))
+    assert seen[0].url.port == 0
+    assert seen[0].headers["host"] == f"{PUBLIC_V4}:0"
+
+
 async def test_fetch_url_strips_embedded_credentials_from_request() -> None:
     seen: list[httpx.Request] = []
 
