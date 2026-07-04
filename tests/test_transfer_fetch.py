@@ -156,12 +156,12 @@ async def test_resolve_pinned_ip_empty_resolution_rejected(monkeypatch) -> None:
 
 
 def test_redact_url_strips_userinfo_and_query() -> None:
+    # Exact match, not substring checks: userinfo (user:s3cr3t), query
+    # (token=abc), and fragment are stripped; scheme, host, port, and path are
+    # kept. (Exact equality also avoids the `host in url` substring pattern that
+    # CodeQL flags as incomplete-URL-sanitization — and is a stronger assertion.)
     redacted = _redact_url("https://user:s3cr3t@example.com:8443/path?token=abc#f")
-    assert "s3cr3t" not in redacted
-    assert "user" not in redacted
-    assert "token" not in redacted
-    assert "abc" not in redacted
-    assert "example.com" in redacted  # host is safe to keep
+    assert redacted == "https://example.com:8443/path"
 
 
 # --------------------------------------------------------------------------- #
