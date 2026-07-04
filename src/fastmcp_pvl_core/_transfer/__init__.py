@@ -10,6 +10,7 @@ Intra-package imports stay relative so a fold-in is a directory rename.
 
 from __future__ import annotations
 
+from .base64 import decode_base64_capped
 from .fetch import FetchResult, fetch_url
 
-__all__ = ["FetchResult", "fetch_url"]
+__all__ = ["FetchResult", "decode_base64_capped", "fetch_url"]
