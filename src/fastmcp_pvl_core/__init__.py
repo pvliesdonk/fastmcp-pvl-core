@@ -53,7 +53,7 @@ from ._server_info import (
     register_server_info_tool,
 )
 from ._subject import get_claims, get_subject
-from ._transfer import FetchResult, fetch_url
+from ._transfer import FetchResult, decode_base64_capped, fetch_url
 
 __version__ = "4.3.0"  # PSR overrides at build time
 
@@ -80,6 +80,7 @@ __all__ = [
     "client_supports_apps",
     "compute_app_domain",
     "configure_logging_from_env",
+    "decode_base64_capped",
     "domain_env_suffixes",
     "env",
     "env_float",
