@@ -68,6 +68,17 @@ def make_transfer_handler(
 
     Raises:
         ValueError: If ``max_upload_bytes`` is not positive.
+
+    Note:
+        The handler serves ``GET``/``POST``/``PUT`` and answers any *other*
+        method routed to it with 405 + ``Connection: close`` (an unserved method
+        may carry an unread body). For that close to cover **every** unsupported
+        method, the route-registration layer (§11 issue #5) must register the
+        route so all methods reach this handler (e.g. omit ``methods=`` or pass a
+        superset) — otherwise Starlette's own 405 handles unregistered methods,
+        and *it* does not send ``Connection: close``. ``HEAD`` reaches this
+        branch (Starlette auto-adds it for ``GET``) but is bodyless, so its close
+        is harmless.
     """
     if max_upload_bytes <= 0:
         raise ValueError(f"max_upload_bytes must be positive, got {max_upload_bytes}")
@@ -78,10 +89,12 @@ def make_transfer_handler(
             return await _download(store, sink, token)
         if request.method in ("POST", "PUT"):
             return await _upload(store, sink, token, request, max_upload_bytes)
-        # A method the handler does not serve may still carry a body it never
-        # reads → close the connection (same undrained-body class as an upload
-        # rejected before the read).
-        return Response(status_code=405, headers=_CLOSE_CONN)
+        # A method the handler does not serve may carry a body it never reads →
+        # close the connection (same undrained-body class as an upload rejected
+        # before the read). Allow lists the served methods (RFC 7231 §6.5.5).
+        return Response(
+            status_code=405, headers={**_CLOSE_CONN, "allow": "GET, POST, PUT"}
+        )
 
     return handler
 

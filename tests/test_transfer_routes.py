@@ -80,8 +80,12 @@ async def _client(
             Route(
                 "/transfer/{token}",
                 handler,
-                # DELETE is allowed only so the handler's own 405 branch is
-                # reachable in tests; the real registration allows GET/POST/PUT.
+                # DELETE is registered only so a request with an unserved method
+                # reaches the handler's own 405 branch here. In production the
+                # route-registration layer (§11 issue #5) must likewise route all
+                # methods to the handler for its 405 + Connection: close to apply
+                # — otherwise Starlette's built-in 405 (no Connection: close)
+                # answers unregistered methods. See make_transfer_handler's Note.
                 methods=["GET", "POST", "PUT", "DELETE"],
             )
         ]
@@ -340,11 +344,14 @@ async def test_unsupported_method_with_body_is_405_and_closes_connection() -> No
     sink = _FakeSink()
     token = await _mint_download(store)
     async with _client(store, sink) as client:
-        # A DELETE carrying a body the handler never reads → 405 + close, so the
-        # undrained body can't desync a keep-alive socket.
+        # A DELETE carrying a body the handler never reads → 405 + close (so the
+        # undrained body can't desync a keep-alive socket) + Allow (RFC 7231).
+        # This exercises the handler's own 405 branch; whether every unsupported
+        # method reaches it in production is the route layer's job (#218).
         resp = await client.request("DELETE", f"/transfer/{token}", content=b"body")
         assert resp.status_code == 405
         assert resp.headers.get("connection") == "close"
+        assert resp.headers.get("allow") == "GET, POST, PUT"
 
 
 # --------------------------------------------------------------------------- #
