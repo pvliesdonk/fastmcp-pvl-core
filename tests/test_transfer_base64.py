@@ -101,6 +101,28 @@ def test_over_cap_rejected_before_materialising(monkeypatch) -> None:
         decode_base64_capped(_b64(b"x" * 6), max_bytes=3)
 
 
+@pytest.mark.parametrize(
+    "attack",
+    [
+        "AB" + "=" * 100_000,  # all-trailing '=' — inflates a naive count
+        "A=B=" * 50_000,  # embedded '=' interspersed
+    ],
+)
+def test_padding_inflated_bomb_rejected_before_materialising(
+    monkeypatch, attack: str
+) -> None:
+    # A crafted payload padded with many '=' must still be rejected on the
+    # pre-check, before b64decode is handed the full attacker-sized string.
+    # Clamping the padding count to 2 (max valid) keeps the estimate a true
+    # lower bound so the estimate cannot be driven negative.
+    def _boom(*_a, **_k):
+        raise AssertionError("b64decode must not run for an over-cap payload")
+
+    monkeypatch.setattr(base64, "b64decode", _boom)
+    with pytest.raises(ValueError, match="decodes to more than"):
+        decode_base64_capped(attack, max_bytes=64)
+
+
 @pytest.mark.parametrize("bad", [0, -1])
 def test_non_positive_max_bytes_raises(bad: int) -> None:
     with pytest.raises(ValueError):

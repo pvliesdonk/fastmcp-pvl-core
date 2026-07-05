@@ -42,10 +42,18 @@ def decode_base64_capped(data: str | bytes, *, max_bytes: int) -> bytes:
     # decoded size is exactly ``len(data) // 4 * 3 - padding``; invalid-length
     # input is caught by the decode below. (A loose ``len * 3 // 4`` upper bound
     # would false-reject a padded payload sitting exactly on the cap.)
-    padding = (
+    #
+    # Valid base64 has at most 2 padding chars, so clamp the count to 2: a
+    # crafted payload padded with many ``=`` (e.g. ``"AB" + "=" * 1_000_000``)
+    # would otherwise drive the estimate negative, slip the pre-check, and hand
+    # the full attacker-sized string to b64decode — which allocates its output
+    # buffer before rejecting the bad padding, defeating the "never materialise"
+    # guarantee. Clamping keeps the estimate a true lower bound of the decoded
+    # size while staying exact for valid input.
+    raw_padding = (
         data.count(b"=") if isinstance(data, (bytes, bytearray)) else data.count("=")
     )
-    if (len(data) // 4) * 3 - padding > max_bytes:
+    if (len(data) // 4) * 3 - min(raw_padding, 2) > max_bytes:
         raise ValueError(f"base64 input decodes to more than the {max_bytes}-byte cap")
 
     try:
