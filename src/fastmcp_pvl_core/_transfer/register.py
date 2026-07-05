@@ -27,19 +27,17 @@ from .store import TransferStore
 
 _ROUTE_PATH = "/transfer/{token}"
 
-# Route every *body-carrying* method to the handler so each reaches its own 405
-# + ``Connection: close`` dispatch for an unread body (see ``make_transfer_handler``'s
-# Note). The keep-alive desync the close guards against is caused by an undrained
-# request body, so the set that must reach the handler is exactly the methods a
-# client can send a body with: GET/POST/PUT are served, and DELETE/PATCH fall to
-# the handler's closing 405. That is the complete body-carrying set — this
-# discharges #217's handoff (a superset reaches the handler; ``custom_route``
-# requires ``methods=``, so "omit it" is not available). Methods NOT listed
-# (OPTIONS, TRACE, CONNECT) are answered by Starlette's Router-level 405 without
-# ``Connection: close``, which is harmless: none carries a request body (TRACE
-# and OPTIONS are bodyless by spec), so there is no body to leave undrained. We
-# deliberately do *not* route OPTIONS here — funnelling it to a 405 would break
-# CORS preflight. HEAD is auto-added by Starlette for GET and is bodyless.
+# Route the methods a client realistically sends a request *body* with, so each
+# reaches the handler's own 405 + ``Connection: close`` dispatch (see
+# ``make_transfer_handler``'s Note) — an undrained body on a keep-alive socket
+# desyncs the next request. GET/POST/PUT are served; DELETE/PATCH fall to the
+# handler's closing 405. ``custom_route`` requires ``methods=``, so this is a
+# superset rather than "omit it". OPTIONS is deliberately NOT routed here: it must
+# stay with Starlette's router so a CORS preflight is answered normally, not
+# turned into a 405 (a preflight carries no body). A method not listed (a
+# non-preflight OPTIONS with a body, TRACE — which forbids a body per RFC 7231
+# §4.3.8 — or an exotic verb) falls to the router's 405 without the close header;
+# that residual is accepted. HEAD is auto-added by Starlette for GET.
 _ROUTE_METHODS = ("GET", "POST", "PUT", "DELETE", "PATCH")
 
 
@@ -108,8 +106,9 @@ def register_transfer_routes(
 
         *ref* is a domain reference the ``validate`` hook resolves to an opaque
         download handle (raising to reject). *ttl_s* is the requested lifetime in
-        seconds — omitted uses the configured default, and any value is clamped
-        to the configured maximum. Returns ``{"url", "expires_in_s"}``.
+        seconds — omitted uses the configured default, a value over the configured
+        maximum is clamped to it, and a non-positive value is rejected. Returns
+        ``{"url", "expires_in_s"}``.
         """
         return await _mint_link(ref, "download", ttl_s)
 
@@ -121,7 +120,8 @@ def register_transfer_routes(
 
         *ref* is a domain reference the ``validate`` hook resolves to an opaque
         upload handle (raising to reject). *ttl_s* is the requested lifetime in
-        seconds — omitted uses the configured default, and any value is clamped
-        to the configured maximum. Returns ``{"url", "expires_in_s"}``.
+        seconds — omitted uses the configured default, a value over the configured
+        maximum is clamped to it, and a non-positive value is rejected. Returns
+        ``{"url", "expires_in_s"}``.
         """
         return await _mint_link(ref, "upload", ttl_s)

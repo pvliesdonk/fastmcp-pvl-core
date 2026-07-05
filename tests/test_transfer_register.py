@@ -230,6 +230,22 @@ class TestEndToEnd:
         assert resp.status_code == 413
         assert sink.write_handles == []  # over-cap body never reached the sink
 
+    @pytest.mark.parametrize("method", ["DELETE", "PATCH"])
+    async def test_body_carrying_unserved_method_gets_closing_405(
+        self, method: str
+    ) -> None:
+        # DELETE/PATCH are in _ROUTE_METHODS so they reach the handler's own
+        # 405 + ``Connection: close`` (an unserved method may carry an unread
+        # body). Pins the register-side wiring: if a refactor dropped them from
+        # the set, they would fall to Starlette's router 405 without the close.
+        mcp, _, _ = _register()
+        res = await mcp.call_tool("create_download_link", {"ref": "doc"})
+        path = _path_of(res.structured_content["url"])
+        async with _client(mcp) as client:
+            resp = await client.request(method, path, content=b"body")
+        assert resp.status_code == 405
+        assert resp.headers["connection"] == "close"
+
     async def test_second_redeem_within_grace_still_serves(self) -> None:
         # Grace-settle wiring: complete() shrinks the TTL to the grace window
         # rather than burning the link, so a retry inside that window re-serves.

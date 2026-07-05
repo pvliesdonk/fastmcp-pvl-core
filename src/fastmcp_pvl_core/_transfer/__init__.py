@@ -8,9 +8,10 @@ point that wires the ``/transfer`` route and the two link tools (§11 #5).
 
 The public surface is the two standalone primitives (``fetch_url`` with its
 ``FetchResult``, and ``decode_base64_capped``) plus the transfer feature's entry
-point and its two domain hooks: ``register_transfer_routes``, ``TransferConfig``,
-``TransferSink``, ``TransferValidator``, ``TransferReadResult``, ``TransferKind``.
-The store, handler, and route mechanics stay internal — pvl-core owns their shape.
+point (``register_transfer_routes``), its config (``TransferConfig``), its two
+domain hooks (``TransferSink``, ``TransferValidator``), and their supporting
+types (``TransferReadResult``, ``TransferKind``). The store, handler, and route
+mechanics stay internal — pvl-core owns their shape.
 
 Intra-package imports stay relative so a fold-in is a directory rename.
 """

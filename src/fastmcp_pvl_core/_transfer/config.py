@@ -54,8 +54,10 @@ class TransferConfig:
     max_upload_bytes: int = _DEFAULT_MAX_UPLOAD_BYTES
 
     def __post_init__(self) -> None:
-        # Iterate the declared fields (not a hand-maintained list) so a field
-        # added later is validated automatically rather than silently escaping.
+        # Iterate the declared fields (not a hand-maintained list) so a new
+        # numeric field is covered without editing this loop. Every field is a
+        # positive, finite number; a non-numeric field must not be added without
+        # extending this check (``isfinite`` / ``> 0`` assume a real number).
         for field in dataclasses.fields(self):
             value = getattr(self, field.name)
             if not isfinite(value) or value <= 0:
