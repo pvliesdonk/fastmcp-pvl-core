@@ -7,7 +7,7 @@ single shared :class:`TransferStore`, mounts the ``/transfer/{token}`` route
 names, the route path and its method set, the status codes, the TTL clamp, and
 the ``base_url``-required guard. The only hooks are ``sink`` (where bytes land)
 and ``validate`` (what bytes are acceptable); there are **no override kwargs**
-for any shape element (ADR §7/§10.2).
+for any shape element (ADR §7 / §10 item 2).
 
 Intra-package imports stay relative so a fold-in is a directory rename.
 """
@@ -27,12 +27,19 @@ from .store import TransferStore
 
 _ROUTE_PATH = "/transfer/{token}"
 
-# Register the body-carrying methods so each reaches the handler's own dispatch
-# (its 405 + ``Connection: close`` for an unread body). A method NOT in this set
-# is answered by Starlette's Router-level 405, which does not close the
-# connection — so listing DELETE/PATCH here closes the undrained-body keep-alive
-# gap for the realistic non-served methods (see ``make_transfer_handler``'s
-# Note). GET/POST/PUT are served; HEAD is auto-added by Starlette for GET.
+# Route every *body-carrying* method to the handler so each reaches its own 405
+# + ``Connection: close`` dispatch for an unread body (see ``make_transfer_handler``'s
+# Note). The keep-alive desync the close guards against is caused by an undrained
+# request body, so the set that must reach the handler is exactly the methods a
+# client can send a body with: GET/POST/PUT are served, and DELETE/PATCH fall to
+# the handler's closing 405. That is the complete body-carrying set — this
+# discharges #217's handoff (a superset reaches the handler; ``custom_route``
+# requires ``methods=``, so "omit it" is not available). Methods NOT listed
+# (OPTIONS, TRACE, CONNECT) are answered by Starlette's Router-level 405 without
+# ``Connection: close``, which is harmless: none carries a request body (TRACE
+# and OPTIONS are bodyless by spec), so there is no body to leave undrained. We
+# deliberately do *not* route OPTIONS here — funnelling it to a 405 would break
+# CORS preflight. HEAD is auto-added by Starlette for GET and is bodyless.
 _ROUTE_METHODS = ("GET", "POST", "PUT", "DELETE", "PATCH")
 
 
@@ -58,9 +65,9 @@ def register_transfer_routes(
             ``sink_handle`` (raises to reject); invoked at link creation.
 
     Raises:
-        ConfigurationError: If ``config.base_url`` is unset — a transfer link
-            cannot be minted without a public base URL, so this fails at
-            registration rather than deferring to the first tool call.
+        ConfigurationError: If ``config.base_url`` is unset or blank — a
+            transfer link cannot be minted without a public base URL, so this
+            fails at registration rather than deferring to the first tool call.
     """
     if not config.base_url:
         raise ConfigurationError(

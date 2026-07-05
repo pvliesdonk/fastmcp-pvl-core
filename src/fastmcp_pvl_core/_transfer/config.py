@@ -15,7 +15,9 @@ Intra-package imports stay relative so a fold-in is a directory rename.
 
 from __future__ import annotations
 
+import dataclasses
 from dataclasses import dataclass
+from math import isfinite
 
 from .._env import env_float, env_int
 from .._errors import ConfigurationError
@@ -31,9 +33,9 @@ _DEFAULT_MAX_UPLOAD_BYTES = 100 * 1024 * 1024  # 100 MiB
 class TransferConfig:
     """Env-tunable knobs for the transfer subsystem.
 
-    All durations are seconds and all values must be positive; the default TTL
-    must not exceed the max TTL. Construct via :meth:`from_env` (the operator
-    path) or directly (tests). ``__post_init__`` validates both.
+    All durations are seconds and all values must be positive and finite; the
+    default TTL must not exceed the max TTL. Construct via :meth:`from_env` (the
+    operator path) or directly (tests). ``__post_init__`` validates both.
 
     Attributes:
         ttl_default_s: Link lifetime when the caller omits one.
@@ -52,16 +54,14 @@ class TransferConfig:
     max_upload_bytes: int = _DEFAULT_MAX_UPLOAD_BYTES
 
     def __post_init__(self) -> None:
-        for name, value in (
-            ("ttl_default_s", self.ttl_default_s),
-            ("ttl_max_s", self.ttl_max_s),
-            ("grace_ttl_s", self.grace_ttl_s),
-            ("lease_s", self.lease_s),
-            ("max_upload_bytes", self.max_upload_bytes),
-        ):
-            if value <= 0:
+        # Iterate the declared fields (not a hand-maintained list) so a field
+        # added later is validated automatically rather than silently escaping.
+        for field in dataclasses.fields(self):
+            value = getattr(self, field.name)
+            if not isfinite(value) or value <= 0:
                 raise ConfigurationError(
-                    f"TransferConfig.{name} must be positive, got {value}"
+                    f"TransferConfig.{field.name} must be a positive, finite "
+                    f"number, got {value}"
                 )
         if self.ttl_default_s > self.ttl_max_s:
             raise ConfigurationError(
@@ -73,9 +73,12 @@ class TransferConfig:
     def from_env(cls, env_prefix: str) -> TransferConfig:
         """Read the transfer env section under *env_prefix*.
 
-        Each var is parsed strictly (an invalid value raises
-        :class:`ConfigurationError` naming it) and falls back to a built-in
-        default when unset; :meth:`__post_init__` then validates the result.
+        Each var is parsed strictly (a malformed value raises
+        :class:`ConfigurationError` naming the env var) and falls back to a
+        built-in default when unset; :meth:`__post_init__` then validates the
+        result. A well-formed but out-of-range value (non-positive, or a default
+        exceeding the max) is caught there and surfaces under the **dataclass
+        field name**, not the env-var suffix.
         """
         return cls(
             ttl_default_s=env_float(

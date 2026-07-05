@@ -102,6 +102,14 @@ class TestPostInitValidation:
         cfg = TransferConfig(ttl_default_s=100.0, ttl_max_s=100.0)
         assert cfg.ttl_default_s == cfg.ttl_max_s == 100.0
 
+    @pytest.mark.parametrize("bad", [float("inf"), float("nan")])
+    def test_non_finite_field_raises(self, bad: float) -> None:
+        # inf passes a naive value > 0 check (inf > 0 is True); the finiteness
+        # guard rejects it so an operator cannot mint a never-expiring link on
+        # the direct-construction path (the env path already rejects non-finite).
+        with pytest.raises(ConfigurationError, match="ttl_max_s"):
+            TransferConfig(ttl_max_s=bad)
+
 
 class TestFromEnv:
     def test_reads_all_vars(self, monkeypatch: pytest.MonkeyPatch) -> None:

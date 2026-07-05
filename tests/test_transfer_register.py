@@ -164,6 +164,14 @@ class TestTtlClamp:
         res = await mcp.call_tool("create_download_link", {"ref": "doc", "ttl_s": 150})
         assert res.structured_content["expires_in_s"] == 150.0
 
+    async def test_non_positive_ttl_is_rejected(self) -> None:
+        # The clamp only bounds the ceiling; a non-positive request would mint a
+        # dead link, so store.mint rejects it (ValueError -> ToolError) rather
+        # than the clamp. Pins that the request fails loudly, not silently.
+        mcp, _, _ = _register()
+        with pytest.raises(ToolError):
+            await mcp.call_tool("create_download_link", {"ref": "doc", "ttl_s": 0})
+
 
 class TestValidatorRejection:
     async def test_rejection_surfaces_from_tool(self) -> None:
@@ -199,6 +207,28 @@ class TestEndToEnd:
         assert 'filename="f.txt"' in resp.headers["content-disposition"]
         # The handle the route handed the sink is the validator's download handle.
         assert sink.read_handles == ["handle:doc:download"]
+
+    async def test_minted_upload_link_redeems_over_http(self) -> None:
+        mcp, sink, _ = _register()
+        res = await mcp.call_tool("create_upload_link", {"ref": "dest"})
+        path = _path_of(res.structured_content["url"])
+        async with _client(mcp) as client:
+            resp = await client.put(path, content=b"PAYLOAD")
+        assert resp.status_code == 200
+        # The handler committed the body to the validator's upload handle.
+        assert sink.write_handles == ["handle:dest:upload"]
+
+    async def test_over_cap_upload_is_rejected_413(self) -> None:
+        # Pins that register threads transfer_config.max_upload_bytes into the
+        # handler: a tiny cap must reject an over-size body. If register dropped
+        # or hardcoded the cap, this would not 413.
+        mcp, sink, _ = _register(transfer_config=_tconfig(max_upload_bytes=4))
+        res = await mcp.call_tool("create_upload_link", {"ref": "dest"})
+        path = _path_of(res.structured_content["url"])
+        async with _client(mcp) as client:
+            resp = await client.put(path, content=b"way-too-long")
+        assert resp.status_code == 413
+        assert sink.write_handles == []  # over-cap body never reached the sink
 
     async def test_second_redeem_within_grace_still_serves(self) -> None:
         # Grace-settle wiring: complete() shrinks the TTL to the grace window
