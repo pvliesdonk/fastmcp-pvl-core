@@ -329,6 +329,7 @@ Already generic in `ServerConfig`: `base_url`, `kv_store_url`. New
 | `TRANSFER_TTL_DEFAULT_S` | link lifetime when the caller omits one |
 | `TRANSFER_TTL_MAX_S` | ceiling; a caller-requested TTL is clamped to this |
 | `TRANSFER_GRACE_TTL_S` | post-success grace window; `complete` shrinks the TTL to `min(remaining, this)` (§6.2) |
+| `TRANSFER_LEASE_S` | crashed-handler reclaim window for an `in_flight` reservation (§6.2) |
 | `TRANSFER_MAX_UPLOAD_BYTES` | per-upload size cap |
 | `TRANSFER_FETCH_MAX_BYTES` | per-fetch size cap |
 | `TRANSFER_FETCH_TIMEOUT_S` | fetch timeout |
