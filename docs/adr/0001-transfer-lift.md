@@ -75,9 +75,9 @@ external-spec adoption.** §10 enumerates the guardrails that keep it there.
    framework *consumes* it rather than owning it.
 3. **The token store is backed by the existing `build_kv_store` abstraction**
    (its docstring already names *"future file-exchange token store"* as an
-   intended consumer), preserving the full `available → in_flight → consumed`
-   state machine — including **release-on-failure** so a one-time link
-   survives a common transient serve failure.
+   intended consumer), preserving the `available ↔ in_flight` state machine
+   (grace-settle on success, explicit `burn` → `consumed`) — including
+   **release-on-failure** so the link survives a common transient serve failure.
 4. **The token carries an opaque `sink_handle`** that pvl-core stores and
    echoes but never interprets — the structural guarantee that no domain
    logic leaks into core.
@@ -203,9 +203,9 @@ building block of ingest.
 |---|---|---|
 | `fetch.py` | scheme allowlist, `_resolve_pinned_ip` (DNS-rebind pin), blocked-host set, streaming size cap, userinfo+query redaction (logs **and** exceptions — §8), Host/SNI handling, redirects disabled | `fetch_url` |
 | `base64.py` | decode + size cap | `decode_base64_capped` |
-| `store.py` | `TransferStore` over `build_kv_store(config, namespace="transfer")`; opaque handle; `available→in_flight→consumed`; TTL expiry; release-on-failure | `TransferStore` |
+| `store.py` | `TransferStore` over `build_kv_store(config, namespace="transfer")`; opaque handle; `available ↔ in_flight` with grace-settle on success (explicit `burn` → `consumed`); TTL expiry; release-on-failure | `TransferStore` |
 | `sink.py` | `TransferSink` Protocol + `TransferValidator` type — **the only things downstream implements** | `TransferSink`, `TransferValidator` |
-| `routes.py` | `make_transfer_handler(store, sink)` — GET=download, POST/PUT=upload, streaming caps, RFC 6266 Content-Disposition, burn/release | *(internal)* |
+| `routes.py` | `make_transfer_handler(store, sink)` — GET=download, POST/PUT=upload, streaming caps, RFC 6266 Content-Disposition, complete/release | *(internal)* |
 | `register.py` | `register_transfer_routes(mcp, config, *, sink, validate)` — owns route + both link tools + TTL clamp + `base_url` guard, wiring one shared store | `register_transfer_routes` |
 | `config.py` | `TransferConfig` (env section, §7) | `TransferConfig` |
 
@@ -236,15 +236,42 @@ behavior is load-bearing and must be preserved.
 The record lives in KV with the **token's expiry as the KV entry TTL**, so an
 expired token (and any abandoned reservation past its own TTL) vanishes with
 no sweep loop — this replaces vault's hand-rolled `_sweep_expired`. The record
-value carries `status ∈ {available, in_flight, consumed}` and, while
-`in_flight`, a short `lease_expires_at`:
+value carries `status ∈ {available, in_flight, consumed}`, a per-claim `fence`
+(a fresh id stamped on each claim so a superseded holder cannot mutate the
+reservation that replaced it), and, while `in_flight`, a short
+`lease_expires_at`:
 
 - `claim(token, kind)` → mark `in_flight` with `lease = now + lease_seconds`
-  (a *crashed* handler's reservation auto-frees once the lease lapses, even
-  without an explicit release);
-- `release(token)` → revert `in_flight → available` on transient failure
-  (**the one-time link survives**);
-- `complete(token)` → `consumed` (burn) on success.
+  and a fresh `fence` returned to the caller (a *crashed or slow* handler's
+  reservation auto-frees once the lease lapses; the fence lets a lapsed-then-
+  reclaimed holder's late `release`/`complete` no-op rather than corrupt the
+  new holder);
+- `release(token, fence)` → revert `in_flight → available` on transient
+  failure, keeping the **full remaining TTL** (a long retry window — the link
+  survives);
+- `complete(token, fence)` → **grace-settle** `in_flight → available` with the
+  TTL shrunk to `min(remaining, grace_seconds)` on success — **not** a hard
+  burn (see below);
+- `burn(token, fence)` → `consumed` (a hard, strict-one-shot burn) — the
+  explicit alternative to `complete`, kept for a caller that cannot tolerate a
+  grace-window replay.
+
+**Grace-settle over hard burn (revised from the original design).** The first
+cut had `complete → consumed` (burn on success). That reintroduces the exact
+hazard §6.1 rejects: for a *download*, the handler must signal "done" **before**
+the buffered response body is transmitted to the client (the body is sent after
+the handler returns), so a burn-on-complete spends the one-time link the instant
+the bytes leave the sink — a client stall or lost ack mid-transmission strands
+the caller with nothing delivered (the failure `markdown-vault-mcp` hit in
+practice). Since §6.3 already establishes that **the TTL is the security bound
+and strict single-use is only hygiene**, the resolution is to *shrink the TTL to
+a short grace* on success instead of burning: the link stays briefly reclaimable
+(a stalled download simply retries within the grace window) and then ordinary
+KV-TTL expiry removes it, with no sweep. `min(remaining, grace_seconds)` never
+*extends* the TTL, and once `remaining ≤ grace_seconds` it keeps the shrinking
+`remaining` — so the absolute expiry is pinned at the first settle and does not
+slide across retries. Strict one-shot remains available as the explicit `burn`.
+`grace_seconds` is operator config (`TRANSFER_GRACE_TTL_S`, §7).
 
 ### 6.3 Correctness boundary — stated honestly
 
@@ -255,7 +282,7 @@ on deployment topology:
 | Topology | Store URL | One-time correctness | Restart survival |
 |---|---|---|---|
 | single worker | `memory://` | **correct** (in-process lock) | no |
-| single worker | `file://` / `redis://` / … | **correct** (in-process `asyncio.Lock` serializes claim/release/complete against the shared KV) | yes |
+| single worker | `file://` / `redis://` / … | **correct** (in-process `asyncio.Lock` serializes claim/release/complete/burn against the shared KV) | yes |
 | multiple worker **processes** / replicas sharing one backend *(not planned)* | `redis://` / `dynamodb://` / … | **best-effort by design** — a narrow same-token retry race; TTL still bounds the link (see below) | yes |
 
 The key insight: within one process (one event loop) an `asyncio.Lock` around
@@ -301,6 +328,7 @@ Already generic in `ServerConfig`: `base_url`, `kv_store_url`. New
 |---|---|
 | `TRANSFER_TTL_DEFAULT_S` | link lifetime when the caller omits one |
 | `TRANSFER_TTL_MAX_S` | ceiling; a caller-requested TTL is clamped to this |
+| `TRANSFER_GRACE_TTL_S` | post-success grace window; `complete` shrinks the TTL to `min(remaining, this)` (§6.2) |
 | `TRANSFER_MAX_UPLOAD_BYTES` | per-upload size cap |
 | `TRANSFER_FETCH_MAX_BYTES` | per-fetch size cap |
 | `TRANSFER_FETCH_TIMEOUT_S` | fetch timeout |
@@ -332,8 +360,8 @@ pvl-core to change the shape for everyone — not to grow a kwarg.
   but missed the exception path); Host header + TLS SNI preservation
   with pinned-IP dial; redirects disabled;
 - RFC 6266 Content-Disposition builder;
-- the `available → in_flight → consumed` state machine + lease reclaim
-  (re-expressed over KV TTL per §6);
+- the `available ↔ in_flight` state machine + lease reclaim (re-expressed over
+  KV TTL, grace-settling on success, per §6);
 - TTL clamp and `base_url`-required guard.
 
 **Salvage as principles/tests** (from archived #139 / #140 / #141): path
