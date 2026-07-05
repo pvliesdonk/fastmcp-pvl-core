@@ -1,9 +1,10 @@
-"""KV-backed one-time capability-link token store (ADR 0001 §6 / §11 #3).
+"""KV-backed capability-link token store (ADR 0001 §6 / §11 #3).
 
-A ``TransferStore`` persists one-time link tokens over an
+A ``TransferStore`` persists capability-link tokens over an
 :class:`~key_value.aio.protocols.key_value.AsyncKeyValue` backend
-(``build_kv_store(config, namespace="transfer")``) and runs the
-``available → in_flight → consumed`` state machine on them:
+(``build_kv_store(config, namespace="transfer")``) and runs an
+``available ↔ in_flight`` state machine (plus an explicit ``consumed`` burn) on
+them:
 
 - :meth:`TransferStore.mint` creates an ``available`` token whose lifetime is
   the KV entry TTL — there is no sweep loop; an expired token (and any
@@ -12,18 +13,34 @@ A ``TransferStore`` persists one-time link tokens over an
   A *crashed* handler's reservation auto-frees once the lease lapses, so the
   next claim reclaims it without an explicit release.
 - :meth:`TransferStore.release` reverts ``in_flight → available`` on a transient
-  failure. **The one-time link survives** — ADR §6.1 rejects delete-on-claim
-  precisely because mid-serve failures are common; a failed attempt must not
-  spend the link.
-- :meth:`TransferStore.complete` burns the token (``consumed``) on success.
+  failure, keeping the **full remaining TTL** — the link survives for a full
+  retry window (ADR §6.1 rejects delete-on-claim; mid-serve failures are common
+  and must not spend the link).
+- :meth:`TransferStore.complete` grace-settles ``in_flight → available`` on
+  success with the TTL shrunk to ``min(remaining, grace_seconds)``. It does
+  **not** hard-burn: a transfer whose bytes were served but whose delivery then
+  stalled can re-claim within the grace window rather than be stranded by a
+  spent link. The ``min`` never extends and does not slide across retries, so
+  the absolute expiry is pinned at the first settle.
+- :meth:`TransferStore.burn` is the strict-one-shot alternative — it marks the
+  token ``consumed`` (a later claim raises ``TokenAlreadyConsumedError``), for a
+  caller that cannot tolerate even a grace-window replay.
+
+**Why grace-settle over a hard burn (ADR §6).** The TTL is the
+security-relevant bound; strict single-use is *hygiene*. A hard burn on success
+spends the link the instant the bytes leave the sink — before they reach the
+client — so a download stall or a lost ack strands the caller (the failure
+markdown-vault-mcp hit in practice). Shrinking the TTL to a short grace instead
+keeps the link briefly reclaimable while still letting normal KV-TTL expiry
+remove it, with no sweep loop.
 
 **Correctness boundary (ADR §6.3).** The KV facade exposes no compare-and-set,
 so one in-process :class:`asyncio.Lock` serialises every read-modify-write.
 Within the single ``serve --transport http`` process these servers run, that
-gives exact one-time semantics *and* restart survival (the record lives in KV).
-A future horizontally-scaled deployment sharing one backend would degrade to
-best-effort single-use — acceptable by design, because the TTL, not strict
-single-use, is the security-relevant bound.
+gives exact semantics *and* restart survival (the record lives in KV). A future
+horizontally-scaled deployment sharing one backend would degrade to best-effort
+— acceptable by design, because the TTL, not strict single-use, is the
+security-relevant bound.
 
 The token carries an **opaque ``sink_handle``** (where bytes land) and opaque
 ``caps`` that the store never interprets — only ``kind`` is matched on claim.
@@ -87,15 +104,15 @@ class _TokenRecord(TypedDict):
     sink_handle: object
     caps: Mapping[str, Any]
     lease_expires_at: float | None
-    # A fresh id stamped on each claim (the fencing token). ``release`` and
-    # ``complete`` only act when the caller's fence matches this — so a stale
-    # holder whose lease was reclaimed cannot mutate the new holder's
+    # A fresh id stamped on each claim (the fencing token). ``release``,
+    # ``complete``, and ``burn`` only act when the caller's fence matches this —
+    # so a stale holder whose lease was reclaimed cannot mutate the new holder's
     # reservation. ``None`` while ``available``/``consumed``.
     fence: str | None
 
 
 class TransferTokenError(Exception):
-    """Base class for the token-store's claim/complete failures."""
+    """Base class for the token-store's claim/complete/burn failures."""
 
 
 class TokenNotFoundError(TransferTokenError):
@@ -107,7 +124,7 @@ class TokenKindMismatchError(TransferTokenError):
 
 
 class TokenAlreadyConsumedError(TransferTokenError):
-    """The token was already burned by a successful :meth:`TransferStore.complete`."""
+    """The token was hard-burned by :meth:`TransferStore.burn` and cannot be reused."""
 
 
 class TokenInFlightError(TransferTokenError):
@@ -117,8 +134,8 @@ class TokenInFlightError(TransferTokenError):
 class TokenNotClaimedError(TransferTokenError):
     """The token is not currently claimed.
 
-    Raised by :meth:`TransferStore.complete` when the token is ``available`` —
-    never claimed, or already released.
+    Raised by :meth:`TransferStore.complete` / :meth:`TransferStore.burn` when
+    the token is ``available`` — never claimed, or already settled/released.
     """
 
 
@@ -128,9 +145,10 @@ class TransferToken:
 
     ``sink_handle`` and ``caps`` are exactly what :meth:`TransferStore.mint`
     stored — the store never interprets them. ``fence`` identifies *this*
-    reservation; pass it back to :meth:`TransferStore.release` /
-    :meth:`TransferStore.complete` so a reservation superseded by a lease
-    reclaim cannot mutate the current holder's state.
+    reservation; pass it back to :meth:`TransferStore.release`,
+    :meth:`TransferStore.complete`, or :meth:`TransferStore.burn` so a
+    reservation superseded by a lease reclaim cannot mutate the current holder's
+    state.
     """
 
     token: str
@@ -141,7 +159,7 @@ class TransferToken:
 
 
 class TransferStore:
-    """One-time capability-link token store backed by an ``AsyncKeyValue``.
+    """Capability-link token store backed by an ``AsyncKeyValue``.
 
     Args:
         kv: The backend store, typically from
@@ -151,6 +169,12 @@ class TransferStore:
             crashed handler's token auto-frees this long after :meth:`claim`.
             Operator-tunable timing (wired from config by the route layer);
             must be positive.
+        grace_seconds: Post-success grace window. :meth:`complete` settles a
+            token back to ``available`` with its TTL shrunk to
+            ``min(remaining, grace_seconds)``, so a stalled/retried transfer can
+            re-claim within this window rather than being stranded by a hard
+            burn (ADR §6 — the TTL, not strict single-use, is the security
+            bound). Operator-tunable; must be positive.
         clock: Wall-clock source for lease timestamps. Defaults to
             :func:`time.time`; injected only for deterministic tests. Wall
             clock (not monotonic) so a lease persisted in KV stays meaningful
@@ -162,12 +186,16 @@ class TransferStore:
         kv: AsyncKeyValue,
         *,
         lease_seconds: float,
+        grace_seconds: float,
         clock: Callable[[], float] = time.time,
     ) -> None:
         if lease_seconds <= 0:
             raise ValueError(f"lease_seconds must be positive, got {lease_seconds}")
+        if grace_seconds <= 0:
+            raise ValueError(f"grace_seconds must be positive, got {grace_seconds}")
         self._kv = kv
         self._lease_seconds = float(lease_seconds)
+        self._grace_seconds = float(grace_seconds)
         self._clock = clock
         self._lock = asyncio.Lock()
 
@@ -177,6 +205,7 @@ class TransferStore:
         config: ServerConfig,
         *,
         lease_seconds: float,
+        grace_seconds: float,
         clock: Callable[[], float] = time.time,
     ) -> TransferStore:
         """Build a store from operator config, pinning ``namespace="transfer"``.
@@ -187,6 +216,7 @@ class TransferStore:
         return cls(
             build_kv_store(config, namespace=_NAMESPACE),
             lease_seconds=lease_seconds,
+            grace_seconds=grace_seconds,
             clock=clock,
         )
 
@@ -238,8 +268,8 @@ class TransferStore:
 
         Reclaims an ``in_flight`` token whose lease has lapsed (a crashed *or
         slow* handler) with a fresh :attr:`TransferToken.fence`. Preserves the
-        token's remaining TTL on the re-put — dropping it would make the
-        one-time link immortal.
+        token's remaining TTL on the re-put — dropping it would make the link
+        immortal.
 
         Raises:
             TokenNotFoundError: The token is missing or its TTL has lapsed.
@@ -261,8 +291,9 @@ class TransferStore:
                 if lease is not None and self._clock() < lease:
                     raise TokenInFlightError("token is claimed and its lease is live")
                 # Lease lapsed → the previous holder crashed or is too slow;
-                # reclaim below under a fresh fence so its late release/complete
-                # (carrying the old fence) can no longer mutate this reservation.
+                # reclaim below under a fresh fence so its late
+                # release/complete/burn (carrying the old fence) can no longer
+                # mutate this reservation.
             fence = secrets.token_urlsafe(_FENCE_BYTES)
             record["status"] = _IN_FLIGHT
             record["lease_expires_at"] = self._clock() + self._lease_seconds
@@ -283,11 +314,10 @@ class TransferStore:
 
         *fence* is the :attr:`TransferToken.fence` from the claim being
         released. Idempotent and safe: a no-op if the token is missing, already
-        ``available`` or ``consumed`` (a late release after a successful
-        :meth:`complete` must never resurrect a burned link), or if *fence* does
-        not match the record's current fence — i.e. this reservation was
-        superseded by a lease reclaim, so reverting it would corrupt the new
-        holder's in-flight state.
+        ``available`` or ``consumed`` (a late release after a :meth:`burn` must
+        never resurrect a hard-burned link), or if *fence* does not match the
+        record's current fence — i.e. this reservation was superseded by a lease
+        reclaim, so reverting it would corrupt the new holder's in-flight state.
         """
         async with self._lock:
             try:
@@ -306,36 +336,79 @@ class TransferStore:
             )
 
     async def complete(self, token: str, fence: str) -> None:
-        """Burn *this* reservation (``in_flight → consumed``) on success.
+        """Grace-settle *this* reservation on a successful transfer.
+
+        The token reverts to ``available`` with its TTL shrunk to
+        ``min(remaining, grace_seconds)`` — **not** hard-burned. So a transfer
+        whose bytes were served but whose delivery then stalled (a client drop
+        mid-download, a lost upload ack) can re-claim within the grace window
+        instead of being stranded by a spent link (ADR §6: the TTL is the
+        security bound, strict single-use is hygiene). Use :meth:`burn` when a
+        caller genuinely needs strict one-shot.
+
+        The ``min`` never *extends* the TTL, and once ``remaining <=
+        grace_seconds`` it keeps the shrinking ``remaining`` — so the absolute
+        expiry is pinned at the first settle and does not slide across retries.
 
         *fence* is the :attr:`TransferToken.fence` from the claim being
-        completed. Idempotent on an already-``consumed`` token, a no-op if the
-        token expired mid-transfer (its TTL lapsed), and a no-op if *fence* does
-        not match the record's current fence — a reservation superseded by a
-        lease reclaim must not burn the new holder's live in-flight link.
+        completed. A no-op if the token expired mid-transfer, if it was already
+        hard-burned (``consumed``), or if *fence* does not match the record's
+        current fence (a reservation superseded by a lease reclaim must not
+        disturb the new holder's live in-flight link).
 
         Raises:
             TokenNotClaimedError: The token is not currently claimed (it is
-                ``available`` — never claimed, or already released).
+                ``available`` — never claimed, or already settled/released).
+        """
+        await self._finish(token, fence, new_status=_AVAILABLE, shrink_to_grace=True)
+
+    async def burn(self, token: str, fence: str) -> None:
+        """Hard-burn *this* reservation (``in_flight → consumed``) — strict one-shot.
+
+        The stricter alternative to :meth:`complete`: the token becomes
+        ``consumed`` and can never be claimed again (a later claim raises
+        :class:`TokenAlreadyConsumedError`), for a caller that cannot tolerate
+        even a grace-window replay (e.g. a sensitive one-time secret). The
+        remaining TTL is preserved as a consumed tombstone until it lapses.
+
+        Same fence/expiry/idempotency no-op rules as :meth:`complete`.
+
+        Raises:
+            TokenNotClaimedError: The token is not currently claimed.
+        """
+        await self._finish(token, fence, new_status=_CONSUMED, shrink_to_grace=False)
+
+    async def _finish(
+        self,
+        token: str,
+        fence: str,
+        *,
+        new_status: TokenStatus,
+        shrink_to_grace: bool,
+    ) -> None:
+        """Shared terminal transition for :meth:`complete` / :meth:`burn`.
+
+        Both move an ``in_flight`` reservation out of flight under the lock and
+        the fence guard; they differ only in the resulting status and whether
+        the TTL is shrunk to the grace window.
         """
         async with self._lock:
             try:
                 record, remaining = await self._read(token)
             except TokenNotFoundError:
-                return  # expired mid-transfer — nothing left to burn
+                return  # expired mid-transfer — nothing left to settle
             status = record["status"]
             if status == _CONSUMED:
-                return  # idempotent re-complete
+                return  # already hard-burned — idempotent
             if status != _IN_FLIGHT:
                 raise TokenNotClaimedError("token is not currently claimed")
             if record["fence"] != fence:
                 return  # superseded — the current reservation is not ours
-            record["status"] = _CONSUMED
+            record["status"] = new_status
             record["lease_expires_at"] = None
             record["fence"] = None
-            await self._kv.put(
-                token, record, collection=_TOKEN_COLLECTION, ttl=remaining
-            )
+            ttl = min(remaining, self._grace_seconds) if shrink_to_grace else remaining
+            await self._kv.put(token, record, collection=_TOKEN_COLLECTION, ttl=ttl)
 
     async def _read(self, token: str) -> tuple[_TokenRecord, float]:
         """Read a live token record and its remaining TTL, or raise.
