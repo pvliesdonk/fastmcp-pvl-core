@@ -65,7 +65,7 @@ from ._transfer import (
     register_transfer_routes,
 )
 
-__version__ = "4.3.0"  # PSR overrides at build time
+__version__ = "4.4.0"  # PSR overrides at build time
 
 __all__ = [
     "AuthMode",
