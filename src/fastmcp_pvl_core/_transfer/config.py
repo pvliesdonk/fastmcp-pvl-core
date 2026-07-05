@@ -1,0 +1,102 @@
+"""Operator configuration for the transfer subsystem (ADR 0001 §7 / §11 #5).
+
+``TransferConfig`` is the env section for the ``/transfer`` feature: link
+lifetimes, the post-success grace window, the crashed-handler lease, and the
+per-upload size cap. Per the ``CLAUDE.md`` axis, operator tuning is env config
+(never kwargs) and domain behaviour is hooks (never config) — so this holds the
+tuning while :data:`TransferSink` / :data:`TransferValidator` hold the domain
+seam.
+
+Reads use the literal ``env_float(prefix, "LITERAL")`` / ``env_int`` form so
+``domain_env_suffixes(TransferConfig)`` (the drift gate) sees the full surface.
+
+Intra-package imports stay relative so a fold-in is a directory rename.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+from .._env import env_float, env_int
+from .._errors import ConfigurationError
+
+_DEFAULT_TTL_DEFAULT_S = 3600.0  # 1 hour
+_DEFAULT_TTL_MAX_S = 86_400.0  # 24 hours
+_DEFAULT_GRACE_TTL_S = 60.0
+_DEFAULT_LEASE_S = 60.0
+_DEFAULT_MAX_UPLOAD_BYTES = 100 * 1024 * 1024  # 100 MiB
+
+
+@dataclass(frozen=True)
+class TransferConfig:
+    """Env-tunable knobs for the transfer subsystem.
+
+    All durations are seconds and all values must be positive; the default TTL
+    must not exceed the max TTL. Construct via :meth:`from_env` (the operator
+    path) or directly (tests). ``__post_init__`` validates both.
+
+    Attributes:
+        ttl_default_s: Link lifetime when the caller omits one.
+        ttl_max_s: Ceiling; a caller-requested TTL is clamped to this.
+        grace_ttl_s: Post-success grace window — ``complete`` shrinks a token's
+            TTL to ``min(remaining, grace_ttl_s)`` so a served-but-stalled
+            transfer can retry within it (ADR §6.2).
+        lease_s: Crashed-handler reclaim window for an ``in_flight`` reservation.
+        max_upload_bytes: Per-upload size cap.
+    """
+
+    ttl_default_s: float = _DEFAULT_TTL_DEFAULT_S
+    ttl_max_s: float = _DEFAULT_TTL_MAX_S
+    grace_ttl_s: float = _DEFAULT_GRACE_TTL_S
+    lease_s: float = _DEFAULT_LEASE_S
+    max_upload_bytes: int = _DEFAULT_MAX_UPLOAD_BYTES
+
+    def __post_init__(self) -> None:
+        for name, value in (
+            ("ttl_default_s", self.ttl_default_s),
+            ("ttl_max_s", self.ttl_max_s),
+            ("grace_ttl_s", self.grace_ttl_s),
+            ("lease_s", self.lease_s),
+            ("max_upload_bytes", self.max_upload_bytes),
+        ):
+            if value <= 0:
+                raise ConfigurationError(
+                    f"TransferConfig.{name} must be positive, got {value}"
+                )
+        if self.ttl_default_s > self.ttl_max_s:
+            raise ConfigurationError(
+                f"TransferConfig.ttl_default_s ({self.ttl_default_s}) must not "
+                f"exceed ttl_max_s ({self.ttl_max_s})"
+            )
+
+    @classmethod
+    def from_env(cls, env_prefix: str) -> TransferConfig:
+        """Read the transfer env section under *env_prefix*.
+
+        Each var is parsed strictly (an invalid value raises
+        :class:`ConfigurationError` naming it) and falls back to a built-in
+        default when unset; :meth:`__post_init__` then validates the result.
+        """
+        return cls(
+            ttl_default_s=env_float(
+                env_prefix,
+                "TRANSFER_TTL_DEFAULT_S",
+                _DEFAULT_TTL_DEFAULT_S,
+                strict=True,
+            ),
+            ttl_max_s=env_float(
+                env_prefix, "TRANSFER_TTL_MAX_S", _DEFAULT_TTL_MAX_S, strict=True
+            ),
+            grace_ttl_s=env_float(
+                env_prefix, "TRANSFER_GRACE_TTL_S", _DEFAULT_GRACE_TTL_S, strict=True
+            ),
+            lease_s=env_float(
+                env_prefix, "TRANSFER_LEASE_S", _DEFAULT_LEASE_S, strict=True
+            ),
+            max_upload_bytes=env_int(
+                env_prefix,
+                "TRANSFER_MAX_UPLOAD_BYTES",
+                _DEFAULT_MAX_UPLOAD_BYTES,
+                strict=True,
+            ),
+        )

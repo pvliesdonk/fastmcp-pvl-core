@@ -53,7 +53,17 @@ from ._server_info import (
     register_server_info_tool,
 )
 from ._subject import get_claims, get_subject
-from ._transfer import FetchResult, decode_base64_capped, fetch_url
+from ._transfer import (
+    FetchResult,
+    TransferConfig,
+    TransferKind,
+    TransferReadResult,
+    TransferSink,
+    TransferValidator,
+    decode_base64_capped,
+    fetch_url,
+    register_transfer_routes,
+)
 
 __version__ = "4.3.0"  # PSR overrides at build time
 
@@ -65,6 +75,11 @@ __all__ = [
     "SecretMaskFilter",
     "ServerConfig",
     "Transport",
+    "TransferConfig",
+    "TransferKind",
+    "TransferReadResult",
+    "TransferSink",
+    "TransferValidator",
     "UpstreamProvider",
     "UpstreamResult",
     "any_check",
@@ -101,6 +116,7 @@ __all__ = [
     "parse_scopes",
     "register_server_info_tool",
     "register_tool_icons",
+    "register_transfer_routes",
     "resolve_auth_mode",
     "server_config_env_suffixes",
     "wire_middleware_stack",

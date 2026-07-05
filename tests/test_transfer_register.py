@@ -1,0 +1,214 @@
+"""Contract tests for :func:`register_transfer_routes` (ADR 0001 §3/§5 / §11 #5).
+
+``register_transfer_routes`` is the transfer feature's one entry point: it
+builds the shared store, mounts the ``/transfer/{token}`` route, and registers
+the ``create_download_link`` / ``create_upload_link`` tools. These tests pin the
+**wiring** it owns — the store's grace-settle timing is proven at the store /
+routes layer (``test_transfer_store``, ``test_transfer_routes``):
+
+- **base_url guard**: an unset/blank ``base_url`` fails fast at *registration*,
+  not at the first tool call.
+- **Link tools**: each mints via the validated handle, echoes ``{url,
+  expires_in_s}``, builds the URL from ``base_url`` (trailing slash stripped),
+  and passes the correct ``kind`` to the validator.
+- **TTL clamp**: an omitted TTL uses the configured default; a request over the
+  max is clamped to the max; an in-range request is honoured — observed via the
+  returned ``expires_in_s``.
+- **Validator rejection** surfaces from the tool call.
+- **End-to-end**: a minted download link redeems over real ASGI (tool → store →
+  route → handler → sink), and a second redeem within the grace window still
+  serves — confirming the grace-settle path is wired, not just the store.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Mapping
+from contextlib import asynccontextmanager
+from typing import Any
+
+import httpx
+import pytest
+from fastmcp import FastMCP
+from fastmcp.exceptions import ToolError
+
+from fastmcp_pvl_core import (
+    ServerConfig,
+    TransferConfig,
+    TransferReadResult,
+    register_transfer_routes,
+)
+from fastmcp_pvl_core._errors import ConfigurationError
+
+
+class _RecordingSink:
+    """A sink that serves canned bytes and records the handles it is called with."""
+
+    def __init__(self) -> None:
+        self.read_handles: list[str] = []
+        self.write_handles: list[str] = []
+
+    async def read(self, handle: str) -> TransferReadResult:
+        self.read_handles.append(handle)
+        return TransferReadResult(b"BODY", "text/plain", "f.txt")
+
+    async def write(self, handle: str, body: bytes) -> Mapping[str, Any]:
+        self.write_handles.append(handle)
+        return {"stored": handle}
+
+
+class _RecordingValidator:
+    """Records (ref, kind) calls; encodes the kind into the returned handle.
+
+    A ``ref`` of ``"bad"`` raises, exercising the rejection path. The handle
+    embeds the kind so a downstream sink assertion can prove which kind was
+    minted.
+    """
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str]] = []
+
+    async def __call__(self, ref: str, kind: str) -> str:
+        self.calls.append((ref, kind))
+        if ref == "bad":
+            raise ValueError("validator rejected ref")
+        return f"handle:{ref}:{kind}"
+
+
+def _tconfig(**overrides: Any) -> TransferConfig:
+    base = dict(
+        ttl_default_s=100.0,
+        ttl_max_s=200.0,
+        grace_ttl_s=60.0,
+        lease_s=60.0,
+        max_upload_bytes=1024,
+    )
+    base.update(overrides)
+    return TransferConfig(**base)  # type: ignore[arg-type]
+
+
+def _register(
+    *,
+    base_url: str | None = "https://x.example.com",
+    transfer_config: TransferConfig | None = None,
+    sink: _RecordingSink | None = None,
+    validate: _RecordingValidator | None = None,
+) -> tuple[FastMCP, _RecordingSink, _RecordingValidator]:
+    mcp = FastMCP("t")
+    sink = sink or _RecordingSink()
+    validate = validate or _RecordingValidator()
+    config = ServerConfig(base_url=base_url, kv_store_url="memory://")
+    register_transfer_routes(
+        mcp,
+        config,
+        transfer_config or _tconfig(),
+        sink=sink,
+        validate=validate,
+    )
+    return mcp, sink, validate
+
+
+class TestBaseUrlGuard:
+    def test_unset_base_url_raises_at_register(self) -> None:
+        with pytest.raises(ConfigurationError, match="base_url"):
+            _register(base_url=None)
+
+    def test_blank_base_url_raises_at_register(self) -> None:
+        # An empty string is as unusable as None for building link URLs.
+        with pytest.raises(ConfigurationError, match="base_url"):
+            _register(base_url="")
+
+
+class TestToolRegistration:
+    async def test_both_link_tools_registered(self) -> None:
+        mcp, _, _ = _register()
+        # get_tool raises KeyError if the name is not registered.
+        assert await mcp.get_tool("create_download_link") is not None
+        assert await mcp.get_tool("create_upload_link") is not None
+
+
+class TestLinkMinting:
+    async def test_download_link_shape_and_kind(self) -> None:
+        mcp, _, validate = _register()
+        res = await mcp.call_tool("create_download_link", {"ref": "doc1"})
+        payload = res.structured_content
+        assert payload["url"].startswith("https://x.example.com/transfer/")
+        assert payload["expires_in_s"] == 100.0  # the configured default
+        assert validate.calls == [("doc1", "download")]
+
+    async def test_upload_link_uses_upload_kind(self) -> None:
+        mcp, _, validate = _register()
+        await mcp.call_tool("create_upload_link", {"ref": "dest1"})
+        assert validate.calls == [("dest1", "upload")]
+
+    async def test_base_url_trailing_slash_stripped(self) -> None:
+        mcp, _, _ = _register(base_url="https://x.example.com/")
+        res = await mcp.call_tool("create_download_link", {"ref": "doc1"})
+        # Exactly one slash between host and the route — no "//transfer".
+        assert "/transfer/" in res.structured_content["url"]
+        assert "com//transfer" not in res.structured_content["url"]
+
+
+class TestTtlClamp:
+    async def test_omitted_ttl_uses_default(self) -> None:
+        mcp, _, _ = _register()
+        res = await mcp.call_tool("create_download_link", {"ref": "doc"})
+        assert res.structured_content["expires_in_s"] == 100.0
+
+    async def test_over_max_ttl_is_clamped(self) -> None:
+        mcp, _, _ = _register()
+        res = await mcp.call_tool("create_download_link", {"ref": "doc", "ttl_s": 9999})
+        assert res.structured_content["expires_in_s"] == 200.0  # the max
+
+    async def test_in_range_ttl_is_honoured(self) -> None:
+        mcp, _, _ = _register()
+        res = await mcp.call_tool("create_download_link", {"ref": "doc", "ttl_s": 150})
+        assert res.structured_content["expires_in_s"] == 150.0
+
+
+class TestValidatorRejection:
+    async def test_rejection_surfaces_from_tool(self) -> None:
+        mcp, _, _ = _register()
+        with pytest.raises(ToolError, match="validator rejected ref"):
+            await mcp.call_tool("create_download_link", {"ref": "bad"})
+
+
+@asynccontextmanager
+async def _client(mcp: FastMCP):
+    """Yield an httpx client bound to the FastMCP ASGI app with lifespan active."""
+    app = mcp.http_app()
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://tsvr") as client:
+        async with app.router.lifespan_context(app):
+            yield client
+
+
+def _path_of(url: str) -> str:
+    """Return the ``/transfer/{token}`` path from a minted absolute link URL."""
+    return "/" + url.split("/", 3)[3]
+
+
+class TestEndToEnd:
+    async def test_minted_download_link_redeems_over_http(self) -> None:
+        mcp, sink, _ = _register()
+        res = await mcp.call_tool("create_download_link", {"ref": "doc"})
+        path = _path_of(res.structured_content["url"])
+        async with _client(mcp) as client:
+            resp = await client.get(path)
+        assert resp.status_code == 200
+        assert resp.content == b"BODY"
+        assert 'filename="f.txt"' in resp.headers["content-disposition"]
+        # The handle the route handed the sink is the validator's download handle.
+        assert sink.read_handles == ["handle:doc:download"]
+
+    async def test_second_redeem_within_grace_still_serves(self) -> None:
+        # Grace-settle wiring: complete() shrinks the TTL to the grace window
+        # rather than burning the link, so a retry inside that window re-serves.
+        # The test runs in milliseconds, far inside the 60s grace default.
+        mcp, _, _ = _register()
+        res = await mcp.call_tool("create_download_link", {"ref": "doc"})
+        path = _path_of(res.structured_content["url"])
+        async with _client(mcp) as client:
+            first = await client.get(path)
+            second = await client.get(path)
+        assert first.status_code == 200
+        assert second.status_code == 200
