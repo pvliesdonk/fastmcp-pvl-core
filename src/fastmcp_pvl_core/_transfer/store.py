@@ -53,6 +53,9 @@ _TOKEN_COLLECTION = "tokens"
 _TOKEN_BYTES = 32
 """Entropy of a minted token — an unguessable 32-byte URL-safe secret."""
 
+_FENCE_BYTES = 8
+"""Entropy of a per-claim fence — a fresh reservation id each :meth:`claim`."""
+
 _NAMESPACE = "transfer"
 """The KV namespace pvl-core pins for the transfer subsystem (a shape decision:
 downstream does not choose the keyspace)."""
@@ -84,6 +87,11 @@ class _TokenRecord(TypedDict):
     sink_handle: object
     caps: Mapping[str, Any]
     lease_expires_at: float | None
+    # A fresh id stamped on each claim (the fencing token). ``release`` and
+    # ``complete`` only act when the caller's fence matches this — so a stale
+    # holder whose lease was reclaimed cannot mutate the new holder's
+    # reservation. ``None`` while ``available``/``consumed``.
+    fence: str | None
 
 
 class TransferTokenError(Exception):
@@ -107,7 +115,11 @@ class TokenInFlightError(TransferTokenError):
 
 
 class TokenNotClaimedError(TransferTokenError):
-    """:meth:`TransferStore.complete` was called on a token that was never claimed."""
+    """The token is not currently claimed.
+
+    Raised by :meth:`TransferStore.complete` when the token is ``available`` —
+    never claimed, or already released.
+    """
 
 
 @dataclass(frozen=True)
@@ -115,10 +127,14 @@ class TransferToken:
     """A successful claim: the opaque routing info the caller needs to proceed.
 
     ``sink_handle`` and ``caps`` are exactly what :meth:`TransferStore.mint`
-    stored — the store never interprets them.
+    stored — the store never interprets them. ``fence`` identifies *this*
+    reservation; pass it back to :meth:`TransferStore.release` /
+    :meth:`TransferStore.complete` so a reservation superseded by a lease
+    reclaim cannot mutate the current holder's state.
     """
 
     token: str
+    fence: str
     kind: str
     sink_handle: object
     caps: Mapping[str, Any]
@@ -210,6 +226,7 @@ class TransferStore:
             "sink_handle": sink_handle,
             "caps": caps,
             "lease_expires_at": None,
+            "fence": None,
         }
         await self._kv.put(
             token, record, collection=_TOKEN_COLLECTION, ttl=float(ttl_seconds)
@@ -219,9 +236,10 @@ class TransferStore:
     async def claim(self, token: str, kind: str) -> TransferToken:
         """Reserve *token* for *kind*, marking it ``in_flight`` under a lease.
 
-        Reclaims an ``in_flight`` token whose lease has lapsed (a crashed
-        handler). Preserves the token's remaining TTL on the re-put — dropping
-        it would make the one-time link immortal.
+        Reclaims an ``in_flight`` token whose lease has lapsed (a crashed *or
+        slow* handler) with a fresh :attr:`TransferToken.fence`. Preserves the
+        token's remaining TTL on the re-put — dropping it would make the
+        one-time link immortal.
 
         Raises:
             TokenNotFoundError: The token is missing or its TTL has lapsed.
@@ -242,25 +260,34 @@ class TransferStore:
                 lease = record["lease_expires_at"]
                 if lease is not None and self._clock() < lease:
                     raise TokenInFlightError("token is claimed and its lease is live")
-                # Lease lapsed → the previous holder crashed; reclaim below.
+                # Lease lapsed → the previous holder crashed or is too slow;
+                # reclaim below under a fresh fence so its late release/complete
+                # (carrying the old fence) can no longer mutate this reservation.
+            fence = secrets.token_urlsafe(_FENCE_BYTES)
             record["status"] = _IN_FLIGHT
             record["lease_expires_at"] = self._clock() + self._lease_seconds
+            record["fence"] = fence
             await self._kv.put(
                 token, record, collection=_TOKEN_COLLECTION, ttl=remaining
             )
             return TransferToken(
                 token=token,
+                fence=fence,
                 kind=record["kind"],
                 sink_handle=record["sink_handle"],
                 caps=record["caps"],
             )
 
-    async def release(self, token: str) -> None:
-        """Revert an ``in_flight`` reservation to ``available`` (release-on-failure).
+    async def release(self, token: str, fence: str) -> None:
+        """Revert *this* reservation to ``available`` (release-on-failure).
 
-        Idempotent and safe: a no-op if the token is missing, already
-        ``available``, or ``consumed`` — a late release after a successful
-        :meth:`complete` must never resurrect a burned link.
+        *fence* is the :attr:`TransferToken.fence` from the claim being
+        released. Idempotent and safe: a no-op if the token is missing, already
+        ``available`` or ``consumed`` (a late release after a successful
+        :meth:`complete` must never resurrect a burned link), or if *fence* does
+        not match the record's current fence — i.e. this reservation was
+        superseded by a lease reclaim, so reverting it would corrupt the new
+        holder's in-flight state.
         """
         async with self._lock:
             try:
@@ -269,20 +296,27 @@ class TransferStore:
                 return  # expired/gone — nothing to release
             if record["status"] != _IN_FLIGHT:
                 return  # available or consumed — nothing to revert
+            if record["fence"] != fence:
+                return  # superseded — this is no longer our reservation
             record["status"] = _AVAILABLE
             record["lease_expires_at"] = None
+            record["fence"] = None
             await self._kv.put(
                 token, record, collection=_TOKEN_COLLECTION, ttl=remaining
             )
 
-    async def complete(self, token: str) -> None:
-        """Burn *token* (``in_flight → consumed``) on a successful transfer.
+    async def complete(self, token: str, fence: str) -> None:
+        """Burn *this* reservation (``in_flight → consumed``) on success.
 
-        Idempotent on an already-``consumed`` token, and a no-op if the token
-        expired mid-transfer (its TTL lapsed).
+        *fence* is the :attr:`TransferToken.fence` from the claim being
+        completed. Idempotent on an already-``consumed`` token, a no-op if the
+        token expired mid-transfer (its TTL lapsed), and a no-op if *fence* does
+        not match the record's current fence — a reservation superseded by a
+        lease reclaim must not burn the new holder's live in-flight link.
 
         Raises:
-            TokenNotClaimedError: The token exists but was never claimed.
+            TokenNotClaimedError: The token is not currently claimed (it is
+                ``available`` — never claimed, or already released).
         """
         async with self._lock:
             try:
@@ -293,9 +327,12 @@ class TransferStore:
             if status == _CONSUMED:
                 return  # idempotent re-complete
             if status != _IN_FLIGHT:
-                raise TokenNotClaimedError("token was never claimed")
+                raise TokenNotClaimedError("token is not currently claimed")
+            if record["fence"] != fence:
+                return  # superseded — the current reservation is not ours
             record["status"] = _CONSUMED
             record["lease_expires_at"] = None
+            record["fence"] = None
             await self._kv.put(
                 token, record, collection=_TOKEN_COLLECTION, ttl=remaining
             )

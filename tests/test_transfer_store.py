@@ -93,8 +93,8 @@ async def test_claim_returns_opaque_handle_and_caps() -> None:
 async def test_claim_then_complete_burns_the_token() -> None:
     store = _store()
     token = await _mint(store)
-    await store.claim(token, "download")
-    await store.complete(token)
+    claim = await store.claim(token, "download")
+    await store.complete(token, claim.fence)
     with pytest.raises(TokenAlreadyConsumedError):
         await store.claim(token, "download")
 
@@ -102,16 +102,16 @@ async def test_claim_then_complete_burns_the_token() -> None:
 async def test_complete_is_idempotent() -> None:
     store = _store()
     token = await _mint(store)
-    await store.claim(token, "download")
-    await store.complete(token)
-    await store.complete(token)  # must not raise
+    claim = await store.claim(token, "download")
+    await store.complete(token, claim.fence)
+    await store.complete(token, claim.fence)  # must not raise
 
 
 async def test_complete_without_claim_raises() -> None:
     store = _store()
     token = await _mint(store)
     with pytest.raises(TokenNotClaimedError):
-        await store.complete(token)
+        await store.complete(token, "no-fence")
 
 
 # --------------------------------------------------------------------------- #
@@ -122,8 +122,8 @@ async def test_complete_without_claim_raises() -> None:
 async def test_claim_release_keeps_the_link_claimable() -> None:
     store = _store()
     token = await _mint(store)
-    await store.claim(token, "download")
-    await store.release(token)
+    claim = await store.claim(token, "download")
+    await store.release(token, claim.fence)
     # The one-time link survived a transient failure — claimable again.
     reclaim = await store.claim(token, "download")
     assert reclaim.token == token
@@ -132,9 +132,10 @@ async def test_claim_release_keeps_the_link_claimable() -> None:
 async def test_release_never_resurrects_a_consumed_token() -> None:
     store = _store()
     token = await _mint(store)
-    await store.claim(token, "download")
-    await store.complete(token)
-    await store.release(token)  # late release after success — must be a no-op
+    claim = await store.claim(token, "download")
+    await store.complete(token, claim.fence)
+    # late release after success — must be a no-op
+    await store.release(token, claim.fence)
     with pytest.raises(TokenAlreadyConsumedError):
         await store.claim(token, "download")
 
@@ -142,7 +143,7 @@ async def test_release_never_resurrects_a_consumed_token() -> None:
 async def test_release_on_unclaimed_token_is_a_noop() -> None:
     store = _store()
     token = await _mint(store)
-    await store.release(token)  # never claimed — no-op, no raise
+    await store.release(token, "no-fence")  # never claimed — no-op, no raise
     claim = await store.claim(token, "download")
     assert claim.token == token
 
@@ -170,6 +171,42 @@ async def test_lapsed_lease_is_reclaimable_without_release() -> None:
     clock.advance(31.0)  # lease has lapsed
     reclaim = await store.claim(token, "download")
     assert reclaim.token == token
+
+
+# --------------------------------------------------------------------------- #
+# fencing — a superseded holder must not mutate the current reservation
+# --------------------------------------------------------------------------- #
+
+
+async def test_superseded_holder_cannot_mutate_reclaimed_reservation() -> None:
+    # A slow-but-alive handler A whose lease lapsed and was reclaimed by B must
+    # not be able to revert (release) or burn (complete) B's active reservation
+    # with its now-stale fence — even single-process, where the lock alone does
+    # not stop a stale holder from mutating a superseded reservation.
+    clock = _Clock()
+    store = _store(lease_seconds=30.0, clock=clock)
+    token = await _mint(store)
+    a = await store.claim(token, "download")  # A holds fence a.fence
+    clock.advance(31.0)  # A's lease lapses — A is slow, not crashed
+    b = await store.claim(token, "download")  # B reclaims → B is the holder now
+    assert b.fence != a.fence
+
+    # A's late release with its stale fence must NOT revert B's reservation —
+    # the token must still be B's live in-flight claim.
+    await store.release(token, a.fence)
+    with pytest.raises(TokenInFlightError):
+        await store.claim(token, "download")
+
+    # A's late complete with its stale fence must NOT burn B's reservation —
+    # the token must still be B's live in-flight claim, not consumed.
+    await store.complete(token, a.fence)
+    with pytest.raises(TokenInFlightError):
+        await store.claim(token, "download")
+
+    # B completes its own reservation with its live fence — that burns it.
+    await store.complete(token, b.fence)
+    with pytest.raises(TokenAlreadyConsumedError):
+        await store.claim(token, "download")
 
 
 # --------------------------------------------------------------------------- #
@@ -209,8 +246,10 @@ async def test_ttl_expiry_removes_the_token() -> None:
 async def test_complete_on_expired_token_is_a_noop() -> None:
     store = _store()
     token = await _mint(store, ttl=0.05)
+    claim = await store.claim(token, "download")
     await asyncio.sleep(0.1)
-    await store.complete(token)  # expired mid-transfer — no-op, no raise
+    # expired mid-transfer — no-op, no raise
+    await store.complete(token, claim.fence)
 
 
 # --------------------------------------------------------------------------- #
@@ -238,8 +277,8 @@ async def test_release_preserves_the_token_ttl() -> None:
     token = await store.mint(
         kind="download", sink_handle={}, caps={}, ttl_seconds=3600.0
     )
-    await store.claim(token, "download")
-    await store.release(token)
+    claim = await store.claim(token, "download")
+    await store.release(token, claim.fence)
     _value, remaining = await kv.ttl(token, collection=_TOKEN_COLLECTION)
     assert remaining is not None
     assert 0.0 < remaining <= 3600.0
@@ -253,8 +292,8 @@ async def test_complete_preserves_the_token_ttl() -> None:
     token = await store.mint(
         kind="download", sink_handle={}, caps={}, ttl_seconds=3600.0
     )
-    await store.claim(token, "download")
-    await store.complete(token)
+    claim = await store.claim(token, "download")
+    await store.complete(token, claim.fence)
     _value, remaining = await kv.ttl(token, collection=_TOKEN_COLLECTION)
     assert remaining is not None
     assert 0.0 < remaining <= 3600.0
@@ -359,7 +398,7 @@ async def test_from_config_wires_a_working_store() -> None:
     )
     claim = await store.claim(token, "download")
     assert claim.sink_handle == {"h": 1}
-    await store.complete(token)
+    await store.complete(token, claim.fence)
     with pytest.raises(TokenAlreadyConsumedError):
         await store.claim(token, "download")
 
