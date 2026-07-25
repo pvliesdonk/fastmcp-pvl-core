@@ -24,6 +24,35 @@
 
 ---
 
+## ⚠️ Correction notice — read before reusing any help text from this plan
+
+Task 2's prescribed help strings below were **partly false** and were corrected
+during implementation. The text in this document is the original draft, kept for
+history. **Do not copy help text out of this plan.** The shipped, corrected
+wording is in `src/fastmcp_pvl_core/_config.py`; treat that as authoritative.
+
+Two claims were wrong:
+
+1. **`oidc_jwt_signing_key`** — this plan said the fallback key is "ephemeral and
+   invalidates every token on restart". False. fastmcp 3.3.1 derives it via
+   `derive_jwt_key(high_entropy_material=upstream_client_secret, salt="fastmcp-jwt-signing-key")`
+   — HKDF-SHA256 with a fixed salt, verified deterministic. Tokens survive a
+   restart; the real caveat is that rotating the client secret invalidates them.
+   The same falsehood was removed from `_auth.py`'s runtime warning, and is
+   tracked for the template repo as `fastmcp-server-template#260`.
+2. **`auth_mode`** — this plan described it as a derived/resolved value with no
+   control. False. It is read from `{PREFIX}_AUTH_MODE` and is an explicit
+   operator override accepting `remote` or `oidc-proxy`. `inferred` therefore
+   means "no wizard control offered", **not** "not operator-settable" — an
+   `inferred` field must still appear in env references and `.env.example`.
+
+Root cause: the drafts were taken from the template's existing wizard spec and
+docs without checking them against the implementation. Since generation
+propagates whatever the metadata says, every migrated claim needs verifying
+against the code that implements it.
+
+---
+
 ## File Structure
 
 | File | Responsibility | Change |
