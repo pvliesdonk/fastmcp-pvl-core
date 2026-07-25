@@ -23,7 +23,7 @@ from fastmcp_pvl_core import (
     server_config_env_suffixes,
     server_config_surface,
 )
-from fastmcp_pvl_core._config import DEFAULT_BEARER_SUBJECT
+from fastmcp_pvl_core._config import DEFAULT_BEARER_SUBJECT, _config_field_from
 
 # ---------------------------------------------------------------------------
 # Module-level fixture classes for TestDomainEnvSuffixes
@@ -595,3 +595,14 @@ class TestServerConfigSurface:
         assert config.oidc_verify_access_token is False
         assert config.bearer_default_subject == DEFAULT_BEARER_SUBJECT
         assert config.base_url is None
+
+    def test_unknown_wizard_string_is_rejected(self):
+        """A typo like "infered" must fail loudly, not crash on .items()."""
+
+        @dataclass(frozen=True)
+        class _BadWizard:
+            oops: str = field(default="x", metadata={"wizard": "infered"})
+
+        (bad,) = dataclasses.fields(_BadWizard)
+        with pytest.raises(ValueError, match="only accepted string form"):
+            _config_field_from(bad)

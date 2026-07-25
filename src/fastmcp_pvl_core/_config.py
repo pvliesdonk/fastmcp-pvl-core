@@ -13,7 +13,7 @@ import typing
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from ._env import env, env_int, parse_bool, parse_scopes
 
@@ -68,8 +68,9 @@ class ServerConfig:
         metadata={
             "help": (
                 "Public base URL of the deployed server, e.g. "
-                "``https://mcp.example.com``. Required for OIDC and for MCP "
-                "Apps resource URLs."
+                "``https://mcp.example.com``. Required for OIDC. Also the "
+                "fallback source of the MCP Apps domain when ``app_domain`` "
+                "is unset."
             ),
             "tags": ("server", "oidc", "apps"),
             "wizard": {"when": "server"},
@@ -80,7 +81,8 @@ class ServerConfig:
         default=None,
         metadata={
             "help": (
-                "Single shared bearer token; any non-empty value enables bearer auth."
+                "Single shared bearer token; enables bearer auth unless "
+                "``bearer_tokens_file`` is set, which takes precedence."
             ),
             "tags": ("auth", "bearer"),
             "wizard": {"when": "bearer", "secret": True},
@@ -128,7 +130,7 @@ class ServerConfig:
     oidc_required_scopes: tuple[str, ...] = field(
         default_factory=tuple,
         metadata={
-            "help": "Comma-separated scopes a caller must present to be authorised.",
+            "help": "Scopes a caller must present, space- or comma-separated.",
             "tags": ("auth", "oidc"),
             "wizard": {"group": "Auth", "when": "oidc"},
         },
@@ -137,9 +139,10 @@ class ServerConfig:
         default=None,
         metadata={
             "help": (
-                "Signing key for issued JWTs. Required on Linux/Docker — the "
-                "generated fallback is ephemeral and invalidates every token "
-                "on restart. Generate with ``openssl rand -hex 32``."
+                "Signing key for issued JWTs. Strongly recommended on "
+                "Linux/Docker — without it the generated fallback is "
+                "ephemeral and invalidates every token on restart. Generate "
+                "with ``openssl rand -hex 32``."
             ),
             "tags": ("auth", "oidc"),
             "wizard": {"when": "oidc", "secret": True},
@@ -158,9 +161,11 @@ class ServerConfig:
         default=None,
         metadata={
             "help": (
-                "Persistent-state backend URL for pvl-core subsystems: "
-                "``file:///path`` survives restarts, ``memory://`` is "
-                "ephemeral and for development only."
+                "Persistent-state backend URL shared by every pvl-core "
+                "subsystem that needs state. ``memory://`` is in-process and "
+                "lost on restart; ``file:///path`` persists on one server; "
+                "``redis://``, ``dynamodb://`` and ``mongodb://`` each need "
+                "their matching extra."
             ),
             "tags": ("persistence", "readme"),
             "wizard": {"group": "Persistence", "when": "server"},
@@ -170,11 +175,11 @@ class ServerConfig:
         default=None,
         metadata={
             "help": (
-                "Legacy override for HTTP resumability, honoured by "
+                "Legacy state-backend override, honoured by "
                 "``build_event_store`` and ``build_kv_store`` only when "
-                "``kv_store_url`` is unset. Prefer ``kv_store_url`` for new "
-                "deployments — a single URL drives every pvl-core subsystem "
-                "that needs persistent state."
+                "``kv_store_url`` is unset — it then backs every namespace, "
+                "not just HTTP resumability. Prefer ``kv_store_url`` for new "
+                "deployments."
             ),
             "tags": ("persistence",),
             "wizard": {"group": "Persistence", "when": "server"},
@@ -183,7 +188,10 @@ class ServerConfig:
     app_domain: str | None = field(
         default=None,
         metadata={
-            "help": "Public domain that serves MCP Apps UI resources.",
+            "help": (
+                "MCP Apps iframe domain, used for CSP sandboxing. Overrides "
+                "the host derived from ``base_url``."
+            ),
             "tags": ("apps",),
             "wizard": {"group": "MCP Apps", "when": "server"},
         },
@@ -413,6 +421,51 @@ class ConfigField:
     ``when``. Empty for inferred fields."""
 
 
+def _config_field_from(f: dataclasses.Field[Any]) -> ConfigField:
+    """Build one :class:`ConfigField` record from a ``ServerConfig`` field.
+
+    Raises:
+        ValueError: If ``metadata["wizard"]`` is a string other than the
+            recognised ``"inferred"`` shorthand — e.g. a typo like
+            ``"infered"``. Falling through silently would otherwise crash
+            later on ``raw_wizard.items()`` since a plain string has no
+            ``.items()``.
+    """
+    if f.default is not dataclasses.MISSING:
+        default: object = f.default
+    elif f.default_factory is not dataclasses.MISSING:
+        default = f.default_factory()
+    else:  # pragma: no cover — every current field has a default
+        default = None
+
+    tags = tuple(str(tag) for tag in f.metadata.get("tags", ()))
+
+    # ``metadata={"wizard": "inferred"}`` is the shorthand for a field with
+    # no control; anything else is a mapping of presentation hints.
+    raw_wizard = f.metadata.get("wizard", {})
+    inferred = raw_wizard == "inferred"
+    wizard: dict[str, object] = {}
+    if not inferred and raw_wizard:
+        if isinstance(raw_wizard, str):
+            raise ValueError(
+                f"ServerConfig.{f.name}: metadata['wizard'] is the string "
+                f"{raw_wizard!r}; the only accepted string form is "
+                f"'inferred'. Use a mapping of hints for anything else."
+            )
+        wizard = {str(k): v for k, v in raw_wizard.items()}
+
+    return ConfigField(
+        suffix=f.name.upper(),
+        name=f.name,
+        type_name=f.type if isinstance(f.type, str) else str(f.type),
+        default=default,
+        help=str(f.metadata.get("help", "")),
+        tags=tags,
+        inferred=inferred,
+        wizard=wizard,
+    )
+
+
 def server_config_surface() -> tuple[ConfigField, ...]:
     """Return every :class:`ServerConfig` env field, in declaration order.
 
@@ -424,38 +477,7 @@ def server_config_surface() -> tuple[ConfigField, ...]:
     Covers the same 18 variables as :func:`server_config_env_suffixes`, adding
     each field's type, default, help text, tags, and wizard hints.
     """
-    records: list[ConfigField] = []
-    for f in dataclasses.fields(ServerConfig):
-        if f.default is not dataclasses.MISSING:
-            default: object = f.default
-        elif f.default_factory is not dataclasses.MISSING:
-            default = f.default_factory()
-        else:  # pragma: no cover — every current field has a default
-            default = None
-
-        tags = tuple(str(tag) for tag in f.metadata.get("tags", ()))
-
-        # ``metadata={"wizard": "inferred"}`` is the shorthand for a field with
-        # no control; anything else is a mapping of presentation hints.
-        raw_wizard = f.metadata.get("wizard", {})
-        inferred = raw_wizard == "inferred"
-        wizard: dict[str, object] = {}
-        if not inferred and raw_wizard:
-            wizard = {str(k): v for k, v in raw_wizard.items()}
-
-        records.append(
-            ConfigField(
-                suffix=f.name.upper(),
-                name=f.name,
-                type_name=f.type if isinstance(f.type, str) else str(f.type),
-                default=default,
-                help=str(f.metadata.get("help", "")),
-                tags=tags,
-                inferred=inferred,
-                wizard=wizard,
-            )
-        )
-    return tuple(records)
+    return tuple(_config_field_from(f) for f in dataclasses.fields(ServerConfig))
 
 
 def domain_env_suffixes(config_cls: type) -> frozenset[str]:
