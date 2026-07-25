@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import dataclasses
 import typing
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
@@ -208,6 +209,93 @@ def server_config_env_suffixes() -> frozenset[str]:
     surface.
     """
     return _SERVER_CONFIG_ENV_SUFFIXES
+
+
+@dataclass(frozen=True)
+class ConfigField:
+    """One env-configurable :class:`ServerConfig` field and its metadata.
+
+    ``help`` deliberately does **not** restate a scalar default: ``default``
+    carries it structurally, and a documentation generator renders both. The
+    one exception is ``transport``, where naming the accepted literal values is
+    the documentation.
+    """
+
+    suffix: str
+    """Env suffix, i.e. the part after ``{PREFIX}_`` — e.g. ``BASE_URL``."""
+
+    name: str
+    """Python field name — e.g. ``base_url``."""
+
+    type_name: str
+    """The annotation as written, e.g. ``str | None``."""
+
+    default: object
+    """The declared default. ``default_factory`` fields report the built value."""
+
+    help: str
+    """One-or-two-sentence description. Empty when undocumented."""
+
+    tags: tuple[str, ...]
+    """Semantic tags used to route this field into documentation sections.
+
+    Layout-agnostic by design: core says *what* a field is about, never which
+    file it belongs in. A field may carry several tags, and appearing in more
+    than one destination is intentional.
+    """
+
+    inferred: bool
+    """True when the value is derived rather than set directly, so no control
+    should be offered for it."""
+
+    wizard: Mapping[str, object]
+    """Presentation hints for a config wizard — e.g. ``group``, ``secret``,
+    ``when``. Empty for inferred fields."""
+
+
+def server_config_surface() -> tuple[ConfigField, ...]:
+    """Return every :class:`ServerConfig` env field, in declaration order.
+
+    Declaration order is part of the contract: a consumer that renders this
+    tuple produces byte-identical output on every run. Prefer this over
+    :func:`server_config_env_suffixes`, which returns a ``frozenset`` whose
+    iteration order varies between processes under hash randomisation.
+
+    Covers the same 18 variables as :func:`server_config_env_suffixes`, adding
+    each field's type, default, help text, tags, and wizard hints.
+    """
+    records: list[ConfigField] = []
+    for f in dataclasses.fields(ServerConfig):
+        if f.default is not dataclasses.MISSING:
+            default: object = f.default
+        elif f.default_factory is not dataclasses.MISSING:
+            default = f.default_factory()
+        else:  # pragma: no cover — every current field has a default
+            default = None
+
+        tags = tuple(str(tag) for tag in f.metadata.get("tags", ()))
+
+        # ``metadata={"wizard": "inferred"}`` is the shorthand for a field with
+        # no control; anything else is a mapping of presentation hints.
+        raw_wizard = f.metadata.get("wizard", {})
+        inferred = raw_wizard == "inferred"
+        wizard: dict[str, object] = {}
+        if not inferred and raw_wizard:
+            wizard = {str(k): v for k, v in raw_wizard.items()}
+
+        records.append(
+            ConfigField(
+                suffix=f.name.upper(),
+                name=f.name,
+                type_name=f.type if isinstance(f.type, str) else str(f.type),
+                default=default,
+                help=str(f.metadata.get("help", "")),
+                tags=tags,
+                inferred=inferred,
+                wizard=wizard,
+            )
+        )
+    return tuple(records)
 
 
 def domain_env_suffixes(config_cls: type) -> frozenset[str]:

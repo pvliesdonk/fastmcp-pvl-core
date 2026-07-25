@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import dataclasses
+import os
+import subprocess
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import pytest
 
 from fastmcp_pvl_core import (
+    ConfigField,
     ConfigurationError,
     ServerConfig,
     build_bearer_auth,
@@ -15,6 +20,8 @@ from fastmcp_pvl_core import (
     env,
     env_float,
     env_int,
+    server_config_env_suffixes,
+    server_config_surface,
 )
 
 # ---------------------------------------------------------------------------
@@ -462,3 +469,70 @@ class TestDomainEnvSuffixes:
         """An annotation not importable at module scope propagates as NameError."""
         with pytest.raises(NameError, match="domain_env_suffixes"):
             domain_env_suffixes(_BadRef)
+
+
+class TestServerConfigSurface:
+    def test_surface_returns_config_field_records(self):
+        assert all(isinstance(c, ConfigField) for c in server_config_surface())
+
+    def test_covers_every_field_in_declaration_order(self):
+        """Declaration order is the contract — it makes generated output stable."""
+        surface = server_config_surface()
+        assert tuple(c.name for c in surface) == tuple(
+            f.name for f in dataclasses.fields(ServerConfig)
+        )
+
+    def test_returns_eighteen_fields(self):
+        assert len(server_config_surface()) == 18
+
+    def test_suffix_is_the_upper_cased_field_name(self):
+        assert all(c.suffix == c.name.upper() for c in server_config_surface())
+
+    def test_suffixes_match_the_env_suffix_set(self):
+        """The surface and the existing frozenset describe the same 18 vars."""
+        assert {
+            c.suffix for c in server_config_surface()
+        } == server_config_env_suffixes()
+
+    def test_scalar_default_is_carried_through(self):
+        host = next(c for c in server_config_surface() if c.name == "host")
+        assert host.default == "127.0.0.1"
+
+    def test_default_factory_is_resolved_to_a_value(self):
+        """oidc_required_scopes uses default_factory=tuple; the surface reports ()."""
+        scopes = next(
+            c for c in server_config_surface() if c.name == "oidc_required_scopes"
+        )
+        assert scopes.default == ()
+
+    def test_type_name_is_the_annotation_string(self):
+        port = next(c for c in server_config_surface() if c.name == "port")
+        assert port.type_name == "int"
+
+    def test_records_are_frozen(self):
+        record = server_config_surface()[0]
+        with pytest.raises(dataclasses.FrozenInstanceError):
+            record.help = "mutated"  # type: ignore[misc]
+
+    def test_order_is_stable_under_hash_randomisation(self):
+        """Guards the generated-output byte-stability failure mode.
+
+        server_config_env_suffixes() returns a frozenset, whose iteration order
+        varies between processes because CPython randomises string hashing. The
+        surface must not inherit that.
+        """
+        program = (
+            "from fastmcp_pvl_core import server_config_surface;"
+            "print(','.join(c.suffix for c in server_config_surface()))"
+        )
+        outputs = set()
+        for seed in ("1", "2", "3"):
+            result = subprocess.run(
+                [sys.executable, "-c", program],
+                capture_output=True,
+                text=True,
+                check=True,
+                env={**os.environ, "PYTHONHASHSEED": seed},
+            )
+            outputs.add(result.stdout.strip())
+        assert len(outputs) == 1
