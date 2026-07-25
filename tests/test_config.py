@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import dataclasses
+import os
+import subprocess
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import pytest
 
 from fastmcp_pvl_core import (
+    ConfigField,
     ConfigurationError,
     ServerConfig,
     build_bearer_auth,
@@ -15,7 +20,10 @@ from fastmcp_pvl_core import (
     env,
     env_float,
     env_int,
+    server_config_env_suffixes,
+    server_config_surface,
 )
+from fastmcp_pvl_core._config import DEFAULT_BEARER_SUBJECT, _config_field_from
 
 # ---------------------------------------------------------------------------
 # Module-level fixture classes for TestDomainEnvSuffixes
@@ -462,3 +470,185 @@ class TestDomainEnvSuffixes:
         """An annotation not importable at module scope propagates as NameError."""
         with pytest.raises(NameError, match="domain_env_suffixes"):
             domain_env_suffixes(_BadRef)
+
+
+class TestServerConfigSurface:
+    def test_surface_returns_config_field_records(self):
+        assert all(isinstance(c, ConfigField) for c in server_config_surface())
+
+    def test_covers_every_field_in_declaration_order(self):
+        """Declaration order is the contract — it makes generated output stable."""
+        surface = server_config_surface()
+        assert tuple(c.name for c in surface) == tuple(
+            f.name for f in dataclasses.fields(ServerConfig)
+        )
+
+    def test_returns_eighteen_fields(self):
+        assert len(server_config_surface()) == 18
+
+    def test_suffix_is_the_upper_cased_field_name(self):
+        assert all(c.suffix == c.name.upper() for c in server_config_surface())
+
+    def test_suffixes_match_the_env_suffix_set(self):
+        """The surface and the existing frozenset describe the same 18 vars."""
+        assert {
+            c.suffix for c in server_config_surface()
+        } == server_config_env_suffixes()
+
+    def test_scalar_default_is_carried_through(self):
+        host = next(c for c in server_config_surface() if c.name == "host")
+        assert host.default == "127.0.0.1"
+
+    def test_default_factory_is_resolved_to_a_value(self):
+        """oidc_required_scopes uses default_factory=tuple; the surface reports ()."""
+        scopes = next(
+            c for c in server_config_surface() if c.name == "oidc_required_scopes"
+        )
+        assert scopes.default == ()
+
+    def test_type_name_is_the_annotation_string(self):
+        port = next(c for c in server_config_surface() if c.name == "port")
+        assert port.type_name == "int"
+
+    def test_records_are_frozen(self):
+        record = server_config_surface()[0]
+        with pytest.raises(dataclasses.FrozenInstanceError):
+            record.help = "mutated"  # type: ignore[misc]
+
+    def test_order_is_stable_under_hash_randomisation(self):
+        """Guards the generated-output byte-stability failure mode.
+
+        server_config_env_suffixes() returns a frozenset, whose iteration order
+        varies between processes because CPython randomises string hashing. The
+        surface must not inherit that.
+        """
+        program = (
+            "from fastmcp_pvl_core import server_config_surface;"
+            "print(','.join(c.suffix for c in server_config_surface()))"
+        )
+        outputs = set()
+        for seed in ("1", "2", "3"):
+            result = subprocess.run(
+                [sys.executable, "-c", program],
+                capture_output=True,
+                text=True,
+                check=True,
+                env={**os.environ, "PYTHONHASHSEED": seed},
+            )
+            outputs.add(result.stdout.strip())
+        assert len(outputs) == 1
+
+    def test_every_field_is_documented(self):
+        undocumented = [c.name for c in server_config_surface() if not c.help]
+        assert undocumented == []
+
+    def test_every_field_is_tagged(self):
+        untagged = [c.name for c in server_config_surface() if not c.tags]
+        assert untagged == []
+
+    def test_auth_mode_is_the_only_inferred_field(self):
+        """AUTH_MODE is an expert override, so the wizard offers no control for it."""
+        assert [c.name for c in server_config_surface() if c.inferred] == ["auth_mode"]
+
+    def test_inferred_field_carries_no_wizard_hints(self):
+        auth_mode = next(c for c in server_config_surface() if c.name == "auth_mode")
+        assert auth_mode.wizard == {}
+
+    def test_base_url_carries_several_tags(self):
+        """A field can honestly belong to several documentation sections."""
+        base_url = next(c for c in server_config_surface() if c.name == "base_url")
+        assert set(base_url.tags) == {"server", "oidc", "apps"}
+
+    def test_secret_fields_are_marked(self):
+        secrets = {c.suffix for c in server_config_surface() if c.wizard.get("secret")}
+        assert secrets == {
+            "BEARER_TOKEN",
+            "OIDC_CLIENT_SECRET",
+            "OIDC_JWT_SIGNING_KEY",
+        }
+
+    def test_oidc_fields_share_the_oidc_tag(self):
+        tagged = {c.suffix for c in server_config_surface() if "oidc" in c.tags}
+        assert tagged == {
+            "BASE_URL",
+            "OIDC_CONFIG_URL",
+            "OIDC_CLIENT_ID",
+            "OIDC_CLIENT_SECRET",
+            "OIDC_AUDIENCE",
+            "OIDC_REQUIRED_SCOPES",
+            "OIDC_JWT_SIGNING_KEY",
+            "OIDC_VERIFY_ACCESS_TOKEN",
+        }
+
+    def test_kv_store_url_is_readme_prominent(self):
+        """The consuming README shows a 3-row curated table; this is its core row."""
+        kv = next(c for c in server_config_surface() if c.name == "kv_store_url")
+        assert "readme" in kv.tags
+
+    def test_defaults_are_unchanged_by_the_metadata_migration(self):
+        """Behaviour guard: converting to field(default=...) must not alter values."""
+        config = ServerConfig()
+        assert config.host == "127.0.0.1"
+        assert config.port == 8000
+        assert config.transport == "stdio"
+        assert config.oidc_required_scopes == ()
+        assert config.oidc_verify_access_token is False
+        assert config.bearer_default_subject == DEFAULT_BEARER_SUBJECT
+        assert config.base_url is None
+
+    def test_unknown_wizard_string_is_rejected(self):
+        """A typo like "infered" must fail loudly, not crash on .items()."""
+
+        @dataclass(frozen=True)
+        class _BadWizard:
+            oops: str = field(default="x", metadata={"wizard": "infered"})
+
+        (bad,) = dataclasses.fields(_BadWizard)
+        with pytest.raises(ValueError, match="must be a mapping of hints"):
+            _config_field_from(bad)
+
+    def test_non_mapping_non_string_wizard_is_rejected(self):
+        """The class is "any non-mapping", not just a mistyped string."""
+
+        @dataclass(frozen=True)
+        class _BadWizard:
+            oops: str = field(default="x", metadata={"wizard": ["inferred"]})
+
+        (bad,) = dataclasses.fields(_BadWizard)
+        with pytest.raises(ValueError, match="must be a mapping of hints"):
+            _config_field_from(bad)
+
+    def test_wizard_hints_use_only_documented_keys(self):
+        """An unrecognised hint key (e.g. a typo) would be silently ignored."""
+        documented = {"group", "when", "secret", "control"}
+        offenders = {
+            c.name: sorted(set(c.wizard) - documented)
+            for c in server_config_surface()
+            if set(c.wizard) - documented
+        }
+        assert offenders == {}
+
+    def test_every_declared_default_is_unchanged(self):
+        """Full 18-field guard; a spot check would miss a silent default change."""
+        expected = {
+            "transport": "stdio",
+            "host": "127.0.0.1",
+            "port": 8000,
+            "base_url": None,
+            "bearer_token": None,
+            "oidc_config_url": None,
+            "oidc_client_id": None,
+            "oidc_client_secret": None,
+            "oidc_audience": None,
+            "oidc_required_scopes": (),
+            "oidc_jwt_signing_key": None,
+            "oidc_verify_access_token": False,
+            "kv_store_url": None,
+            "event_store_url": None,
+            "app_domain": None,
+            "auth_mode": None,
+            "bearer_tokens_file": None,
+            "bearer_default_subject": DEFAULT_BEARER_SUBJECT,
+        }
+        actual = {c.name: c.default for c in server_config_surface()}
+        assert actual == expected

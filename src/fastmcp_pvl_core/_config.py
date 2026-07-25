@@ -10,9 +10,10 @@ from __future__ import annotations
 
 import dataclasses
 import typing
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from ._env import env, env_int, parse_bool, parse_scopes
 
@@ -34,35 +35,213 @@ class ServerConfig:
     Compose into a domain config; never inherit from this class.
     """
 
-    transport: Transport = "stdio"
-    host: str = "127.0.0.1"
-    port: int = 8000
-    base_url: str | None = None
+    transport: Transport = field(
+        default="stdio",
+        metadata={
+            "help": (
+                "Transport the server speaks: ``stdio`` for local Claude "
+                "Desktop/Code, ``http`` or ``sse`` for a network server."
+            ),
+            "tags": ("server",),
+            # Emitted by a routing select in the wizard, not a free-text field.
+            "wizard": {"control": "emit"},
+        },
+    )
+    host: str = field(
+        default="127.0.0.1",
+        metadata={
+            "help": "Interface the HTTP server binds to.",
+            "tags": ("server",),
+            "wizard": {"group": "Server", "when": "server"},
+        },
+    )
+    port: int = field(
+        default=8000,
+        metadata={
+            "help": "TCP port for the HTTP server.",
+            "tags": ("server",),
+            "wizard": {"group": "Server", "when": "server"},
+        },
+    )
+    base_url: str | None = field(
+        default=None,
+        metadata={
+            "help": (
+                "Public base URL of the deployed server, e.g. "
+                "``https://mcp.example.com``. Required for OIDC. Also the "
+                "fallback source of the MCP Apps domain when ``app_domain`` "
+                "is unset."
+            ),
+            "tags": ("server", "oidc", "apps"),
+            "wizard": {"when": "server"},
+        },
+    )
 
-    bearer_token: str | None = None
+    bearer_token: str | None = field(
+        default=None,
+        metadata={
+            "help": (
+                "Single shared bearer token; enables bearer auth unless "
+                "``bearer_tokens_file`` is set, which takes precedence."
+            ),
+            "tags": ("auth", "bearer"),
+            "wizard": {"when": "bearer", "secret": True},
+        },
+    )
 
-    oidc_config_url: str | None = None
-    oidc_client_id: str | None = None
-    oidc_client_secret: str | None = None
-    oidc_audience: str | None = None
-    oidc_required_scopes: tuple[str, ...] = field(default_factory=tuple)
-    oidc_jwt_signing_key: str | None = None
-    oidc_verify_access_token: bool = False
+    oidc_config_url: str | None = field(
+        default=None,
+        metadata={
+            "help": (
+                "OIDC discovery document URL, e.g. "
+                "``https://auth.example.com/.well-known/openid-configuration``."
+            ),
+            "tags": ("auth", "oidc"),
+            "wizard": {"when": "oidc"},
+        },
+    )
+    oidc_client_id: str | None = field(
+        default=None,
+        metadata={
+            "help": "OIDC client identifier registered with the provider.",
+            "tags": ("auth", "oidc"),
+            "wizard": {"when": "oidc"},
+        },
+    )
+    oidc_client_secret: str | None = field(
+        default=None,
+        metadata={
+            "help": "OIDC client secret registered with the provider.",
+            "tags": ("auth", "oidc"),
+            "wizard": {"when": "oidc", "secret": True},
+        },
+    )
+    oidc_audience: str | None = field(
+        default=None,
+        metadata={
+            "help": (
+                "Expected ``aud`` claim; tokens issued for another audience "
+                "are rejected."
+            ),
+            "tags": ("auth", "oidc"),
+            "wizard": {"group": "Auth", "when": "oidc"},
+        },
+    )
+    oidc_required_scopes: tuple[str, ...] = field(
+        default_factory=tuple,
+        metadata={
+            "help": (
+                "Scopes a caller must present, space- or comma-separated. "
+                "Defaults to ``openid`` in oidc-proxy mode."
+            ),
+            "tags": ("auth", "oidc"),
+            "wizard": {"group": "Auth", "when": "oidc"},
+        },
+    )
+    oidc_jwt_signing_key: str | None = field(
+        default=None,
+        metadata={
+            "help": (
+                "Signing key for issued JWTs; used in oidc-proxy mode only. "
+                "When unset, the key is derived deterministically from "
+                "``oidc_client_secret``, so tokens survive a restart — but "
+                "rotating that secret invalidates every issued token. Set "
+                "this explicitly to decouple token validity from secret "
+                "rotation. Generate with ``openssl rand -hex 32``."
+            ),
+            "tags": ("auth", "oidc"),
+            "wizard": {"when": "oidc", "secret": True},
+        },
+    )
+    oidc_verify_access_token: bool = field(
+        default=False,
+        metadata={
+            "help": "Validate the access token instead of the id token.",
+            "tags": ("auth", "oidc"),
+            "wizard": {"group": "Auth", "when": "oidc"},
+        },
+    )
 
-    kv_store_url: str | None = None
-    # Legacy override, honoured by build_event_store and build_kv_store
-    # when ``kv_store_url`` is unset. Set ``kv_store_url`` instead for
-    # new deployments — a single URL drives every pvl-core subsystem
-    # that needs persistent state.
-    event_store_url: str | None = None
-    app_domain: str | None = None
+    kv_store_url: str | None = field(
+        default=None,
+        metadata={
+            "help": (
+                "Persistent-state backend URL shared by every pvl-core "
+                "subsystem that needs state. ``memory://`` is in-process and "
+                "lost on restart; ``file:///path`` persists on one server; "
+                "``redis://``, ``dynamodb://`` and ``mongodb://`` each need "
+                "their matching extra. Defaults to ``file:///data/state`` "
+                "when unset."
+            ),
+            "tags": ("persistence", "readme"),
+            "wizard": {"group": "Persistence", "when": "server"},
+        },
+    )
+    event_store_url: str | None = field(
+        default=None,
+        metadata={
+            "help": (
+                "Legacy state-backend override, honoured by "
+                "``build_event_store`` and ``build_kv_store`` only when "
+                "``kv_store_url`` is unset — it then backs every namespace, "
+                "not just HTTP resumability. Prefer ``kv_store_url`` for new "
+                "deployments."
+            ),
+            "tags": ("persistence",),
+            "wizard": {"group": "Persistence", "when": "server"},
+        },
+    )
+    app_domain: str | None = field(
+        default=None,
+        metadata={
+            "help": (
+                "MCP Apps iframe domain, used for CSP sandboxing. Overrides "
+                "the host derived from ``base_url``."
+            ),
+            "tags": ("apps",),
+            "wizard": {"group": "MCP Apps", "when": "server"},
+        },
+    )
 
-    auth_mode: str | None = None
+    auth_mode: str | None = field(
+        default=None,
+        metadata={
+            "help": (
+                "Explicit auth-mode override, accepting ``remote`` or "
+                "``oidc-proxy`` (case- and whitespace-insensitive). When "
+                "unset the mode is auto-detected from which auth variables "
+                "are set; the override exists because having all four OIDC "
+                "variables set is ambiguous between those two modes. Other "
+                "values are ignored with a warning."
+            ),
+            "tags": ("auth",),
+            "wizard": "inferred",
+        },
+    )
 
-    bearer_tokens_file: Path | None = None
-    # Subject for the single-token bearer mode; ignored when
-    # ``bearer_tokens_file`` is set (mapped mode uses per-token subjects).
-    bearer_default_subject: str = DEFAULT_BEARER_SUBJECT
+    bearer_tokens_file: Path | None = field(
+        default=None,
+        metadata={
+            "help": (
+                "Path to a TOML file mapping bearer tokens to subjects; "
+                "overrides the single-token ``bearer_token`` mode."
+            ),
+            "tags": ("auth", "bearer"),
+            "wizard": {"group": "Auth", "when": "bearer"},
+        },
+    )
+    bearer_default_subject: str = field(
+        default=DEFAULT_BEARER_SUBJECT,
+        metadata={
+            "help": (
+                "Subject assigned to the single-token bearer mode; ignored "
+                "when ``bearer_tokens_file`` is set, since mapped mode carries "
+                "per-token subjects."
+            ),
+            "tags": ("auth", "bearer"),
+            "wizard": {"group": "Auth", "when": "bearer"},
+        },
+    )
 
     def __post_init__(self) -> None:
         """Enforce the non-blank ``bearer_default_subject`` invariant.
@@ -208,6 +387,129 @@ def server_config_env_suffixes() -> frozenset[str]:
     surface.
     """
     return _SERVER_CONFIG_ENV_SUFFIXES
+
+
+@dataclass(frozen=True)
+class ConfigField:
+    """One env-configurable :class:`ServerConfig` field and its metadata.
+
+    ``help`` deliberately does **not** restate a scalar default: ``default``
+    carries it structurally, and a documentation generator renders both. The
+    one exception is ``transport``, where naming the accepted literal values is
+    the documentation.
+    """
+
+    suffix: str
+    """Env suffix, i.e. the part after ``{PREFIX}_`` — e.g. ``BASE_URL``."""
+
+    name: str
+    """Python field name — e.g. ``base_url``."""
+
+    type_name: str
+    """The annotation as written, e.g. ``str | None``."""
+
+    default: object
+    """The declared default. ``default_factory`` fields report the built value."""
+
+    help: str
+    """One-or-two-sentence description. Empty when undocumented."""
+
+    tags: tuple[str, ...]
+    """Semantic tags used to route this field into documentation sections.
+
+    Mostly semantic — core says *what* a field is about, not which file
+    documents it. One exception: ``readme`` marks a field prominent
+    enough for a landing-page summary table, which is a prominence
+    signal rather than a topic. A field may carry several tags, and
+    appearing in more than one destination is intentional.
+    """
+
+    inferred: bool
+    """True when no wizard control is offered for this field.
+
+    A wizard-presentation concern only. The variable remains
+    operator-settable and MUST still appear in env references and
+    ``.env.example`` — this flag is not a signal that the value cannot
+    be set.
+    """
+
+    wizard: Mapping[str, object]
+    """Presentation hints for a config wizard.
+
+    Recognised keys:
+
+    - ``group`` — name of the wizard's collapsed "Advanced" section.
+      Absence means the field is a primary question.
+    - ``when`` — the context in which the question applies: ``"server"``
+      for HTTP deployments, or ``"oidc"`` / ``"bearer"`` for the
+      matching auth selection (both of which also imply an HTTP
+      deployment).
+    - ``secret`` — ``True`` when the value must never appear in a
+      shareable link.
+    - ``control`` — ``"emit"`` when a routing select emits this value
+      and the field gets no question of its own.
+
+    Empty when :attr:`inferred` is True.
+    """
+
+
+def _config_field_from(f: dataclasses.Field[Any]) -> ConfigField:
+    """Build one :class:`ConfigField` record from a ``ServerConfig`` field.
+
+    Raises:
+        ValueError: If ``metadata["wizard"]`` is neither a mapping of hints
+            nor the recognised ``"inferred"`` shorthand — e.g. a typo like
+            ``"infered"``, or an accidental list. Falling through silently
+            would otherwise crash later on ``raw_wizard.items()``, since
+            only a mapping has ``.items()``.
+    """
+    if f.default is not dataclasses.MISSING:
+        default: object = f.default
+    elif f.default_factory is not dataclasses.MISSING:
+        default = f.default_factory()
+    else:  # pragma: no cover — every current field has a default
+        default = None
+
+    tags = tuple(str(tag) for tag in f.metadata.get("tags", ()))
+
+    # ``metadata={"wizard": "inferred"}`` is the shorthand for a field with
+    # no control; anything else is a mapping of presentation hints.
+    raw_wizard = f.metadata.get("wizard", {})
+    inferred = raw_wizard == "inferred"
+    wizard: dict[str, object] = {}
+    if not inferred and raw_wizard:
+        if not isinstance(raw_wizard, Mapping):
+            raise ValueError(
+                f"ServerConfig.{f.name}: metadata['wizard'] must be a "
+                f"mapping of hints or the string 'inferred'; got "
+                f"{raw_wizard!r}."
+            )
+        wizard = {str(k): v for k, v in raw_wizard.items()}
+
+    return ConfigField(
+        suffix=f.name.upper(),
+        name=f.name,
+        type_name=f.type if isinstance(f.type, str) else str(f.type),
+        default=default,
+        help=str(f.metadata.get("help", "")),
+        tags=tags,
+        inferred=inferred,
+        wizard=wizard,
+    )
+
+
+def server_config_surface() -> tuple[ConfigField, ...]:
+    """Return every :class:`ServerConfig` env field, in declaration order.
+
+    Declaration order is part of the contract: a consumer that renders this
+    tuple produces byte-identical output on every run. Prefer this over
+    :func:`server_config_env_suffixes`, which returns a ``frozenset`` whose
+    iteration order varies between processes under hash randomisation.
+
+    Covers the same 18 variables as :func:`server_config_env_suffixes`, adding
+    each field's type, default, help text, tags, and wizard hints.
+    """
+    return tuple(_config_field_from(f) for f in dataclasses.fields(ServerConfig))
 
 
 def domain_env_suffixes(config_cls: type) -> frozenset[str]:

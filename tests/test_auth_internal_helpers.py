@@ -8,7 +8,6 @@ directly, at a finer grain than the public-builder tests exercise them.
 from __future__ import annotations
 
 import logging
-import sys
 from pathlib import Path
 
 import pytest
@@ -98,9 +97,7 @@ def test_coerce_subject_empty_string_raises() -> None:
 
 def test_caveats_warns_missing_openid_scope(caplog: pytest.LogCaptureFixture) -> None:
     with caplog.at_level(logging.WARNING, logger="fastmcp_pvl_core._auth"):
-        _warn_oidc_caveats(
-            required_scopes=["email"], verify_id_token=True, signing_key="k"
-        )
+        _warn_oidc_caveats(required_scopes=["email"], verify_id_token=True)
     assert [r for r in caplog.records if "scope_warning" in r.getMessage()]
 
 
@@ -108,9 +105,7 @@ def test_caveats_no_scope_warning_when_openid_present(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     with caplog.at_level(logging.WARNING, logger="fastmcp_pvl_core._auth"):
-        _warn_oidc_caveats(
-            required_scopes=["openid"], verify_id_token=True, signing_key="k"
-        )
+        _warn_oidc_caveats(required_scopes=["openid"], verify_id_token=True)
     assert not [r for r in caplog.records if "scope_warning" in r.getMessage()]
 
 
@@ -118,40 +113,19 @@ def test_caveats_no_scope_warning_when_verifying_access_token(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     with caplog.at_level(logging.WARNING, logger="fastmcp_pvl_core._auth"):
-        _warn_oidc_caveats(
-            required_scopes=["email"], verify_id_token=False, signing_key="k"
-        )
+        _warn_oidc_caveats(required_scopes=["email"], verify_id_token=False)
     assert not [r for r in caplog.records if "scope_warning" in r.getMessage()]
 
 
-def test_caveats_warns_ephemeral_key_on_linux(
-    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+def test_caveats_no_ephemeral_warning_regardless_of_signing_key(
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
-    monkeypatch.setattr(sys, "platform", "linux")
+    """The derived signing key survives a restart (fixed-salt HKDF), so an
+    unset ``oidc_jwt_signing_key`` is not a misconfiguration and must never
+    warn — regardless of platform, since HKDF derivation is
+    platform-independent. ``_warn_oidc_caveats`` no longer accepts a
+    ``signing_key`` parameter at all.
+    """
     with caplog.at_level(logging.WARNING, logger="fastmcp_pvl_core._auth"):
-        _warn_oidc_caveats(
-            required_scopes=["openid"], verify_id_token=True, signing_key=None
-        )
-    assert [r for r in caplog.records if "ephemeral_signing_key" in r.getMessage()]
-
-
-def test_caveats_no_ephemeral_warning_when_key_set(
-    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(sys, "platform", "linux")
-    with caplog.at_level(logging.WARNING, logger="fastmcp_pvl_core._auth"):
-        _warn_oidc_caveats(
-            required_scopes=["openid"], verify_id_token=True, signing_key="k"
-        )
-    assert not [r for r in caplog.records if "ephemeral_signing_key" in r.getMessage()]
-
-
-def test_caveats_no_ephemeral_warning_off_linux(
-    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(sys, "platform", "darwin")
-    with caplog.at_level(logging.WARNING, logger="fastmcp_pvl_core._auth"):
-        _warn_oidc_caveats(
-            required_scopes=["openid"], verify_id_token=True, signing_key=None
-        )
+        _warn_oidc_caveats(required_scopes=["openid"], verify_id_token=True)
     assert not [r for r in caplog.records if "ephemeral_signing_key" in r.getMessage()]

@@ -23,10 +23,12 @@ from ._authorization import (
 )
 from ._cli import make_serve_parser, normalise_http_path
 from ._config import (
+    ConfigField,
     ServerConfig,
     Transport,
     domain_env_suffixes,
     server_config_env_suffixes,
+    server_config_surface,
 )
 from ._debug import maybe_start_debugpy
 from ._env import (
@@ -69,6 +71,7 @@ __version__ = "4.4.0"  # PSR overrides at build time
 
 __all__ = [
     "AuthMode",
+    "ConfigField",
     "ConfigurationError",
     "FetchResult",
     "IconSpec",
@@ -119,5 +122,6 @@ __all__ = [
     "register_transfer_routes",
     "resolve_auth_mode",
     "server_config_env_suffixes",
+    "server_config_surface",
     "wire_middleware_stack",
 ]
