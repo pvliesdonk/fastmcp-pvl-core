@@ -287,14 +287,11 @@ def build_bearer_auth(config: ServerConfig) -> StaticTokenVerifier | None:
     )
 
 
-def _warn_oidc_caveats(
-    *, required_scopes: list[str], verify_id_token: bool, signing_key: str | None
-) -> None:
+def _warn_oidc_caveats(*, required_scopes: list[str], verify_id_token: bool) -> None:
     """Emit operator warnings for misconfiguration-prone OIDC-proxy settings.
 
     Warns when id_token verification is on but ``openid`` is absent from
-    *required_scopes* (the id_token may never be issued), and when no JWT
-    signing key is set on Linux (tokens are invalidated on every restart).
+    *required_scopes* (the id_token may never be issued).
     """
     if verify_id_token and "openid" not in required_scopes:
         logger.warning(
@@ -303,14 +300,6 @@ def _warn_oidc_caveats(
             "the id_token may be absent from the token response; "
             "add 'openid' to required_scopes or set "
             "oidc_verify_access_token=True"
-        )
-
-    if signing_key is None and sys.platform.startswith("linux"):
-        logger.warning(
-            "oidc_proxy_auth_ephemeral_signing_key "
-            "oidc_jwt_signing_key=<unset> — tokens will be invalidated on "
-            "every server restart; configure OIDC_JWT_SIGNING_KEY in "
-            "production"
         )
 
 
@@ -365,7 +354,6 @@ def build_oidc_proxy_auth(config: ServerConfig) -> OIDCProxy | None:
     _warn_oidc_caveats(
         required_scopes=required_scopes,
         verify_id_token=verify_id_token,
-        signing_key=config.oidc_jwt_signing_key,
     )
 
     from fastmcp.server.auth.oidc_proxy import OIDCProxy

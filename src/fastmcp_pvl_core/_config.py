@@ -130,7 +130,10 @@ class ServerConfig:
     oidc_required_scopes: tuple[str, ...] = field(
         default_factory=tuple,
         metadata={
-            "help": "Scopes a caller must present, space- or comma-separated.",
+            "help": (
+                "Scopes a caller must present, space- or comma-separated. "
+                "Defaults to ``openid`` in oidc-proxy mode."
+            ),
             "tags": ("auth", "oidc"),
             "wizard": {"group": "Auth", "when": "oidc"},
         },
@@ -139,10 +142,12 @@ class ServerConfig:
         default=None,
         metadata={
             "help": (
-                "Signing key for issued JWTs. Strongly recommended on "
-                "Linux/Docker — without it the generated fallback is "
-                "ephemeral and invalidates every token on restart. Generate "
-                "with ``openssl rand -hex 32``."
+                "Signing key for issued JWTs; used in oidc-proxy mode only. "
+                "When unset, the key is derived deterministically from "
+                "``oidc_client_secret``, so tokens survive a restart — but "
+                "rotating that secret invalidates every issued token. Set "
+                "this explicitly to decouple token validity from secret "
+                "rotation. Generate with ``openssl rand -hex 32``."
             ),
             "tags": ("auth", "oidc"),
             "wizard": {"when": "oidc", "secret": True},
@@ -165,7 +170,8 @@ class ServerConfig:
                 "subsystem that needs state. ``memory://`` is in-process and "
                 "lost on restart; ``file:///path`` persists on one server; "
                 "``redis://``, ``dynamodb://`` and ``mongodb://`` each need "
-                "their matching extra."
+                "their matching extra. Defaults to ``file:///data/state`` "
+                "when unset."
             ),
             "tags": ("persistence", "readme"),
             "wizard": {"group": "Persistence", "when": "server"},
@@ -201,8 +207,12 @@ class ServerConfig:
         default=None,
         metadata={
             "help": (
-                "Resolved authentication mode. Inferred from which auth "
-                "variables are set, so no dedicated control is offered for it."
+                "Explicit auth-mode override, accepting ``remote`` or "
+                "``oidc-proxy`` (case- and whitespace-insensitive). When "
+                "unset the mode is auto-detected from which auth variables "
+                "are set; the override exists because having all four OIDC "
+                "variables set is ambiguous between those two modes. Other "
+                "values are ignored with a warning."
             ),
             "tags": ("auth",),
             "wizard": "inferred",
@@ -407,29 +417,51 @@ class ConfigField:
     tags: tuple[str, ...]
     """Semantic tags used to route this field into documentation sections.
 
-    Layout-agnostic by design: core says *what* a field is about, never which
-    file it belongs in. A field may carry several tags, and appearing in more
-    than one destination is intentional.
+    Mostly semantic — core says *what* a field is about, not which file
+    documents it. One exception: ``readme`` marks a field prominent
+    enough for a landing-page summary table, which is a prominence
+    signal rather than a topic. A field may carry several tags, and
+    appearing in more than one destination is intentional.
     """
 
     inferred: bool
-    """True when the value is derived rather than set directly, so no control
-    should be offered for it."""
+    """True when no wizard control is offered for this field.
+
+    A wizard-presentation concern only. The variable remains
+    operator-settable and MUST still appear in env references and
+    ``.env.example`` — this flag is not a signal that the value cannot
+    be set.
+    """
 
     wizard: Mapping[str, object]
-    """Presentation hints for a config wizard — e.g. ``group``, ``secret``,
-    ``when``. Empty for inferred fields."""
+    """Presentation hints for a config wizard.
+
+    Recognised keys:
+
+    - ``group`` — name of the wizard's collapsed "Advanced" section.
+      Absence means the field is a primary question.
+    - ``when`` — the context in which the question applies: ``"server"``
+      for HTTP deployments, or ``"oidc"`` / ``"bearer"`` for the
+      matching auth selection (both of which also imply an HTTP
+      deployment).
+    - ``secret`` — ``True`` when the value must never appear in a
+      shareable link.
+    - ``control`` — ``"emit"`` when a routing select emits this value
+      and the field gets no question of its own.
+
+    Empty when :attr:`inferred` is True.
+    """
 
 
 def _config_field_from(f: dataclasses.Field[Any]) -> ConfigField:
     """Build one :class:`ConfigField` record from a ``ServerConfig`` field.
 
     Raises:
-        ValueError: If ``metadata["wizard"]`` is a string other than the
-            recognised ``"inferred"`` shorthand — e.g. a typo like
-            ``"infered"``. Falling through silently would otherwise crash
-            later on ``raw_wizard.items()`` since a plain string has no
-            ``.items()``.
+        ValueError: If ``metadata["wizard"]`` is neither a mapping of hints
+            nor the recognised ``"inferred"`` shorthand — e.g. a typo like
+            ``"infered"``, or an accidental list. Falling through silently
+            would otherwise crash later on ``raw_wizard.items()``, since
+            only a mapping has ``.items()``.
     """
     if f.default is not dataclasses.MISSING:
         default: object = f.default
@@ -446,11 +478,11 @@ def _config_field_from(f: dataclasses.Field[Any]) -> ConfigField:
     inferred = raw_wizard == "inferred"
     wizard: dict[str, object] = {}
     if not inferred and raw_wizard:
-        if isinstance(raw_wizard, str):
+        if not isinstance(raw_wizard, Mapping):
             raise ValueError(
-                f"ServerConfig.{f.name}: metadata['wizard'] is the string "
-                f"{raw_wizard!r}; the only accepted string form is "
-                f"'inferred'. Use a mapping of hints for anything else."
+                f"ServerConfig.{f.name}: metadata['wizard'] must be a "
+                f"mapping of hints or the string 'inferred'; got "
+                f"{raw_wizard!r}."
             )
         wizard = {str(k): v for k, v in raw_wizard.items()}
 

@@ -547,7 +547,7 @@ class TestServerConfigSurface:
         assert untagged == []
 
     def test_auth_mode_is_the_only_inferred_field(self):
-        """AUTH_MODE is derived from which auth vars are set, so it gets no control."""
+        """AUTH_MODE is an expert override, so the wizard offers no control for it."""
         assert [c.name for c in server_config_surface() if c.inferred] == ["auth_mode"]
 
     def test_inferred_field_carries_no_wizard_hints(self):
@@ -604,5 +604,51 @@ class TestServerConfigSurface:
             oops: str = field(default="x", metadata={"wizard": "infered"})
 
         (bad,) = dataclasses.fields(_BadWizard)
-        with pytest.raises(ValueError, match="only accepted string form"):
+        with pytest.raises(ValueError, match="must be a mapping of hints"):
             _config_field_from(bad)
+
+    def test_non_mapping_non_string_wizard_is_rejected(self):
+        """The class is "any non-mapping", not just a mistyped string."""
+
+        @dataclass(frozen=True)
+        class _BadWizard:
+            oops: str = field(default="x", metadata={"wizard": ["inferred"]})
+
+        (bad,) = dataclasses.fields(_BadWizard)
+        with pytest.raises(ValueError, match="must be a mapping of hints"):
+            _config_field_from(bad)
+
+    def test_wizard_hints_use_only_documented_keys(self):
+        """An unrecognised hint key (e.g. a typo) would be silently ignored."""
+        documented = {"group", "when", "secret", "control"}
+        offenders = {
+            c.name: sorted(set(c.wizard) - documented)
+            for c in server_config_surface()
+            if set(c.wizard) - documented
+        }
+        assert offenders == {}
+
+    def test_every_declared_default_is_unchanged(self):
+        """Full 18-field guard; a spot check would miss a silent default change."""
+        expected = {
+            "transport": "stdio",
+            "host": "127.0.0.1",
+            "port": 8000,
+            "base_url": None,
+            "bearer_token": None,
+            "oidc_config_url": None,
+            "oidc_client_id": None,
+            "oidc_client_secret": None,
+            "oidc_audience": None,
+            "oidc_required_scopes": (),
+            "oidc_jwt_signing_key": None,
+            "oidc_verify_access_token": False,
+            "kv_store_url": None,
+            "event_store_url": None,
+            "app_domain": None,
+            "auth_mode": None,
+            "bearer_tokens_file": None,
+            "bearer_default_subject": DEFAULT_BEARER_SUBJECT,
+        }
+        actual = {c.name: c.default for c in server_config_surface()}
+        assert actual == expected

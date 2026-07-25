@@ -121,15 +121,17 @@ class TestBuildOIDCProxyAuth:
             for r in caplog.records
         )
 
-    def test_linux_ephemeral_key_warning(self, caplog: pytest.LogCaptureFixture):
+    def test_no_ephemeral_key_warning_when_signing_key_unset(
+        self, caplog: pytest.LogCaptureFixture
+    ):
+        """The derived signing key survives a restart (fixed-salt HKDF), so
+        leaving ``oidc_jwt_signing_key`` unset is not a misconfiguration and
+        must never warn, on any platform.
+        """
         mock_cls = MagicMock()
-        with (
-            patch("fastmcp.server.auth.oidc_proxy.OIDCProxy", mock_cls),
-            patch("fastmcp_pvl_core._auth.sys") as mock_sys,
-        ):
-            mock_sys.platform = "linux"
+        with patch("fastmcp.server.auth.oidc_proxy.OIDCProxy", mock_cls):
             build_oidc_proxy_auth(_oidc_config())
-        assert any(
+        assert not any(
             "ephemeral_signing_key" in r.message and r.levelname == "WARNING"
             for r in caplog.records
         )
