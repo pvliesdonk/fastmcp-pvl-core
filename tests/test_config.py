@@ -23,6 +23,7 @@ from fastmcp_pvl_core import (
     server_config_env_suffixes,
     server_config_surface,
 )
+from fastmcp_pvl_core._config import DEFAULT_BEARER_SUBJECT
 
 # ---------------------------------------------------------------------------
 # Module-level fixture classes for TestDomainEnvSuffixes
@@ -536,3 +537,61 @@ class TestServerConfigSurface:
             )
             outputs.add(result.stdout.strip())
         assert len(outputs) == 1
+
+    def test_every_field_is_documented(self):
+        undocumented = [c.name for c in server_config_surface() if not c.help]
+        assert undocumented == []
+
+    def test_every_field_is_tagged(self):
+        untagged = [c.name for c in server_config_surface() if not c.tags]
+        assert untagged == []
+
+    def test_auth_mode_is_the_only_inferred_field(self):
+        """AUTH_MODE is derived from which auth vars are set, so it gets no control."""
+        assert [c.name for c in server_config_surface() if c.inferred] == ["auth_mode"]
+
+    def test_inferred_field_carries_no_wizard_hints(self):
+        auth_mode = next(c for c in server_config_surface() if c.name == "auth_mode")
+        assert auth_mode.wizard == {}
+
+    def test_base_url_carries_several_tags(self):
+        """A field can honestly belong to several documentation sections."""
+        base_url = next(c for c in server_config_surface() if c.name == "base_url")
+        assert set(base_url.tags) == {"server", "oidc", "apps"}
+
+    def test_secret_fields_are_marked(self):
+        secrets = {c.suffix for c in server_config_surface() if c.wizard.get("secret")}
+        assert secrets == {
+            "BEARER_TOKEN",
+            "OIDC_CLIENT_SECRET",
+            "OIDC_JWT_SIGNING_KEY",
+        }
+
+    def test_oidc_fields_share_the_oidc_tag(self):
+        tagged = {c.suffix for c in server_config_surface() if "oidc" in c.tags}
+        assert tagged == {
+            "BASE_URL",
+            "OIDC_CONFIG_URL",
+            "OIDC_CLIENT_ID",
+            "OIDC_CLIENT_SECRET",
+            "OIDC_AUDIENCE",
+            "OIDC_REQUIRED_SCOPES",
+            "OIDC_JWT_SIGNING_KEY",
+            "OIDC_VERIFY_ACCESS_TOKEN",
+        }
+
+    def test_kv_store_url_is_readme_prominent(self):
+        """The consuming README shows a 3-row curated table; this is its core row."""
+        kv = next(c for c in server_config_surface() if c.name == "kv_store_url")
+        assert "readme" in kv.tags
+
+    def test_defaults_are_unchanged_by_the_metadata_migration(self):
+        """Behaviour guard: converting to field(default=...) must not alter values."""
+        config = ServerConfig()
+        assert config.host == "127.0.0.1"
+        assert config.port == 8000
+        assert config.transport == "stdio"
+        assert config.oidc_required_scopes == ()
+        assert config.oidc_verify_access_token is False
+        assert config.bearer_default_subject == DEFAULT_BEARER_SUBJECT
+        assert config.base_url is None

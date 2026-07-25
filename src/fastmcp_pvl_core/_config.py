@@ -35,35 +35,195 @@ class ServerConfig:
     Compose into a domain config; never inherit from this class.
     """
 
-    transport: Transport = "stdio"
-    host: str = "127.0.0.1"
-    port: int = 8000
-    base_url: str | None = None
+    transport: Transport = field(
+        default="stdio",
+        metadata={
+            "help": (
+                "Transport the server speaks: ``stdio`` for local Claude "
+                "Desktop/Code, ``http`` or ``sse`` for a network server."
+            ),
+            "tags": ("server",),
+            # Emitted by a routing select in the wizard, not a free-text field.
+            "wizard": {"control": "emit"},
+        },
+    )
+    host: str = field(
+        default="127.0.0.1",
+        metadata={
+            "help": "Interface the HTTP server binds to.",
+            "tags": ("server",),
+            "wizard": {"group": "Server", "when": "server"},
+        },
+    )
+    port: int = field(
+        default=8000,
+        metadata={
+            "help": "TCP port for the HTTP server.",
+            "tags": ("server",),
+            "wizard": {"group": "Server", "when": "server"},
+        },
+    )
+    base_url: str | None = field(
+        default=None,
+        metadata={
+            "help": (
+                "Public base URL of the deployed server, e.g. "
+                "``https://mcp.example.com``. Required for OIDC and for MCP "
+                "Apps resource URLs."
+            ),
+            "tags": ("server", "oidc", "apps"),
+            "wizard": {"when": "server"},
+        },
+    )
 
-    bearer_token: str | None = None
+    bearer_token: str | None = field(
+        default=None,
+        metadata={
+            "help": (
+                "Single shared bearer token; any non-empty value enables bearer auth."
+            ),
+            "tags": ("auth", "bearer"),
+            "wizard": {"when": "bearer", "secret": True},
+        },
+    )
 
-    oidc_config_url: str | None = None
-    oidc_client_id: str | None = None
-    oidc_client_secret: str | None = None
-    oidc_audience: str | None = None
-    oidc_required_scopes: tuple[str, ...] = field(default_factory=tuple)
-    oidc_jwt_signing_key: str | None = None
-    oidc_verify_access_token: bool = False
+    oidc_config_url: str | None = field(
+        default=None,
+        metadata={
+            "help": (
+                "OIDC discovery document URL, e.g. "
+                "``https://auth.example.com/.well-known/openid-configuration``."
+            ),
+            "tags": ("auth", "oidc"),
+            "wizard": {"when": "oidc"},
+        },
+    )
+    oidc_client_id: str | None = field(
+        default=None,
+        metadata={
+            "help": "OIDC client identifier registered with the provider.",
+            "tags": ("auth", "oidc"),
+            "wizard": {"when": "oidc"},
+        },
+    )
+    oidc_client_secret: str | None = field(
+        default=None,
+        metadata={
+            "help": "OIDC client secret registered with the provider.",
+            "tags": ("auth", "oidc"),
+            "wizard": {"when": "oidc", "secret": True},
+        },
+    )
+    oidc_audience: str | None = field(
+        default=None,
+        metadata={
+            "help": (
+                "Expected ``aud`` claim; tokens issued for another audience "
+                "are rejected."
+            ),
+            "tags": ("auth", "oidc"),
+            "wizard": {"group": "Auth", "when": "oidc"},
+        },
+    )
+    oidc_required_scopes: tuple[str, ...] = field(
+        default_factory=tuple,
+        metadata={
+            "help": "Comma-separated scopes a caller must present to be authorised.",
+            "tags": ("auth", "oidc"),
+            "wizard": {"group": "Auth", "when": "oidc"},
+        },
+    )
+    oidc_jwt_signing_key: str | None = field(
+        default=None,
+        metadata={
+            "help": (
+                "Signing key for issued JWTs. Required on Linux/Docker — the "
+                "generated fallback is ephemeral and invalidates every token "
+                "on restart. Generate with ``openssl rand -hex 32``."
+            ),
+            "tags": ("auth", "oidc"),
+            "wizard": {"when": "oidc", "secret": True},
+        },
+    )
+    oidc_verify_access_token: bool = field(
+        default=False,
+        metadata={
+            "help": "Validate the access token instead of the id token.",
+            "tags": ("auth", "oidc"),
+            "wizard": {"group": "Auth", "when": "oidc"},
+        },
+    )
 
-    kv_store_url: str | None = None
-    # Legacy override, honoured by build_event_store and build_kv_store
-    # when ``kv_store_url`` is unset. Set ``kv_store_url`` instead for
-    # new deployments — a single URL drives every pvl-core subsystem
-    # that needs persistent state.
-    event_store_url: str | None = None
-    app_domain: str | None = None
+    kv_store_url: str | None = field(
+        default=None,
+        metadata={
+            "help": (
+                "Persistent-state backend URL for pvl-core subsystems: "
+                "``file:///path`` survives restarts, ``memory://`` is "
+                "ephemeral and for development only."
+            ),
+            "tags": ("persistence", "readme"),
+            "wizard": {"group": "Persistence", "when": "server"},
+        },
+    )
+    event_store_url: str | None = field(
+        default=None,
+        metadata={
+            "help": (
+                "Legacy override for HTTP resumability, honoured by "
+                "``build_event_store`` and ``build_kv_store`` only when "
+                "``kv_store_url`` is unset. Prefer ``kv_store_url`` for new "
+                "deployments — a single URL drives every pvl-core subsystem "
+                "that needs persistent state."
+            ),
+            "tags": ("persistence",),
+            "wizard": {"group": "Persistence", "when": "server"},
+        },
+    )
+    app_domain: str | None = field(
+        default=None,
+        metadata={
+            "help": "Public domain that serves MCP Apps UI resources.",
+            "tags": ("apps",),
+            "wizard": {"group": "MCP Apps", "when": "server"},
+        },
+    )
 
-    auth_mode: str | None = None
+    auth_mode: str | None = field(
+        default=None,
+        metadata={
+            "help": (
+                "Resolved authentication mode. Inferred from which auth "
+                "variables are set, so no dedicated control is offered for it."
+            ),
+            "tags": ("auth",),
+            "wizard": "inferred",
+        },
+    )
 
-    bearer_tokens_file: Path | None = None
-    # Subject for the single-token bearer mode; ignored when
-    # ``bearer_tokens_file`` is set (mapped mode uses per-token subjects).
-    bearer_default_subject: str = DEFAULT_BEARER_SUBJECT
+    bearer_tokens_file: Path | None = field(
+        default=None,
+        metadata={
+            "help": (
+                "Path to a TOML file mapping bearer tokens to subjects; "
+                "overrides the single-token ``bearer_token`` mode."
+            ),
+            "tags": ("auth", "bearer"),
+            "wizard": {"group": "Auth", "when": "bearer"},
+        },
+    )
+    bearer_default_subject: str = field(
+        default=DEFAULT_BEARER_SUBJECT,
+        metadata={
+            "help": (
+                "Subject assigned to the single-token bearer mode; ignored "
+                "when ``bearer_tokens_file`` is set, since mapped mode carries "
+                "per-token subjects."
+            ),
+            "tags": ("auth", "bearer"),
+            "wizard": {"group": "Auth", "when": "bearer"},
+        },
+    )
 
     def __post_init__(self) -> None:
         """Enforce the non-blank ``bearer_default_subject`` invariant.
