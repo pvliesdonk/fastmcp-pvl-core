@@ -16,7 +16,7 @@ Intra-package imports stay relative so a fold-in is a directory rename.
 from __future__ import annotations
 
 import dataclasses
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from math import isfinite
 
 from .._env import env_float, env_int
@@ -47,22 +47,65 @@ class TransferConfig:
         max_upload_bytes: Per-upload size cap.
     """
 
-    ttl_default_s: float = _DEFAULT_TTL_DEFAULT_S
-    ttl_max_s: float = _DEFAULT_TTL_MAX_S
-    grace_ttl_s: float = _DEFAULT_GRACE_TTL_S
-    lease_s: float = _DEFAULT_LEASE_S
-    max_upload_bytes: int = _DEFAULT_MAX_UPLOAD_BYTES
+    ttl_default_s: float = field(
+        default=_DEFAULT_TTL_DEFAULT_S,
+        metadata={
+            "help": (
+                "Link lifetime in seconds when the caller requests no explicit TTL."
+            ),
+            "tags": ("transfer",),
+            "wizard": {"group": "Transfer"},
+        },
+    )
+    ttl_max_s: float = field(
+        default=_DEFAULT_TTL_MAX_S,
+        metadata={
+            "help": ("Ceiling in seconds a caller-requested link TTL is clamped to."),
+            "tags": ("transfer",),
+            "wizard": {"group": "Transfer"},
+        },
+    )
+    grace_ttl_s: float = field(
+        default=_DEFAULT_GRACE_TTL_S,
+        metadata={
+            "help": (
+                "Post-success grace window in seconds: a served token's TTL "
+                "shrinks to this so a stalled transfer can retry within it."
+            ),
+            "tags": ("transfer",),
+            "wizard": {"group": "Transfer"},
+        },
+    )
+    lease_s: float = field(
+        default=_DEFAULT_LEASE_S,
+        metadata={
+            "help": (
+                "Crashed-handler reclaim window in seconds for an in-flight "
+                "reservation."
+            ),
+            "tags": ("transfer",),
+            "wizard": {"group": "Transfer"},
+        },
+    )
+    max_upload_bytes: int = field(
+        default=_DEFAULT_MAX_UPLOAD_BYTES,
+        metadata={
+            "help": "Maximum size in bytes of a single upload.",
+            "tags": ("transfer",),
+            "wizard": {"group": "Transfer"},
+        },
+    )
 
     def __post_init__(self) -> None:
         # Iterate the declared fields (not a hand-maintained list) so a new
         # numeric field is covered without editing this loop. Every field is a
         # positive, finite number; a non-numeric field must not be added without
         # extending this check (``isfinite`` / ``> 0`` assume a real number).
-        for field in dataclasses.fields(self):
-            value = getattr(self, field.name)
+        for f in dataclasses.fields(self):
+            value = getattr(self, f.name)
             if not isfinite(value) or value <= 0:
                 raise ConfigurationError(
-                    f"TransferConfig.{field.name} must be a positive, finite "
+                    f"TransferConfig.{f.name} must be a positive, finite "
                     f"number, got {value}"
                 )
         if self.ttl_default_s > self.ttl_max_s:
