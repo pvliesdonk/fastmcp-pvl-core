@@ -83,6 +83,30 @@ jobs:
           name: dist
           path: dist/
 
+      # Runs last, after the build/upload/publish path, and is non-blocking:
+      # PSR bumps pyproject/__init__ and commits but never re-locks, so
+      # uv.lock's own package entry lags one version behind after every
+      # release. Re-lock here — uv is installed in this job, whereas PSR's own
+      # container has no uv, which is why it cannot do this itself — and commit
+      # the single changed line. ``[skip ci]`` keeps this follow-up commit from
+      # re-triggering CI. ``continue-on-error`` ensures a git-push hiccup on
+      # this dev-convenience sync (uv.lock is not shipped in the wheel) never
+      # fails an already-tagged release nor blocks the dependent PyPI publish.
+      - name: Sync uv.lock to the released version
+        if: steps.release.outputs.released == 'true'
+        continue-on-error: true
+        run: |
+          uv lock
+          if git diff --quiet -- uv.lock; then
+            echo "uv.lock already in sync with the released version."
+          else
+            git config user.name "github-actions"
+            git config user.email "actions@users.noreply.github.com"
+            git add uv.lock
+            git commit -m "chore: sync uv.lock to released version [skip ci]"
+            git push || echo "::warning::uv.lock push failed; run 'uv lock' and commit it manually."
+          fi
+
     outputs:
       released: ${{ steps.release.outputs.released }}
       version: ${{ steps.release.outputs.version }}
