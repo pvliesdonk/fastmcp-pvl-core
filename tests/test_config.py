@@ -203,6 +203,58 @@ class _ReqSec:
         return cls(endpoint=env(prefix, "REQ_ENDPOINT", "fallback"))
 
 
+# ---------------------------------------------------------------------------
+# Fixtures for the field-name resolution fallback (issue #243): reads consumed
+# via a local before cls(...) are not keyword-mapped, but a top-level field
+# whose name.upper() equals the suffix must still carry its metadata.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class _LocalRead:
+    read_only: bool = field(
+        default=False,
+        metadata={"help": "Read-only mode.", "tags": ("mode",)},
+    )
+    api_key: str | None = field(
+        default=None,
+        metadata={"help": "API key.", "tags": ("auth",), "wizard": {"secret": True}},
+    )
+
+    @classmethod
+    def from_env(cls, prefix: str = "X") -> _LocalRead:
+        # Both reads land in a local first, so neither cls(...) keyword carries
+        # the literal; only the name fallback can attach their metadata.
+        read_only_raw = env(prefix, "READ_ONLY")
+        api_key = env(prefix, "API_KEY")
+        return cls(read_only=bool(read_only_raw), api_key=api_key)
+
+
+@dataclass(frozen=True)
+class _TwoLiteralKeyword:
+    host: str = field(default="", metadata={"help": "Host.", "tags": ("net",)})
+    port: str = field(default="", metadata={"help": "Port.", "tags": ("net",)})
+    addr: str = field(default="", metadata={"help": "Combined.", "tags": ("net",)})
+
+    @classmethod
+    def from_env(cls, prefix: str = "X") -> _TwoLiteralKeyword:
+        # Two literals in one keyword -> not keyword-mapped; each resolves by
+        # field name instead.
+        return cls(addr=f"{env(prefix, 'HOST')}:{env(prefix, 'PORT')}")
+
+
+@dataclass(frozen=True)
+class _SectionLocalRead:
+    # A section-style field: its read carries a section prefix, so the prefixed
+    # suffix is not name.upper() of any field. Read via a local -> unresolved.
+    ttl_s: float = field(default=1.0, metadata={"help": "TTL.", "tags": ("sec",)})
+
+    @classmethod
+    def from_env(cls, prefix: str = "X") -> _SectionLocalRead:
+        raw = env(prefix, "SECTION_TTL_S")
+        return cls(ttl_s=float(raw) if raw else 1.0)
+
+
 class TestServerConfigDefaults:
     def test_default_transport_is_stdio(self):
         config = ServerConfig()
@@ -645,6 +697,67 @@ class TestDomainEnvSurface:
             )
             outputs.add(result.stdout.strip())
         assert outputs == {"LABEL,META_TOKEN,META_COUNT"}
+
+
+class TestDomainEnvSurfaceNameFallback:
+    """Issue #243: a read consumed via a local (or assembled from several reads)
+    is not keyword-mapped, but a field whose name.upper() equals the suffix must
+    still carry its metadata — restoring the pre-4.6 field-name resolution."""
+
+    def test_local_read_resolves_to_its_field(self) -> None:
+        by_suffix = {v.suffix: v for v in domain_env_surface(_LocalRead)}
+        read_only = by_suffix["READ_ONLY"]
+        assert read_only.name == "read_only"
+        assert read_only.help == "Read-only mode."
+        assert read_only.tags == ("mode",)
+        assert read_only.required is False
+
+    def test_secret_wizard_hint_survives_the_local_read(self) -> None:
+        """The regression lost isSecret masking on API keys; it must be back."""
+        api_key = next(
+            v for v in domain_env_surface(_LocalRead) if v.suffix == "API_KEY"
+        )
+        assert api_key.name == "api_key"
+        assert api_key.wizard == {"secret": True}
+
+    def test_suffixes_still_match_the_frozenset_gate(self) -> None:
+        assert {
+            v.suffix for v in domain_env_surface(_LocalRead)
+        } == domain_env_suffixes(_LocalRead)
+
+    def test_keyword_mapping_still_wins_when_present(self) -> None:
+        """Inline reads keep their keyword resolution; the fallback is a fallback."""
+        endpoint = next(
+            v for v in domain_env_surface(_ReqSec) if v.suffix == "REQ_ENDPOINT"
+        )
+        assert endpoint.name == "endpoint"
+        assert endpoint.required is True
+
+    def test_two_literals_in_one_keyword_resolve_by_field_name(self) -> None:
+        """A keyword with two literals is not keyword-mapped; each suffix falls
+        back to its same-named field (open question 1 in the issue)."""
+        by_suffix = {v.suffix: v for v in domain_env_surface(_TwoLiteralKeyword)}
+        assert by_suffix["HOST"].name == "host"
+        assert by_suffix["HOST"].help == "Host."
+        assert by_suffix["PORT"].name == "port"
+        assert by_suffix["PORT"].help == "Port."
+
+    def test_section_field_read_via_local_stays_unresolved(self) -> None:
+        """A prefixed section suffix does not equal name.upper() of any field, so
+        a section field read via a local stays name=None (documented boundary)."""
+        ttl = next(
+            v
+            for v in domain_env_surface(_SectionLocalRead)
+            if v.suffix == "SECTION_TTL_S"
+        )
+        assert ttl.name is None
+        assert ttl.help == ""
+        assert ttl.required is False
+
+    def test_throwaway_read_with_no_matching_field_stays_none(self) -> None:
+        """The fallback must not invent a field: _Composed's throwaway reads have
+        no same-named field, so they remain name=None as before."""
+        assert all(v.name is None for v in domain_env_surface(_Composed))
 
 
 class TestServerConfigSurface:
