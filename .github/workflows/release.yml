@@ -65,6 +65,26 @@ jobs:
           prerelease: ${{ inputs.prerelease }}
           prerelease_token: rc
 
+      - name: Sync uv.lock to the released version
+        # PSR bumps pyproject/__init__ and commits, but it never re-locks, so
+        # uv.lock's own package entry lags one version behind after every
+        # release. Re-lock here — uv is installed in this job, whereas PSR's
+        # own container has no uv, which is why it cannot do this itself — and
+        # commit the single changed line. ``[skip ci]`` keeps this follow-up
+        # commit from re-triggering the CI workflow.
+        if: steps.release.outputs.released == 'true'
+        run: |
+          uv lock
+          if git diff --quiet -- uv.lock; then
+            echo "uv.lock already in sync with the released version."
+          else
+            git config user.name "github-actions"
+            git config user.email "actions@users.noreply.github.com"
+            git add uv.lock
+            git commit -m "chore: sync uv.lock to released version [skip ci]"
+            git push
+          fi
+
       - name: Build package
         if: steps.release.outputs.released == 'true'
         run: uv build
