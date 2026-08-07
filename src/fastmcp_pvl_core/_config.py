@@ -8,6 +8,7 @@ MCP Apps domain.
 
 from __future__ import annotations
 
+import ast
 import dataclasses
 import typing
 from collections.abc import Mapping
@@ -512,6 +513,33 @@ def server_config_surface() -> tuple[ConfigField, ...]:
     return tuple(_config_field_from(f) for f in dataclasses.fields(ServerConfig))
 
 
+_ENV_READ_FUNCS = frozenset({"env", "env_int", "env_float"})
+
+
+def _literal_env_reads(node: ast.AST) -> list[tuple[str, int, int]]:
+    """Return ``(suffix, lineno, col)`` for each literal env read under *node*.
+
+    Walks *node* for unqualified ``env``/``env_int``/``env_float`` calls whose
+    suffix argument is a string literal. Shared by :func:`domain_env_suffixes`
+    and :func:`domain_env_surface` so both scans recognise exactly the same
+    reads; a renamed import, an attribute-form call, or a variable/keyword-form
+    suffix is invisible to either. Position is included so a consumer that wants
+    deterministic ordering can sort by it; the suffix-only caller ignores it.
+    """
+    out: list[tuple[str, int, int]] = []
+    for n in ast.walk(node):
+        if (
+            isinstance(n, ast.Call)
+            and isinstance(n.func, ast.Name)
+            and n.func.id in _ENV_READ_FUNCS
+            and len(n.args) >= 2
+            and isinstance(n.args[1], ast.Constant)
+            and isinstance(n.args[1].value, str)
+        ):
+            out.append((n.args[1].value, n.lineno, n.col_offset))
+    return out
+
+
 def domain_env_suffixes(config_cls: type) -> frozenset[str]:
     """Return the ``{PREFIX}_``-stripped env suffixes a domain config reads.
 
@@ -556,7 +584,6 @@ def domain_env_suffixes(config_cls: type) -> frozenset[str]:
             is not defined at module scope, or contains a broken forward
             reference.
     """
-    import ast
     import inspect
     import textwrap
 
@@ -567,7 +594,6 @@ def domain_env_suffixes(config_cls: type) -> frozenset[str]:
             f"domain_env_suffixes: expected a dataclass type, got {config_cls!r}"
         )
 
-    read_funcs = {"env", "env_int", "env_float"}
     found: set[str] = set()
     visited: set[type] = set()
 
@@ -581,16 +607,8 @@ def domain_env_suffixes(config_cls: type) -> frozenset[str]:
                 f"domain_env_suffixes: cannot read source for "
                 f"{cls.__qualname__}.from_env: {exc}"
             ) from exc
-        for node in ast.walk(ast.parse(src)):
-            if (
-                isinstance(node, ast.Call)
-                and isinstance(node.func, ast.Name)
-                and node.func.id in read_funcs
-                and len(node.args) >= 2
-                and isinstance(node.args[1], ast.Constant)
-                and isinstance(node.args[1].value, str)
-            ):
-                found.add(node.args[1].value)
+        for suffix, _lineno, _col in _literal_env_reads(ast.parse(src)):
+            found.add(suffix)
 
     def _visit(cls: type) -> None:
         if cls in visited or cls is ServerConfig or not dataclasses.is_dataclass(cls):
@@ -776,7 +794,6 @@ def domain_env_surface(config_cls: type) -> tuple[DomainEnvVar, ...]:
         ValueError: If a resolved field's ``metadata["wizard"]`` is malformed
             (see :func:`_config_field_from`).
     """
-    import ast
     import inspect
     import textwrap
 
@@ -785,31 +802,18 @@ def domain_env_surface(config_cls: type) -> tuple[DomainEnvVar, ...]:
             f"domain_env_surface: expected a dataclass type, got {config_cls!r}"
         )
 
-    read_funcs = {"env", "env_int", "env_float"}
     records: list[DomainEnvVar] = []
     visited: set[type] = set()
     seen: set[tuple[str, str]] = set()
-
-    def _literal_reads(node: ast.AST) -> list[tuple[str, int, int]]:
-        """Every ``(suffix, lineno, col)`` for a literal env read under *node*."""
-        out: list[tuple[str, int, int]] = []
-        for n in ast.walk(node):
-            if (
-                isinstance(n, ast.Call)
-                and isinstance(n.func, ast.Name)
-                and n.func.id in read_funcs
-                and len(n.args) >= 2
-                and isinstance(n.args[1], ast.Constant)
-                and isinstance(n.args[1].value, str)
-            ):
-                out.append((n.args[1].value, n.lineno, n.col_offset))
-        return out
 
     def _field_by_suffix(tree: ast.AST, cls: type) -> dict[str, str]:
         """Map a literal suffix to the ``cls(...)`` keyword it is read into.
 
         Only a keyword whose value expression contains exactly one literal env
-        read is mapped; zero or several is ambiguous and left unmapped.
+        read is mapped; zero or several is ambiguous and left unmapped. If the
+        same suffix appears in two keywords (unusual — a section's suffixes are
+        distinct), the first in source order wins and the later field goes
+        unmapped, matching the frozenset's de-duplication of that suffix.
         """
         ctor_names = {"cls", cls.__name__}
         mapping: dict[str, str] = {}
@@ -823,7 +827,7 @@ def domain_env_surface(config_cls: type) -> tuple[DomainEnvVar, ...]:
             for kw in n.keywords:
                 if kw.arg is None:  # ``**kwargs`` splat — no field name
                     continue
-                literals = {lit for lit, _, _ in _literal_reads(kw.value)}
+                literals = {lit for lit, _, _ in _literal_env_reads(kw.value)}
                 if len(literals) == 1:
                     mapping.setdefault(next(iter(literals)), kw.arg)
         return mapping
@@ -842,7 +846,7 @@ def domain_env_surface(config_cls: type) -> tuple[DomainEnvVar, ...]:
         ordered: list[str] = []
         local_seen: set[str] = set()
         for suffix, _lineno, _col in sorted(
-            _literal_reads(tree), key=lambda t: (t[1], t[2])
+            _literal_env_reads(tree), key=lambda t: (t[1], t[2])
         ):
             if suffix not in local_seen:
                 local_seen.add(suffix)
