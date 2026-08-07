@@ -763,16 +763,28 @@ def domain_env_surface(config_cls: type) -> tuple[DomainEnvVar, ...]:
     sub-config's vars can be documented like a top-level field's without
     flattening the config.
 
-    **Suffix→field resolution.** A section prefixes its suffixes (a
-    ``ttl_default_s`` field read as ``TRANSFER_TTL_DEFAULT_S``), so ``name.upper()``
-    does not identify the field. Instead each ``cls(...)`` / ``{ClassName}(...)``
-    construction in ``from_env`` is inspected: a keyword argument whose value
-    expression contains exactly one literal env read links that field to that
-    suffix. A read not in such a keyword — a throwaway ``_ = env(...)`` or a
-    value assembled from several reads — still yields a record, with
-    :attr:`DomainEnvVar.name` ``None`` and neutral metadata, so no suffix the
-    frozenset carried is dropped. Keep a field's read inline in its constructor
-    keyword (``field=env(prefix, "LITERAL")``) for its metadata to be attached.
+    **Suffix→field resolution** happens in two tiers. First, each ``cls(...)`` /
+    ``{ClassName}(...)`` construction in ``from_env`` is inspected: a keyword
+    argument whose value expression contains exactly one literal env read links
+    that field to that suffix. This tier is what resolves a *section* field,
+    whose suffix carries the section's own prefix (a ``ttl_default_s`` field read
+    as ``TRANSFER_TTL_DEFAULT_S``), so ``name.upper()`` alone cannot identify it.
+
+    Second, a read the first tier does not tie to a keyword — one consumed via
+    an intermediate local (``x = parse_bool(env(prefix, "X")); cls(x=x)``), or a
+    value assembled from several reads — falls back to the field whose
+    ``name.upper()`` equals the suffix, since a field's env var is
+    ``{PREFIX}_{NAME.upper()}`` by convention. This restores the metadata the
+    pre-4.6 field-name resolution attached and covers the common shape where a
+    value needs parsing or a fallback before construction.
+
+    A suffix that neither tier resolves — a throwaway ``_ = env(...)``, or a
+    *section* field read via a local (its prefixed suffix is not ``name.upper()``
+    of any field, and the keyword did not carry the literal) — still yields a
+    record, with :attr:`DomainEnvVar.name` ``None`` and neutral metadata, so no
+    suffix the frozenset carried is dropped. Keep a section field's read inline
+    in its constructor keyword (``field=env(prefix, "LITERAL")``) so its metadata
+    is attached; a top-level field resolves either way.
 
     Records are ordered deterministically: depth-first over the config tree
     (a class's own reads before its sub-configs'), and within a class by the
@@ -847,6 +859,11 @@ def domain_env_surface(config_cls: type) -> tuple[DomainEnvVar, ...]:
         tree = ast.parse(src)
         field_of = _field_by_suffix(tree, cls)
         fields_by_name = {f.name: f for f in dataclasses.fields(cls)}
+        # Field-name fallback: a field's env var is ``{PREFIX}_{NAME.upper()}``
+        # by convention, so a read this class does not tie to a constructor
+        # keyword (consumed via a local, or assembled from several reads) still
+        # resolves to the field whose ``name.upper()`` equals the suffix.
+        fields_by_suffix = {f.name.upper(): f for f in dataclasses.fields(cls)}
         ordered: list[str] = []
         local_seen: set[str] = set()
         for suffix, _lineno, _col in sorted(
@@ -861,7 +878,10 @@ def domain_env_surface(config_cls: type) -> tuple[DomainEnvVar, ...]:
                 continue
             seen.add(key)
             fname = field_of.get(suffix)
-            f = fields_by_name.get(fname) if fname is not None else None
+            if fname is not None:
+                f = fields_by_name.get(fname)
+            else:
+                f = fields_by_suffix.get(suffix)
             records.append(_domain_env_var_from(cls, suffix, f))
 
     def _visit(cls: type) -> None:
