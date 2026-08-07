@@ -468,7 +468,11 @@ def _config_field_from(f: dataclasses.Field[Any]) -> ConfigField:
         default: object = f.default
     elif f.default_factory is not dataclasses.MISSING:
         default = f.default_factory()
-    else:  # pragma: no cover — every current field has a default
+    else:
+        # A field with neither a default nor a default_factory — a required
+        # var. No ``ServerConfig`` field hits this (they all have defaults), but
+        # ``domain_env_surface`` reaches it for a domain sub-config's required
+        # field; ``_domain_env_var_from`` then reports ``required=True``.
         default = None
 
     tags = tuple(str(tag) for tag in f.metadata.get("tags", ()))
