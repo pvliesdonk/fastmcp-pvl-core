@@ -24,9 +24,11 @@ from ._authorization import (
 from ._cli import make_serve_parser, normalise_http_path
 from ._config import (
     ConfigField,
+    DomainEnvVar,
     ServerConfig,
     Transport,
     domain_env_suffixes,
+    domain_env_surface,
     server_config_env_suffixes,
     server_config_surface,
 )
@@ -73,6 +75,7 @@ __all__ = [
     "AuthMode",
     "ConfigField",
     "ConfigurationError",
+    "DomainEnvVar",
     "FetchResult",
     "IconSpec",
     "SecretMaskFilter",
@@ -100,6 +103,7 @@ __all__ = [
     "configure_logging_from_env",
     "decode_base64_capped",
     "domain_env_suffixes",
+    "domain_env_surface",
     "env",
     "env_float",
     "env_int",

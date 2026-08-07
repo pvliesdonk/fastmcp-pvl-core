@@ -11,7 +11,7 @@ import dataclasses
 
 import pytest
 
-from fastmcp_pvl_core import TransferConfig, domain_env_suffixes
+from fastmcp_pvl_core import TransferConfig, domain_env_suffixes, domain_env_surface
 from fastmcp_pvl_core._errors import ConfigurationError
 
 # The full literal env surface TransferConfig.from_env reads; the drift gate
@@ -182,3 +182,42 @@ class TestDomainEnvSuffixes:
         ``_EXPECTED_SUFFIXES`` (and the ADR §7 table) fails here.
         """
         assert domain_env_suffixes(TransferConfig) == _EXPECTED_SUFFIXES
+
+
+class TestDomainEnvSurface:
+    """The metadata-carrying surface for the transfer section — the motivating
+    case: composed ``TRANSFER_*`` vars must render documented, not required."""
+
+    def test_surface_suffixes_match_the_frozenset_gate(self) -> None:
+        assert {
+            v.suffix for v in domain_env_surface(TransferConfig)
+        } == _EXPECTED_SUFFIXES
+
+    def test_every_var_carries_provenance(self) -> None:
+        assert all(
+            v.source == "TransferConfig" for v in domain_env_surface(TransferConfig)
+        )
+
+    def test_every_var_resolves_to_its_field(self) -> None:
+        """Each prefixed suffix links back to the field it populates."""
+        by_suffix = {v.suffix: v for v in domain_env_surface(TransferConfig)}
+        assert by_suffix["TRANSFER_TTL_DEFAULT_S"].name == "ttl_default_s"
+        assert by_suffix["TRANSFER_MAX_UPLOAD_BYTES"].name == "max_upload_bytes"
+
+    def test_every_var_is_documented_and_tagged(self) -> None:
+        surface = domain_env_surface(TransferConfig)
+        assert all(v.help for v in surface)
+        assert all("transfer" in v.tags for v in surface)
+
+    def test_defaulted_vars_are_not_required(self) -> None:
+        """All transfer knobs have defaults, so none render as required — the
+        regression the flat frozenset caused downstream."""
+        assert all(v.required is False for v in domain_env_surface(TransferConfig))
+
+    def test_default_is_carried_through(self) -> None:
+        ttl = next(
+            v
+            for v in domain_env_surface(TransferConfig)
+            if v.suffix == "TRANSFER_TTL_DEFAULT_S"
+        )
+        assert ttl.default == pytest.approx(3600.0)

@@ -14,9 +14,11 @@ import pytest
 from fastmcp_pvl_core import (
     ConfigField,
     ConfigurationError,
+    DomainEnvVar,
     ServerConfig,
     build_bearer_auth,
     domain_env_suffixes,
+    domain_env_surface,
     env,
     env_float,
     env_int,
@@ -145,6 +147,60 @@ class _BadRef:
     def from_env(cls, prefix: str = "X") -> _BadRef:
         _ = env(prefix, "BAD")
         return cls()
+
+
+# ---------------------------------------------------------------------------
+# Extra fixtures for TestDomainEnvSurface: a section whose prefixed suffixes
+# are tied to metadata-carrying fields via constructor keywords (the realistic
+# shape the surface resolves), and a config that composes it.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class _MetaSec:
+    token: str | None = field(
+        default=None,
+        metadata={
+            "help": "Secret token.",
+            "tags": ("meta",),
+            "wizard": {"secret": True},
+        },
+    )
+    count: int = field(
+        default=3,
+        metadata={"help": "How many.", "tags": ("meta",)},
+    )
+
+    @classmethod
+    def from_env(cls, prefix: str = "X") -> _MetaSec:
+        return cls(
+            token=env(prefix, "META_TOKEN"),
+            count=env_int(prefix, "META_COUNT", 3),
+        )
+
+
+@dataclass(frozen=True)
+class _MetaComposed:
+    label: str = field(default="", metadata={"help": "A label.", "tags": ("top",)})
+    meta: _MetaSec = field(default_factory=_MetaSec)
+    server: ServerConfig = field(default_factory=ServerConfig)
+
+    @classmethod
+    def from_env(cls, prefix: str = "X") -> _MetaComposed:
+        return cls(
+            label=env(prefix, "LABEL", ""),
+            meta=_MetaSec.from_env(prefix),
+            server=ServerConfig.from_env(prefix),
+        )
+
+
+@dataclass(frozen=True)
+class _ReqSec:
+    endpoint: str  # no default -> a required var
+
+    @classmethod
+    def from_env(cls, prefix: str = "X") -> _ReqSec:
+        return cls(endpoint=env(prefix, "REQ_ENDPOINT", "fallback"))
 
 
 class TestServerConfigDefaults:
@@ -470,6 +526,125 @@ class TestDomainEnvSuffixes:
         """An annotation not importable at module scope propagates as NameError."""
         with pytest.raises(NameError, match="domain_env_suffixes"):
             domain_env_suffixes(_BadRef)
+
+
+class TestDomainEnvSurface:
+    @pytest.mark.parametrize(
+        "cls",
+        [_Flat, _Composed, _OptComposed, _CycA, _TwoFields, _HasPlain, _ListTypedField],
+    )
+    def test_suffixes_match_the_frozenset_gate(self, cls: type) -> None:
+        """The surface never drops or adds a suffix the flat frozenset carries."""
+        assert {v.suffix for v in domain_env_surface(cls)} == domain_env_suffixes(cls)
+
+    def test_records_are_domain_env_var_instances(self) -> None:
+        assert all(
+            isinstance(v, DomainEnvVar) for v in domain_env_surface(_MetaComposed)
+        )
+
+    def test_top_level_read_carries_its_field_metadata(self) -> None:
+        surface = domain_env_surface(_MetaComposed)
+        label = next(v for v in surface if v.suffix == "LABEL")
+        assert label.source == "_MetaComposed"
+        assert label.name == "label"
+        assert label.help == "A label."
+        assert label.tags == ("top",)
+        assert label.required is False
+
+    def test_section_read_carries_provenance_and_field_metadata(self) -> None:
+        """A composed section's prefixed suffix resolves to its field's metadata."""
+        surface = domain_env_surface(_MetaComposed)
+        token = next(v for v in surface if v.suffix == "META_TOKEN")
+        assert token.source == "_MetaSec"
+        assert token.name == "token"
+        assert token.help == "Secret token."
+        assert token.tags == ("meta",)
+        assert token.wizard == {"secret": True}
+        assert token.required is False
+
+    def test_default_is_carried_through(self) -> None:
+        count = next(
+            v for v in domain_env_surface(_MetaComposed) if v.suffix == "META_COUNT"
+        )
+        assert count.default == 3
+        assert count.type_name == "int"
+
+    def test_field_without_default_is_required(self) -> None:
+        """A section field with no default reports required=True."""
+        endpoint = next(
+            v for v in domain_env_surface(_ReqSec) if v.suffix == "REQ_ENDPOINT"
+        )
+        assert endpoint.name == "endpoint"
+        assert endpoint.required is True
+
+    def test_throwaway_read_yields_placeholder_record(self) -> None:
+        """A read not tied to a constructor field is still emitted, with name=None."""
+        surface = domain_env_surface(_Composed)
+        assert {v.suffix for v in surface} == {"TOP", "SEC_TOKEN", "SEC_COUNT"}
+        assert all(v.name is None for v in surface)
+        top = next(v for v in surface if v.suffix == "TOP")
+        assert top.help == ""
+        assert top.tags == ()
+        assert top.required is False
+
+    def test_order_is_depth_first_root_before_sections(self) -> None:
+        """Root's own read precedes the composed section's reads."""
+        order = [v.suffix for v in domain_env_surface(_MetaComposed)]
+        assert order == ["LABEL", "META_TOKEN", "META_COUNT"]
+
+    def test_server_config_field_is_excluded(self) -> None:
+        suffixes = {v.suffix for v in domain_env_surface(_MetaComposed)}
+        assert "TRANSPORT" not in suffixes
+        assert "HOST" not in suffixes
+
+    def test_server_config_as_root_returns_empty(self) -> None:
+        assert domain_env_surface(ServerConfig) == ()
+
+    def test_non_dataclass_input_raises_typeerror(self) -> None:
+        with pytest.raises(TypeError, match="dataclass"):
+            domain_env_surface(int)
+
+    def test_dataclass_instance_raises_typeerror(self) -> None:
+        with pytest.raises(TypeError, match="dataclass"):
+            domain_env_surface(_Flat())  # type: ignore[arg-type]
+
+    def test_source_unavailable_raises_oserror_with_context(self) -> None:
+        ns: dict[str, object] = {}
+        exec(  # noqa: S102 — building a source-less class on purpose
+            "from dataclasses import dataclass\n"
+            "@dataclass\n"
+            "class ExecCfg:\n"
+            "    @classmethod\n"
+            "    def from_env(cls, prefix='X'):\n"
+            "        return cls()\n",
+            ns,
+        )
+        with pytest.raises(OSError, match="ExecCfg.from_env"):
+            domain_env_surface(ns["ExecCfg"])  # type: ignore[arg-type]
+
+    def test_unresolvable_forward_ref_raises_nameerror(self) -> None:
+        with pytest.raises(NameError, match="domain_env_surface"):
+            domain_env_surface(_BadRef)
+
+    def test_order_is_stable_under_hash_randomisation(self) -> None:
+        """Byte-stability guard: record order must not vary between processes."""
+        program = (
+            "from tests.test_config import _MetaComposed;"
+            "from fastmcp_pvl_core import domain_env_surface;"
+            "print(','.join(v.suffix for v in domain_env_surface(_MetaComposed)))"
+        )
+        outputs = set()
+        for seed in ("1", "2", "3"):
+            result = subprocess.run(
+                [sys.executable, "-c", program],
+                capture_output=True,
+                text=True,
+                check=True,
+                cwd=Path(__file__).resolve().parent.parent,
+                env={**os.environ, "PYTHONHASHSEED": seed},
+            )
+            outputs.add(result.stdout.strip())
+        assert outputs == {"LABEL,META_TOKEN,META_COUNT"}
 
 
 class TestServerConfigSurface:

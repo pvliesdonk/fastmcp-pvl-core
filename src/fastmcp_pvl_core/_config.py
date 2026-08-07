@@ -619,3 +619,267 @@ def domain_env_suffixes(config_cls: type) -> frozenset[str]:
 
     _visit(config_cls)
     return frozenset(found)
+
+
+@dataclass(frozen=True)
+class DomainEnvVar:
+    """One env var a domain config reads, with provenance and field metadata.
+
+    Carries a suffix a domain config (or a composed sub-config) reads, the class
+    that read it, and — when resolvable — the metadata of the field it populates.
+    This is the per-record counterpart to :func:`domain_env_suffixes`'s bare
+    ``frozenset[str]``. The frozenset flattens every recursed suffix into one
+    set and discards which class read it, so a consumer cannot attach per-field
+    metadata to a suffix a composed sub-config contributed. Each record here
+    keeps that provenance (:attr:`source`) and links the var to its declaring
+    field, so a downstream generator can document a composed sub-config's vars
+    with the same help / tags / wizard hints and required-ness as a top-level
+    field — the gap recorded in the motivating issue — without flattening the
+    config.
+    """
+
+    suffix: str
+    """Env suffix as read — the part after ``{PREFIX}_``, e.g.
+    ``TRANSFER_TTL_DEFAULT_S``. For a composed *section* this carries the
+    section's own prefix, so it is generally **not** ``name.upper()``."""
+
+    source: str
+    """``__qualname__`` of the (sub-)config class whose ``from_env`` reads this
+    var — e.g. ``TransferConfig``. This is the provenance the flat frozenset
+    discards; a suffix read by two different classes yields one record per
+    class."""
+
+    name: str | None
+    """Dataclass field the read populates — e.g. ``ttl_default_s`` — or ``None``
+    when the read is not tied to a single constructor field (a throwaway read,
+    or a value assembled from several reads). When ``None`` the metadata fields
+    below carry neutral placeholders and must not be treated as authoritative;
+    the var still appears so the surface never loses a suffix the frozenset had.
+    """
+
+    type_name: str | None
+    """The field's annotation as written, e.g. ``float``. ``None`` when
+    :attr:`name` is ``None``."""
+
+    default: object
+    """The field's declared default (a ``default_factory`` field reports the
+    built value). ``None`` when :attr:`name` is ``None``."""
+
+    help: str
+    """The field's ``metadata["help"]``. Empty when undocumented or unresolved."""
+
+    tags: tuple[str, ...]
+    """The field's ``metadata["tags"]``. Empty when untagged or unresolved."""
+
+    inferred: bool
+    """True when the field carries the ``"inferred"`` wizard shorthand (no
+    control offered). ``False`` when :attr:`name` is ``None``."""
+
+    wizard: Mapping[str, object]
+    """The field's wizard presentation hints. Empty for inferred or unresolved
+    vars."""
+
+    required: bool
+    """True when the field has no default, so an operator must set the var.
+    ``False`` when :attr:`name` is ``None`` — required-ness is a field property
+    and is unknown for a read that maps to no field."""
+
+
+def _domain_env_var_from(
+    source: type, suffix: str, f: dataclasses.Field[Any] | None
+) -> DomainEnvVar:
+    """Build one :class:`DomainEnvVar`.
+
+    When ``f`` is ``None`` the read could not be tied to a constructor field, so
+    the metadata fields carry neutral placeholders (the var is still emitted so
+    the surface is a strict superset of :func:`domain_env_suffixes`). Otherwise
+    the field's metadata is extracted via :func:`_config_field_from` — the same
+    reader ``server_config_surface`` uses, so help/tags/wizard parsing (and its
+    validation) live in one place.
+    """
+    if f is None:
+        return DomainEnvVar(
+            suffix=suffix,
+            source=source.__qualname__,
+            name=None,
+            type_name=None,
+            default=None,
+            help="",
+            tags=(),
+            inferred=False,
+            wizard={},
+            required=False,
+        )
+    cf = _config_field_from(f)
+    required = (
+        f.default is dataclasses.MISSING and f.default_factory is dataclasses.MISSING
+    )
+    return DomainEnvVar(
+        suffix=suffix,
+        source=source.__qualname__,
+        name=cf.name,
+        type_name=cf.type_name,
+        default=cf.default,
+        help=cf.help,
+        tags=cf.tags,
+        inferred=cf.inferred,
+        wizard=cf.wizard,
+        required=required,
+    )
+
+
+def domain_env_surface(config_cls: type) -> tuple[DomainEnvVar, ...]:
+    """Return :class:`DomainEnvVar` records for the env vars a domain config reads.
+
+    The metadata-carrying counterpart of :func:`domain_env_suffixes`: it walks
+    the same scan — literal ``env``/``env_int``/``env_float`` reads in
+    ``config_cls.from_env`` plus every composed sub-config's ``from_env``,
+    excluding the :class:`ServerConfig` field — but returns one record per var
+    instead of a flat ``frozenset[str]``. Each record keeps the sub-config it
+    came from (:attr:`DomainEnvVar.source`) and, when the read populates a
+    constructor field, that field's metadata and required-ness, so a composed
+    sub-config's vars can be documented like a top-level field's without
+    flattening the config.
+
+    **Suffix→field resolution.** A section prefixes its suffixes (a
+    ``ttl_default_s`` field read as ``TRANSFER_TTL_DEFAULT_S``), so ``name.upper()``
+    does not identify the field. Instead each ``cls(...)`` / ``{ClassName}(...)``
+    construction in ``from_env`` is inspected: a keyword argument whose value
+    expression contains exactly one literal env read links that field to that
+    suffix. A read not in such a keyword — a throwaway ``_ = env(...)`` or a
+    value assembled from several reads — still yields a record, with
+    :attr:`DomainEnvVar.name` ``None`` and neutral metadata, so no suffix the
+    frozenset carried is dropped. Keep a field's read inline in its constructor
+    keyword (``field=env(prefix, "LITERAL")``) for its metadata to be attached.
+
+    Records are ordered deterministically: depth-first over the config tree
+    (a class's own reads before its sub-configs'), and within a class by the
+    source position of each read — so a consumer that renders this tuple
+    produces byte-stable output, as :func:`server_config_surface` does.
+    ``{v.suffix for v in domain_env_surface(cls)}`` equals
+    ``domain_env_suffixes(cls)``.
+
+    Args:
+        config_cls: The domain config dataclass; its ``from_env`` classmethod
+            is the scan root.
+
+    Returns:
+        A tuple of :class:`DomainEnvVar` records, one per ``(source, suffix)``.
+
+    Raises:
+        TypeError: If ``config_cls`` is not a dataclass, or a sub-config's
+            ``from_env`` is not a readable Python function.
+        OSError: If a sub-config's ``from_env`` source cannot be read.
+        NameError: If a field annotation cannot be resolved at
+            :func:`typing.get_type_hints` time (the config or a sub-config is
+            not defined at module scope, or has a broken forward reference).
+        ValueError: If a resolved field's ``metadata["wizard"]`` is malformed
+            (see :func:`_config_field_from`).
+    """
+    import ast
+    import inspect
+    import textwrap
+
+    if not isinstance(config_cls, type) or not dataclasses.is_dataclass(config_cls):
+        raise TypeError(
+            f"domain_env_surface: expected a dataclass type, got {config_cls!r}"
+        )
+
+    read_funcs = {"env", "env_int", "env_float"}
+    records: list[DomainEnvVar] = []
+    visited: set[type] = set()
+    seen: set[tuple[str, str]] = set()
+
+    def _literal_reads(node: ast.AST) -> list[tuple[str, int, int]]:
+        """Every ``(suffix, lineno, col)`` for a literal env read under *node*."""
+        out: list[tuple[str, int, int]] = []
+        for n in ast.walk(node):
+            if (
+                isinstance(n, ast.Call)
+                and isinstance(n.func, ast.Name)
+                and n.func.id in read_funcs
+                and len(n.args) >= 2
+                and isinstance(n.args[1], ast.Constant)
+                and isinstance(n.args[1].value, str)
+            ):
+                out.append((n.args[1].value, n.lineno, n.col_offset))
+        return out
+
+    def _field_by_suffix(tree: ast.AST, cls: type) -> dict[str, str]:
+        """Map a literal suffix to the ``cls(...)`` keyword it is read into.
+
+        Only a keyword whose value expression contains exactly one literal env
+        read is mapped; zero or several is ambiguous and left unmapped.
+        """
+        ctor_names = {"cls", cls.__name__}
+        mapping: dict[str, str] = {}
+        for n in ast.walk(tree):
+            if not (
+                isinstance(n, ast.Call)
+                and isinstance(n.func, ast.Name)
+                and n.func.id in ctor_names
+            ):
+                continue
+            for kw in n.keywords:
+                if kw.arg is None:  # ``**kwargs`` splat — no field name
+                    continue
+                literals = {lit for lit, _, _ in _literal_reads(kw.value)}
+                if len(literals) == 1:
+                    mapping.setdefault(next(iter(literals)), kw.arg)
+        return mapping
+
+    def _scan(cls: type) -> None:
+        try:
+            src = textwrap.dedent(inspect.getsource(cls.from_env))  # type: ignore[attr-defined]
+        except (OSError, TypeError) as exc:  # source unreadable / not a function
+            raise type(exc)(
+                f"domain_env_surface: cannot read source for "
+                f"{cls.__qualname__}.from_env: {exc}"
+            ) from exc
+        tree = ast.parse(src)
+        field_of = _field_by_suffix(tree, cls)
+        fields_by_name = {f.name: f for f in dataclasses.fields(cls)}
+        ordered: list[str] = []
+        local_seen: set[str] = set()
+        for suffix, _lineno, _col in sorted(
+            _literal_reads(tree), key=lambda t: (t[1], t[2])
+        ):
+            if suffix not in local_seen:
+                local_seen.add(suffix)
+                ordered.append(suffix)
+        for suffix in ordered:
+            key = (cls.__qualname__, suffix)
+            if key in seen:
+                continue
+            seen.add(key)
+            fname = field_of.get(suffix)
+            f = fields_by_name.get(fname) if fname is not None else None
+            records.append(_domain_env_var_from(cls, suffix, f))
+
+    def _visit(cls: type) -> None:
+        if cls in visited or cls is ServerConfig or not dataclasses.is_dataclass(cls):
+            return
+        visited.add(cls)
+        if hasattr(cls, "from_env"):
+            _scan(cls)
+        try:
+            hints = typing.get_type_hints(cls)
+        except NameError as exc:
+            raise NameError(
+                f"domain_env_surface: cannot resolve type hints for "
+                f"{cls.__qualname__} — annotations must be importable at module "
+                f"scope: {exc}"
+            ) from exc
+        for f in dataclasses.fields(cls):
+            resolved = hints.get(f.name, f.type)
+            for candidate in (resolved, *typing.get_args(resolved)):
+                if (
+                    isinstance(candidate, type)
+                    and dataclasses.is_dataclass(candidate)
+                    and candidate is not ServerConfig
+                    and hasattr(candidate, "from_env")
+                ):
+                    _visit(candidate)
+
+    _visit(config_cls)
+    return tuple(records)
