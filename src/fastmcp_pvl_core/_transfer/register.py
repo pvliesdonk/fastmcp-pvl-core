@@ -1,27 +1,39 @@
 """Wire the ``/transfer`` feature onto a FastMCP server (ADR 0001 §3/§5 / §11 #5).
 
-:func:`register_transfer_routes` is the one public entry point: it builds a
-single shared :class:`TransferStore`, mounts the ``/transfer/{token}`` route
-(the #217 handler), and registers the two link tools ``create_download_link`` /
-``create_upload_link``. pvl-core owns every **shape** decision here — the tool
-names, the route path and its method set, the status codes, the TTL clamp, the
-``base_url``-required guard, **and the tool metadata** (annotations, icons,
-tags). Downstream supplies the ``sink`` and ``validate`` hooks, plus optional
-``download_note`` / ``upload_note`` strings that are *appended* to the generic
-tool descriptions. There are **no override kwargs** for any shape element (ADR
-§7 / §10 item 2): a note adds domain context, it never replaces pvl-core's
-description or changes a tool name, route, or status code.
+Two entry points share one route-mount and one token store:
 
-The two tools carry generic, universal metadata: titles and icons are fixed and
-identical across downstreams, and the descriptions share a common generic base
-that a per-server ``download_note`` / ``upload_note`` may only *append* to. A
-server must NOT mutate the registered tools post-hoc, nor reach into
-:mod:`._transfer.store` / :mod:`._transfer.routes` to rebuild the capability-link
-machinery under a different name — the token store, route, and link-tool shape
-are pvl-core's, full stop (ADR §10 item 2). The only two things exported for
-standalone reuse are :func:`fetch_url` and :func:`decode_base64_capped` — a
-server with a genuinely different ingest shape (e.g. no capability link at all)
-builds a tool on those, not on the transfer framework's internals.
+- :func:`register_transfer_routes` — **path 1**: builds the shared
+  :class:`TransferStore`, mounts the ``/transfer/{token}`` route (the #217
+  handler), and registers the two generic link tools ``create_download_link`` /
+  ``create_upload_link``. The common case — a generic pair identical across
+  downstreams.
+- :func:`build_transfer_links` — **path 2**: mounts the route and returns a
+  :class:`TransferLinks` minter, registering **no tools**, for a downstream whose
+  transfer tool the generic pair cannot express (a different name, a
+  domain-accurate description, domain-specific parameters). It builds its own
+  tool on the returned minter. ``register_transfer_routes`` *is*
+  ``build_transfer_links`` plus the two tools, so a server calls one of them, not
+  both; it returns the same :class:`TransferLinks` so a server can also run mixed
+  mode (the generic pair plus its own extra tools).
+
+pvl-core owns every **shape** decision on both paths — the route path and its
+method set, the token store and its namespace, the status codes, the TTL clamp,
+the ``base_url``-required guard, and (for path 1's tools) the tool names and
+metadata (annotations, icons, tags). Downstream supplies the ``sink`` domain hook
+on both paths, plus — on path 1 — the ``validate`` hook and optional
+``download_note`` / ``upload_note`` strings *appended* to the generic tool
+descriptions. There are **no override kwargs** for any shape element (ADR §7 /
+§10 item 2): a note adds domain context, it never replaces pvl-core's description
+or changes a tool name, route, or status code. A downstream needing a different
+tool *shape* uses path 2 rather than overriding path 1.
+
+A server must not reach into :mod:`._transfer.store` / :mod:`._transfer.routes` to
+rebuild the capability-link machinery by hand: :func:`build_transfer_links`
+exposes exactly that machinery as a supported seam, so path 2 needs no private
+imports. The token store, route, and generic-tool shape stay pvl-core's (ADR §10
+item 2). The standalone ingest primitives :func:`fetch_url` and
+:func:`decode_base64_capped` remain available for a server whose ingest is not a
+capability link at all.
 
 Intra-package imports stay relative so a fold-in is a directory rename.
 """
@@ -104,6 +116,119 @@ _ROUTE_PATH = "/transfer/{token}"
 _ROUTE_METHODS = ("GET", "POST", "PUT", "DELETE", "PATCH")
 
 
+class TransferLinks:
+    """Mints capability links over a mounted ``/transfer`` route and shared store.
+
+    Returned by :func:`build_transfer_links` (path 2) and
+    :func:`register_transfer_routes` (path 1 / mixed). A downstream building its
+    own transfer tool calls :meth:`mint_download` / :meth:`mint_upload` with an
+    already-validated ``sink_handle`` — the opaque routing string the sink
+    interprets, not a caller-facing ref. There is **no** ``validate`` hook here:
+    in path 2 the downstream's own tool is the validation site.
+
+    Obtain an instance from :func:`build_transfer_links` or
+    :func:`register_transfer_routes`; it is not constructed directly downstream.
+    """
+
+    def __init__(
+        self,
+        store: TransferStore,
+        *,
+        base_url: str,
+        transfer_config: TransferConfig,
+    ) -> None:
+        self._store = store
+        self._base = base_url  # trailing slash already stripped by the factory
+        self._transfer_config = transfer_config
+
+    def _clamp_ttl(self, ttl_s: float | None) -> float:
+        """Resolve the link TTL: the default when omitted, else clamped to the max."""
+        if ttl_s is None:
+            return self._transfer_config.ttl_default_s
+        return min(ttl_s, self._transfer_config.ttl_max_s)
+
+    async def _mint(
+        self, sink_handle: str, kind: TransferKind, ttl_s: float | None
+    ) -> dict[str, Any]:
+        ttl = self._clamp_ttl(ttl_s)
+        token = await self._store.mint(
+            kind=kind, sink_handle=sink_handle, caps={}, ttl_seconds=ttl
+        )
+        return {"url": f"{self._base}/transfer/{token}", "expires_in_s": ttl}
+
+    async def mint_download(
+        self, sink_handle: str, ttl_s: float | None = None
+    ) -> dict[str, Any]:
+        """Mint a download link for an already-validated *sink_handle*.
+
+        *sink_handle* is the opaque routing string the sink interprets (the same
+        value path 1's ``validate`` hook returns). *ttl_s* is the requested
+        lifetime in seconds — omitted uses the configured default, over the
+        configured maximum is clamped to it, non-positive is rejected. Returns
+        ``{"url", "expires_in_s"}``.
+        """
+        return await self._mint(sink_handle, "download", ttl_s)
+
+    async def mint_upload(
+        self, sink_handle: str, ttl_s: float | None = None
+    ) -> dict[str, Any]:
+        """Mint an upload link for an already-validated *sink_handle*.
+
+        Same contract as :meth:`mint_download`, for the ``upload`` kind.
+        """
+        return await self._mint(sink_handle, "upload", ttl_s)
+
+
+def build_transfer_links(
+    mcp: FastMCP,
+    config: ServerConfig,
+    transfer_config: TransferConfig,
+    *,
+    sink: TransferSink,
+) -> TransferLinks:
+    """Mount the ``/transfer`` route and return a link minter, registering no tools.
+
+    The **path-2** seam: a downstream whose transfer tool the generic pair cannot
+    express — a different name, a domain-accurate description, domain-specific
+    parameters — builds its own tool on the returned :class:`TransferLinks`
+    instead of importing pvl-core internals. :func:`register_transfer_routes`
+    (path 1) *is* this function plus the two generic tools, so a server calls one
+    of them, not both.
+
+    Args:
+        mcp: The FastMCP server to mount the ``/transfer/{token}`` route on.
+        config: The server's :class:`ServerConfig` — supplies ``base_url``
+            (required, to build link URLs) and ``kv_store_url`` (the token store
+            backend).
+        transfer_config: The transfer env section (TTL default/max, grace, lease,
+            upload cap).
+        sink: Domain hook — where bytes are read from / written to.
+
+    Returns:
+        A :class:`TransferLinks` minter over the mounted route and shared store.
+
+    Raises:
+        ConfigurationError: If ``config.base_url`` is unset or blank — a transfer
+            link cannot be minted without a public base URL, so this fails at
+            build time rather than deferring to the first mint.
+    """
+    if not config.base_url:
+        raise ConfigurationError(
+            "base_url is required to mint transfer links; set <PREFIX>_BASE_URL"
+        )
+    base = config.base_url.rstrip("/")
+    store = TransferStore.from_config(
+        config,
+        lease_seconds=transfer_config.lease_s,
+        grace_seconds=transfer_config.grace_ttl_s,
+    )
+    handler = make_transfer_handler(
+        store, sink, max_upload_bytes=transfer_config.max_upload_bytes
+    )
+    mcp.custom_route(_ROUTE_PATH, methods=list(_ROUTE_METHODS))(handler)
+    return TransferLinks(store, base_url=base, transfer_config=transfer_config)
+
+
 def register_transfer_routes(
     mcp: FastMCP,
     config: ServerConfig,
@@ -113,7 +238,7 @@ def register_transfer_routes(
     validate: TransferValidator,
     download_note: str | None = None,
     upload_note: str | None = None,
-) -> None:
+) -> TransferLinks:
     """Register the ``/transfer`` route and the two link tools on *mcp*.
 
     Args:
@@ -136,47 +261,25 @@ def register_transfer_routes(
             upload ``ref`` is *authored* by the caller, so stating the
             destination rules here is what a calling model most lacks.
 
+    Returns:
+        The :class:`TransferLinks` minter backing the two generic tools. Ignore
+        it for path 1; keep it to also register extra domain tools on the same
+        route and store (mixed mode).
+
     Raises:
         ConfigurationError: If ``config.base_url`` is unset or blank — a
             transfer link cannot be minted without a public base URL, so this
             fails at registration rather than deferring to the first tool call.
     """
-    if not config.base_url:
-        raise ConfigurationError(
-            "base_url is required to mint transfer links; set <PREFIX>_BASE_URL"
-        )
-    base = config.base_url.rstrip("/")
-    store = TransferStore.from_config(
-        config,
-        lease_seconds=transfer_config.lease_s,
-        grace_seconds=transfer_config.grace_ttl_s,
-    )
-    handler = make_transfer_handler(
-        store, sink, max_upload_bytes=transfer_config.max_upload_bytes
-    )
-    mcp.custom_route(_ROUTE_PATH, methods=list(_ROUTE_METHODS))(handler)
-
-    def _clamp_ttl(ttl_s: float | None) -> float:
-        """Resolve the link TTL: the default when omitted, else clamped to the max."""
-        if ttl_s is None:
-            return transfer_config.ttl_default_s
-        return min(ttl_s, transfer_config.ttl_max_s)
-
-    async def _mint_link(
-        ref: str, kind: TransferKind, ttl_s: float | None
-    ) -> dict[str, Any]:
-        handle = await validate(ref, kind)
-        ttl = _clamp_ttl(ttl_s)
-        token = await store.mint(
-            kind=kind, sink_handle=handle, caps={}, ttl_seconds=ttl
-        )
-        return {"url": f"{base}/transfer/{token}", "expires_in_s": ttl}
+    links = build_transfer_links(mcp, config, transfer_config, sink=sink)
 
     # The tools are registered by an explicit ``mcp.tool(...)(fn)`` call rather
     # than ``@mcp.tool`` decoration so ``description=`` can be composed from each
     # function's own docstring: a nested closure cannot reference its own
     # ``__doc__`` in its decorator expression. The docstring therefore stays the
     # single source of the generic description; a downstream note is appended.
+    # Each closure validates the caller ``ref`` to an opaque handle, then defers
+    # to the shared minter — so path 1 and path 2 mint through one code path.
     async def create_download_link(
         ref: str, ttl_s: float | None = None
     ) -> dict[str, Any]:
@@ -188,7 +291,8 @@ def register_transfer_routes(
         maximum is clamped to it, and a non-positive value is rejected. Returns
         ``{"url", "expires_in_s"}``.
         """
-        return await _mint_link(ref, "download", ttl_s)
+        handle = await validate(ref, "download")
+        return await links.mint_download(handle, ttl_s)
 
     mcp.tool(
         name="create_download_link",
@@ -213,7 +317,8 @@ def register_transfer_routes(
         maximum is clamped to it, and a non-positive value is rejected. Returns
         ``{"url", "expires_in_s"}``.
         """
-        return await _mint_link(ref, "upload", ttl_s)
+        handle = await validate(ref, "upload")
+        return await links.mint_upload(handle, ttl_s)
 
     mcp.tool(
         name="create_upload_link",
@@ -227,3 +332,4 @@ def register_transfer_routes(
         icons=[_UPLOAD_ICON],
         tags={"write"},
     )(create_upload_link)
+    return links
