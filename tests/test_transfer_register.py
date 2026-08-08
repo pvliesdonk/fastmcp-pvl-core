@@ -30,11 +30,14 @@ import httpx
 import pytest
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
+from starlette.routing import Route
 
 from fastmcp_pvl_core import (
     ServerConfig,
     TransferConfig,
+    TransferLinks,
     TransferReadResult,
+    build_transfer_links,
     register_transfer_routes,
 )
 from fastmcp_pvl_core._errors import ConfigurationError
@@ -109,6 +112,27 @@ def _register(
         upload_note=upload_note,
     )
     return mcp, sink, validate
+
+
+def _build_links(
+    *,
+    base_url: str | None = "https://x.example.com",
+    transfer_config: TransferConfig | None = None,
+    sink: _RecordingSink | None = None,
+) -> tuple[FastMCP, TransferLinks, _RecordingSink]:
+    mcp = FastMCP("t")
+    sink = sink or _RecordingSink()
+    config = ServerConfig(base_url=base_url, kv_store_url="memory://")
+    links = build_transfer_links(mcp, config, transfer_config or _tconfig(), sink=sink)
+    return mcp, links, sink
+
+
+def _transfer_route_count(mcp: FastMCP) -> int:
+    """Count mounted ``/transfer/{token}`` routes in the assembled ASGI app."""
+    app = mcp.http_app()
+    return sum(
+        1 for r in app.routes if isinstance(r, Route) and r.path == "/transfer/{token}"
+    )
 
 
 class TestBaseUrlGuard:
@@ -351,3 +375,119 @@ class TestEndToEnd:
             second = await client.get(path)
         assert first.status_code == 200
         assert second.status_code == 200
+
+
+class TestBuildTransferLinksGuard:
+    def test_unset_base_url_raises(self) -> None:
+        with pytest.raises(ConfigurationError, match="base_url"):
+            _build_links(base_url=None)
+
+    def test_blank_base_url_raises(self) -> None:
+        with pytest.raises(ConfigurationError, match="base_url"):
+            _build_links(base_url="")
+
+
+class TestBuildTransferLinksNoTools:
+    async def test_registers_no_tools(self) -> None:
+        # Path 2 mounts the route but registers no tools — the whole point.
+        mcp, _, _ = _build_links()
+        assert await mcp.list_tools() == []
+
+    async def test_route_mounted_once(self) -> None:
+        mcp, _, _ = _build_links()
+        assert _transfer_route_count(mcp) == 1
+
+
+class TestTransferLinksMinting:
+    async def test_mint_download_shape(self) -> None:
+        _, links, _ = _build_links()
+        res = await links.mint_download("handle:doc:download")
+        assert res["url"].startswith("https://x.example.com/transfer/")
+        assert res["expires_in_s"] == 100.0  # the configured default
+
+    async def test_mint_upload_shape(self) -> None:
+        _, links, _ = _build_links()
+        res = await links.mint_upload("handle:dest:upload")
+        assert res["url"].startswith("https://x.example.com/transfer/")
+        assert res["expires_in_s"] == 100.0
+
+    async def test_base_url_trailing_slash_stripped(self) -> None:
+        _, links, _ = _build_links(base_url="https://x.example.com/")
+        res = await links.mint_download("h")
+        assert "/transfer/" in res["url"]
+        assert "com//transfer" not in res["url"]
+
+
+class TestTransferLinksTtlClamp:
+    async def test_omitted_ttl_uses_default(self) -> None:
+        _, links, _ = _build_links()
+        res = await links.mint_download("h")
+        assert res["expires_in_s"] == 100.0
+
+    async def test_over_max_ttl_is_clamped(self) -> None:
+        _, links, _ = _build_links()
+        res = await links.mint_download("h", ttl_s=9999)
+        assert res["expires_in_s"] == 200.0  # the max
+
+    async def test_in_range_ttl_is_honoured(self) -> None:
+        _, links, _ = _build_links()
+        res = await links.mint_download("h", ttl_s=150)
+        assert res["expires_in_s"] == 150.0
+
+    async def test_non_positive_ttl_is_rejected(self) -> None:
+        # The clamp only bounds the ceiling; store.mint rejects a dead link.
+        _, links, _ = _build_links()
+        with pytest.raises(ValueError):
+            await links.mint_download("h", ttl_s=0)
+
+
+class TestPurePath2EndToEnd:
+    async def test_minted_link_redeems_over_http(self) -> None:
+        mcp, links, sink = _build_links()
+        res = await links.mint_download("handle:doc:download")
+        async with _client(mcp) as client:
+            resp = await client.get(_path_of(res["url"]))
+        assert resp.status_code == 200
+        assert resp.content == b"BODY"
+        assert sink.read_handles == ["handle:doc:download"]
+
+
+class TestMixedMode:
+    async def test_register_returns_transfer_links(self) -> None:
+        mcp = FastMCP("t")
+        config = ServerConfig(
+            base_url="https://x.example.com", kv_store_url="memory://"
+        )
+        links = register_transfer_routes(
+            mcp,
+            config,
+            _tconfig(),
+            sink=_RecordingSink(),
+            validate=_RecordingValidator(),
+        )
+        assert isinstance(links, TransferLinks)
+
+    async def test_path1_and_path2_links_redeem_same_store(self) -> None:
+        mcp = FastMCP("t")
+        sink = _RecordingSink()
+        config = ServerConfig(
+            base_url="https://x.example.com", kv_store_url="memory://"
+        )
+        links = register_transfer_routes(
+            mcp, config, _tconfig(), sink=sink, validate=_RecordingValidator()
+        )
+        p1 = await mcp.call_tool("create_download_link", {"ref": "doc1"})
+        p2 = await links.mint_download("handle:doc2:download")
+        async with _client(mcp) as client:
+            r1 = await client.get(_path_of(p1.structured_content["url"]))
+            r2 = await client.get(_path_of(p2["url"]))
+        assert r1.status_code == 200
+        assert r1.content == b"BODY"
+        assert r2.status_code == 200
+        assert r2.content == b"BODY"
+        # Both links resolved against the one shared store/route/sink.
+        assert sink.read_handles == ["handle:doc1:download", "handle:doc2:download"]
+
+    async def test_register_mounts_route_once(self) -> None:
+        mcp, _, _ = _register()
+        assert _transfer_route_count(mcp) == 1
