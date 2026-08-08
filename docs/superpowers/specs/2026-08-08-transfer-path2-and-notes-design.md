@@ -261,10 +261,22 @@ Two issues, two PRs, one issue-cycle each (CLAUDE.md).
 2. **Part A second** — the larger surface change.
 3. **Scenario-2 deferral issue** — filed to document the known-but-unsupported
    shape.
-4. **PR #247 amended** — reduced to the ADR §5 correction note (the factual
-   record that `TransferStore` was never exported). Its prescriptive
-   "must not reach into `._transfer.store`" sentence is dropped: Part A makes
-   it obsolete by providing the supported alternative.
+
+### 6.1 Superseded prose already on `main`
+
+PR #247 merged (`e4d72c6`) before this design was settled, so its `register.py`
+module docstring now states three things this design supersedes. Each is
+corrected by the PR that invalidates it, not separately:
+
+| Statement on `main` | Superseded by | Correction |
+|---|---|---|
+| "`register_transfer_routes` is the one public entry point" | Part A | Two entry points; `register_transfer_routes` is path 1, `build_transfer_links` is path 2. |
+| "there are **no override kwargs** for any shape element" | Part B | Still true as written — the note kwargs are additive hooks, not overrides — but the sentence should name them so it does not read as contradicted. |
+| "must NOT ... reach into `._transfer.store` / `._transfer.routes` ... full stop" | Part A | The prohibition on private imports stands; the surrounding claim that path 2 is therefore impossible does not. Rewrite to point at `build_transfer_links`. |
+
+The ADR §5 correction note from #247 (the factual record that `TransferStore`
+was never a public export) stays as-is — it remains true, and Part A does not
+change it: `TransferStore` is still internal.
 
 Downstream follow-ups, out of scope here: `fastmcp-server-template`#309's
 Path 2 example rewritten onto `build_transfer_links`;
