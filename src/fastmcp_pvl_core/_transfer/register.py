@@ -126,15 +126,15 @@ def register_transfer_routes(
         sink: Domain hook — where bytes are read from / written to.
         validate: Domain hook — maps a caller ref + kind to a validated opaque
             ``sink_handle`` (raises to reject); invoked at link creation.
-        download_note: Optional domain-specific sentence appended to
-            ``create_download_link``'s description. pvl-core's generic
-            description always comes first and is never replaced; this only adds
-            domain context (e.g. what a ``ref`` is for this server). Omitted or
-            blank leaves the generic description unchanged.
-        upload_note: The same for ``create_upload_link``. Usually the more
-            valuable of the two: an upload ``ref`` is *authored* by the caller,
-            so stating the destination rules here is what a calling model most
-            lacks.
+        download_note: Domain hook (optional) — a domain-specific sentence
+            appended to ``create_download_link``'s description. pvl-core's
+            generic description always comes first and is never replaced; this
+            only adds domain context (e.g. what a ``ref`` is for this server).
+            Omitted or blank leaves the generic description unchanged.
+        upload_note: Domain hook (optional) — the same for
+            ``create_upload_link``. Usually the more valuable of the two: an
+            upload ``ref`` is *authored* by the caller, so stating the
+            destination rules here is what a calling model most lacks.
 
     Raises:
         ConfigurationError: If ``config.base_url`` is unset or blank — a
