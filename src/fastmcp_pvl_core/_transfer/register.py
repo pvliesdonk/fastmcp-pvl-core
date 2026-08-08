@@ -21,6 +21,7 @@ Intra-package imports stay relative so a fold-in is a directory rename.
 
 from __future__ import annotations
 
+import base64
 from typing import Any
 
 from fastmcp import FastMCP
@@ -33,22 +34,37 @@ from .routes import make_transfer_handler
 from .sink import TransferKind, TransferSink, TransferValidator
 from .store import TransferStore
 
-# Lucide icons (MIT) embedded as data URIs so the tools carry universal icons
-# with no file-system or network dependency — foldable and offline-capable.
-_DOWNLOAD_ICON = Icon(
-    src=(
-        "data:image/svg+xml;base64,"
-        "PHN2ZyB3aWR0aD0iMjQiIGhlaWdodD0iMjQiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyIgdmlld0JveD0iMCAwIDI0IDI0Ij48cGF0aCBmaWxsPSJub25lIiBzdHJva2U9ImN1cnJlbnRDb2xvciIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBzdHJva2UtbGluZWpvaW49InJvdW5kIiBzdHJva2Utd2lkdGg9IjIiIGQ9Ik0xMiAxNVYzbTkgMTJ2NGEyIDIgMCAwIDEtMiAySDVhMiAyIDAgMCAxLTItMnYtNCIvPjxwYXRoIGQ9Im03IDEwbDUgNWw1LTUiLz48L3N2Zz4="
-    ),
-    mimeType="image/svg+xml",
+# Lucide icons (MIT) — raw SVG markup, base64-encoded once at import time into
+# data URIs so the tools carry universal icons with no file-system or network
+# dependency (foldable and offline-capable). The raw markup stays reviewable and
+# diffable in source; the base64 blob is derived, not authored.
+_DOWNLOAD_SVG = (
+    '<svg width="24" height="24" xmlns="http://www.w3.org/2000/svg"'
+    ' viewBox="0 0 24 24">'
+    '<path fill="none" stroke="currentColor" stroke-linecap="round"'
+    ' stroke-linejoin="round" stroke-width="2"'
+    ' d="M12 15V3m9 12v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>'
+    '<path d="m7 10l5 5l5-5"/>'
+    "</svg>"
 )
-_UPLOAD_ICON = Icon(
-    src=(
-        "data:image/svg+xml;base64,"
-        "PHN2ZyB3aWR0aD0iMjQiIGhlaWdodD0iMjQiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyIgdmlld0JveD0iMCAwIDI0IDI0Ij48cGF0aCBmaWxsPSJub25lIiBzdHJva2U9ImN1cnJlbnRDb2xvciIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBzdHJva2UtbGluZWpvaW49InJvdW5kIiBzdHJva2Utd2lkdGg9IjIiIGQ9Ik0xMiAzdjEybTUtN2wtNS01bC01IDVtMTQgN3Y0YTIgMiAwIDAgMS0yIDJINWEyIDIgMCAwIDEtMi0ydi00Ii8+PC9zdmc+"
-    ),
-    mimeType="image/svg+xml",
+_UPLOAD_SVG = (
+    '<svg width="24" height="24" xmlns="http://www.w3.org/2000/svg"'
+    ' viewBox="0 0 24 24">'
+    '<path fill="none" stroke="currentColor" stroke-linecap="round"'
+    ' stroke-linejoin="round" stroke-width="2"'
+    ' d="M12 3v12m5-7l-5-5l-5 5m14 7v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>'
+    "</svg>"
 )
+
+
+def _icon(svg: str) -> Icon:
+    """Return an :class:`Icon` with a base64 data URI for *svg*."""
+    payload = base64.b64encode(svg.encode()).decode("ascii")
+    return Icon(src=f"data:image/svg+xml;base64,{payload}", mimeType="image/svg+xml")
+
+
+_DOWNLOAD_ICON = _icon(_DOWNLOAD_SVG)
+_UPLOAD_ICON = _icon(_UPLOAD_SVG)
 
 _ROUTE_PATH = "/transfer/{token}"
 
