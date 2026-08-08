@@ -4,19 +4,28 @@
 single shared :class:`TransferStore`, mounts the ``/transfer/{token}`` route
 (the #217 handler), and registers the two link tools ``create_download_link`` /
 ``create_upload_link``. pvl-core owns every **shape** decision here — the tool
-names, the route path and its method set, the status codes, the TTL clamp, and
-the ``base_url``-required guard. The only hooks are ``sink`` (where bytes land)
-and ``validate`` (what bytes are acceptable); there are **no override kwargs**
-for any shape element (ADR §7 / §10 item 2).
+names, the route path and its method set, the status codes, the TTL clamp, the
+``base_url``-required guard, **and the tool metadata** (annotations, icons,
+tags). The only hooks are ``sink`` (where bytes land) and ``validate`` (what
+bytes are acceptable); there are **no override kwargs** for any shape element
+(ADR §7 / §10 item 2).
+
+The two tools carry generic, universal metadata so every downstream server
+presents them identically. A server that needs domain-specific titles, icons, or
+descriptions should build its own tools on the exported primitives
+(:class:`TransferStore`, :func:`fetch_url`, :func:`decode_base64_capped`)
+rather than mutating the registered tools post-hoc.
 
 Intra-package imports stay relative so a fold-in is a directory rename.
 """
 
 from __future__ import annotations
 
+import base64
 from typing import Any
 
 from fastmcp import FastMCP
+from mcp.types import Icon, ToolAnnotations
 
 from .._config import ServerConfig
 from .._errors import ConfigurationError
@@ -24,6 +33,38 @@ from .config import TransferConfig
 from .routes import make_transfer_handler
 from .sink import TransferKind, TransferSink, TransferValidator
 from .store import TransferStore
+
+# Lucide icons (MIT) — raw SVG markup, base64-encoded once at import time into
+# data URIs so the tools carry universal icons with no file-system or network
+# dependency (foldable and offline-capable). The raw markup stays reviewable and
+# diffable in source; the base64 blob is derived, not authored.
+_DOWNLOAD_SVG = (
+    '<svg width="24" height="24" xmlns="http://www.w3.org/2000/svg"'
+    ' viewBox="0 0 24 24">'
+    '<path fill="none" stroke="currentColor" stroke-linecap="round"'
+    ' stroke-linejoin="round" stroke-width="2"'
+    ' d="M12 15V3m9 12v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>'
+    '<path d="m7 10l5 5l5-5"/>'
+    "</svg>"
+)
+_UPLOAD_SVG = (
+    '<svg width="24" height="24" xmlns="http://www.w3.org/2000/svg"'
+    ' viewBox="0 0 24 24">'
+    '<path fill="none" stroke="currentColor" stroke-linecap="round"'
+    ' stroke-linejoin="round" stroke-width="2"'
+    ' d="M12 3v12m5-7l-5-5l-5 5m14 7v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>'
+    "</svg>"
+)
+
+
+def _icon(svg: str) -> Icon:
+    """Return an :class:`Icon` with a base64 data URI for *svg*."""
+    payload = base64.b64encode(svg.encode()).decode("ascii")
+    return Icon(src=f"data:image/svg+xml;base64,{payload}", mimeType="image/svg+xml")
+
+
+_DOWNLOAD_ICON = _icon(_DOWNLOAD_SVG)
+_UPLOAD_ICON = _icon(_UPLOAD_SVG)
 
 _ROUTE_PATH = "/transfer/{token}"
 
@@ -98,7 +139,16 @@ def register_transfer_routes(
         )
         return {"url": f"{base}/transfer/{token}", "expires_in_s": ttl}
 
-    @mcp.tool(name="create_download_link")
+    @mcp.tool(
+        name="create_download_link",
+        annotations=ToolAnnotations(
+            title="Create Download Link",
+            readOnlyHint=True,
+            destructiveHint=False,
+            idempotentHint=False,
+        ),
+        icons=[_DOWNLOAD_ICON],
+    )
     async def create_download_link(
         ref: str, ttl_s: float | None = None
     ) -> dict[str, Any]:
@@ -112,7 +162,17 @@ def register_transfer_routes(
         """
         return await _mint_link(ref, "download", ttl_s)
 
-    @mcp.tool(name="create_upload_link")
+    @mcp.tool(
+        name="create_upload_link",
+        annotations=ToolAnnotations(
+            title="Create Upload Link",
+            readOnlyHint=False,
+            destructiveHint=False,
+            idempotentHint=False,
+        ),
+        icons=[_UPLOAD_ICON],
+        tags={"write"},
+    )
     async def create_upload_link(
         ref: str, ttl_s: float | None = None
     ) -> dict[str, Any]:
