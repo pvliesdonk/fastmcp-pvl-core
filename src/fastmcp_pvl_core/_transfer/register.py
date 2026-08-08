@@ -12,9 +12,13 @@ bytes are acceptable); there are **no override kwargs** for any shape element
 
 The two tools carry generic, universal metadata so every downstream server
 presents them identically. A server that needs domain-specific titles, icons, or
-descriptions should build its own tools on the exported primitives
-(:class:`TransferStore`, :func:`fetch_url`, :func:`decode_base64_capped`)
-rather than mutating the registered tools post-hoc.
+descriptions must NOT mutate the registered tools post-hoc, nor reach into
+:mod:`._transfer.store` / :mod:`._transfer.routes` to rebuild the capability-link
+machinery under a different name — the token store, route, and link-tool shape
+are pvl-core's, full stop (ADR §10 item 2). The only two things exported for
+standalone reuse are :func:`fetch_url` and :func:`decode_base64_capped` — a
+server with a genuinely different ingest shape (e.g. no capability link at all)
+builds a tool on those, not on the transfer framework's internals.
 
 Intra-package imports stay relative so a fold-in is a directory rename.
 """
