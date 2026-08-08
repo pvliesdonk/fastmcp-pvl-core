@@ -125,6 +125,48 @@ class TestToolRegistration:
         assert await mcp.get_tool("create_download_link") is not None
         assert await mcp.get_tool("create_upload_link") is not None
 
+    async def test_download_link_has_annotations(self) -> None:
+        mcp, _, _ = _register()
+        tool = await mcp.get_tool("create_download_link")
+        assert tool.annotations is not None
+        assert tool.annotations.title == "Create Download Link"
+        assert tool.annotations.readOnlyHint is True
+        assert tool.annotations.destructiveHint is False
+
+    async def test_upload_link_has_annotations(self) -> None:
+        mcp, _, _ = _register()
+        tool = await mcp.get_tool("create_upload_link")
+        assert tool.annotations is not None
+        assert tool.annotations.title == "Create Upload Link"
+        assert tool.annotations.readOnlyHint is False
+        assert tool.annotations.destructiveHint is False
+
+    async def test_download_link_has_icon(self) -> None:
+        mcp, _, _ = _register()
+        tool = await mcp.get_tool("create_download_link")
+        assert tool.icons is not None
+        assert len(tool.icons) == 1
+        assert tool.icons[0].src.startswith("data:image/svg+xml;base64,")
+        assert tool.icons[0].mimeType == "image/svg+xml"
+
+    async def test_upload_link_has_icon(self) -> None:
+        mcp, _, _ = _register()
+        tool = await mcp.get_tool("create_upload_link")
+        assert tool.icons is not None
+        assert len(tool.icons) == 1
+        assert tool.icons[0].src.startswith("data:image/svg+xml;base64,")
+        assert tool.icons[0].mimeType == "image/svg+xml"
+
+    async def test_upload_link_has_write_tag(self) -> None:
+        mcp, _, _ = _register()
+        tool = await mcp.get_tool("create_upload_link")
+        assert "write" in tool.tags
+
+    async def test_download_link_has_no_write_tag(self) -> None:
+        mcp, _, _ = _register()
+        tool = await mcp.get_tool("create_download_link")
+        assert "write" not in tool.tags
+
 
 class TestLinkMinting:
     async def test_download_link_shape_and_kind(self) -> None:

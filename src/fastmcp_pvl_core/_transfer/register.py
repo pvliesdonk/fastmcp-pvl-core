@@ -4,10 +4,17 @@
 single shared :class:`TransferStore`, mounts the ``/transfer/{token}`` route
 (the #217 handler), and registers the two link tools ``create_download_link`` /
 ``create_upload_link``. pvl-core owns every **shape** decision here — the tool
-names, the route path and its method set, the status codes, the TTL clamp, and
-the ``base_url``-required guard. The only hooks are ``sink`` (where bytes land)
-and ``validate`` (what bytes are acceptable); there are **no override kwargs**
-for any shape element (ADR §7 / §10 item 2).
+names, the route path and its method set, the status codes, the TTL clamp, the
+``base_url``-required guard, **and the tool metadata** (annotations, icons,
+tags). The only hooks are ``sink`` (where bytes land) and ``validate`` (what
+bytes are acceptable); there are **no override kwargs** for any shape element
+(ADR §7 / §10 item 2).
+
+The two tools carry generic, universal metadata so every downstream server
+presents them identically. A server that needs domain-specific titles, icons, or
+descriptions should build its own tools on the exported primitives
+(:class:`TransferStore`, :func:`fetch_url`, :func:`decode_base64_capped`)
+rather than mutating the registered tools post-hoc.
 
 Intra-package imports stay relative so a fold-in is a directory rename.
 """
@@ -17,6 +24,7 @@ from __future__ import annotations
 from typing import Any
 
 from fastmcp import FastMCP
+from mcp.types import Icon, ToolAnnotations
 
 from .._config import ServerConfig
 from .._errors import ConfigurationError
@@ -24,6 +32,23 @@ from .config import TransferConfig
 from .routes import make_transfer_handler
 from .sink import TransferKind, TransferSink, TransferValidator
 from .store import TransferStore
+
+# Lucide icons (MIT) embedded as data URIs so the tools carry universal icons
+# with no file-system or network dependency — foldable and offline-capable.
+_DOWNLOAD_ICON = Icon(
+    src=(
+        "data:image/svg+xml;base64,"
+        "PHN2ZyB3aWR0aD0iMjQiIGhlaWdodD0iMjQiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyIgdmlld0JveD0iMCAwIDI0IDI0Ij48cGF0aCBmaWxsPSJub25lIiBzdHJva2U9ImN1cnJlbnRDb2xvciIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBzdHJva2UtbGluZWpvaW49InJvdW5kIiBzdHJva2Utd2lkdGg9IjIiIGQ9Ik0xMiAxNVYzbTkgMTJ2NGEyIDIgMCAwIDEtMiAySDVhMiAyIDAgMCAxLTItMnYtNCIvPjxwYXRoIGQ9Im03IDEwbDUgNWw1LTUiLz48L3N2Zz4="
+    ),
+    mimeType="image/svg+xml",
+)
+_UPLOAD_ICON = Icon(
+    src=(
+        "data:image/svg+xml;base64,"
+        "PHN2ZyB3aWR0aD0iMjQiIGhlaWdodD0iMjQiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyIgdmlld0JveD0iMCAwIDI0IDI0Ij48cGF0aCBmaWxsPSJub25lIiBzdHJva2U9ImN1cnJlbnRDb2xvciIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBzdHJva2UtbGluZWpvaW49InJvdW5kIiBzdHJva2Utd2lkdGg9IjIiIGQ9Ik0xMiAzdjEybTUtN2wtNS01bC01IDVtMTQgN3Y0YTIgMiAwIDAgMS0yIDJINWEyIDIgMCAwIDEtMi0ydi00Ii8+PC9zdmc+"
+    ),
+    mimeType="image/svg+xml",
+)
 
 _ROUTE_PATH = "/transfer/{token}"
 
@@ -98,7 +123,16 @@ def register_transfer_routes(
         )
         return {"url": f"{base}/transfer/{token}", "expires_in_s": ttl}
 
-    @mcp.tool(name="create_download_link")
+    @mcp.tool(
+        name="create_download_link",
+        annotations=ToolAnnotations(
+            title="Create Download Link",
+            readOnlyHint=True,
+            destructiveHint=False,
+            idempotentHint=False,
+        ),
+        icons=[_DOWNLOAD_ICON],
+    )
     async def create_download_link(
         ref: str, ttl_s: float | None = None
     ) -> dict[str, Any]:
@@ -112,7 +146,17 @@ def register_transfer_routes(
         """
         return await _mint_link(ref, "download", ttl_s)
 
-    @mcp.tool(name="create_upload_link")
+    @mcp.tool(
+        name="create_upload_link",
+        annotations=ToolAnnotations(
+            title="Create Upload Link",
+            readOnlyHint=False,
+            destructiveHint=False,
+            idempotentHint=False,
+        ),
+        icons=[_UPLOAD_ICON],
+        tags={"write"},
+    )
     async def create_upload_link(
         ref: str, ttl_s: float | None = None
     ) -> dict[str, Any]:
