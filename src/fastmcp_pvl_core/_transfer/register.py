@@ -6,13 +6,16 @@ single shared :class:`TransferStore`, mounts the ``/transfer/{token}`` route
 ``create_upload_link``. pvl-core owns every **shape** decision here — the tool
 names, the route path and its method set, the status codes, the TTL clamp, the
 ``base_url``-required guard, **and the tool metadata** (annotations, icons,
-tags). The only hooks are ``sink`` (where bytes land) and ``validate`` (what
-bytes are acceptable); there are **no override kwargs** for any shape element
-(ADR §7 / §10 item 2).
+tags). Downstream supplies the ``sink`` and ``validate`` hooks, plus optional
+``download_note`` / ``upload_note`` strings that are *appended* to the generic
+tool descriptions. There are **no override kwargs** for any shape element (ADR
+§7 / §10 item 2): a note adds domain context, it never replaces pvl-core's
+description or changes a tool name, route, or status code.
 
-The two tools carry generic, universal metadata so every downstream server
-presents them identically. A server that needs domain-specific titles, icons, or
-descriptions must NOT mutate the registered tools post-hoc, nor reach into
+The two tools carry generic, universal metadata: titles and icons are fixed and
+identical across downstreams, and the descriptions share a common generic base
+that a per-server ``download_note`` / ``upload_note`` may only *append* to. A
+server must NOT mutate the registered tools post-hoc, nor reach into
 :mod:`._transfer.store` / :mod:`._transfer.routes` to rebuild the capability-link
 machinery under a different name — the token store, route, and link-tool shape
 are pvl-core's, full stop (ADR §10 item 2). The only two things exported for
@@ -26,6 +29,7 @@ Intra-package imports stay relative so a fold-in is a directory rename.
 from __future__ import annotations
 
 import base64
+import inspect
 from typing import Any
 
 from fastmcp import FastMCP
@@ -70,6 +74,20 @@ def _icon(svg: str) -> Icon:
 _DOWNLOAD_ICON = _icon(_DOWNLOAD_SVG)
 _UPLOAD_ICON = _icon(_UPLOAD_SVG)
 
+
+def _describe(fn: Any, note: str | None) -> str:
+    """Compose a tool description from *fn*'s docstring plus an optional *note*.
+
+    pvl-core's generic description (the function docstring) always comes first
+    and is never altered; a downstream *note* is appended after a blank line.
+    An absent note (``None`` or blank) yields the generic description unchanged.
+    """
+    base = inspect.cleandoc(fn.__doc__ or "")
+    if note and note.strip():
+        return f"{base}\n\n{note.strip()}"
+    return base
+
+
 _ROUTE_PATH = "/transfer/{token}"
 
 # Route the methods a client realistically sends a request *body* with, so each
@@ -93,6 +111,8 @@ def register_transfer_routes(
     *,
     sink: TransferSink,
     validate: TransferValidator,
+    download_note: str | None = None,
+    upload_note: str | None = None,
 ) -> None:
     """Register the ``/transfer`` route and the two link tools on *mcp*.
 
@@ -106,6 +126,15 @@ def register_transfer_routes(
         sink: Domain hook — where bytes are read from / written to.
         validate: Domain hook — maps a caller ref + kind to a validated opaque
             ``sink_handle`` (raises to reject); invoked at link creation.
+        download_note: Domain hook (optional) — a domain-specific sentence
+            appended to ``create_download_link``'s description. pvl-core's
+            generic description always comes first and is never replaced; this
+            only adds domain context (e.g. what a ``ref`` is for this server).
+            Omitted or blank leaves the generic description unchanged.
+        upload_note: Domain hook (optional) — the same for
+            ``create_upload_link``. Usually the more valuable of the two: an
+            upload ``ref`` is *authored* by the caller, so stating the
+            destination rules here is what a calling model most lacks.
 
     Raises:
         ConfigurationError: If ``config.base_url`` is unset or blank — a
@@ -143,16 +172,11 @@ def register_transfer_routes(
         )
         return {"url": f"{base}/transfer/{token}", "expires_in_s": ttl}
 
-    @mcp.tool(
-        name="create_download_link",
-        annotations=ToolAnnotations(
-            title="Create Download Link",
-            readOnlyHint=True,
-            destructiveHint=False,
-            idempotentHint=False,
-        ),
-        icons=[_DOWNLOAD_ICON],
-    )
+    # The tools are registered by an explicit ``mcp.tool(...)(fn)`` call rather
+    # than ``@mcp.tool`` decoration so ``description=`` can be composed from each
+    # function's own docstring: a nested closure cannot reference its own
+    # ``__doc__`` in its decorator expression. The docstring therefore stays the
+    # single source of the generic description; a downstream note is appended.
     async def create_download_link(
         ref: str, ttl_s: float | None = None
     ) -> dict[str, Any]:
@@ -166,17 +190,18 @@ def register_transfer_routes(
         """
         return await _mint_link(ref, "download", ttl_s)
 
-    @mcp.tool(
-        name="create_upload_link",
+    mcp.tool(
+        name="create_download_link",
+        description=_describe(create_download_link, download_note),
         annotations=ToolAnnotations(
-            title="Create Upload Link",
-            readOnlyHint=False,
+            title="Create Download Link",
+            readOnlyHint=True,
             destructiveHint=False,
             idempotentHint=False,
         ),
-        icons=[_UPLOAD_ICON],
-        tags={"write"},
-    )
+        icons=[_DOWNLOAD_ICON],
+    )(create_download_link)
+
     async def create_upload_link(
         ref: str, ttl_s: float | None = None
     ) -> dict[str, Any]:
@@ -189,3 +214,16 @@ def register_transfer_routes(
         ``{"url", "expires_in_s"}``.
         """
         return await _mint_link(ref, "upload", ttl_s)
+
+    mcp.tool(
+        name="create_upload_link",
+        description=_describe(create_upload_link, upload_note),
+        annotations=ToolAnnotations(
+            title="Create Upload Link",
+            readOnlyHint=False,
+            destructiveHint=False,
+            idempotentHint=False,
+        ),
+        icons=[_UPLOAD_ICON],
+        tags={"write"},
+    )(create_upload_link)

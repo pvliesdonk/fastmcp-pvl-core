@@ -441,9 +441,11 @@ The constraints that keep this from re-becoming #138:
    `/transfer/{token}` is an implementation detail of a single server, **not**
    a published contract — and therefore **not** documented under `docs/specs/`.
 2. **No shape-override kwargs.** Tool names, route path, status codes, and the
-   scheme allowlist are pvl-core's. The only kwargs are the two hooks
-   (`sink`, `validate`); the only tuning is env config. A reviewer rejects any
-   kwarg that overrides a shape decision.
+   scheme allowlist are pvl-core's. The kwargs are the two hooks
+   (`sink`, `validate`) plus the optional `download_note` / `upload_note`, which
+   *append* domain context to the generic tool descriptions without replacing
+   them; the only tuning is env config. A reviewer rejects any kwarg that
+   overrides a shape decision (a note does not — it adds, it cannot replace).
 3. **Opaque handle.** pvl-core never interprets the sink handle, so no
    domain-aware branch can grow in core.
 4. **Naming + housekeeping.** Module is `_transfer`; the empty
