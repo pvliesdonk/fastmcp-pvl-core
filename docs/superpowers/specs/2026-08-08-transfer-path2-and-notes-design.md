@@ -218,12 +218,86 @@ nothing to escape.
 `build_transfer_links` takes no note kwargs: path 2 downstream writes its own
 tool docstrings.
 
-### 4.4 Implementation
+### 4.4 The ADR amendment is a prerequisite, not a footnote
 
-`@mcp.tool(description=...)` overrides the function docstring (verified against
-the installed fastmcp). Core composes `inspect.cleandoc(<base>) + "\n\n" + note`
-and passes the result explicitly, keeping the docstring as the single source of
-the base text rather than duplicating it in a constant.
+Resolving the CLAUDE.md rule question in §4.3 is **not** the same as changing
+the decision record. ADR 0001 states, verbatim:
+
+> **No shape-override kwargs.** Tool names, route path, status codes, and the
+> scheme allowlist are pvl-core's. **The only kwargs are the two hooks
+> (`sink`, `validate`)**; the only tuning is env config.
+> — `docs/adr/0001-transfer-lift.md` §10 item 2
+
+`register_transfer_routes` gaining two more kwargs contradicts that sentence as
+written. §2 item 1 (`register_transfer_routes(mcp, config, *, sink, validate)`,
+"Downstream implements **only** two domain hooks") and the §5 module table row
+say the same thing.
+
+A first attempt at Part B shipped the kwargs *while citing §10 item 2 as their
+authority*, and the pre-flight gate returned `structural` — 11 findings at ≥80,
+nine of them traceable to this single unamended premise: the missing category
+label on the new Args entries, the unpinned append-only guarantee, and the tests
+that therefore could not pin it either. The lesson is recorded here so the
+sequencing cannot be lost again:
+
+**The ADR amendment lands first, as its own change, before any code that
+depends on it.** It ratifies a third kwarg category alongside domain hooks and
+operator env config:
+
+> **Additive-domain-text kwargs** — optional strings a downstream appends to
+> text pvl-core owns. They may only *add*; the core text always survives as the
+> prefix, so the shape stays pvl-core's. Not a shape override, and not operator
+> config.
+
+Amend §2 item 1, §10 item 2, and the §5 table row, using the repo's established
+post-hoc form — the `> **Correction (post-implementation):** …` block already
+present at `docs/adr/0001-transfer-lift.md:211` — rather than silently
+rewriting shipped ADR text.
+
+Every new kwarg's Args entry names its category (`Domain hook — …`,
+`Additive domain text — …`), which CLAUDE.md's "Practical consequences"
+requires and the existing `sink` / `validate` entries already do.
+
+### 4.5 The append-only guarantee must be enforced, not just asserted
+
+The first attempt wrote `inspect.cleandoc(fn.__doc__ or "")`. Under
+`python -OO` / `PYTHONOPTIMIZE=2` docstrings are stripped, so `__doc__` is
+`None`, the base collapses to `""`, and the *note becomes the entire tool
+description* — the exact inversion of the guarantee. The `or ""` fallback makes
+it silent.
+
+The guarantee is therefore an invariant with a precondition, and the
+precondition is checked:
+
+- The base text is read from the tool function's docstring. A missing docstring
+  is a **programming/build error**, not a runtime condition to paper over: raise
+  at registration naming the tool and the `-OO` cause. Registration already
+  fails loudly on a missing `base_url`, so this matches the module's existing
+  posture — fail at wiring time, not at the first tool call.
+- `_augment`'s docstring claims only what a pure two-line function can: it
+  appends, and returns the base unchanged for an absent note. The end-to-end
+  "byte-identical" claim belongs to the registration site, which is where the
+  test pins it.
+
+A blank-but-supplied note (`""` / whitespace) stays a silent no-op rather than
+an error — an operator template that renders empty should not take the server
+down — but registration logs at `debug` that a note was supplied and discarded,
+so the operator has a signal. `register.py` has no logger today; it gains the
+module-level `logging.getLogger(__name__)` that `routes.py` and `store.py`
+already use.
+
+### 4.6 Implementation
+
+`@mcp.tool(description=...)` overrides the function docstring, and
+`description=None` falls back to it (both verified against the installed
+fastmcp). Core composes `inspect.cleandoc(<base>) + "\n\n" + note` and passes
+the result explicitly.
+
+The tool functions are nested closures, and a closure cannot reference its own
+`__doc__` in its own decorator expression — so registration is an explicit
+`mcp.tool(...)(fn)` call after the `def`, not `@` syntax. This keeps the
+docstring as the single source of the base text; a duplicated module constant
+would be free to drift from it.
 
 ---
 
@@ -246,21 +320,58 @@ the base text rather than duplicating it in a constant.
 **Part B**
 
 - A note is appended to the correct tool, after core's base text.
-- Core's base text is intact and unmodified in the augmented description.
-- Both notes omitted → descriptions byte-identical to the pre-change output.
-- Empty / whitespace-only note treated as absent.
+- Notes do not cross tools: a download note never appears in the upload
+  description, and vice versa (a test that would pass with the arguments
+  swapped is not a test).
+- **The full base body is pinned, not just its first sentence.** The first
+  attempt asserted only `description.startswith("<first sentence>")`, and both
+  of these mutations passed the whole suite:
+  - dropping `inspect.cleandoc` (leaving every continuation line indented,
+    which renders as a Markdown code block in a client);
+  - truncating the base to `.split("\n\n")[0]` (silently losing the parameter
+    documentation).
+
+  So the assertions must include a verbatim fragment from the base's *second*
+  paragraph, and that no line of the rendered description begins with
+  indentation. Both mutations are re-run as a check on the test, not just the
+  code.
+- Both notes omitted → description equals the base docstring exactly (pinned
+  against `inspect.cleandoc(<the docstring>)`, not against another run of the
+  same new code path — comparing post-change to post-change proves nothing).
+- Empty / whitespace-only note treated as absent, and logged at `debug`.
+- A multi-line note is handled: `_augment` strips the note but does not dedent
+  it, so a triple-quoted note keeps interior indentation. Either dedent it via
+  `inspect.cleandoc` or pin the current behaviour with a test — do not leave it
+  untested.
+- A missing docstring (the `-OO` case) raises at registration, naming the tool.
 
 ---
 
 ## 6. Sequencing
 
-Two issues, two PRs, one issue-cycle each (CLAUDE.md).
+Three issues, three PRs, one issue-cycle each (CLAUDE.md).
 
-1. **Part B first** — smaller, independent of Part A, and it unblocks
-   `markdown-vault-mcp`'s upload-description problem immediately.
-2. **Part A second** — the larger surface change.
+0. **The ADR amendment first** (§4.4) — ratifies the additive-domain-text kwarg
+   category in ADR 0001 §2 item 1, §10 item 2, and the §5 table. Docs-only, no
+   code. **Part B may not start until this is merged**: its code cites §10
+   item 2 as authority, and shipping the two in one PR is what produced the
+   `structural` gate verdict on the first attempt (a PR that both changes the
+   rule and relies on it gives review nothing stable to check against).
+1. **Part B second** — the description-augmentation hook. Unblocks
+   `markdown-vault-mcp`'s upload-description problem.
+2. **Part A third** — the larger surface change.
 3. **Scenario-2 deferral issue** — filed to document the known-but-unsupported
    shape.
+
+### 6.0 Status of the first Part B attempt
+
+Branch `transfer-domain-notes` (4 commits, unpushed, never PR'd) implemented
+Part B before this revision and was stopped by the pre-flight gate at
+`structural` — 11 findings at ≥80. It is a **spike**: read it for the mechanics
+it proved (the `mcp.tool(...)(fn)` call form, `-OO` docstring stripping,
+`description=None` fallback), and re-implement fresh against this revised design
+rather than patching it. Its two substantive gaps — the unamended ADR and the
+mutation-surviving tests — are now §4.4 and §5 respectively.
 
 ### 6.1 Superseded prose already on `main`
 
@@ -271,8 +382,14 @@ corrected by the PR that invalidates it, not separately:
 | Statement on `main` | Superseded by | Correction |
 |---|---|---|
 | "`register_transfer_routes` is the one public entry point" | Part A | Two entry points; `register_transfer_routes` is path 1, `build_transfer_links` is path 2. |
-| "there are **no override kwargs** for any shape element" | Part B | Still true as written — the note kwargs are additive hooks, not overrides — but the sentence should name them so it does not read as contradicted. |
+| "there are **no override kwargs** for any shape element" | Part B | Still true as written — the note kwargs are additive, not overrides — but the sentence must name them, and may only do so **after** the ADR amendment (§4.4) ratifies the category it is citing. |
 | "must NOT ... reach into `._transfer.store` / `._transfer.routes` ... full stop" | Part A | The prohibition on private imports stands; the surrounding claim that path 2 is therefore impossible does not. Rewrite to point at `build_transfer_links`. |
+
+One further item, independent of both parts and pre-dating them:
+`create_download_link` carries `destructiveHint=False` under `readOnlyHint=True`,
+which is inert per the MCP annotation spec and which `claude-review` flagged
+twice on PR #245. Any PR that rewrites that annotations block should drop it,
+matching `_server_info.py`'s precedent.
 
 The ADR §5 correction note from #247 (the factual record that `TransferStore`
 was never a public export) stays as-is — it remains true, and Part A does not
