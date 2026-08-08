@@ -12,9 +12,10 @@ tool descriptions. There are **no override kwargs** for any shape element (ADR
 §7 / §10 item 2): a note adds domain context, it never replaces pvl-core's
 description or changes a tool name, route, or status code.
 
-The two tools carry generic, universal metadata so every downstream server
-presents them identically. A server that needs domain-specific titles, icons, or
-descriptions must NOT mutate the registered tools post-hoc, nor reach into
+The two tools carry generic, universal metadata: titles and icons are fixed and
+identical across downstreams, and the descriptions share a common generic base
+that a per-server ``download_note`` / ``upload_note`` may only *append* to. A
+server must NOT mutate the registered tools post-hoc, nor reach into
 :mod:`._transfer.store` / :mod:`._transfer.routes` to rebuild the capability-link
 machinery under a different name — the token store, route, and link-tool shape
 are pvl-core's, full stop (ADR §10 item 2). The only two things exported for
