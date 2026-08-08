@@ -92,6 +92,8 @@ def _register(
     transfer_config: TransferConfig | None = None,
     sink: _RecordingSink | None = None,
     validate: _RecordingValidator | None = None,
+    download_note: str | None = None,
+    upload_note: str | None = None,
 ) -> tuple[FastMCP, _RecordingSink, _RecordingValidator]:
     mcp = FastMCP("t")
     sink = sink or _RecordingSink()
@@ -103,6 +105,8 @@ def _register(
         transfer_config or _tconfig(),
         sink=sink,
         validate=validate,
+        download_note=download_note,
+        upload_note=upload_note,
     )
     return mcp, sink, validate
 
@@ -166,6 +170,53 @@ class TestToolRegistration:
         mcp, _, _ = _register()
         tool = await mcp.get_tool("create_download_link")
         assert "write" not in tool.tags
+
+
+class TestDomainNotes:
+    # A verbatim fragment from the *second* paragraph of both tool docstrings.
+    # Asserting a second-paragraph fragment (not just the opening sentence) is
+    # what makes these tests catch a regression that drops the whole body or
+    # truncates it to the first paragraph.
+    _BODY = "omitted uses the configured default, a value over the configured"
+
+    async def test_download_note_appended_after_body(self) -> None:
+        mcp, _, _ = _register(download_note="Refs are vault-relative paths.")
+        desc = (await mcp.get_tool("create_download_link")).description
+        assert desc.startswith("Mint a capability link that serves the bytes")
+        assert self._BODY in desc  # generic body survives in full
+        assert desc.endswith("\n\nRefs are vault-relative paths.")
+
+    async def test_upload_note_appended_after_body(self) -> None:
+        mcp, _, _ = _register(upload_note="Dest must be an allowed extension.")
+        desc = (await mcp.get_tool("create_upload_link")).description
+        assert desc.startswith("Mint a capability link that accepts one upload")
+        assert self._BODY in desc
+        assert desc.endswith("\n\nDest must be an allowed extension.")
+
+    async def test_notes_do_not_cross_tools(self) -> None:
+        mcp, _, _ = _register(download_note="DOWN_ONLY", upload_note="UP_ONLY")
+        down = (await mcp.get_tool("create_download_link")).description
+        up = (await mcp.get_tool("create_upload_link")).description
+        assert "DOWN_ONLY" in down
+        assert "DOWN_ONLY" not in up
+        assert "UP_ONLY" in up
+        assert "UP_ONLY" not in down
+
+    async def test_omitted_notes_leave_generic_description(self) -> None:
+        # No note: the description is exactly the docstring, no trailing blank
+        # paragraph, no injected text.
+        mcp, _, _ = _register()
+        desc = (await mcp.get_tool("create_download_link")).description
+        assert desc.startswith("Mint a capability link that serves the bytes")
+        assert self._BODY in desc
+        assert desc == desc.strip()  # no stray leading/trailing whitespace
+
+    async def test_blank_note_is_ignored(self) -> None:
+        # Whitespace-only note is treated as absent — no dangling "\n\n".
+        mcp, _, _ = _register(download_note="   ")
+        desc = (await mcp.get_tool("create_download_link")).description
+        assert desc == desc.strip()
+        assert not desc.endswith("\n")
 
 
 class TestLinkMinting:
