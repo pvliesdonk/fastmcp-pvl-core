@@ -203,11 +203,21 @@ building block of ingest.
 |---|---|---|
 | `fetch.py` | scheme allowlist, `_resolve_pinned_ip` (DNS-rebind pin), blocked-host set, streaming size cap, userinfo+query redaction (logs **and** exceptions — §8), Host/SNI handling, redirects disabled | `fetch_url` |
 | `base64.py` | decode + size cap | `decode_base64_capped` |
-| `store.py` | `TransferStore` over `build_kv_store(config, namespace="transfer")`; opaque handle; `available ↔ in_flight` with grace-settle on success (explicit `burn` → `consumed`); TTL expiry; release-on-failure | `TransferStore` |
+| `store.py` | `TransferStore` over `build_kv_store(config, namespace="transfer")`; opaque handle; `available ↔ in_flight` with grace-settle on success (explicit `burn` → `consumed`); TTL expiry; release-on-failure | *(internal — see correction below)* |
 | `sink.py` | `TransferSink` Protocol + `TransferValidator` type — **the only things downstream implements** | `TransferSink`, `TransferValidator` |
 | `routes.py` | `make_transfer_handler(store, sink)` — GET=download, POST/PUT=upload, streaming caps, RFC 6266 Content-Disposition, complete/release | *(internal)* |
 | `register.py` | `register_transfer_routes(mcp, config, *, sink, validate)` — owns route + both link tools + TTL clamp + `base_url` guard, wiring one shared store | `register_transfer_routes` |
 | `config.py` | `TransferConfig` (env section, §7) | `TransferConfig` |
+
+> **Correction (post-implementation):** the `store.py` row's "Public export" originally
+> read `TransferStore`. The shipped implementation never exported it — neither
+> `_transfer/__init__.py`'s `__all__` nor the top-level package re-export it — and
+> `_transfer/__init__.py`'s own docstring says plainly *"The store, handler, and
+> route mechanics stay internal — pvl-core owns their shape."* This table cell was
+> wrong from the first implementing PR; it misled a later downstream (the
+> `fastmcp-server-template` DOMAIN-WIRING example) into importing
+> `fastmcp_pvl_core._transfer.store` directly. Only `fetch_url` and
+> `decode_base64_capped` are standalone exported primitives (§4).
 
 All intra-package imports stay relative (`from .store import …`) so a
 fold-in remains a directory rename (`CLAUDE.md` foldability rule).
