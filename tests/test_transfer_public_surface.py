@@ -11,11 +11,19 @@ import fastmcp_pvl_core
 from fastmcp_pvl_core import transfer
 
 _EXPECTED = {
+    "TransferBadGatewayError",
     "TransferConfig",
+    "TransferForbiddenError",
+    "TransferGatewayTimeoutError",
     "TransferKind",
     "TransferLinks",
+    "TransferNotFoundError",
+    "TransferRateLimitedError",
     "TransferReadResult",
+    "TransferResourceGoneError",
     "TransferSink",
+    "TransferSinkError",
+    "TransferUnavailableError",
     "TransferValidator",
     "build_transfer_links",
     "register_transfer_routes",
