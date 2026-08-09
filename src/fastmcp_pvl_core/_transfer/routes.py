@@ -12,7 +12,10 @@ capability-link state machine over HTTP:
 The link is **settled on success** (``store.complete`` — grace-settle, so a
 served-but-stalled transfer can retry within the grace window rather than be
 stranded) and **released on any failure** (``store.release`` — a transient
-failure must not spend the link; ADR §6.1). The handler is kept internal; the
+failure must not spend the link; ADR §6.1). A sink may raise
+:class:`TransferSinkError` (or a named subclass) from ``read``/``write`` to
+return a specific 4xx/5xx status instead of the default 500; the link is still
+released, exactly as on any other failure. The handler is kept internal; the
 route-registration layer (§11 issue #5) mounts it via ``mcp.custom_route`` and
 wires the operator caps from config.
 
@@ -30,7 +33,7 @@ from urllib.parse import quote
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
-from .sink import TransferSink
+from .sink import TransferSink, TransferSinkError
 from .store import TokenInFlightError, TransferStore, TransferToken, TransferTokenError
 
 logger = logging.getLogger(__name__)
@@ -142,6 +145,17 @@ async def _download(store: TransferStore, sink: TransferSink, token: str) -> Res
         return Response(status_code=_claim_error_status(exc))
     try:
         body, media_type, filename = await sink.read(cast(str, claim.sink_handle))
+    except TransferSinkError as exc:
+        # A deliberate domain signal: release the link and return the sink's
+        # chosen status. Log the status and class name only — never the message,
+        # which may embed a domain path or the token-derived key.
+        await _release_quietly(store, claim)
+        logger.info(
+            "transfer download sink signalled %d: %s",
+            exc.status_code,
+            type(exc).__name__,
+        )
+        return Response(status_code=exc.status_code)
     except BaseException:
         # Release-on-failure: the link survives a transient failure. BaseException
         # (not Exception) so a cancelled request also releases; then the error /
@@ -183,6 +197,16 @@ async def _upload(
         raise
     try:
         payload = await sink.write(cast(str, claim.sink_handle), body)
+    except TransferSinkError as exc:
+        # Deliberate domain signal. The body was fully read above, so nothing is
+        # left undrained → no Connection: close needed (unlike the 413 path).
+        await _release_quietly(store, claim)
+        logger.info(
+            "transfer upload sink signalled %d: %s",
+            exc.status_code,
+            type(exc).__name__,
+        )
+        return Response(status_code=exc.status_code)
     except BaseException:
         await _release_quietly(store, claim)
         raise
