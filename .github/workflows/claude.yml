@@ -19,14 +19,14 @@ jobs:
       (github.event_name == 'issues' && (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude')))
     runs-on: ubuntu-latest
     permissions:
-      contents: read
-      pull-requests: read
-      issues: read
+      contents: read         # Read-only: @claude answers and comments, never commits
+      pull-requests: write   # Post inline review comments
+      issues: write          # Update issue/PR comments
       id-token: write
       actions: read # Required for Claude to read CI results on PRs
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           fetch-depth: 1
 
@@ -43,7 +43,25 @@ jobs:
           # Optional: Give a custom prompt to Claude. If this is not specified, Claude will perform the instructions specified in the comment that tagged it.
           # prompt: 'Update the pull request description to include a summary of changes.'
 
-          # Optional: Add claude_args to customize behavior and configuration
+          track_progress: true
+          display_report: true
+          include_fix_links: false
+
+          # Grant the built-in GitHub MCP servers' read/search/CI tools, the
+          # inline-comment tool, `gh api` for GitHub API access (read, and write
+          # bounded by the issues/pull-requests: write scopes above — a @claude
+          # asked to label an issue or update a PR needs it), and Task. These ADD
+          # to the action's defaults (Edit/Write/git stay available), but
+          # `contents: read` above is what keeps this workflow from committing.
+          #
+          # Task lets @claude fan out into parallel subagents. It dispatches them
+          # via the Task tool, which tag mode's fixed allow-set omits, so under
+          # --permission-mode acceptEdits + headless (no prompt handler) every
+          # dispatch silently falls through to "ask" and is denied — the run then
+          # stalls mid-review. Subagents still inherit this same curated allow-set
+          # under `contents: read`, so Task grants delegation, not new capability.
+          # (Verified: a fan-out run went from a stall to 0 permission denials the
+          # moment Task was granted.)
           # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md
-          # or https://code.claude.com/docs/en/cli-reference for available options
-          # claude_args: '--allowed-tools Bash(gh pr *)'
+          claude_args: |
+            --allowedTools "Task,mcp__github__get_*,mcp__github__list_*,mcp__github__search_*,mcp__github_ci__*,mcp__github_inline_comment__*,Bash(gh api *)"
