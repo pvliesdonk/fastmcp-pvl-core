@@ -221,3 +221,13 @@ class TestDomainEnvSurface:
             if v.suffix == "TRANSFER_TTL_DEFAULT_S"
         )
         assert ttl.default == pytest.approx(3600.0)
+
+    def test_every_var_is_gated_to_server_deployment(self) -> None:
+        """Transfer is HTTP-only (the route/tools mount only under an HTTP
+        transport), so every knob's wizard hint gates to a server deployment —
+        a stdio/local wizard must not surface them (issue #255). The group stays
+        ``Transfer`` so the gating rides alongside, not replacing, the section."""
+        surface = domain_env_surface(TransferConfig)
+        assert surface  # guard: an empty surface would pass all() vacuously
+        assert all(v.wizard.get("when") == "server" for v in surface)
+        assert all(v.wizard.get("group") == "Transfer" for v in surface)
