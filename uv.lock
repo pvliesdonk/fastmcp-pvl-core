@@ -852,7 +852,7 @@ wheels = [
 
 [[package]]
 name = "fastmcp-pvl-core"
-version = "4.8.0"
+version = "4.9.0"
 source = { editable = "." }
 dependencies = [
     { name = "fastmcp" },
