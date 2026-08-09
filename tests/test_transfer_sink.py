@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import copy
+import pickle
 from collections.abc import Callable
 
 import pytest
@@ -65,3 +67,26 @@ class TestSugarSubclasses:
         self, cls: Callable[..., TransferSinkError], status: int
     ) -> None:
         assert str(cls("nope")) == "nope"
+
+
+class TestRoundTrip:
+    """Exceptions must survive copy/pickle — a signal may cross a process or
+    task-queue boundary, and the base stores status_code outside self.args."""
+
+    def test_base_copy_preserves_status_and_message(self) -> None:
+        c = copy.copy(TransferSinkError(503, "backend down"))
+        assert c.status_code == 503
+        assert str(c) == "backend down"
+
+    def test_base_pickle_preserves_status_and_message(self) -> None:
+        r = pickle.loads(pickle.dumps(TransferSinkError(503, "backend down")))
+        assert r.status_code == 503
+        assert str(r) == "backend down"
+
+    @pytest.mark.parametrize(("cls", "status"), _SUGAR)
+    def test_subclass_pickle_preserves_status_and_message(
+        self, cls: Callable[..., TransferSinkError], status: int
+    ) -> None:
+        r = pickle.loads(pickle.dumps(cls("nope")))
+        assert r.status_code == status
+        assert str(r) == "nope"

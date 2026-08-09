@@ -123,9 +123,9 @@ except BaseException:
 
 ## Surfacing
 
-`TransferSinkError`, `TransferResourceGoneError`, `TransferUnavailableError` are
-part of the public **domain seam** (a sink implementer imports and raises them),
-so they are exported from `_transfer/__init__.py`, re-exported top-level from
+All eight names (`TransferSinkError` plus the seven sugar subclasses) are part of
+the public **domain seam** (a sink implementer imports and raises them), so they
+are exported from `_transfer/__init__.py`, re-exported top-level from
 `fastmcp_pvl_core`, and included in `fastmcp_pvl_core/transfer.py`'s `__all__`.
 The internal `Token*Error` types stay internal (unchanged; #250).
 
@@ -151,7 +151,7 @@ claim beyond what the code does.
   **503** + released; `TransferSinkError(403)` → **403**; an upload sink raising
   each → the same statuses + released. The existing "generic `RuntimeError` →
   500 + released" tests stay **unchanged** (the default path is preserved).
-- **Public surface** (extend `tests/test_transfer_public_surface.py`): the three
+- **Public surface** (extend `tests/test_transfer_public_surface.py`): all eight
   names appear in `fastmcp_pvl_core.transfer.__all__`, alias the top-level
   re-exports, and the `Token*Error` internals remain unexported.
 ```

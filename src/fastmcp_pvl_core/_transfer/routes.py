@@ -148,7 +148,8 @@ async def _download(store: TransferStore, sink: TransferSink, token: str) -> Res
     except TransferSinkError as exc:
         # A deliberate domain signal: release the link and return the sink's
         # chosen status. Log the status and class name only — never the message,
-        # which may embed a domain path or the token-derived key.
+        # which is authored from the domain sink_handle and may embed a domain
+        # path or other domain data (the sink never sees the token).
         await _release_quietly(store, claim)
         logger.info(
             "transfer download sink signalled %d: %s",

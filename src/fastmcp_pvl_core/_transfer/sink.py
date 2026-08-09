@@ -109,6 +109,16 @@ class TransferSinkError(Exception):
         super().__init__(*args)
         self.status_code = status_code
 
+    def __reduce__(self) -> tuple[Any, tuple[Any, ...]]:
+        # Keep the exception picklable/copyable. Exception.__reduce__ replays
+        # ``self.args`` (the message only) through ``type(self)(...)``; for the
+        # base that would call ``TransferSinkError(<message>)`` and fail the
+        # status_code check. Reconstruct with the right arity: the base needs
+        # status_code first, a fixed-status subclass takes only the message args.
+        if type(self) is TransferSinkError:
+            return (self.__class__, (self.status_code, *self.args))
+        return (self.__class__, self.args)
+
 
 class TransferResourceGoneError(TransferSinkError):
     """The resource the link pointed at existed and is now gone (**410 Gone**).
