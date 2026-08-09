@@ -37,6 +37,10 @@ class TransferConfig:
     default TTL must not exceed the max TTL. Construct via :meth:`from_env` (the
     operator path) or directly (tests). ``__post_init__`` validates both.
 
+    Every field's wizard hint carries ``when: "server"``: the transfer route and
+    tools mount only under an HTTP (server) deployment, so these knobs are
+    meaningful only there and a stdio/local config wizard gates them out (#255).
+
     Attributes:
         ttl_default_s: Link lifetime when the caller omits one.
         ttl_max_s: Ceiling; a caller-requested TTL is clamped to this.
@@ -54,7 +58,7 @@ class TransferConfig:
                 "Link lifetime in seconds when the caller requests no explicit TTL."
             ),
             "tags": ("transfer",),
-            "wizard": {"group": "Transfer"},
+            "wizard": {"group": "Transfer", "when": "server"},
         },
     )
     ttl_max_s: float = field(
@@ -62,7 +66,7 @@ class TransferConfig:
         metadata={
             "help": ("Ceiling in seconds a caller-requested link TTL is clamped to."),
             "tags": ("transfer",),
-            "wizard": {"group": "Transfer"},
+            "wizard": {"group": "Transfer", "when": "server"},
         },
     )
     grace_ttl_s: float = field(
@@ -73,7 +77,7 @@ class TransferConfig:
                 "shrinks to this so a stalled transfer can retry within it."
             ),
             "tags": ("transfer",),
-            "wizard": {"group": "Transfer"},
+            "wizard": {"group": "Transfer", "when": "server"},
         },
     )
     lease_s: float = field(
@@ -84,7 +88,7 @@ class TransferConfig:
                 "reservation."
             ),
             "tags": ("transfer",),
-            "wizard": {"group": "Transfer"},
+            "wizard": {"group": "Transfer", "when": "server"},
         },
     )
     max_upload_bytes: int = field(
@@ -92,7 +96,7 @@ class TransferConfig:
         metadata={
             "help": "Maximum size in bytes of a single upload.",
             "tags": ("transfer",),
-            "wizard": {"group": "Transfer"},
+            "wizard": {"group": "Transfer", "when": "server"},
         },
     )
 
