@@ -38,7 +38,14 @@ jobs:
           deadline=$(( SECONDS + 25 * 60 ))
           conclusion=""
           while [ "$SECONDS" -lt "$deadline" ]; do
-            runs=$(gh api "repos/${REPO}/actions/workflows/ci.yml/runs?head_sha=${HEAD_SHA}&per_page=1" 2>/dev/null || echo '{}')
+            # A genuine API failure (auth, rate-limit, network) must not look
+            # like the "run not created yet" case (which returns 200 + an empty
+            # list): log it so a spin-to-timeout is diagnosable, then fall back
+            # to {} and keep polling.
+            if ! runs=$(gh api "repos/${REPO}/actions/workflows/ci.yml/runs?head_sha=${HEAD_SHA}&per_page=1" 2>/tmp/gh_err); then
+              echo "CI poll: gh api failed (retrying): $(cat /tmp/gh_err)" >&2
+              runs='{}'
+            fi
             status=$(echo "$runs" | jq -r '.workflow_runs[0].status // empty')
             conclusion=$(echo "$runs" | jq -r '.workflow_runs[0].conclusion // empty')
             if [ "$status" = "completed" ]; then
@@ -109,10 +116,11 @@ jobs:
             actions: read
           # Grant the built-in GitHub read/search MCP tools, the CI tools, the
           # inline-comment tool (what lets the reviewer post inline — not in the
-          # default allow-set), `gh api`, gh pr/run read commands, scoped
-          # `uv run` gate tools for targeted investigation, and Task.
-          # contents: read above keeps the reviewer from committing — it only
-          # reads and comments.
+          # default allow-set), `gh api` (read + write, bounded by the token
+          # scopes), `gh pr comment` for posting a summary comment, the gh
+          # pr/run read commands (pr diff/view, run view/list), scoped `uv run`
+          # gate tools for targeted investigation, and Task. contents: read
+          # above keeps the reviewer from committing — it only reads and comments.
           #
           # Task is required: the /code-review plugin fans out into review
           # subagents via the Task tool. Tag mode's fixed allow-set omits it, so
