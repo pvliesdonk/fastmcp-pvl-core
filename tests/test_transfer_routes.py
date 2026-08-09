@@ -37,7 +37,13 @@ from starlette.applications import Starlette
 from starlette.routing import Route
 
 from fastmcp_pvl_core._transfer.routes import make_transfer_handler
-from fastmcp_pvl_core._transfer.sink import TransferReadResult
+from fastmcp_pvl_core._transfer.sink import (
+    TransferForbiddenError,
+    TransferReadResult,
+    TransferResourceGoneError,
+    TransferSinkError,
+    TransferUnavailableError,
+)
 from fastmcp_pvl_core._transfer.store import TransferStore
 
 
@@ -49,13 +55,22 @@ class _FakeSink:
         self.writes: dict[str, bytes] = {}
         self.fail_read = False
         self.fail_write = False
+        # When set, read/write raise this instead — used to exercise a sink
+        # signalling a specific status (TransferSinkError) as well as an
+        # unexpected error. Cleared (None) to simulate the sink recovering.
+        self.read_raises: BaseException | None = None
+        self.write_raises: BaseException | None = None
 
     async def read(self, handle: str) -> TransferReadResult:
+        if self.read_raises is not None:
+            raise self.read_raises
         if self.fail_read:
             raise RuntimeError("sink read boom")
         return TransferReadResult(*self.reads[handle])
 
     async def write(self, handle: str, body: bytes) -> Mapping[str, Any]:
+        if self.write_raises is not None:
+            raise self.write_raises
         if self.fail_write:
             raise RuntimeError("sink write boom")
         self.writes[handle] = body
@@ -235,6 +250,61 @@ async def test_release_failure_does_not_mask_the_original_error(
             resp = await client.get(f"/transfer/{token}")
         assert resp.status_code == 500  # the sink error propagated, not masked
         assert any("release failed" in r.getMessage() for r in caplog.records)
+
+
+# --------------------------------------------------------------------------- #
+# sink-signalled status (issue #233)
+# --------------------------------------------------------------------------- #
+
+# A representative spread: two named sugar subclasses, one more, and the base
+# used directly for a status with no named class.
+_SIGNALS = [
+    (TransferResourceGoneError(), 410),
+    (TransferUnavailableError(), 503),
+    (TransferForbiddenError(), 403),
+    (TransferSinkError(404), 404),
+    (TransferSinkError(502), 502),
+]
+
+
+@pytest.mark.parametrize(("exc", "status"), _SIGNALS)
+async def test_download_sink_signal_maps_status_and_releases(
+    exc: TransferSinkError, status: int
+) -> None:
+    store = _make_store()
+    sink = _FakeSink()
+    sink.reads["h1"] = (b"DATA", "text/plain", "f.txt")
+    token = await _mint_download(store, handle="h1")
+    async with _client(store, sink) as client:
+        sink.read_raises = exc
+        resp = await client.get(f"/transfer/{token}")
+        assert resp.status_code == status
+        # Released, not spent: a retry once the sink recovers serves 200.
+        sink.read_raises = None
+        retry = await client.get(f"/transfer/{token}")
+        assert retry.status_code == 200
+        assert retry.content == b"DATA"
+
+
+@pytest.mark.parametrize(("exc", "status"), _SIGNALS)
+async def test_upload_sink_signal_maps_status_and_releases(
+    exc: TransferSinkError, status: int
+) -> None:
+    store = _make_store()
+    sink = _FakeSink()
+    token = await _mint_upload(store, handle="h1")
+    async with _client(store, sink) as client:
+        sink.write_raises = exc
+        resp = await client.put(f"/transfer/{token}", content=b"BODY")
+        assert resp.status_code == status
+        # The upload body was fully read before write, so nothing is undrained →
+        # the connection is not force-closed (unlike the 413 over-cap path).
+        assert resp.headers.get("connection") != "close"
+        # Released: a retry once the sink recovers stores the body (200).
+        sink.write_raises = None
+        retry = await client.put(f"/transfer/{token}", content=b"BODY")
+        assert retry.status_code == 200
+        assert sink.writes["h1"] == b"BODY"
 
 
 # --------------------------------------------------------------------------- #

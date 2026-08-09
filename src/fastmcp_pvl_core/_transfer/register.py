@@ -17,10 +17,12 @@ Two entry points share one route-mount and one token store:
   mode (the generic pair plus its own extra tools).
 
 pvl-core owns every **shape** decision on both paths — the route path and its
-method set, the token store and its namespace, the status codes, the TTL clamp,
-the ``base_url``-required guard, and (for path 1's tools) the tool names and
-metadata (annotations, icons, tags). Downstream supplies the ``sink`` domain hook
-on both paths, plus — on path 1 — the ``validate`` hook and optional
+method set, the token store and its namespace, the protocol status codes (claim,
+method, size-cap, success — a sink may signal its own read/write failure status
+via :class:`TransferSinkError`), the TTL clamp, the ``base_url``-required guard,
+and (for path 1's tools) the tool names and metadata (annotations, icons, tags).
+Downstream supplies the ``sink`` domain hook on both paths, plus — on path 1 —
+the ``validate`` hook and optional
 ``download_note`` / ``upload_note`` strings *appended* to the generic tool
 descriptions. There are **no override kwargs** for any shape element (ADR §7 /
 §10 item 2): a note adds domain context, it never replaces pvl-core's description

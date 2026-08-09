@@ -11,9 +11,10 @@ The public surface is the two standalone primitives (``fetch_url`` with its
 entry points — ``register_transfer_routes`` (path 1: generic tools) and
 ``build_transfer_links`` (path 2: the ``TransferLinks`` minter, no tools) —
 its config (``TransferConfig``), its two domain hooks (``TransferSink``,
-``TransferValidator``), and their supporting types (``TransferReadResult``,
-``TransferKind``). The store, handler, and route mechanics stay internal —
-pvl-core owns their shape.
+``TransferValidator``), their supporting types (``TransferReadResult``,
+``TransferKind``), and the sink-raisable status signals (``TransferSinkError``
+and its named subclasses). The store, handler, and route mechanics stay
+internal — pvl-core owns their shape.
 
 Intra-package imports stay relative so a fold-in is a directory rename.
 """
@@ -24,15 +25,36 @@ from .base64 import decode_base64_capped
 from .config import TransferConfig
 from .fetch import FetchResult, fetch_url
 from .register import TransferLinks, build_transfer_links, register_transfer_routes
-from .sink import TransferKind, TransferReadResult, TransferSink, TransferValidator
+from .sink import (
+    TransferBadGatewayError,
+    TransferForbiddenError,
+    TransferGatewayTimeoutError,
+    TransferKind,
+    TransferNotFoundError,
+    TransferRateLimitedError,
+    TransferReadResult,
+    TransferResourceGoneError,
+    TransferSink,
+    TransferSinkError,
+    TransferUnavailableError,
+    TransferValidator,
+)
 
 __all__ = [
     "FetchResult",
+    "TransferBadGatewayError",
     "TransferConfig",
+    "TransferForbiddenError",
+    "TransferGatewayTimeoutError",
     "TransferKind",
     "TransferLinks",
+    "TransferNotFoundError",
+    "TransferRateLimitedError",
     "TransferReadResult",
+    "TransferResourceGoneError",
     "TransferSink",
+    "TransferSinkError",
+    "TransferUnavailableError",
     "TransferValidator",
     "build_transfer_links",
     "decode_base64_capped",

@@ -12,22 +12,38 @@ a second implementation. The feature's mechanics stay in the internal
 from __future__ import annotations
 
 from ._transfer import (
+    TransferBadGatewayError,
     TransferConfig,
+    TransferForbiddenError,
+    TransferGatewayTimeoutError,
     TransferKind,
     TransferLinks,
+    TransferNotFoundError,
+    TransferRateLimitedError,
     TransferReadResult,
+    TransferResourceGoneError,
     TransferSink,
+    TransferSinkError,
+    TransferUnavailableError,
     TransferValidator,
     build_transfer_links,
     register_transfer_routes,
 )
 
 __all__ = [
+    "TransferBadGatewayError",
     "TransferConfig",
+    "TransferForbiddenError",
+    "TransferGatewayTimeoutError",
     "TransferKind",
     "TransferLinks",
+    "TransferNotFoundError",
+    "TransferRateLimitedError",
     "TransferReadResult",
+    "TransferResourceGoneError",
     "TransferSink",
+    "TransferSinkError",
+    "TransferUnavailableError",
     "TransferValidator",
     "build_transfer_links",
     "register_transfer_routes",
