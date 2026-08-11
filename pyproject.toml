@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "fastmcp-pvl-core"
-version = "4.9.0"  # PSR-managed post-release
+version = "4.10.0"  # PSR-managed post-release
 description = "Shared FastMCP infrastructure: auth, middleware, logging, server-factory helpers"
 readme = "README.md"
 license = {text = "MIT"}
