@@ -1,0 +1,133 @@
+"""Tests for ``apply_tool_visibility``."""
+
+from __future__ import annotations
+
+import pytest
+from fastmcp import Client, FastMCP
+from fastmcp.exceptions import ToolError
+
+from fastmcp_pvl_core import ConfigurationError, ServerConfig, apply_tool_visibility
+
+
+def build_server() -> FastMCP:
+    mcp = FastMCP("t")
+
+    @mcp.tool
+    def alpha() -> str:
+        return "a"
+
+    @mcp.tool
+    def beta() -> str:
+        return "b"
+
+    @mcp.tool
+    def gamma() -> str:
+        return "g"
+
+    @mcp.resource("res://thing")
+    def thing() -> str:
+        return "r"
+
+    @mcp.prompt
+    def hello() -> str:
+        return "p"
+
+    return mcp
+
+
+async def visible_tools(mcp: FastMCP) -> list[str]:
+    async with Client(mcp) as client:
+        return sorted(t.name for t in await client.list_tools())
+
+
+class TestDenylist:
+    async def test_denied_tools_hidden_from_listing(self):
+        mcp = build_server()
+        apply_tool_visibility(mcp, ServerConfig(tools_deny=("beta", "gamma")))
+        assert await visible_tools(mcp) == ["alpha"]
+
+    async def test_denied_tool_cannot_be_called(self):
+        mcp = build_server()
+        apply_tool_visibility(mcp, ServerConfig(tools_deny=("beta",)))
+        async with Client(mcp) as client:
+            with pytest.raises(ToolError):
+                await client.call_tool("beta", {})
+
+    async def test_other_component_types_untouched(self):
+        mcp = build_server()
+        apply_tool_visibility(mcp, ServerConfig(tools_deny=("beta",)))
+        async with Client(mcp) as client:
+            assert [str(r.uri) for r in await client.list_resources()] == [
+                "res://thing"
+            ]
+            assert [p.name for p in await client.list_prompts()] == ["hello"]
+
+    async def test_unknown_names_are_inert(self):
+        mcp = build_server()
+        apply_tool_visibility(mcp, ServerConfig(tools_deny=("nonexistent",)))
+        assert await visible_tools(mcp) == ["alpha", "beta", "gamma"]
+
+    async def test_covers_tools_registered_after_the_call(self):
+        mcp = build_server()
+        apply_tool_visibility(mcp, ServerConfig(tools_deny=("late",)))
+
+        @mcp.tool
+        def late() -> str:
+            return "x"
+
+        assert await visible_tools(mcp) == ["alpha", "beta", "gamma"]
+
+
+class TestAllowlist:
+    async def test_only_allowed_tools_exposed(self):
+        mcp = build_server()
+        apply_tool_visibility(mcp, ServerConfig(tools_allow=("alpha", "gamma")))
+        assert await visible_tools(mcp) == ["alpha", "gamma"]
+
+    async def test_unlisted_tool_cannot_be_called(self):
+        mcp = build_server()
+        apply_tool_visibility(mcp, ServerConfig(tools_allow=("alpha",)))
+        async with Client(mcp) as client:
+            with pytest.raises(ToolError):
+                await client.call_tool("beta", {})
+
+    async def test_other_component_types_untouched(self):
+        """The allowlist must not fall back to fastmcp's ``only=True`` mode,
+        which allowlists across *all* component types and would hide every
+        resource and prompt."""
+        mcp = build_server()
+        apply_tool_visibility(mcp, ServerConfig(tools_allow=("alpha",)))
+        async with Client(mcp) as client:
+            assert [str(r.uri) for r in await client.list_resources()] == [
+                "res://thing"
+            ]
+            assert [p.name for p in await client.list_prompts()] == ["hello"]
+
+    async def test_covers_tools_registered_after_the_call(self):
+        mcp = build_server()
+        apply_tool_visibility(mcp, ServerConfig(tools_allow=("alpha",)))
+
+        @mcp.tool
+        def late() -> str:
+            return "x"
+
+        assert await visible_tools(mcp) == ["alpha"]
+
+    async def test_unknown_names_yield_empty_tool_list(self):
+        mcp = build_server()
+        apply_tool_visibility(mcp, ServerConfig(tools_allow=("nonexistent",)))
+        assert await visible_tools(mcp) == []
+
+
+class TestGuards:
+    async def test_neither_list_set_is_a_noop(self):
+        mcp = build_server()
+        apply_tool_visibility(mcp, ServerConfig())
+        assert await visible_tools(mcp) == ["alpha", "beta", "gamma"]
+
+    def test_both_lists_set_raises(self):
+        mcp = build_server()
+        with pytest.raises(ConfigurationError, match="at most one"):
+            apply_tool_visibility(
+                mcp, ServerConfig(tools_allow=("alpha",), tools_deny=("beta",))
+            )

@@ -391,6 +391,33 @@ class TestServerConfigFromEnv:
     def test_auth_mode_defaults_to_none(self):
         assert ServerConfig().auth_mode is None
 
+    def test_reads_tools_allow(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setenv("MYAPP_TOOLS_ALLOW", "search, get_item ,fetch")
+        config = ServerConfig.from_env("MYAPP")
+        assert config.tools_allow == ("search", "get_item", "fetch")
+        assert config.tools_deny == ()
+
+    def test_reads_tools_deny(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setenv("MYAPP_TOOLS_DENY", "delete_item,, purge ")
+        config = ServerConfig.from_env("MYAPP")
+        assert config.tools_deny == ("delete_item", "purge")
+        assert config.tools_allow == ()
+
+    def test_tool_lists_default_to_empty(self):
+        config = ServerConfig()
+        assert config.tools_allow == ()
+        assert config.tools_deny == ()
+
+    def test_both_tool_lists_set_raises_naming_the_vars(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.setenv("MYAPP_TOOLS_ALLOW", "search")
+        monkeypatch.setenv("MYAPP_TOOLS_DENY", "purge")
+        with pytest.raises(
+            ConfigurationError, match="MYAPP_TOOLS_ALLOW and MYAPP_TOOLS_DENY"
+        ):
+            ServerConfig.from_env("MYAPP")
+
     def test_invalid_transport_falls_back_to_stdio(
         self, monkeypatch: pytest.MonkeyPatch
     ):
@@ -771,14 +798,14 @@ class TestServerConfigSurface:
             f.name for f in dataclasses.fields(ServerConfig)
         )
 
-    def test_returns_eighteen_fields(self):
-        assert len(server_config_surface()) == 18
+    def test_returns_twenty_fields(self):
+        assert len(server_config_surface()) == 20
 
     def test_suffix_is_the_upper_cased_field_name(self):
         assert all(c.suffix == c.name.upper() for c in server_config_surface())
 
     def test_suffixes_match_the_env_suffix_set(self):
-        """The surface and the existing frozenset describe the same 18 vars."""
+        """The surface and the existing frozenset describe the same 20 vars."""
         assert {
             c.suffix for c in server_config_surface()
         } == server_config_env_suffixes()
@@ -834,9 +861,15 @@ class TestServerConfigSurface:
         untagged = [c.name for c in server_config_surface() if not c.tags]
         assert untagged == []
 
-    def test_auth_mode_is_the_only_inferred_field(self):
-        """AUTH_MODE is an expert override, so the wizard offers no control for it."""
-        assert [c.name for c in server_config_surface() if c.inferred] == ["auth_mode"]
+    def test_inferred_fields_are_the_expert_overrides(self):
+        """AUTH_MODE is an expert override and the tool visibility lists are
+        deployment-specific operator knobs, so the wizard offers no control
+        for any of them."""
+        assert [c.name for c in server_config_surface() if c.inferred] == [
+            "tools_allow",
+            "tools_deny",
+            "auth_mode",
+        ]
 
     def test_inferred_field_carries_no_wizard_hints(self):
         auth_mode = next(c for c in server_config_surface() if c.name == "auth_mode")
@@ -917,7 +950,7 @@ class TestServerConfigSurface:
         assert offenders == {}
 
     def test_every_declared_default_is_unchanged(self):
-        """Full 18-field guard; a spot check would miss a silent default change."""
+        """Full 20-field guard; a spot check would miss a silent default change."""
         expected = {
             "transport": "stdio",
             "host": "127.0.0.1",
@@ -934,6 +967,8 @@ class TestServerConfigSurface:
             "kv_store_url": None,
             "event_store_url": None,
             "app_domain": None,
+            "tools_allow": (),
+            "tools_deny": (),
             "auth_mode": None,
             "bearer_tokens_file": None,
             "bearer_default_subject": DEFAULT_BEARER_SUBJECT,

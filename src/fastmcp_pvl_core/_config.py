@@ -16,7 +16,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
-from ._env import env, env_int, parse_bool, parse_scopes
+from ._env import _resolve_key, env, env_int, parse_bool, parse_list, parse_scopes
+from ._errors import ConfigurationError
 
 Transport = Literal["stdio", "http", "sse"]
 
@@ -204,6 +205,35 @@ class ServerConfig:
         },
     )
 
+    tools_allow: tuple[str, ...] = field(
+        default_factory=tuple,
+        metadata={
+            "help": (
+                "Comma-separated explicit tool names this instance exposes; "
+                "every other tool is hidden from listings and cannot be "
+                "invoked. Names matching no registered tool are inert. "
+                "Mutually exclusive with ``tools_deny``. Takes effect through "
+                "``apply_tool_visibility``."
+            ),
+            "tags": ("server",),
+            "wizard": "inferred",
+        },
+    )
+    tools_deny: tuple[str, ...] = field(
+        default_factory=tuple,
+        metadata={
+            "help": (
+                "Comma-separated explicit tool names hidden from this "
+                "instance (absent from listings, cannot be invoked). Names "
+                "matching no registered tool are inert. Mutually exclusive "
+                "with ``tools_allow``. Takes effect through "
+                "``apply_tool_visibility``."
+            ),
+            "tags": ("server",),
+            "wizard": "inferred",
+        },
+    )
+
     auth_mode: str | None = field(
         default=None,
         metadata={
@@ -287,7 +317,9 @@ class ServerConfig:
 
         Raises:
             ConfigurationError: If ``{env_prefix}_PORT`` is set to a
-                non-integer or out-of-``1..65535`` value.
+                non-integer or out-of-``1..65535`` value, or if
+                ``{env_prefix}_TOOLS_ALLOW`` and ``{env_prefix}_TOOLS_DENY``
+                are both set.
         """
         transport_raw = env(env_prefix, "TRANSPORT", "stdio")
         transport: Transport
@@ -319,6 +351,18 @@ class ServerConfig:
             env_prefix, "BEARER_DEFAULT_SUBJECT", DEFAULT_BEARER_SUBJECT
         )
 
+        tools_allow_raw = env(env_prefix, "TOOLS_ALLOW")
+        tools_allow = tuple(parse_list(tools_allow_raw)) if tools_allow_raw else ()
+        tools_deny_raw = env(env_prefix, "TOOLS_DENY")
+        tools_deny = tuple(parse_list(tools_deny_raw)) if tools_deny_raw else ()
+        if tools_allow and tools_deny:
+            raise ConfigurationError(
+                f"{_resolve_key(env_prefix, 'TOOLS_ALLOW')} and "
+                f"{_resolve_key(env_prefix, 'TOOLS_DENY')} are both set; "
+                "set at most one — an allowlist already expresses every "
+                "exclusion."
+            )
+
         return cls(
             transport=transport,
             host=host,
@@ -337,6 +381,8 @@ class ServerConfig:
             kv_store_url=env(env_prefix, "KV_STORE_URL"),
             event_store_url=env(env_prefix, "EVENT_STORE_URL"),
             app_domain=env(env_prefix, "APP_DOMAIN"),
+            tools_allow=tools_allow,
+            tools_deny=tools_deny,
             auth_mode=env(env_prefix, "AUTH_MODE"),
             bearer_tokens_file=bearer_tokens_file,
             bearer_default_subject=bearer_default_subject,
@@ -370,6 +416,8 @@ _SERVER_CONFIG_ENV_SUFFIXES: frozenset[str] = frozenset(
         "EVENT_STORE_URL",
         "APP_DOMAIN",
         "AUTH_MODE",
+        "TOOLS_ALLOW",
+        "TOOLS_DENY",
     }
 )
 

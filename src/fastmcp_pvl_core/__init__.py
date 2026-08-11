@@ -78,6 +78,7 @@ from ._transfer import (
     fetch_url,
     register_transfer_routes,
 )
+from ._visibility import apply_tool_visibility
 
 __version__ = "4.9.0"  # PSR overrides at build time
 
@@ -110,6 +111,7 @@ __all__ = [
     "any_check",
     "app_tool_address",
     "app_tool_meta",
+    "apply_tool_visibility",
     "build_auth",
     "build_bearer_auth",
     "build_event_store",
