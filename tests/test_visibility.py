@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 import pytest
 from fastmcp import Client, FastMCP
 from fastmcp.exceptions import ToolError
@@ -116,6 +118,48 @@ class TestAllowlist:
     async def test_unknown_names_yield_empty_tool_list(self):
         mcp = build_server()
         apply_tool_visibility(mcp, ServerConfig(tools_allow=("nonexistent",)))
+        assert await visible_tools(mcp) == []
+
+
+class TestZeroMatchWarning:
+    """A fully unmatched allowlist is a silent total tool outage; it must
+    warn. These tests are deliberately sync — the diagnostic runs the async
+    listing path in a private event loop, which requires no loop running."""
+
+    def test_fully_unmatched_allowlist_warns(self, caplog: pytest.LogCaptureFixture):
+        mcp = build_server()
+        with caplog.at_level(logging.WARNING, logger="fastmcp_pvl_core._visibility"):
+            apply_tool_visibility(mcp, ServerConfig(tools_allow=("serach",)))
+        assert "exposes ZERO tools" in caplog.text
+        assert "serach" in caplog.text
+
+    def test_matching_allowlist_does_not_warn(self, caplog: pytest.LogCaptureFixture):
+        mcp = build_server()
+        with caplog.at_level(logging.WARNING, logger="fastmcp_pvl_core._visibility"):
+            apply_tool_visibility(mcp, ServerConfig(tools_allow=("alpha",)))
+        assert "ZERO tools" not in caplog.text
+
+    def test_partially_matching_allowlist_does_not_warn(
+        self, caplog: pytest.LogCaptureFixture
+    ):
+        """Partial mismatch stays silent by design (forward compat)."""
+        mcp = build_server()
+        with caplog.at_level(logging.WARNING, logger="fastmcp_pvl_core._visibility"):
+            apply_tool_visibility(
+                mcp, ServerConfig(tools_allow=("alpha", "nonexistent"))
+            )
+        assert "ZERO tools" not in caplog.text
+
+    async def test_check_is_skipped_inside_a_running_loop(
+        self, caplog: pytest.LogCaptureFixture
+    ):
+        """Inside a running event loop the diagnostic cannot run the async
+        listing path synchronously, so it is skipped — no warning, no error,
+        and the filtering itself still applies."""
+        mcp = build_server()
+        with caplog.at_level(logging.WARNING, logger="fastmcp_pvl_core._visibility"):
+            apply_tool_visibility(mcp, ServerConfig(tools_allow=("serach",)))
+        assert "ZERO tools" not in caplog.text
         assert await visible_tools(mcp) == []
 
 

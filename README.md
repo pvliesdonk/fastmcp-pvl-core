@@ -180,9 +180,12 @@ list of explicit tool names:
 
 Hidden tools disappear from `tools/list` **and** are rejected on
 `tools/call`. Setting both variables is a startup `ConfigurationError` (an
-allowlist already expresses every exclusion). Names matching no registered
-tool are inert, so one operator config survives releases that add or remove
-tools. Resources, resource templates, and prompts are unaffected.
+allowlist already expresses every exclusion). Individual names matching no
+registered tool are inert, so one operator config survives releases that add
+or remove tools — but an allowlist that leaves *zero* tools exposed (fully
+mistyped or fully stale) logs a startup `WARNING`, since that would
+otherwise present as a silent total tool outage. Resources, resource
+templates, and prompts are unaffected.
 
 Servers wire it in with one call, after any visibility adjustments of their
 own so the operator's lists win:
