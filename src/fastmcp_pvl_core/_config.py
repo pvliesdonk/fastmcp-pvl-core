@@ -317,9 +317,10 @@ class ServerConfig:
 
         Raises:
             ConfigurationError: If ``{env_prefix}_PORT`` is set to a
-                non-integer or out-of-``1..65535`` value, or if
+                non-integer or out-of-``1..65535`` value; if
                 ``{env_prefix}_TOOLS_ALLOW`` and ``{env_prefix}_TOOLS_DENY``
-                are both set.
+                are both set; or if either is set but parses to zero tool
+                names (e.g. a lone ``,``).
         """
         transport_raw = env(env_prefix, "TRANSPORT", "stdio")
         transport: Transport
@@ -351,10 +352,24 @@ class ServerConfig:
             env_prefix, "BEARER_DEFAULT_SUBJECT", DEFAULT_BEARER_SUBJECT
         )
 
+        # "Set but parses to zero names" (e.g. a lone ",") is rejected rather
+        # than treated as unset: for TOOLS_ALLOW the silent reading would
+        # expose every tool — the exact opposite of the lockdown the operator
+        # was expressing. TOOLS_DENY gets the same guard for symmetry.
         tools_allow_raw = env(env_prefix, "TOOLS_ALLOW")
         tools_allow = tuple(parse_list(tools_allow_raw)) if tools_allow_raw else ()
+        if tools_allow_raw and not tools_allow:
+            raise ConfigurationError(
+                f"{_resolve_key(env_prefix, 'TOOLS_ALLOW')} is set but "
+                "contains no tool names; unset it to expose all tools."
+            )
         tools_deny_raw = env(env_prefix, "TOOLS_DENY")
         tools_deny = tuple(parse_list(tools_deny_raw)) if tools_deny_raw else ()
+        if tools_deny_raw and not tools_deny:
+            raise ConfigurationError(
+                f"{_resolve_key(env_prefix, 'TOOLS_DENY')} is set but "
+                "contains no tool names; unset it to hide no tools."
+            )
         if tools_allow and tools_deny:
             raise ConfigurationError(
                 f"{_resolve_key(env_prefix, 'TOOLS_ALLOW')} and "
@@ -559,7 +574,7 @@ def server_config_surface() -> tuple[ConfigField, ...]:
     :func:`server_config_env_suffixes`, which returns a ``frozenset`` whose
     iteration order varies between processes under hash randomisation.
 
-    Covers the same 18 variables as :func:`server_config_env_suffixes`, adding
+    Covers the same 20 variables as :func:`server_config_env_suffixes`, adding
     each field's type, default, help text, tags, and wizard hints.
     """
     return tuple(_config_field_from(f) for f in dataclasses.fields(ServerConfig))

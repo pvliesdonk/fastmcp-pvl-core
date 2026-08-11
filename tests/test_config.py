@@ -408,6 +408,30 @@ class TestServerConfigFromEnv:
         assert config.tools_allow == ()
         assert config.tools_deny == ()
 
+    def test_blank_tool_list_vars_read_as_unset(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setenv("MYAPP_TOOLS_ALLOW", "   ")
+        monkeypatch.setenv("MYAPP_TOOLS_DENY", "")
+        config = ServerConfig.from_env("MYAPP")
+        assert config.tools_allow == ()
+        assert config.tools_deny == ()
+
+    def test_tools_allow_set_but_empty_after_parsing_raises(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """A lone ',' is not blank, so it must fail fast rather than read as
+        unset — the silent reading would expose every tool, the opposite of
+        the lockdown the operator was expressing."""
+        monkeypatch.setenv("MYAPP_TOOLS_ALLOW", " , ")
+        with pytest.raises(ConfigurationError, match="MYAPP_TOOLS_ALLOW is set but"):
+            ServerConfig.from_env("MYAPP")
+
+    def test_tools_deny_set_but_empty_after_parsing_raises(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.setenv("MYAPP_TOOLS_DENY", ",,")
+        with pytest.raises(ConfigurationError, match="MYAPP_TOOLS_DENY is set but"):
+            ServerConfig.from_env("MYAPP")
+
     def test_both_tool_lists_set_raises_naming_the_vars(
         self, monkeypatch: pytest.MonkeyPatch
     ):
