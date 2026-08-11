@@ -131,7 +131,11 @@ jobs:
           path: dist/
 
       - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b  # v1.14.0
+        # v1.14.2+ required: hatchling is unpinned in [build-system], and current
+        # hatchling emits core metadata 2.5, which the twine bundled in v1.14.x
+        # before .2 rejects ("'2.5' is not a valid metadata version"). v1.14.2
+        # upgraded to Twine v7, which accepts 2.5.
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33  # v1.14.2
         with:
           packages-dir: dist/
           print-hash: true
