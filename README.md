@@ -295,6 +295,11 @@ inside its own tool; the handles resolve through the same generic
 polling tool. Do not reach into `fastmcp_pvl_core._jobs` internals; the
 `jobs` namespace is the supported seam.
 
+The full downstream implementation guide — payload shapes, semantics and
+their limits, path-2 rules, migration from a hand-rolled queue-and-poll
+surface, and testing patterns — is
+[`docs/jobs.md`](docs/jobs.md).
+
 ### Per-user subject mapping (bearer auth)
 
 Bearer auth has two modes:
