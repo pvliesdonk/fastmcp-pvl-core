@@ -48,6 +48,20 @@ from ._factory import (
     compute_app_domain,
 )
 from ._icons import IconSpec, make_icon, register_tool_icons
+from ._jobs import (
+    JOB_POLL_TOOL_NAME,
+    JOB_RETRY_AFTER_S,
+    JobHandle,
+    JobLimitExceededError,
+    JobNotFoundError,
+    JobRecord,
+    Jobs,
+    JobsConfig,
+    JobStatus,
+    build_jobs,
+    register_job_tools,
+    register_long_running_tool,
+)
 from ._kv_store import build_kv_store
 from ._logging import SecretMaskFilter, configure_logging_from_env
 from ._middleware import wire_middleware_stack
@@ -90,6 +104,15 @@ __all__ = [
     "DomainEnvVar",
     "FetchResult",
     "IconSpec",
+    "JOB_POLL_TOOL_NAME",
+    "JOB_RETRY_AFTER_S",
+    "JobHandle",
+    "JobLimitExceededError",
+    "JobNotFoundError",
+    "JobRecord",
+    "JobStatus",
+    "Jobs",
+    "JobsConfig",
     "SecretMaskFilter",
     "ServerConfig",
     "Transport",
@@ -117,6 +140,7 @@ __all__ = [
     "build_bearer_auth",
     "build_event_store",
     "build_instructions",
+    "build_jobs",
     "build_kv_store",
     "build_oidc_proxy_auth",
     "build_remote_auth",
@@ -145,6 +169,8 @@ __all__ = [
     "parse_claim_grants",
     "parse_list",
     "parse_scopes",
+    "register_job_tools",
+    "register_long_running_tool",
     "register_server_info_tool",
     "register_tool_icons",
     "register_transfer_routes",

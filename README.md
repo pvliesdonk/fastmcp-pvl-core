@@ -258,6 +258,43 @@ deliberately not wrapped: `FASTMCP_DOCKET_CONCURRENCY`,
 `FASTMCP_DOCKET_URL` / `FASTMCP_DOCKET_NAME` also keep working as native
 escape hatches when the pvl-core surface leaves them untouched.
 
+### Long-running tools (dual mode)
+
+A tool that may outlive the client's request timeout registers once and
+gets both behaviours: protocol-native SEP-1686 task execution when the
+request is task-augmented, and foreground execution with soft-deadline
+promotion to a pollable background job otherwise:
+
+```python
+from fastmcp_pvl_core import (
+    JobsConfig, build_jobs, register_job_tools, register_long_running_tool,
+)
+
+jobs_config = JobsConfig.from_env("MY_APP")   # MY_APP_JOBS_* knobs
+jobs = build_jobs(config, jobs_config)
+
+@register_long_running_tool(mcp, jobs, tags={"reports"})
+async def build_report(paths: list[str]) -> dict:
+    ...  # domain work; may take minutes
+
+register_job_tools(mcp, jobs)  # the one generic get_job_result tool
+```
+
+A call that beats `MY_APP_JOBS_SOFT_DEADLINE_S` returns its result
+inline; a slower one immediately returns a job handle
+(`{"status": "working", "job_id": ..., "poll_with": "get_job_result",
+...}`) and finishes in the background — results are retrievable via
+`get_job_result` until `MY_APP_JOBS_RESULT_TTL_S` expires, scoped to the
+calling subject.
+
+A server whose long-running tool the wrapper cannot express (its own
+promotion decision, a handle minted from a route) composes on the same
+mechanics without the wrapper — `from fastmcp_pvl_core.jobs import
+build_jobs` and use `jobs.run_with_deadline(...)` / `jobs.start(...)`
+inside its own tool; the handles resolve through the same generic
+polling tool. Do not reach into `fastmcp_pvl_core._jobs` internals; the
+`jobs` namespace is the supported seam.
+
 ### Per-user subject mapping (bearer auth)
 
 Bearer auth has two modes:
