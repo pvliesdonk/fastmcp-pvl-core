@@ -902,7 +902,7 @@ name = "fastmcp-pvl-core"
 version = "4.10.1"
 source = { editable = "." }
 dependencies = [
-    { name = "fastmcp" },
+    { name = "fastmcp", extra = ["tasks"] },
     { name = "httpx" },
     { name = "tomli", marker = "python_full_version < '3.11'" },
     { name = "typing-extensions", marker = "python_full_version < '3.11'" },
@@ -921,9 +921,6 @@ mongodb = [
 redis = [
     { name = "py-key-value-aio", extra = ["redis"] },
 ]
-tasks = [
-    { name = "fastmcp", extra = ["tasks"] },
-]
 
 [package.dev-dependencies]
 dev = [
@@ -940,8 +937,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "debugpy", marker = "extra == 'debug'", specifier = ">=1.8" },
-    { name = "fastmcp", specifier = ">=3.3.1,<4" },
-    { name = "fastmcp", extras = ["tasks"], marker = "extra == 'tasks'" },
+    { name = "fastmcp", extras = ["tasks"], specifier = ">=3.3.1,<4" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "py-key-value-aio", extras = ["dynamodb"], marker = "extra == 'dynamodb'" },
     { name = "py-key-value-aio", extras = ["mongodb"], marker = "extra == 'mongodb'" },
@@ -949,7 +945,7 @@ requires-dist = [
     { name = "tomli", marker = "python_full_version < '3.11'", specifier = ">=2.0" },
     { name = "typing-extensions", marker = "python_full_version < '3.11'", specifier = ">=4.7" },
 ]
-provides-extras = ["remote-auth", "debug", "redis", "dynamodb", "mongodb", "tasks"]
+provides-extras = ["remote-auth", "debug", "redis", "dynamodb", "mongodb"]
 
 [package.metadata.requires-dev]
 dev = [

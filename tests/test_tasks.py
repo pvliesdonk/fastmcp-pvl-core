@@ -30,11 +30,11 @@ def _neutral_docket_settings(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture
 def docket_installed(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Simulate a compatible pydocket being importable.
+    """Pin ``is_docket_available()`` to True.
 
-    The dev venv does not install the ``tasks`` extra, so the real
-    ``is_docket_available()`` returns False; most tests patch it True to
-    exercise the wiring itself.
+    pydocket ships with pvl-core's base dependencies, so this normally
+    matches reality; pinning keeps the wiring tests deterministic in a
+    stripped environment (and symmetric with the tests that pin False).
     """
     monkeypatch.setattr(_AVAILABLE, lambda: True)
 
@@ -187,7 +187,7 @@ class TestNoPydocket:
             r.getMessage() for r in caplog.records if r.levelno == logging.WARNING
         )
         assert "MY_APP_TASKS_URL" in warning
-        assert "tasks" in warning
+        assert "pydocket" in warning
 
 
 class TestMemoryBackendSignal:

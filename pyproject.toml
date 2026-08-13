@@ -11,7 +11,12 @@ license = {text = "MIT"}
 authors = [{name = "Peter van Liesdonk", email = "peter@liesdonk.nl"}]
 requires-python = ">=3.10"
 dependencies = [
-  "fastmcp>=3.3.1,<4",
+  # The [tasks] extra (pydocket) is a deliberate base dependency, not an
+  # optional extra: nearly every family server carries long-running tools,
+  # and fastmcp raises ImportError at registration time for any
+  # ``task=True`` tool when pydocket is missing — ~10 MB buys removal of
+  # that whole failure class (ADR 0002 §4.4, revised).
+  "fastmcp[tasks]>=3.3.1,<4",
   # httpx is used by the remote-auth provider (`_auth.py`) to fetch the
   # OIDC discovery document at startup. Kept as a hard dependency; the
   # `remote-auth` extra is retained as a backwards-compat no-op.
@@ -38,10 +43,6 @@ debug = ["debugpy>=1.8"]
 redis = ["py-key-value-aio[redis]"]
 dynamodb = ["py-key-value-aio[dynamodb]"]
 mongodb = ["py-key-value-aio[mongodb]"]
-# SEP-1686 background-task execution (Docket). Per-downstream opt-in:
-# add it where task-enabled tools exist; ``configure_task_backend`` is a
-# no-op without it.
-tasks = ["fastmcp[tasks]"]
 
 [project.urls]
 Homepage = "https://github.com/pvliesdonk/fastmcp-pvl-core"

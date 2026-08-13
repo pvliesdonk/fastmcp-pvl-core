@@ -129,9 +129,11 @@ downstream today, and is the entire subject of #265.
    otherwise), and **one** generic polling tool registered per server. The
    fallback's status vocabulary mirrors the protocol task lifecycle so a
    later migration to protocol-native tasks is mechanical.
-3. A **`tasks` extra** on pvl-core (`tasks = ["fastmcp[tasks]"]`),
+3. ~~A **`tasks` extra** on pvl-core (`tasks = ["fastmcp[tasks]"]`),
    mirroring the `redis`/`dynamodb`/`mongodb` extras: per-downstream
-   opt-in, never a base dependency.
+   opt-in, never a base dependency.~~ **Revised during implementation:
+   `fastmcp[tasks]` is a base dependency — see §4.4 for the measurements
+   and rationale.**
 
 ## 4. #264 — the task-backend configuration surface
 
@@ -189,15 +191,31 @@ twice. The env-reference generator gains a short "native fastmcp task
 variables" note (the same treatment other `FASTMCP_*` vars get), so the
 surface is documented without being renamed.
 
-### 4.4 The `tasks` extra
+### 4.4 The tasks dependency (revised: base dependency, not an extra)
 
-`fastmcp-pvl-core[tasks]` → `fastmcp[tasks]`. Whether a downstream adopts
-task execution remains a per-project choice (#264's second open question):
-the extra, like `redis`, is installed by the downstream that wants the
-feature; pvl-core's own import surface stays lazy so nothing pulls
-`pydocket` uninvited. `configure_task_backend` is a no-op (with a debug
-log) when `pydocket` is not importable — mirroring fastmcp's own
-activation conditions.
+**Revision, 2026-08-13 (maintainer decision during #267 implementation;
+supersedes the original extra-based text below).** `fastmcp[tasks]` is a
+**base dependency** of pvl-core, not an optional extra. Two measurements
+drove the change: (1) the delta is ~10 MB of site-packages (redis client
+~7.6 MB, docket ~1.1 MB, small tools the rest) — a few percent of a
+typical server image, with runtime cost limited to import weight since
+fastmcp only starts Docket when task-enabled components exist; and
+(2) fastmcp fails **hard at registration time** — `ImportError` from
+`TaskConfig.validate_function` → `require_docket` — for any `task=True`
+tool when pydocket is missing, so with nearly every family server
+carrying long-running tools, a lean install is not a graceful fallback
+but a startup crash waiting to happen. It also removes a conditional
+registration branch from §5's dual-mode helper, which can now always
+register `task=TaskConfig(mode="optional")`. This resolves #264's second
+open question the other way from the original text: adoption of task
+*execution* stays per-project (register `task=True` tools or don't); the
+*dependency* is family baseline. `configure_task_backend` keeps its
+no-op guard (debug log) for stripped forks and incompatible-pydocket
+environments, mirroring fastmcp's own activation conditions.
+
+*Original (superseded):* `fastmcp-pvl-core[tasks]` → `fastmcp[tasks]` as
+a per-downstream opt-in extra, like `redis`, keeping pvl-core's import
+surface lazy so nothing pulls `pydocket` uninvited.
 
 ## 5. #265 — dual-mode long-running tools
 

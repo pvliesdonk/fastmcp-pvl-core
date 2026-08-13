@@ -201,9 +201,8 @@ class ServerConfig:
                 "in-process and lost on restart; ``redis://`` is durable and "
                 "multi-process. When unset, a ``redis://`` ``kv_store_url`` "
                 "is reused for tasks too; otherwise fastmcp's ``memory://`` "
-                "default applies. Only meaningful when the ``tasks`` extra "
-                "is installed and task-enabled tools exist. Applied via "
-                "``configure_task_backend``."
+                "default applies. Only meaningful when task-enabled tools "
+                "exist. Applied via ``configure_task_backend``."
             ),
             "tags": ("persistence", "tasks"),
             "wizard": {"group": "Persistence", "when": "server"},

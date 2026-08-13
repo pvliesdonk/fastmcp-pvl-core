@@ -147,8 +147,6 @@ uv add fastmcp-pvl-core
 uv add "fastmcp-pvl-core[remote-auth]"
 # For attaching a remote Python debugger inside a container image:
 uv add "fastmcp-pvl-core[debug]"
-# For SEP-1686 background-task execution (fastmcp[tasks] / Docket):
-uv add "fastmcp-pvl-core[tasks]"
 ```
 
 ## Usage
@@ -228,10 +226,14 @@ keyed by `method=`. Set `FASTMCP_ENABLE_RICH_LOGGING=false` to emit one JSON
 object per record instead of `key=value` text — for log aggregators such as
 the ELK stack or Splunk.
 
-### Background task backend (opt-in)
+### Background task backend
 
-Servers that register task-enabled tools (`task=True`, SEP-1686) install the
-`tasks` extra and call `configure_task_backend` once before `mcp.run(...)`:
+SEP-1686 task support (`fastmcp[tasks]` / Docket) is a pvl-core **base
+dependency** — nearly every family server carries long-running tools, and
+fastmcp raises `ImportError` at registration time for any `task=True` tool
+when pydocket is missing, so the ~10 MB is deliberately always present.
+Servers that register task-enabled tools call `configure_task_backend` once
+before `mcp.run(...)`:
 
 ```python
 from fastmcp_pvl_core import configure_task_backend
@@ -246,7 +248,8 @@ configures every stateful subsystem *and* tasks; otherwise fastmcp's
 `memory://` default applies (in-process, lost on restart — fine for
 development, not for a multi-process deployment). The Docket queue name is
 derived from the env prefix so family servers sharing one Redis do not share
-a queue. The helper is a no-op when the extra is not installed.
+a queue. The helper degrades to a no-op in the degenerate case of a
+stripped fork or an incompatible pydocket pin.
 
 The remaining Docket worker tunables are native fastmcp variables,
 deliberately not wrapped: `FASTMCP_DOCKET_CONCURRENCY`,

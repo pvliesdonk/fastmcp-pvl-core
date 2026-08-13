@@ -1,8 +1,9 @@
 """Background-task backend wiring (ADR 0002 §4).
 
-fastmcp's SEP-1686 background tasks (the ``fastmcp[tasks]`` extra /
-Docket) select their backend through the native ``FASTMCP_DOCKET_*``
-env surface, outside pvl-core's unified ``kv_store_url`` contract.
+fastmcp's SEP-1686 background tasks (Docket, via ``fastmcp[tasks]`` —
+a pvl-core **base** dependency, so every consumer has it) select their
+backend through the native ``FASTMCP_DOCKET_*`` env surface, outside
+pvl-core's unified ``kv_store_url`` contract.
 :func:`configure_task_backend` closes that gap: it resolves the task
 backend from pvl-core's own operator config and injects the result into
 ``fastmcp.settings.docket`` before the server starts — fastmcp reads
@@ -83,11 +84,13 @@ def configure_task_backend(env_prefix: str, config: ServerConfig) -> None:
     ``FASTMCP_DOCKET_NAME``, which is respected as the native escape
     hatch — pvl-core exposes no variable of its own for it.
 
-    The whole helper is a no-op (debug log) when a compatible ``pydocket``
-    is not installed — mirroring fastmcp's own activation conditions —
-    except that an explicitly set ``tasks_url`` is still validated (an
-    operator typo must fail fast regardless) and, when valid, downgraded
-    to a warning naming the ``tasks`` extra rather than silently dropped.
+    pydocket ships with pvl-core's base dependencies, so a compatible
+    install always has it; the availability guard survives for stripped
+    forks and incompatible-pydocket environments, mirroring fastmcp's own
+    activation conditions. In that degenerate case the helper is a no-op
+    (debug log) — except that an explicitly set ``tasks_url`` is still
+    validated (an operator typo must fail fast regardless) and, when
+    valid, dropped with a warning rather than silently.
 
     Args:
         env_prefix: Env-var prefix of the consuming project (trailing
@@ -125,8 +128,9 @@ def configure_task_backend(env_prefix: str, config: ServerConfig) -> None:
         if url is not None:
             logger.warning(
                 "%s is set but a compatible pydocket is not installed; "
-                "task backend configuration skipped. Install the 'tasks' "
-                "extra (`pip install 'fastmcp-pvl-core[tasks]'`).",
+                "task backend configuration skipped. pydocket ships with "
+                "fastmcp-pvl-core's base dependencies — this environment "
+                "is missing it or pins an incompatible version.",
                 _resolve_key(env_prefix, "TASKS_URL"),
             )
         else:
