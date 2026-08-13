@@ -226,6 +226,38 @@ keyed by `method=`. Set `FASTMCP_ENABLE_RICH_LOGGING=false` to emit one JSON
 object per record instead of `key=value` text — for log aggregators such as
 the ELK stack or Splunk.
 
+### Background task backend
+
+SEP-1686 task support (`fastmcp[tasks]` / Docket) is a pvl-core **base
+dependency** — nearly every family server carries long-running tools, and
+fastmcp raises `ImportError` at registration time for any `task=True` tool
+when pydocket is missing, so the ~10 MB is deliberately always present.
+Servers that register task-enabled tools call `configure_task_backend` once
+before `mcp.run(...)`:
+
+```python
+from fastmcp_pvl_core import configure_task_backend
+
+configure_task_backend("MY_APP", config)
+```
+
+Backend selection then follows pvl-core's unified surface: an explicit
+`MY_APP_TASKS_URL` (`memory://` or `redis://`) wins; otherwise a `redis://`
+`MY_APP_KV_STORE_URL` is reused for the task queue too, so one variable
+configures every stateful subsystem *and* tasks; otherwise fastmcp's
+`memory://` default applies (in-process, lost on restart — fine for
+development, not for a multi-process deployment). The Docket queue name is
+derived from the env prefix so family servers sharing one Redis do not share
+a queue. The helper degrades to a no-op in the degenerate case of a
+stripped fork or an incompatible pydocket pin.
+
+The remaining Docket worker tunables are native fastmcp variables,
+deliberately not wrapped: `FASTMCP_DOCKET_CONCURRENCY`,
+`FASTMCP_DOCKET_WORKER_NAME`, `FASTMCP_DOCKET_REDELIVERY_TIMEOUT`,
+`FASTMCP_DOCKET_RECONNECTION_DELAY`, `FASTMCP_DOCKET_MINIMUM_CHECK_INTERVAL`.
+`FASTMCP_DOCKET_URL` / `FASTMCP_DOCKET_NAME` also keep working as native
+escape hatches when the pvl-core surface leaves them untouched.
+
 ### Per-user subject mapping (bearer auth)
 
 Bearer auth has two modes:

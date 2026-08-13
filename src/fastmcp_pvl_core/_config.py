@@ -3,7 +3,7 @@
 Downstream projects compose this into their own domain config dataclass
 (they do not inherit). Core only owns fields that are universal to any
 FastMCP server: transport, host, port, auth credentials, event store URL,
-MCP Apps domain.
+background-task backend URL, MCP Apps domain.
 """
 
 from __future__ import annotations
@@ -190,6 +190,21 @@ class ServerConfig:
                 "deployments."
             ),
             "tags": ("persistence",),
+            "wizard": {"group": "Persistence", "when": "server"},
+        },
+    )
+    tasks_url: str | None = field(
+        default=None,
+        metadata={
+            "help": (
+                "Background-task (Docket) backend URL: ``memory://`` is "
+                "in-process and lost on restart; ``redis://`` is durable and "
+                "multi-process. When unset, a ``redis://`` ``kv_store_url`` "
+                "is reused for tasks too; otherwise fastmcp's ``memory://`` "
+                "default applies. Only meaningful when task-enabled tools "
+                "exist. Applied via ``configure_task_backend``."
+            ),
+            "tags": ("persistence", "tasks"),
             "wizard": {"group": "Persistence", "when": "server"},
         },
     )
@@ -395,6 +410,7 @@ class ServerConfig:
             oidc_verify_access_token=verify_access_token,
             kv_store_url=env(env_prefix, "KV_STORE_URL"),
             event_store_url=env(env_prefix, "EVENT_STORE_URL"),
+            tasks_url=env(env_prefix, "TASKS_URL"),
             app_domain=env(env_prefix, "APP_DOMAIN"),
             tools_allow=tools_allow,
             tools_deny=tools_deny,
@@ -429,6 +445,7 @@ _SERVER_CONFIG_ENV_SUFFIXES: frozenset[str] = frozenset(
         "OIDC_VERIFY_ACCESS_TOKEN",
         "KV_STORE_URL",
         "EVENT_STORE_URL",
+        "TASKS_URL",
         "APP_DOMAIN",
         "AUTH_MODE",
         "TOOLS_ALLOW",
@@ -574,7 +591,7 @@ def server_config_surface() -> tuple[ConfigField, ...]:
     :func:`server_config_env_suffixes`, which returns a ``frozenset`` whose
     iteration order varies between processes under hash randomisation.
 
-    Covers the same 20 variables as :func:`server_config_env_suffixes`, adding
+    Covers the same 21 variables as :func:`server_config_env_suffixes`, adding
     each field's type, default, help text, tags, and wizard hints.
     """
     return tuple(_config_field_from(f) for f in dataclasses.fields(ServerConfig))
