@@ -822,14 +822,14 @@ class TestServerConfigSurface:
             f.name for f in dataclasses.fields(ServerConfig)
         )
 
-    def test_returns_twenty_fields(self):
-        assert len(server_config_surface()) == 20
+    def test_returns_twenty_one_fields(self):
+        assert len(server_config_surface()) == 21
 
     def test_suffix_is_the_upper_cased_field_name(self):
         assert all(c.suffix == c.name.upper() for c in server_config_surface())
 
     def test_suffixes_match_the_env_suffix_set(self):
-        """The surface and the existing frozenset describe the same 20 vars."""
+        """The surface and the existing frozenset describe the same 21 vars."""
         assert {
             c.suffix for c in server_config_surface()
         } == server_config_env_suffixes()
@@ -974,7 +974,7 @@ class TestServerConfigSurface:
         assert offenders == {}
 
     def test_every_declared_default_is_unchanged(self):
-        """Full 20-field guard; a spot check would miss a silent default change."""
+        """Full 21-field guard; a spot check would miss a silent default change."""
         expected = {
             "transport": "stdio",
             "host": "127.0.0.1",
@@ -990,6 +990,7 @@ class TestServerConfigSurface:
             "oidc_verify_access_token": False,
             "kv_store_url": None,
             "event_store_url": None,
+            "tasks_url": None,
             "app_domain": None,
             "tools_allow": (),
             "tools_deny": (),

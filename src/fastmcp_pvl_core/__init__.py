@@ -57,6 +57,7 @@ from ._server_info import (
     register_server_info_tool,
 )
 from ._subject import get_claims, get_subject
+from ._tasks import configure_task_backend
 from ._transfer import (
     FetchResult,
     TransferBadGatewayError,
@@ -123,6 +124,7 @@ __all__ = [
     "client_supports_apps",
     "compute_app_domain",
     "configure_logging_from_env",
+    "configure_task_backend",
     "decode_base64_capped",
     "domain_env_suffixes",
     "domain_env_surface",
