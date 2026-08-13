@@ -18,6 +18,11 @@ URL scheme dispatch:
 - ``mongodb://host:port[/db]`` → :class:`MongoDBStore` (requires the
   ``mongodb`` extra; the URL is forwarded verbatim to the store)
 
+With no URL configured at all the default is ``file://`` at
+``/data/state`` — the volume family Docker images mount — degrading to
+``memory://`` on a host where that directory is not usable (see
+:func:`_default_url`).
+
 Backend imports are lazy so memory/file deployments do not pull in
 optional client libraries.
 """
@@ -25,6 +30,7 @@ optional client libraries.
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 from typing import TYPE_CHECKING
 from urllib.parse import parse_qs, urlparse
@@ -38,11 +44,26 @@ logger = logging.getLogger(__name__)
 
 
 _DEFAULT_KV_STORE_DIR = "/data/state"
-"""Fallback directory for the file-tree backend when no URL is given.
+"""Preferred directory for the file-tree backend when no URL is given.
 
-Downstream Docker images typically mount a persistent volume at
-``/data/state``. Tests monkey-patch this module attribute to redirect
-the default to a tmp path rather than touching the real ``/data/state``.
+Downstream Docker images mount a persistent volume at ``/data``. The
+default is *contingent* on that convention actually holding — see
+:func:`_default_url`, which degrades to ``memory://`` on a host where
+the directory is not usable rather than crashing server construction.
+Tests monkey-patch this module attribute to redirect the default to a
+tmp path rather than touching the real ``/data/state``.
+"""
+
+
+_default_fallback_warned: bool = False
+"""Process-wide flag for the unusable-default-directory warning.
+
+Same one-shot discipline as :data:`_legacy_url_warned`: an operator
+whose server builds three namespaced stores (events, transfer, jobs)
+sees one warning, not three.
+
+Tests reset this via ``monkeypatch.setattr`` so each test sees a fresh
+process-state.
 """
 
 
@@ -72,7 +93,8 @@ def build_kv_store(
        backend for every pvl-core subsystem)
     2. ``config.event_store_url`` (legacy override; emits a one-shot
        per-process deprecation warning when used)
-    3. Default: ``file://`` at :data:`_DEFAULT_KV_STORE_DIR`
+    3. Default: ``file://`` at :data:`_DEFAULT_KV_STORE_DIR` where that
+       directory is usable, else ``memory://`` — see :func:`_default_url`
 
     The returned store is wrapped in
     :class:`~key_value.aio.wrappers.prefix_collections.PrefixCollectionsWrapper`
@@ -121,13 +143,81 @@ def build_kv_store(
             )
             _legacy_url_warned = True
     if not url:
-        url = f"file://{_DEFAULT_KV_STORE_DIR}"
+        url = _default_url()
 
     backend = _build_backend(url)
 
     from key_value.aio.wrappers.prefix_collections import PrefixCollectionsWrapper
 
     return PrefixCollectionsWrapper(key_value=backend, prefix=namespace)
+
+
+def _default_url() -> str:
+    """Resolve the backend URL for a deployment that configured none.
+
+    ``file://`` at :data:`_DEFAULT_KV_STORE_DIR` is the intended
+    default — the Docker convention every family image follows. But the
+    same code also runs unconfigured on hosts that never heard of
+    ``/data``: CI runners, `uvx`/pipx installs, the stdio plugin
+    channel. There the eager ``mkdir`` in the file branch raises
+    ``PermissionError`` at *construction* time, so a downstream that
+    merely wires ``build_jobs`` into ``make_server`` cannot build a
+    server at all.
+
+    So the default is contingent: probe the directory, and where it is
+    not usable fall back to ``memory://`` with one warning naming the
+    variable to set. State is then in-process and lost on restart —
+    which is exactly what an unconfigured deployment on such a host can
+    honestly offer, and it is what the memory backend already logs.
+
+    The probe requires the *parent* to exist rather than creating it:
+    ``/data`` is a mount point, and a host where it is absent is a host
+    that never opted into the convention. Creating it there would leak
+    a root-level directory (and, running as root, silently "succeed"
+    into a path nobody mounted).
+
+    An **explicitly configured** ``file://`` URL is never degraded —
+    that operator asked for a specific directory and gets a hard error
+    if it is unusable. Only this unset-URL default is best-effort.
+    """
+    directory = Path(_DEFAULT_KV_STORE_DIR)
+    reason = _unusable_reason(directory)
+    if reason is None:
+        return f"file://{_DEFAULT_KV_STORE_DIR}"
+
+    global _default_fallback_warned
+    if not _default_fallback_warned:
+        logger.warning(
+            "kv_store_url=<unset> and the default directory is unusable "
+            "(%s); falling back to memory:// — state is in-process and "
+            "lost on restart. Set <PREFIX>_KV_STORE_URL to choose a "
+            "backend explicitly.",
+            reason,
+        )
+        _default_fallback_warned = True
+    return "memory://"
+
+
+def _unusable_reason(directory: Path) -> str | None:
+    """Why *directory* cannot back the default store, or ``None`` if it can.
+
+    Only ever called on :data:`_DEFAULT_KV_STORE_DIR`, so the paths in
+    the returned message are pvl-core's own default — never an
+    operator-supplied URL that might carry credentials.
+    """
+    parent = directory.parent
+    if not parent.is_dir():
+        return f"{parent} does not exist"
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        return f"{directory} is not creatable ({exc.strerror or exc})"
+    # mkdir(exist_ok=True) is a no-op on a pre-existing directory, so a
+    # read-only mount gets past the branch above and would only fail on
+    # the first job promotion — later, and harder to diagnose.
+    if not os.access(directory, os.W_OK | os.X_OK):
+        return f"{directory} is not writable"
+    return None
 
 
 def _build_backend(url: str) -> AsyncKeyValue:
