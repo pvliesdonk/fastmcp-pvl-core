@@ -117,6 +117,23 @@ class TestTtl:
         )
         assert remaining is not None and remaining <= 600.0
 
+    async def test_settle_fails_closed_on_ttl_less_record(self):
+        # Anomalous state: a live record with no TTL info. create() always
+        # writes with a TTL, so this was not minted here; settling it must
+        # not re-mint a full retention window (the "never slides"
+        # invariant) — fail closed, leaving the record untouched.
+        store, kv = _store(result_ttl_s=600.0)
+        record = await store.create("alice")
+        key = _scope_key("alice", record.job_id)
+        raw, _remaining = await kv.ttl(key, collection=_RECORD_COLLECTION)
+        assert raw is not None
+        await kv.put(key, dict(raw), collection=_RECORD_COLLECTION)  # no ttl
+        await store.finish("alice", record.job_id, {"late": True})
+        after = await store.get("alice", record.job_id)
+        assert after.status == "working"  # untouched — not resurrected
+        _value, remaining = await kv.ttl(key, collection=_RECORD_COLLECTION)
+        assert remaining is None  # and no fresh TTL was minted
+
 
 class TestScopeIsolation:
     async def test_other_scope_cannot_see_job(self):

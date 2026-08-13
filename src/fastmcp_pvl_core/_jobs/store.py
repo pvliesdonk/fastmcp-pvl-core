@@ -216,8 +216,14 @@ class JobStore:
         key = _scope_key(scope, job_id)
         async with self._lock:
             raw, remaining = await self._kv.ttl(key, collection=_RECORD_COLLECTION)
-            if raw is None:
-                return  # expired mid-run — nothing left to settle
+            # Fail closed on the anomalous live-record-without-TTL state as
+            # well: create() always writes with a TTL, so a record missing
+            # one was not minted here, and settling it would re-mint a full
+            # retention window — the exact "never slides" violation the
+            # remaining-TTL rule exists to prevent. Same handling as
+            # _transfer/store.py's _read.
+            if raw is None or remaining is None:
+                return  # expired mid-run (or foreign record) — nothing to settle
             raw = dict(raw)
             raw["status"] = status
             raw["result"] = result
@@ -226,8 +232,9 @@ class JobStore:
             # Keep the REMAINING TTL: retention is pinned at creation and
             # never slides, so a subject's records cannot live forever by
             # being repeatedly settled.
-            ttl = float(remaining) if remaining is not None else self._result_ttl_s
-            await self._kv.put(key, raw, collection=_RECORD_COLLECTION, ttl=ttl)
+            await self._kv.put(
+                key, raw, collection=_RECORD_COLLECTION, ttl=float(remaining)
+            )
 
     async def get(self, scope: str, job_id: str) -> JobRecord:
         """Return the record for *job_id* as visible to *scope*.
