@@ -295,10 +295,12 @@ inside its own tool; the handles resolve through the same generic
 polling tool. Do not reach into `fastmcp_pvl_core._jobs` internals; the
 `jobs` namespace is the supported seam.
 
-The full downstream contract — payload shapes, inline-failure semantics,
+The downstream contract — payload shapes, inline-failure semantics,
 scoping/retention limits, and the path-2 rules — lives in the docstrings
 of `register_long_running_tool`, `register_job_tools`, `Jobs`, and
-`build_jobs` (import them from `fastmcp_pvl_core.jobs`).
+`build_jobs` (they are the authority a coding agent reads first);
+[`docs/jobs.md`](docs/jobs.md) is the same contract as a narrative
+implementation guide.
 
 ### Per-user subject mapping (bearer auth)
 
