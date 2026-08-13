@@ -146,6 +146,59 @@ class TestRunWithDeadline:
         assert await jobs.run_with_deadline(work(), tool="t") == {"native": True}
         assert not jobs._background
 
+    async def test_cap_rejection_cancels_the_promoted_work(self):
+        # A promotion rejected by the per-subject cap must not orphan the
+        # already-running task: it is cancelled before the error surfaces,
+        # and nothing lingers untracked.
+        from fastmcp_pvl_core import JobLimitExceededError
+
+        jobs = _jobs(
+            JobsConfig(soft_deadline_s=0.05, result_ttl_s=60.0, max_per_subject=1)
+        )
+        cancelled = asyncio.Event()
+
+        async def slow(marker: asyncio.Event | None = None) -> dict[str, Any]:
+            try:
+                await asyncio.sleep(5.0)
+            except asyncio.CancelledError:
+                if marker is not None:
+                    marker.set()
+                raise
+            return {}
+
+        first = await jobs.run_with_deadline(slow(), tool="t")
+        assert first["status"] == "working"
+        with pytest.raises(JobLimitExceededError):
+            await jobs.run_with_deadline(slow(cancelled), tool="t")
+        assert cancelled.is_set()
+        # Only the first (promoted) task remains tracked.
+        assert len(jobs._background) == 1
+        for task in set(jobs._background):
+            task.cancel()
+        await _drain(jobs)
+
+    async def test_cap_rejection_returns_result_if_work_finished_meanwhile(
+        self, monkeypatch
+    ):
+        # Race window: the work completes while the cap rejection is being
+        # decided — its result is the inline answer; no error, no orphan.
+        from fastmcp_pvl_core import JobLimitExceededError
+
+        jobs = _jobs(JobsConfig(soft_deadline_s=0.05, result_ttl_s=60.0))
+
+        async def slow_reject(*args: Any, **kwargs: Any):
+            await asyncio.sleep(0.2)  # the work (0.1s left) finishes in here
+            raise JobLimitExceededError("cap")
+
+        monkeypatch.setattr(jobs._store, "create", slow_reject)
+
+        async def work() -> dict[str, Any]:
+            await asyncio.sleep(0.15)
+            return {"made_it": True}
+
+        assert await jobs.run_with_deadline(work(), tool="t") == {"made_it": True}
+        assert not jobs._background
+
 
 class TestStart:
     async def test_start_returns_handle_immediately(self):

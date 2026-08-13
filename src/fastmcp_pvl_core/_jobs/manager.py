@@ -24,6 +24,7 @@ Intra-package imports stay relative so a fold-in is a directory rename.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import time
 from typing import TYPE_CHECKING, Any
@@ -35,6 +36,7 @@ from .records import (
     JOB_POLL_TOOL_NAME,
     JOB_RETRY_AFTER_S,
     JobHandle,
+    JobLimitExceededError,
     JobRecord,
 )
 from .store import JobStore
@@ -143,7 +145,10 @@ class Jobs:
             wrapper. A failure after promotion is reported through the
             polling tool instead.
             JobLimitExceededError: If the caller is at its live-job cap
-                at promotion time.
+                at promotion time. The already-running work is cancelled
+                first (unless it finished while the rejection was being
+                decided, in which case its result is returned inline and
+                no error is raised).
         """
         from fastmcp.server.dependencies import get_task_context
 
@@ -164,7 +169,21 @@ class Jobs:
         # this call returns the handle, and the done-callback fires
         # outside any request.
         scope = _current_scope()
-        record = await self._store.create(scope, started_at=started_at)
+        try:
+            record = await self._store.create(scope, started_at=started_at)
+        except JobLimitExceededError:
+            # The task was started before the record could exist (it had
+            # to, to allow inline completion), so a cap rejection must not
+            # orphan it: if it finished while the rejection was being
+            # decided, its outcome is simply the inline answer; otherwise
+            # cancel it — a rejected promotion must actually stop the
+            # work, and an untracked task must not outlive this frame.
+            if task.done() and not task.cancelled():
+                return task.result()
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+            raise
         self._background.add(task)
         task.add_done_callback(self._background.discard)
         task.add_done_callback(
