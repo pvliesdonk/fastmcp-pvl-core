@@ -252,6 +252,35 @@ Mirroring `_transfer/`:
     subject's job. Scope composition follows `get_task_scope()`'s
     `client_id|sub` shape so native and fallback scoping stay congruent.
 
+### 5.1a Public surface — path 1 / path 2 (added during #268, before implementation)
+
+The transfer retrofits (#249 mechanics seam, #247 false-export docs fix,
+#233 seam-crossing error type) are applied here **up front**. pvl-core
+offers a generic surface *and* exposes the primitives, because downstream
+builds its server — and therefore its own domain tools — separately:
+
+- **Path 1** (shapes owned by core): `register_long_running_tool` (the
+  dual-mode wrapper; the wrapped tool's *identity* is downstream's and
+  passes through, `task` registration mode is core's and not overridable),
+  `register_job_tools` (the generic poller, with a transfer-style `note`
+  appended-not-replacing hook), `JobsConfig`.
+- **Path 2** (mechanics without tools): `build_jobs(...) → Jobs` — a
+  capability object with narrow verbs, not the raw store.
+  `Jobs.run_with_deadline` is the dual-mode decision as **one verb
+  correct in every mode** (native → run; inline → result; expiry →
+  promote + handle), so path-2 authors never branch on execution mode.
+  `Jobs.start` (unconditional background), `Jobs.get` (record read),
+  `Jobs.poll` (the polling payload shape, shared with the generic tool).
+- **Wire-shape types public**: `JobRecord`, `JobStatus`, `JobHandle`,
+  `JOB_POLL_TOOL_NAME`, `JOB_RETRY_AFTER_S`; errors `JobNotFoundError`,
+  `JobLimitExceededError`. Tool identity on path 2 is downstream's; the
+  payload/status shape is core's — exported so it cannot fork.
+- **Path 1 is re-expressed on path 2**: both registrars run on the same
+  `Jobs`, so a path-2 job resolves through the same generic polling tool.
+- **Surfacing**: named public module `fastmcp_pvl_core/jobs.py`
+  (mirroring `transfer.py`). `JobStore`, key layout, lock discipline, and
+  promotion bookkeeping stay internal.
+
 ### 5.2 Kwarg classification (the `CLAUDE.md` test, applied)
 
 - **Hooks (kwargs)**: the domain coroutine itself; a per-tool
