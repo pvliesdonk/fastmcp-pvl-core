@@ -81,6 +81,36 @@ class Jobs:
 
     Construct via :func:`build_jobs`. All verbs resolve the caller's
     subject scope internally — a caller can only ever see its own jobs.
+
+    This is the **path-2 seam**: a downstream tool the generic wrapper
+    cannot express (always long-running and handle-first, its own
+    promotion decision, polling embedded in a domain tool) composes on
+    these verbs directly and stays on the shared shapes::
+
+        from fastmcp_pvl_core.jobs import build_jobs
+
+        jobs = build_jobs(config, jobs_config)
+
+        @mcp.tool
+        async def rebuild_index(scope: str) -> dict[str, Any]:
+            \"\"\"Rebuild the index. Always long-running.\"\"\"
+            async def work() -> dict[str, Any]:
+                ...  # minutes of work
+            return dict(await jobs.start(work(), tool="rebuild_index"))
+
+    Path-2 rules: import from ``fastmcp_pvl_core.jobs`` (or the package
+    root) only — ``fastmcp_pvl_core._jobs`` is internal; return the
+    handle unmodified rather than restyling it (the payload shape is
+    pvl-core's even when the tool is yours); still call
+    ``register_job_tools`` once, because these handles resolve through
+    the same generic polling tool; and catch the public error types
+    (:class:`~.records.JobNotFoundError`,
+    :class:`~.records.JobLimitExceededError`), not internals.
+
+    A promoted or started job runs on the serving process and dies with
+    it; its record then reports ``working`` until the TTL removes it —
+    never a fabricated result. Durable cross-restart execution is the
+    native task path's job (``redis://`` backend), not the fallback's.
     """
 
     def __init__(self, store: JobStore, config: JobsConfig) -> None:
@@ -184,7 +214,19 @@ class Jobs:
 
         This is the body of the generic ``get_job_result`` tool, public
         so a path-2 downstream that embeds polling in its own tool keeps
-        the exact same payload shape.
+        the exact same payload shape::
+
+            {"job_id": ..., "status": "working", "result": None,
+             "error": None, "running_for_s": 41.3, "retry_after_s": 5.0,
+             "message": "Still running. ..."}
+
+            {"job_id": ..., "status": "completed", "result": {...},
+             "error": None}
+            {"job_id": ..., "status": "failed", "result": None,
+             "error": "<message>"}
+
+        A tool that returned a non-mapping value completes with it
+        wrapped as ``result={"value": ...}``.
 
         Raises:
             JobNotFoundError: Unknown/expired id, or another subject's.
@@ -249,14 +291,28 @@ class Jobs:
 def build_jobs(config: ServerConfig, jobs_config: JobsConfig) -> Jobs:
     """Build the jobs mechanics — store plus :class:`Jobs` — no tools.
 
-    The path-2 entry point (and the substrate path 1 registers on). Both
-    arguments are operator config; there are no hook or shape kwargs —
-    every naming/shape decision inside is pvl-core-owned.
+    The path-2 entry point (and the substrate path 1 registers on). Build
+    **one** ``Jobs`` per server and share it between every long-running
+    tool and ``register_job_tools``, so all handles resolve through the
+    one polling contract. Both arguments are operator config; there are
+    no hook or shape kwargs — every naming/shape decision inside is
+    pvl-core-owned. Records land in the unified KV backend
+    (``build_kv_store(config, namespace="jobs")``), so one
+    ``<PREFIX>_KV_STORE_URL`` covers them along with every other pvl-core
+    subsystem.
+
+    Tests shrink the deadline instead of sleeping for real::
+
+        jobs = build_jobs(
+            ServerConfig(kv_store_url="memory://"),
+            JobsConfig(soft_deadline_s=0.05, result_ttl_s=60.0),
+        )
 
     Args:
         config: Universal server configuration; its ``kv_store_url``
             selects the backing store (namespace ``"jobs"``).
-        jobs_config: The jobs env section (deadline, TTL, cap).
+        jobs_config: The jobs env section (deadline, TTL, cap) —
+            typically ``JobsConfig.from_env("<PREFIX>")``.
 
     Returns:
         A :class:`Jobs` object ready for ``run_with_deadline`` /

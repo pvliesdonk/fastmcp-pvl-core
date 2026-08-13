@@ -68,24 +68,55 @@ def register_long_running_tool(
 
     Use as a decorator factory, exactly like ``FastMCP.tool``::
 
+        from fastmcp_pvl_core import (
+            JobsConfig, build_jobs, register_job_tools,
+            register_long_running_tool,
+        )
+
+        jobs_config = JobsConfig.from_env("MY_APP")   # MY_APP_JOBS_* knobs
         jobs = build_jobs(config, jobs_config)
 
         @register_long_running_tool(mcp, jobs, tags={"summarize"})
         async def summarize(paths: list[str]) -> dict[str, Any]:
-            ...
+            ...   # domain work; may take minutes
 
-    The decorated coroutine is the **domain hook**. Its registration
-    keyword arguments (name, description, annotations, icons, tags…) pass
-    through to ``FastMCP.tool`` — they describe the downstream's own tool.
-    ``task`` is the one exception: the tool is always registered with
-    ``TaskConfig(mode="optional")`` (pvl-core shape — that is what makes
-    it dual-mode), so a ``task`` kwarg here raises.
+        register_job_tools(mcp, jobs)   # once per server — see below
 
-    The wrapped body delegates to :meth:`Jobs.run_with_deadline`: native
-    task-augmented requests run under Docket; foreground calls return the
-    coroutine's result inline when it beats the soft deadline, and a
-    :class:`~.records.JobHandle` payload otherwise. Annotate the
-    coroutine's return type accordingly (``dict[str, Any]`` covers both).
+    The decorated coroutine is the **domain hook**: a plain ``async``
+    function (background execution needs a coroutine) returning a
+    JSON-serialisable value, written once and never branching on how it
+    is executed. The wrapped body delegates to
+    :meth:`Jobs.run_with_deadline`, so a call behaves as:
+
+    - **task-augmented request** (a client that speaks SEP-1686 tasks) →
+      native background-task execution; Docket owns lifecycle and
+      results.
+    - **plain request, finishes within the soft deadline** → the
+      coroutine's own result, inline, exactly as if unwrapped — and an
+      exception raised within the deadline propagates to the caller
+      unchanged.
+    - **plain request, deadline expires** → the work continues in the
+      background and the caller immediately receives a
+      :class:`~.records.JobHandle` payload
+      (``{"status": "working", "job_id": ..., "poll_with":
+      "get_job_result", "retry_after_s": 5.0, "message": ...}``),
+      retrievable via the generic polling tool until the record's TTL. A
+      failure *after* promotion is reported through polling, not raised.
+
+    Because the caller receives either your result *or* a handle — both
+    JSON objects — annotate the coroutine's return type as
+    ``dict[str, Any]``.
+
+    Registration keyword arguments (name, description, annotations,
+    icons, tags…) pass through to ``FastMCP.tool`` — the tool's identity
+    is the downstream's. ``task`` is the one exception: the tool is
+    always registered with ``TaskConfig(mode="optional")`` (pvl-core
+    shape — that is what makes it dual-mode), so a ``task`` kwarg raises.
+
+    Pair with :func:`register_job_tools` (once per server, same *jobs*)
+    so promoted handles are actually retrievable; a server whose tool
+    this wrapper cannot express composes on :func:`~.manager.build_jobs`
+    directly instead — see :class:`Jobs`.
 
     Args:
         mcp: The server to register on.
@@ -130,10 +161,30 @@ def register_job_tools(
     """Register the generic ``get_job_result`` polling tool.
 
     Call once per server, with the same :class:`Jobs` the long-running
-    tools run on. The tool's name, result payload, and metadata are
-    pvl-core-owned shape; *note* is the one domain hook — a sentence
-    appended to (never replacing) the generic description, for domain
-    context pvl-core cannot know (mirroring path 1's transfer notes).
+    tools run on — every job on the server resolves through this one
+    tool, whether it was minted by ``register_long_running_tool`` or by a
+    downstream tool composed on :func:`~.manager.build_jobs`. Do not
+    write per-tool pollers; one polling contract per server is the point.
+
+    The tool returns :meth:`Jobs.poll`'s payload::
+
+        {"job_id": ..., "status": "working", "result": None,
+         "error": None, "running_for_s": 41.3, "retry_after_s": 5.0,
+         "message": "Still running. ..."}
+
+        {"job_id": ..., "status": "completed", "result": {...}, "error": None}
+        {"job_id": ..., "status": "failed", "result": None, "error": "..."}
+
+    Lookups are scoped to the calling subject: another subject's job id
+    answers exactly like an unknown one (a ``ToolError``), so ids are not
+    probeable across tenants. Records expire ``result_ttl_s`` after
+    creation, after which the id is simply unknown — clients should fetch
+    results promptly.
+
+    The tool's name, payload, and metadata are pvl-core-owned shape;
+    *note* is the one domain hook — a sentence appended to (never
+    replacing) the generic description, for domain context pvl-core
+    cannot know (mirroring path 1's transfer notes).
 
     Args:
         mcp: The server to register on.

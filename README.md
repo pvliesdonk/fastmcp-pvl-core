@@ -295,10 +295,10 @@ inside its own tool; the handles resolve through the same generic
 polling tool. Do not reach into `fastmcp_pvl_core._jobs` internals; the
 `jobs` namespace is the supported seam.
 
-The full downstream implementation guide — payload shapes, semantics and
-their limits, path-2 rules, migration from a hand-rolled queue-and-poll
-surface, and testing patterns — is
-[`docs/jobs.md`](docs/jobs.md).
+The full downstream contract — payload shapes, inline-failure semantics,
+scoping/retention limits, and the path-2 rules — lives in the docstrings
+of `register_long_running_tool`, `register_job_tools`, `Jobs`, and
+`build_jobs` (import them from `fastmcp_pvl_core.jobs`).
 
 ### Per-user subject mapping (bearer auth)
 
