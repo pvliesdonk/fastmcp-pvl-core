@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import tempfile
 
 import pytest
@@ -11,6 +12,10 @@ from key_value.aio.stores.memory import MemoryStore
 from key_value.aio.wrappers.prefix_collections import PrefixCollectionsWrapper
 
 from fastmcp_pvl_core import ServerConfig, build_kv_store
+
+_IS_ROOT = hasattr(os, "geteuid") and os.geteuid() == 0
+"""Root ignores directory permission bits, so the unwritable-directory
+cases cannot be exercised as root (CI runs unprivileged)."""
 
 # Note: the autouse fixture that resets ``_legacy_url_warned`` between
 # tests lives in ``tests/conftest.py`` so it protects every test file
@@ -97,6 +102,128 @@ class TestBuildKvStoreFileBackend:
         msg = str(exc_info.value)
         assert "hunter2" not in msg
         assert "alice" not in msg
+
+
+class TestBuildKvStoreDefaultDirectoryUnusable:
+    """The unset-URL default degrades instead of crashing construction.
+
+    ``file:///data/state`` is a Docker convention. The same code runs
+    unconfigured on hosts that never mount ``/data`` — CI runners, uvx
+    installs, the stdio plugin channel — where the eager ``mkdir`` used
+    to raise ``PermissionError`` at *server construction* time. There
+    the default resolves to ``memory://`` instead.
+    """
+
+    def test_missing_parent_falls_back_to_memory(self, tmp_path, monkeypatch):
+        # `/data` absent is the CI-runner / uvx case: the host never
+        # opted into the volume convention.
+        default_dir = tmp_path / "absent-mount" / "state"
+        monkeypatch.setattr(
+            "fastmcp_pvl_core._kv_store._DEFAULT_KV_STORE_DIR", str(default_dir)
+        )
+        store = build_kv_store(ServerConfig(), namespace="ns")
+        assert isinstance(store.key_value, MemoryStore)
+
+    def test_missing_parent_is_not_created(self, tmp_path, monkeypatch):
+        # Running as root the old mkdir silently "succeeded", leaking a
+        # root-level directory nobody mounted. The probe must not create
+        # the mount point — only a directory *inside* an existing one.
+        default_dir = tmp_path / "absent-mount" / "state"
+        monkeypatch.setattr(
+            "fastmcp_pvl_core._kv_store._DEFAULT_KV_STORE_DIR", str(default_dir)
+        )
+        build_kv_store(ServerConfig(), namespace="ns")
+        assert not (tmp_path / "absent-mount").exists()
+
+    def test_fallback_warns_and_names_the_variable(self, tmp_path, monkeypatch, caplog):
+        default_dir = tmp_path / "absent-mount" / "state"
+        monkeypatch.setattr(
+            "fastmcp_pvl_core._kv_store._DEFAULT_KV_STORE_DIR", str(default_dir)
+        )
+        with caplog.at_level(logging.WARNING, logger="fastmcp_pvl_core._kv_store"):
+            build_kv_store(ServerConfig(), namespace="ns")
+        messages = " ".join(r.getMessage() for r in caplog.records)
+        assert "memory://" in messages
+        assert "KV_STORE_URL" in messages
+
+    def test_fallback_warning_is_one_shot_per_process(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        # A server builds three namespaced stores (events, transfer,
+        # jobs); the operator should see one warning, not three.
+        default_dir = tmp_path / "absent-mount" / "state"
+        monkeypatch.setattr(
+            "fastmcp_pvl_core._kv_store._DEFAULT_KV_STORE_DIR", str(default_dir)
+        )
+        config = ServerConfig()
+        with caplog.at_level(logging.WARNING, logger="fastmcp_pvl_core._kv_store"):
+            build_kv_store(config, namespace="events")
+            build_kv_store(config, namespace="transfer")
+            build_kv_store(config, namespace="jobs")
+        fallbacks = [r for r in caplog.records if "memory://" in r.getMessage()]
+        assert len(fallbacks) == 1
+
+    @pytest.mark.skipif(_IS_ROOT, reason="root bypasses directory permission checks")
+    def test_unwritable_parent_falls_back_to_memory(self, tmp_path, monkeypatch):
+        # `/data` present but not writable — the mkdir itself raises.
+        mount = tmp_path / "ro-mount"
+        mount.mkdir()
+        mount.chmod(0o500)
+        monkeypatch.setattr(
+            "fastmcp_pvl_core._kv_store._DEFAULT_KV_STORE_DIR", str(mount / "state")
+        )
+        try:
+            store = build_kv_store(ServerConfig(), namespace="ns")
+        finally:
+            mount.chmod(0o700)
+        assert isinstance(store.key_value, MemoryStore)
+
+    @pytest.mark.skipif(_IS_ROOT, reason="root bypasses directory permission checks")
+    def test_existing_unwritable_directory_falls_back_to_memory(
+        self, tmp_path, monkeypatch
+    ):
+        # mkdir(exist_ok=True) is a no-op here, so only the explicit
+        # access check catches it — otherwise the failure would surface
+        # at the first job promotion rather than at construction.
+        default_dir = tmp_path / "state"
+        default_dir.mkdir()
+        default_dir.chmod(0o500)
+        monkeypatch.setattr(
+            "fastmcp_pvl_core._kv_store._DEFAULT_KV_STORE_DIR", str(default_dir)
+        )
+        try:
+            store = build_kv_store(ServerConfig(), namespace="ns")
+        finally:
+            default_dir.chmod(0o700)
+        assert isinstance(store.key_value, MemoryStore)
+
+    @pytest.mark.skipif(_IS_ROOT, reason="root bypasses directory permission checks")
+    def test_explicit_file_url_is_never_degraded(self, tmp_path):
+        # The degradation is a property of the *default*, not of the
+        # file backend: an operator who named a directory gets a hard
+        # error when it is unusable, never a silent memory store.
+        mount = tmp_path / "ro-mount"
+        mount.mkdir()
+        mount.chmod(0o500)
+        config = ServerConfig(kv_store_url=f"file://{mount}/state")
+        try:
+            with pytest.raises(PermissionError):
+                build_kv_store(config, namespace="ns")
+        finally:
+            mount.chmod(0o700)
+
+    def test_legacy_url_still_takes_precedence_over_the_fallback(
+        self, tmp_path, monkeypatch
+    ):
+        # The default resolves only when *no* URL is configured; the
+        # legacy override must not be short-circuited by the probe.
+        monkeypatch.setattr(
+            "fastmcp_pvl_core._kv_store._DEFAULT_KV_STORE_DIR",
+            str(tmp_path / "absent-mount" / "state"),
+        )
+        config = ServerConfig(event_store_url=f"file://{tmp_path}/legacy")
+        store = build_kv_store(config, namespace="ns")
+        assert isinstance(store.key_value, FileTreeStore)
 
 
 class TestBuildKvStoreNamespaceValidation:

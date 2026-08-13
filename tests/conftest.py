@@ -70,3 +70,14 @@ def _reset_legacy_url_warning_flag(monkeypatch: pytest.MonkeyPatch) -> None:
     so the fixture protects every test that touches ``build_kv_store``.
     """
     monkeypatch.setattr("fastmcp_pvl_core._kv_store._legacy_url_warned", False)
+
+
+@pytest.fixture(autouse=True)
+def _reset_default_fallback_warning_flag(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Reset the one-shot memory-fallback warning flag between tests.
+
+    Same reasoning as ``_reset_legacy_url_warning_flag``: the flag that
+    keeps the unusable-default-directory warning to one line per process
+    would otherwise silence it for whichever test happens to run second.
+    """
+    monkeypatch.setattr("fastmcp_pvl_core._kv_store._default_fallback_warned", False)

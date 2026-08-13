@@ -172,8 +172,10 @@ class ServerConfig:
                 "subsystem that needs state. ``memory://`` is in-process and "
                 "lost on restart; ``file:///path`` persists on one server; "
                 "``redis://``, ``dynamodb://`` and ``mongodb://`` each need "
-                "their matching extra. Defaults to ``file:///data/state`` "
-                "when unset."
+                "their matching extra. When unset, defaults to "
+                "``file:///data/state`` (the volume family Docker images "
+                "mount), or to ``memory://`` — with a warning — on a host "
+                "where that directory is not usable."
             ),
             "tags": ("persistence", "readme"),
             "wizard": {"group": "Persistence", "when": "server"},

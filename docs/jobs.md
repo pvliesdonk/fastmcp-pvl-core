@@ -134,7 +134,13 @@ one.
 - **Storage.** Records live in the unified KV backend
   (`build_kv_store(config, namespace="jobs")`), so one
   `MY_APP_KV_STORE_URL` covers them along with every other pvl-core
-  subsystem.
+  subsystem. With the variable unset, records land in
+  `file:///data/state` where that directory is usable (the volume the
+  family Docker images mount) and in `memory://` — with a warning —
+  where it is not: a CI runner, a `uvx`/pipx install, the stdio plugin
+  channel. Wiring `build_jobs` into `make_server` therefore never
+  depends on `/data` existing; a deployment that wants job records to
+  outlive a restart names a backend explicitly.
 
 ## Operator knobs
 

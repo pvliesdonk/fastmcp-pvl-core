@@ -316,3 +316,24 @@ class TestPathTwoParity:
         await _drain(jobs)
         polled = await mcp.call_tool(JOB_POLL_TOOL_NAME, {"job_id": handle["job_id"]})
         assert polled.structured_content["result"] == {"processed": 3}
+
+
+class TestUnconfiguredDefaultBackend:
+    async def test_build_jobs_works_without_a_kv_url_or_writable_default_dir(
+        self, tmp_path, monkeypatch
+    ):
+        # The path-1 wiring (`build_jobs` inside `make_server`) must not
+        # crash server construction on a host with no `/data` — CI
+        # runners, uvx installs, the stdio plugin channel. Regression
+        # for the PermissionError that took down a downstream's whole
+        # test matrix (issue #272).
+        monkeypatch.setattr(
+            "fastmcp_pvl_core._kv_store._DEFAULT_KV_STORE_DIR",
+            str(tmp_path / "absent-mount" / "state"),
+        )
+        jobs = build_jobs(ServerConfig(), _FAST_CONFIG)
+
+        async def work() -> dict[str, Any]:
+            return {"ok": True}
+
+        assert await jobs.run_with_deadline(work(), tool="t") == {"ok": True}
