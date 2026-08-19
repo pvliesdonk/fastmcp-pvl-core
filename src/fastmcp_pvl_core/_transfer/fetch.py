@@ -14,10 +14,13 @@ Hardening (lifted from ``markdown-vault-mcp``'s proven fetch, ADR §8):
   into the connection (we dial the IP literal, carrying the real hostname only
   in the ``Host`` header and TLS SNI). This closes the TOCTOU window between
   validation and connect. Fails **closed** on any resolution error.
-- **No redirects** — a 3xx response is refused (never followed to a possibly
-  internal target). An explicit ``300 <= status < 400`` check refuses every 3xx
-  up front with a purpose-specific error, rather than letting a redirect surface
-  later as httpx's generic status error.
+- **Redirects, revalidated per hop** — redirects are followed, but the guard
+  above is not a pre-flight check done once in :func:`fetch_url`; it lives in
+  :class:`_GuardedTransport`. httpx sends every redirect hop back through the
+  transport, so each hop repeats the scheme check, the address validation, and
+  the pin by construction — a ``Location`` pointing at an internal target is
+  refused exactly as a directly-supplied one is. httpx bounds the chain
+  (``max_redirects``) and drops ``Authorization`` on a cross-origin hop.
 - **No ambient environment** — the client runs with ``trust_env=False`` so an
   ``HTTP(S)_PROXY`` env var cannot divert the request past the pinned IP and
   ``.netrc`` cannot attach ambient credentials.
@@ -208,6 +211,61 @@ def _redact_url(url: str) -> str:
     return urlunparse(parsed._replace(netloc=netloc, query="", fragment=""))
 
 
+def _authority(request: httpx.Request) -> tuple[str, int]:
+    """Return the ``(hostname, port)`` a request is really addressed to.
+
+    The ``Host`` header is the authority, not ``request.url.host``: on a hop
+    after the first, the URL host is the IP :class:`_GuardedTransport` pinned
+    last time round, while httpx keeps the real name in ``Host`` (preserving
+    ours on a same-origin hop, setting the new one on a cross-origin hop).
+    """
+    raw_host = request.headers.get("Host")
+    # A bare authority parses as a URL, which handles IPv6 brackets and the
+    # optional ``:port`` without hand-rolled string splitting.
+    authority = httpx.URL(f"//{raw_host}") if raw_host else request.url
+    return (
+        authority.host or request.url.host,
+        authority.port or _SCHEME_DEFAULT_PORTS[request.url.scheme],
+    )
+
+
+class _GuardedTransport(httpx.AsyncBaseTransport):
+    """Resolve, validate, and pin every request httpx makes through it.
+
+    The guard lives in a transport rather than inline in :func:`fetch_url`
+    because httpx builds each redirect hop as a new request and sends it back
+    through the transport. That makes "every hop is validated" structural: no
+    request reaches the network without passing through here.
+    """
+
+    def __init__(self, inner: httpx.AsyncBaseTransport) -> None:
+        self._inner = inner
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        if request.url.scheme not in _ALLOWED_SCHEMES:
+            raise ValueError(
+                f"Only http and https URLs are allowed, got {request.url.scheme!r}"
+            )
+        hostname, port = _authority(request)
+        if not hostname:
+            raise ValueError("The fetch URL has no host.")
+
+        # Resolve + validate now and pin the result into the connection: the
+        # address validated here is the one actually dialled. Fails closed.
+        pinned_ip = await _resolve_pinned_ip(hostname, port)
+
+        # Swap in the validated IP but keep the real hostname in TLS SNI so
+        # certificate verification still works. The ``Host`` header already
+        # carries the real name (httpx built it before this rewrite, and
+        # maintains it across hops), so it is deliberately left untouched.
+        request.url = request.url.copy_with(host=pinned_ip)
+        request.extensions["sni_hostname"] = hostname
+        return await self._inner.handle_async_request(request)
+
+    async def aclose(self) -> None:
+        await self._inner.aclose()
+
+
 async def fetch_url(
     url: str,
     *,
@@ -220,25 +278,39 @@ async def fetch_url(
     Args:
         url: An ``http``/``https`` URL. The host is resolved and rejected if any
             address is non-public; the validated IP is pinned for the
-            connection (DNS-rebind safe); redirects are not followed.
+            connection (DNS-rebind safe). Redirects are followed, with every hop
+            re-running that same chain (:class:`_GuardedTransport`).
         max_bytes: Positive per-fetch size cap; the download aborts the moment
             it is exceeded.
         timeout_s: Overall request timeout in seconds.
         transport: An optional ``httpx`` transport (an extension point used by
             tests to inject a ``MockTransport``); ``None`` uses real networking.
+            It is wrapped in the guard, never used bare.
 
     Returns:
         A :class:`FetchResult` with the body, content type, and byte size.
 
+    Note:
+        Because redirects are followed, the bytes need not come from the host
+        in *url*. A caller enforcing a host policy must apply it inside the
+        guard chain or re-check afterwards; validating *url* before the call is
+        no longer sufficient on its own.
+
     Raises:
         ValueError: On a non-positive *max_bytes* or *timeout_s*, a non-http(s)
             scheme, a missing host, a blocked/non-public address, a resolution
-            failure, a refused redirect, or a body that exceeds *max_bytes*.
-        httpx.HTTPStatusError: On a 4xx/5xx response status (re-raised with a
+            failure, or a body that exceeds *max_bytes*. A redirect hop that
+            fails any of those checks raises the same errors as a directly
+            supplied URL would.
+        httpx.HTTPStatusError: On a non-2xx final response (re-raised with a
             redacted message; the type and ``request``/``response`` are kept for
-            programmatic inspection). Note: the retained ``exc.request.url``
-            still contains the query string, so callers should not log it
-            verbatim — the redacted message is the safe surface.
+            programmatic inspection). This includes a terminal 3xx httpx cannot
+            follow — one with no ``Location``, such as a ``304``. Note: the
+            retained ``exc.request.url`` still contains the query string, so
+            callers should not log it verbatim — the redacted message is the
+            safe surface.
+        httpx.TooManyRedirects: When the redirect chain exceeds httpx's
+            ``max_redirects``.
         httpx.TransportError: Transport-level failures propagate uncaught — e.g.
             ``httpx.TimeoutException`` when *timeout_s* expires, or a connection
             error. This primitive does not wrap them.
@@ -254,66 +326,31 @@ async def fetch_url(
     hostname = parsed.hostname
     if not hostname:
         raise ValueError("The fetch URL has no host.")
-    # `is not None` (not truthiness): an explicit port 0 must be kept, not
-    # silently coerced to the scheme default.
-    explicit_port = parsed.port
-    port = (
-        explicit_port
-        if explicit_port is not None
-        else _SCHEME_DEFAULT_PORTS[parsed.scheme]
-    )
 
-    # Resolve + validate now and pin the resulting IP into the connection: the
-    # address validated here is the one actually dialled. Fails closed.
-    pinned_ip = await _resolve_pinned_ip(hostname, port)
-
-    # Dial the validated IP, but keep the real hostname in the Host header and
-    # TLS SNI so vhost routing and certificate verification still work. Any
-    # userinfo in the original URL is intentionally dropped (never relayed).
-    ip_host = _bracket_host(pinned_ip)
-    pinned_netloc = (
-        f"{ip_host}:{explicit_port}" if explicit_port is not None else ip_host
-    )
-    pinned_url = urlunparse(parsed._replace(netloc=pinned_netloc))
-    # The Host header carries the real hostname; bracket it if it is an IPv6
-    # literal (urlparse hands it back unbracketed) so the header is well-formed.
-    host_for_header = _bracket_host(hostname)
-    if explicit_port is None or explicit_port == _SCHEME_DEFAULT_PORTS.get(
-        parsed.scheme
-    ):
-        host_header = host_for_header
-    else:
-        host_header = f"{host_for_header}:{explicit_port}"
+    # Strip any ``user:pass@`` userinfo before httpx ever sees the URL, so
+    # embedded credentials are never relayed to the origin. Everything else
+    # about the request — including the address validation and the pin — is the
+    # transport's job, so it also covers each redirect hop.
+    netloc = _bracket_host(hostname)
+    if parsed.port is not None:
+        netloc = f"{netloc}:{parsed.port}"
+    request_url = urlunparse(parsed._replace(netloc=netloc))
 
     chunks: list[bytes] = []
     downloaded = 0
     async with (
         httpx.AsyncClient(
             timeout=timeout_s,
-            follow_redirects=False,
+            follow_redirects=True,
             trust_env=False,
             # trust_env=False: ignore ambient HTTP(S)_PROXY / .netrc. A proxy env
             # var would divert the request through an operator-uncontrolled host,
             # bypassing the resolve-validate-pin chain entirely (an SSRF bypass);
             # .netrc could attach ambient credentials to the outbound request.
-            transport=transport,
+            transport=_GuardedTransport(transport or httpx.AsyncHTTPTransport()),
         ) as client,
-        client.stream(
-            "GET",
-            pinned_url,
-            headers={"Host": host_header},
-            extensions={"sni_hostname": hostname},
-        ) as response,
+        client.stream("GET", request_url) as response,
     ):
-        # Refuse every 3xx explicitly by status range. (httpx's `is_redirect`
-        # is equivalent — True for all 300-399 in supported versions — but its
-        # semantics are easy to misread as Location-gated, so the range check is
-        # self-evidently "all 3xx".)
-        if 300 <= response.status_code < 400:
-            raise ValueError(
-                f"Refusing the 3xx redirect response from {_redact_url(url)} "
-                "(redirects are not followed)."
-            )
         try:
             response.raise_for_status()
         except httpx.HTTPStatusError as exc:

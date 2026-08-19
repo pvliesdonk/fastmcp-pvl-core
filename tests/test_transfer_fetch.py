@@ -7,8 +7,9 @@ The primitive is split into two testable planes:
   this is where the security guarantee lives.
 - **HTTP mechanics** — ``fetch_url`` end-to-end, driven through an injected
   ``httpx.MockTransport`` so we can assert on the exact request dialled
-  (pinned IP, Host header, no redirect, no relayed credentials) and drive the
-  streaming size cap.
+  (pinned IP, Host header, no relayed credentials) and drive the streaming size
+  cap. Redirects are followed, so these also assert that *every* hop is
+  re-validated and re-pinned rather than only the first.
 """
 
 from __future__ import annotations
@@ -27,6 +28,7 @@ from fastmcp_pvl_core._transfer.fetch import (
 )
 
 PUBLIC_V4 = "93.184.216.34"  # example.com
+PUBLIC_V4_B = "93.184.215.14"  # a second public literal, for redirect hops
 PUBLIC_V6 = "2606:2800:220:1:248:1893:25c8:1946"
 
 
@@ -236,7 +238,10 @@ async def test_fetch_url_aborts_over_size_cap() -> None:
     assert "pass" not in msg
 
 
-async def test_fetch_url_does_not_follow_redirects() -> None:
+async def test_fetch_url_refuses_redirect_to_private_target() -> None:
+    # The guard runs per hop, so a Location pointing at an internal address is
+    # refused exactly as a directly-supplied one would be — and the target is
+    # never dialled.
     seen: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -246,7 +251,6 @@ async def test_fetch_url_does_not_follow_redirects() -> None:
     url = f"http://user:pass@{PUBLIC_V4}/r?token=s3cr3t"
     with pytest.raises(ValueError) as excinfo:
         await fetch_url(url, transport=_transport(handler))
-    # The redirect target must never be dialled.
     assert len(seen) == 1
     assert "10.0.0.1" not in str(seen[0].url)
     # ...and the refusal message must be redacted on this emit-path.
@@ -255,20 +259,83 @@ async def test_fetch_url_does_not_follow_redirects() -> None:
     assert "pass" not in msg
 
 
+async def test_fetch_url_refuses_redirect_to_disallowed_scheme() -> None:
+    # The scheme allowlist is re-checked per hop: a redirect cannot escape
+    # http(s) into file:// or any other scheme.
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(302, headers={"location": "file:///etc/passwd"})
+
+    with pytest.raises(ValueError, match="http and https"):
+        await fetch_url(f"http://{PUBLIC_V4}/x", transport=_transport(handler))
+
+
+async def test_fetch_url_follows_redirect_to_public_target(monkeypatch) -> None:
+    # The ordinary case the refuse-all policy made unreachable: a redirect to a
+    # different public host. Both hops resolve, validate, and pin — each dial
+    # goes to the pinned IP while carrying the real name in Host and SNI.
+    async def _fake(host, _port):
+        return {"start.example": [PUBLIC_V4], "end.example": [PUBLIC_V4_B]}[host]
+
+    monkeypatch.setattr("fastmcp_pvl_core._transfer.fetch._resolve_addresses", _fake)
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        if len(seen) == 1:
+            return httpx.Response(
+                302, headers={"location": "https://end.example/final"}
+            )
+        return httpx.Response(200, content=b"arrived")
+
+    result = await fetch_url("https://start.example/go", transport=_transport(handler))
+    assert result.body == b"arrived"
+    assert [str(r.url.host) for r in seen] == [PUBLIC_V4, PUBLIC_V4_B]
+    assert [r.headers["host"] for r in seen] == ["start.example", "end.example"]
+    assert [r.extensions["sni_hostname"] for r in seen] == [
+        "start.example",
+        "end.example",
+    ]
+
+
+async def test_fetch_url_relative_redirect_keeps_the_real_hostname(
+    monkeypatch,
+) -> None:
+    # Regression guard for the Host-header-is-the-authority rule: httpx joins a
+    # relative Location against the *pinned* URL, so hop 2's `url.host` is an IP
+    # literal. Reading the name from `url.host` would send the IP as SNI and
+    # break TLS on any relative redirect.
+    async def _fake(_host, _port):
+        return [PUBLIC_V4]
+
+    monkeypatch.setattr("fastmcp_pvl_core._transfer.fetch._resolve_addresses", _fake)
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        if len(seen) == 1:
+            return httpx.Response(302, headers={"location": "/next"})
+        return httpx.Response(200, content=b"ok")
+
+    await fetch_url("https://vhost.example/go", transport=_transport(handler))
+    assert str(seen[1].url) == f"https://{PUBLIC_V4}/next"
+    assert seen[1].headers["host"] == "vhost.example"
+    assert seen[1].extensions["sni_hostname"] == "vhost.example"
+
+
 @pytest.mark.parametrize("code", [300, 302, 304, 307, 308])
-async def test_fetch_url_refuses_3xx_without_location(code: int) -> None:
-    # Every 3xx is refused by status range — including a Location-less 3xx
-    # (e.g. 304, or a bare 302 without a Location header). This locks that the
-    # refusal does not depend on a Location header being present.
+async def test_fetch_url_raises_on_terminal_3xx(code: int) -> None:
+    # A 3xx httpx cannot follow — no Location header (e.g. a 304, or a bare 302)
+    # — is not a redirect at all. It surfaces as a non-2xx status error, with
+    # no second dial.
     seen: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         seen.append(request)
         return httpx.Response(code)  # no Location header
 
-    with pytest.raises(ValueError):
+    with pytest.raises(httpx.HTTPStatusError, match=f"HTTP {code}"):
         await fetch_url(f"http://{PUBLIC_V4}/x", transport=_transport(handler))
-    assert len(seen) == 1  # refused before any second dial
+    assert len(seen) == 1
 
 
 async def test_fetch_url_keeps_explicit_port_zero() -> None:
@@ -483,7 +550,7 @@ async def test_fetch_url_client_disables_ambient_env(monkeypatch) -> None:
 
     await fetch_url(f"http://{PUBLIC_V4}/x", transport=_transport(handler))
     assert captured.get("trust_env") is False
-    assert captured.get("follow_redirects") is False
+    assert captured.get("follow_redirects") is True
 
 
 async def test_fetch_url_wraps_idna_failure_as_value_error() -> None:
