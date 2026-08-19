@@ -6,6 +6,11 @@
 - **Supersedes / relates to:** EPIC #138 (closed `NOT_PLANNED`; archived
   `file-exchange-archive`), image-generation-mcp#300 (shared-infra half is
   unblocked by this ADR)
+- **Amended by:** #274 — `fetch_url` follows redirects, re-validating and
+  re-pinning every hop. The "redirects disabled" element listed in §8 and the
+  §11 #1 table describes the original implementation, not the current one; the
+  security requirement it served (never dial an unvalidated address) is
+  unchanged and now holds per hop.
 
 > This is an **implementor design**, not a wire specification. It deliberately
 > does **not** live under `docs/specs/`, which `CLAUDE.md` reserves for
