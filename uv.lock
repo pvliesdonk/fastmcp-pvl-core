@@ -899,7 +899,7 @@ tasks = [
 
 [[package]]
 name = "fastmcp-pvl-core"
-version = "4.11.1"
+version = "4.11.2"
 source = { editable = "." }
 dependencies = [
     { name = "fastmcp", extra = ["tasks"] },
