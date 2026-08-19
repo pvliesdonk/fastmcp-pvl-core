@@ -6,9 +6,8 @@ base class.
 
 Three orthogonal helpers live here:
 
-- :func:`build_instructions` — read-only/read-write-aware MCP instructions
-  template parameterized by environment-variable prefix and a
-  domain-describing sentence.
+- :func:`build_instructions` — MCP instructions template parameterized
+  by environment-variable prefix and a domain-describing sentence.
 - :func:`build_event_store` — construct an MCP event store backed by
   the unified storage selected by :func:`build_kv_store`.
 - :func:`compute_app_domain` — derive the MCP Apps iframe domain for CSP
@@ -32,19 +31,26 @@ logger = logging.getLogger(__name__)
 
 def build_instructions(
     *,
-    read_only: bool,
     env_prefix: str,
     domain_line: str,
 ) -> str:
     """Build the default MCP instructions string.
 
-    The returned text concatenates three parts: a domain-describing
-    sentence supplied by the caller, a boilerplate line announcing whether
-    the server is read-only or read-write, and a one-line hint telling
-    operators how to override these instructions via environment variable.
+    The returned text concatenates a domain-describing sentence supplied
+    by the caller and a one-line hint telling operators how to override
+    these instructions via environment variable.
+
+    There is deliberately no read-only/read-write announcement (#222).
+    The former ``read_only`` argument only chose a sentence — nothing in
+    pvl-core hid or rejected write tools — so a server could truthfully
+    be told to say it was read-only while every write tool stayed
+    listable and callable. Announcing a guarantee the server does not
+    enforce is worse than announcing nothing. Operators restrict the
+    exposed tool set with ``{PREFIX}_TOOLS_ALLOW`` /
+    ``{PREFIX}_TOOLS_DENY``, which
+    :func:`~fastmcp_pvl_core.apply_tool_visibility` actually enforces.
 
     Args:
-        read_only: Whether write tools are hidden on this instance.
         env_prefix: Environment-variable prefix for the consuming project
             (with or without a trailing underscore — it is normalized).
             Used to construct the override env var name
@@ -56,15 +62,9 @@ def build_instructions(
         A single string suitable for :class:`~fastmcp.FastMCP`'s
         ``instructions`` parameter.
     """
-    write_line = (
-        "This instance is READ-ONLY — write tools are not available."
-        if read_only
-        else "This instance is READ-WRITE — write tools are available."
-    )
     prefix = env_prefix.rstrip("_")
     return (
         f"{domain_line} "
-        f"{write_line} "
         f"Operators: set {prefix}_INSTRUCTIONS to describe this "
         "service's domain and capabilities."
     )
