@@ -163,7 +163,7 @@ from fastmcp_pvl_core import (
 config = ServerConfig.from_env("MY_APP")
 mcp = FastMCP(
     name="my-app",
-    instructions=build_instructions(read_only=False, env_prefix="MY_APP", domain_line="…"),
+    instructions=build_instructions(env_prefix="MY_APP", domain_line="…"),
     auth=build_auth(config),
 )
 wire_middleware_stack(mcp)
