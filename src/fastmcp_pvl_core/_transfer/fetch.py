@@ -62,6 +62,9 @@ _BLOCKED_ADDR_MSG = (
     "are not allowed."
 )
 _CHUNK_SIZE = 65536
+# Namespaced key under which _GuardedTransport stashes each hop's real URL
+# on the request, so fetch_url can report where the bytes came from.
+_FINAL_URL_KEY = "pvl_core_fetch_url"
 # RFC 6052 NAT64 well-known prefix. stdlib does not decode the IPv4 embedded in
 # its low 32 bits for is_global, so we validate that IPv4 explicitly.
 _NAT64_WKP = ipaddress.ip_network("64:ff9b::/96")
@@ -75,6 +78,11 @@ class FetchResult:
         body: The full response body (materialised in memory, bounded by the
             ``max_bytes`` cap the caller passed).
         content_type: The response ``Content-Type`` header, or ``None``.
+        final_url: The URL the bytes actually came from. Equal to the requested
+            URL when nothing redirected; otherwise the last hop. Userinfo is
+            stripped, but the query string is **not** — a redirect target's
+            query is often load-bearing (pre-signed links), so it is returned
+            intact and callers must not log it verbatim.
 
     The byte count is exposed as the derived :attr:`size` property rather than a
     stored field, so it can never drift from ``len(body)``.
@@ -82,6 +90,7 @@ class FetchResult:
 
     body: bytes
     content_type: str | None
+    final_url: str
 
     @property
     def size(self) -> int:
@@ -250,6 +259,15 @@ class _GuardedTransport(httpx.AsyncBaseTransport):
         if not hostname:
             raise ValueError("The fetch URL has no host.")
 
+        # Record this hop's URL under its real hostname, before the pin
+        # overwrites the host with an IP. Each hop overwrites the last, so after
+        # the chain settles the final request carries the URL the bytes came
+        # from. Userinfo in a Location is dropped here for the same reason it is
+        # dropped from the caller's URL: it is never relayed onward.
+        request.extensions[_FINAL_URL_KEY] = str(
+            request.url.copy_with(host=hostname, userinfo=b"")
+        )
+
         # Resolve + validate now and pin the result into the connection: the
         # address validated here is the one actually dialled. Fails closed.
         pinned_ip = await _resolve_pinned_ip(hostname, port)
@@ -292,9 +310,9 @@ async def fetch_url(
 
     Note:
         Because redirects are followed, the bytes need not come from the host
-        in *url*. A caller enforcing a host policy must apply it inside the
-        guard chain or re-check afterwards; validating *url* before the call is
-        no longer sufficient on its own.
+        in *url*. Validating *url* before the call is no longer sufficient on
+        its own — a caller enforcing a host policy must re-check
+        :attr:`FetchResult.final_url` afterwards.
 
     Raises:
         ValueError: On a non-positive *max_bytes* or *timeout_s*, a non-http(s)
@@ -384,4 +402,8 @@ async def fetch_url(
         _redact_url(url),
         content_type,
     )
-    return FetchResult(body=body, content_type=content_type)
+    return FetchResult(
+        body=body,
+        content_type=content_type,
+        final_url=response.request.extensions.get(_FINAL_URL_KEY, request_url),
+    )

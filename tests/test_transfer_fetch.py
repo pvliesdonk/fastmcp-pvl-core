@@ -238,6 +238,27 @@ async def test_fetch_url_aborts_over_size_cap() -> None:
     assert "pass" not in msg
 
 
+async def test_fetch_url_final_url_is_the_request_url_when_nothing_redirects() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"ok")
+
+    result = await fetch_url(f"http://{PUBLIC_V4}/x?q=1", transport=_transport(handler))
+    assert result.final_url == f"http://{PUBLIC_V4}/x?q=1"
+
+
+async def test_fetch_url_final_url_drops_userinfo() -> None:
+    # Credentials are never relayed, and never handed back in final_url either.
+    # The query string *is* kept: a redirect target's query is often the
+    # load-bearing part (pre-signed links).
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"ok")
+
+    result = await fetch_url(
+        f"http://user:pass@{PUBLIC_V4}/x?token=s3cr3t", transport=_transport(handler)
+    )
+    assert result.final_url == f"http://{PUBLIC_V4}/x?token=s3cr3t"
+
+
 async def test_fetch_url_refuses_redirect_to_private_target() -> None:
     # The guard runs per hop, so a Location pointing at an internal address is
     # refused exactly as a directly-supplied one would be — and the target is
@@ -289,6 +310,9 @@ async def test_fetch_url_follows_redirect_to_public_target(monkeypatch) -> None:
 
     result = await fetch_url("https://start.example/go", transport=_transport(handler))
     assert result.body == b"arrived"
+    # final_url reports where the bytes came from, under the real hostname —
+    # not the pinned IP the request was dialled at.
+    assert result.final_url == "https://end.example/final"
     assert [str(r.url.host) for r in seen] == [PUBLIC_V4, PUBLIC_V4_B]
     assert [r.headers["host"] for r in seen] == ["start.example", "end.example"]
     assert [r.extensions["sni_hostname"] for r in seen] == [
@@ -316,7 +340,8 @@ async def test_fetch_url_relative_redirect_keeps_the_real_hostname(
             return httpx.Response(302, headers={"location": "/next"})
         return httpx.Response(200, content=b"ok")
 
-    await fetch_url("https://vhost.example/go", transport=_transport(handler))
+    result = await fetch_url("https://vhost.example/go", transport=_transport(handler))
+    assert result.final_url == "https://vhost.example/next"
     assert str(seen[1].url) == f"https://{PUBLIC_V4}/next"
     assert seen[1].headers["host"] == "vhost.example"
     assert seen[1].extensions["sni_hostname"] == "vhost.example"
