@@ -140,6 +140,22 @@ class ServerConfig:
             "wizard": {"group": "Auth", "when": "oidc"},
         },
     )
+    oidc_advertised_scopes: tuple[str, ...] = field(
+        default_factory=tuple,
+        metadata={
+            "help": (
+                "Scopes advertised to MCP clients in protected-resource "
+                "metadata, space- or comma-separated. Overrides the default "
+                "``openid offline_access``; ``oidc_required_scopes`` is always "
+                "added on top. Set this when the registered client is not "
+                "permitted ``offline_access``, or to have clients request "
+                "extra claim scopes (e.g. ``groups``) without also requiring "
+                "them in every token."
+            ),
+            "tags": ("auth", "oidc"),
+            "wizard": {"group": "Auth", "when": "oidc"},
+        },
+    )
     oidc_jwt_signing_key: str | None = field(
         default=None,
         metadata={
@@ -353,6 +369,9 @@ class ServerConfig:
         scopes_raw = env(env_prefix, "OIDC_REQUIRED_SCOPES")
         scopes = tuple(parse_scopes(scopes_raw) or ())
 
+        advertised_raw = env(env_prefix, "OIDC_ADVERTISED_SCOPES")
+        advertised_scopes = tuple(parse_scopes(advertised_raw) or ())
+
         verify_access_raw = env(env_prefix, "OIDC_VERIFY_ACCESS_TOKEN")
         verify_access_token = (
             parse_bool(verify_access_raw) if verify_access_raw is not None else False
@@ -408,6 +427,7 @@ class ServerConfig:
             oidc_client_secret=env(env_prefix, "OIDC_CLIENT_SECRET"),
             oidc_audience=env(env_prefix, "OIDC_AUDIENCE"),
             oidc_required_scopes=scopes,
+            oidc_advertised_scopes=advertised_scopes,
             oidc_jwt_signing_key=env(env_prefix, "OIDC_JWT_SIGNING_KEY"),
             oidc_verify_access_token=verify_access_token,
             kv_store_url=env(env_prefix, "KV_STORE_URL"),
@@ -443,6 +463,7 @@ _SERVER_CONFIG_ENV_SUFFIXES: frozenset[str] = frozenset(
         "OIDC_CLIENT_SECRET",
         "OIDC_AUDIENCE",
         "OIDC_REQUIRED_SCOPES",
+        "OIDC_ADVERTISED_SCOPES",
         "OIDC_JWT_SIGNING_KEY",
         "OIDC_VERIFY_ACCESS_TOKEN",
         "KV_STORE_URL",
