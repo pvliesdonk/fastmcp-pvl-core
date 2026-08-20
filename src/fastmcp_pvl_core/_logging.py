@@ -3,6 +3,10 @@
 The ``-v`` CLI flag forces ``DEBUG``; otherwise ``FASTMCP_LOG_LEVEL``
 wins; otherwise ``INFO``.
 
+Two module constants keep the operator stream readable at both ends:
+``_NOISY_THIRD_PARTY_LOGGERS`` (loud at ``INFO``, demoted) and
+``_DEBUG_FLOOD_LOGGERS`` (loud at ``DEBUG``, capped).
+
 This module also exposes :class:`SecretMaskFilter`, a reusable
 ``logging.Filter`` that redacts ``Authorization: Bearer/Token/Basic``
 values in formatted log messages before they reach handlers.
@@ -23,6 +27,16 @@ _VALID_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
 # operator opts into DEBUG. ``uvicorn.error`` is deliberately excluded: it
 # carries genuine bind / startup failures.
 _NOISY_THIRD_PARTY_LOGGERS = ("uvicorn.access", "mcp.server.lowlevel.server")
+
+# Third-party loggers with the opposite shape: near-silent at INFO, but a
+# per-iteration firehose at DEBUG driven by a poll loop that runs whether or
+# not there is any work. ``docket.worker`` (pydocket, which every consumer
+# inherits through the ``fastmcp[tasks]`` base dependency) logs two records
+# per poll at its 250 ms default check interval — ~2500 lines/minute on a
+# permanently idle queue, which buries every first-party DEBUG line. Capped
+# at INFO when the root level is DEBUG, so the worker's own lifecycle records
+# still come through while the poll trace does not.
+_DEBUG_FLOOD_LOGGERS = ("docket.worker",)
 
 
 def configure_logging_from_env(*, verbose: bool = False) -> None:
@@ -48,6 +62,16 @@ def configure_logging_from_env(*, verbose: bool = False) -> None:
     ``INFO`` stream. At ``DEBUG`` they are reset to ``NOTSET`` and
     reappear. ``uvicorn.error`` is never demoted.
 
+    One third-party logger is capped in the other direction:
+    ``docket.worker`` is pinned to ``INFO`` when the resolved level is
+    ``DEBUG``, because its poll loop emits a record per iteration even on
+    an idle queue and would otherwise dominate the ``DEBUG`` stream. Its
+    ``INFO`` lifecycle records are unaffected, and at every other level it
+    is left at ``NOTSET`` — the cap only ever removes the poll trace. An
+    operator debugging the task queue itself restores the full stream
+    after this call with
+    ``logging.getLogger("docket.worker").setLevel(logging.DEBUG)``.
+
     Args:
         verbose: If ``True``, force ``DEBUG`` (overrides
             ``FASTMCP_LOG_LEVEL``).
@@ -67,6 +91,13 @@ def configure_logging_from_env(*, verbose: bool = False) -> None:
     noisy_level = logging.NOTSET if level == logging.DEBUG else logging.WARNING
     for name in _NOISY_THIRD_PARTY_LOGGERS:
         logging.getLogger(name).setLevel(noisy_level)
+
+    # Mirror image of the demotion above: pin at INFO exactly where the root
+    # would otherwise let the poll trace through, and hand the logger back to
+    # inheritance everywhere else so repeated calls leave no residue.
+    flood_level = logging.INFO if level == logging.DEBUG else logging.NOTSET
+    for name in _DEBUG_FLOOD_LOGGERS:
+        logging.getLogger(name).setLevel(flood_level)
 
 
 class SecretMaskFilter(logging.Filter):

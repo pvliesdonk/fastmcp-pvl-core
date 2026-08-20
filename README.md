@@ -211,6 +211,20 @@ so they do not flood the operator log stream:
 Both reappear at `DEBUG` (`-v` or `FASTMCP_LOG_LEVEL=DEBUG`). `uvicorn.error`
 is never demoted — it carries genuine bind / startup failures.
 
+One logger is capped in the other direction. `docket.worker` — pydocket's
+background-task worker, which every consumer inherits through the
+`fastmcp[tasks]` base dependency — logs a record per poll iteration at its
+250 ms default check interval, roughly 2500 lines/minute on a queue that
+never receives a job. At `DEBUG` it is pinned to `INFO`, so its startup and
+lifecycle records still appear while the idle poll trace does not; at every
+other level it is untouched. An operator debugging the task queue itself
+restores the full stream after the call:
+
+```python
+configure_logging_from_env(verbose=True)
+logging.getLogger("docket.worker").setLevel(logging.DEBUG)
+```
+
 `wire_middleware_stack` installs a single conforming request-logging
 middleware. Every line it emits starts with a bare snake_case event name,
 followed by `key=value` pairs, with request timing carried inline:
