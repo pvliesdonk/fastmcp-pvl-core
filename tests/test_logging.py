@@ -63,6 +63,7 @@ _NOISY_LOGGER_NAMES = (
     "uvicorn.access",
     "mcp.server.lowlevel.server",
     "uvicorn.error",
+    "docket.worker",
 )
 
 
@@ -123,6 +124,77 @@ def test_demotion_idempotent_across_level_flips(monkeypatch):
     monkeypatch.setenv("FASTMCP_LOG_LEVEL", "DEBUG")
     configure_logging_from_env(verbose=False)
     assert access.level == logging.NOTSET
+
+
+def test_debug_flood_logger_capped_at_info_at_debug(monkeypatch):
+    # docket.worker's poll loop emits a DEBUG record per iteration on an
+    # idle queue; capping it at INFO keeps DEBUG readable for first-party
+    # diagnostics while leaving its lifecycle records in place.
+    monkeypatch.setenv("FASTMCP_LOG_LEVEL", "DEBUG")
+    configure_logging_from_env(verbose=False)
+    assert logging.getLogger("docket.worker").level == logging.INFO
+
+
+def test_debug_flood_logger_capped_at_info_via_verbose(monkeypatch):
+    monkeypatch.delenv("FASTMCP_LOG_LEVEL", raising=False)
+    configure_logging_from_env(verbose=True)
+    assert logging.getLogger("docket.worker").level == logging.INFO
+
+
+def test_debug_flood_logger_untouched_below_debug(monkeypatch):
+    monkeypatch.setenv("FASTMCP_LOG_LEVEL", "INFO")
+    configure_logging_from_env(verbose=False)
+    assert logging.getLogger("docket.worker").level == logging.NOTSET
+
+
+def test_debug_flood_logger_untouched_above_info(monkeypatch):
+    # The cap must never *raise* the effective level: at WARNING the logger
+    # stays on inheritance so warnings and errors still pass through.
+    monkeypatch.setenv("FASTMCP_LOG_LEVEL", "WARNING")
+    configure_logging_from_env(verbose=False)
+    assert logging.getLogger("docket.worker").level == logging.NOTSET
+
+
+def test_debug_flood_cap_idempotent_across_level_flips(monkeypatch):
+    worker = logging.getLogger("docket.worker")
+
+    monkeypatch.setenv("FASTMCP_LOG_LEVEL", "DEBUG")
+    configure_logging_from_env(verbose=False)
+    assert worker.level == logging.INFO
+
+    monkeypatch.setenv("FASTMCP_LOG_LEVEL", "INFO")
+    configure_logging_from_env(verbose=False)
+    assert worker.level == logging.NOTSET
+
+    monkeypatch.setenv("FASTMCP_LOG_LEVEL", "DEBUG")
+    configure_logging_from_env(verbose=False)
+    assert worker.level == logging.INFO
+
+
+def test_debug_flood_logger_filters_poll_records_at_debug(monkeypatch, caplog):
+    # Behavioural check, not just a level assertion: at root DEBUG the poll
+    # trace is dropped while the worker's INFO records survive.
+    monkeypatch.setenv("FASTMCP_LOG_LEVEL", "DEBUG")
+    configure_logging_from_env(verbose=False)
+    worker = logging.getLogger("docket.worker")
+
+    # at_level() must target the root logger, not docket.worker: naming the
+    # logger would reset the very cap under test.
+    with caplog.at_level(logging.DEBUG):
+        worker.debug("Getting new deliveries")
+        worker.info("Starting worker")
+
+    assert [record.getMessage() for record in caplog.records] == ["Starting worker"]
+
+
+def test_debug_flood_cap_leaves_first_party_debug_intact(monkeypatch, caplog):
+    monkeypatch.setenv("FASTMCP_LOG_LEVEL", "DEBUG")
+    configure_logging_from_env(verbose=False)
+
+    with caplog.at_level(logging.DEBUG):
+        logging.getLogger("fastmcp_pvl_core._auth").debug("token_validated")
+
+    assert [record.getMessage() for record in caplog.records] == ["token_validated"]
 
 
 class TestSecretMaskFilter:
