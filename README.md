@@ -354,6 +354,37 @@ mode alongside OIDC). It is ignored when `MY_APP_BEARER_TOKENS_FILE`
 is set, including in `multi` mode — mapped mode uses the per-token
 subjects from the TOML file.
 
+### OIDC scopes — requested vs. required
+
+Two different questions, two different settings:
+
+- **What a client should ask the IdP for** — advertised in the server's
+  protected-resource metadata (RFC 9728). pvl-core advertises
+  `openid offline_access` by default. `offline_access` is what makes the
+  IdP issue a **refresh token**; without it a session ends at
+  access-token expiry and needs a human to complete a browser flow
+  again.
+
+- **What a token must carry to be accepted** —
+  `MY_APP_OIDC_REQUIRED_SCOPES=<space- or comma-separated>`. This is a
+  hard requirement checked on every request, so keep it minimal; a scope
+  listed here is always advertised too, or clients would never request
+  it and every token would fail the check.
+
+Override the advertised set with
+`MY_APP_OIDC_ADVERTISED_SCOPES=<space- or comma-separated>` when the
+deployment needs something else — for example a registered client that
+is not permitted `offline_access`, or extra claim scopes (`groups`,
+`email`) that clients should request but that tokens are not *required*
+to carry. `MY_APP_OIDC_REQUIRED_SCOPES` is still added on top.
+
+pvl-core's own default is filtered against the IdP's published
+`scopes_supported` (some providers reject an authorization request
+outright with `invalid_scope` rather than ignoring an unknown scope); a
+scope dropped that way is logged at `WARNING`. An operator-set
+`MY_APP_OIDC_ADVERTISED_SCOPES` is used verbatim — a client-level
+restriction is not visible in discovery, so the operator's list wins.
+
 ### Identifying the caller — `get_subject`
 
 Tools, middleware, and resource handlers can call

@@ -360,6 +360,18 @@ class TestServerConfigFromEnv:
         assert config.oidc_jwt_signing_key == "sigkey"
         assert config.oidc_required_scopes == ("openid", "profile")
 
+    def test_reads_advertised_scopes(self, monkeypatch: pytest.MonkeyPatch):
+        """The advertised set is read separately from the required one (#280)."""
+        monkeypatch.setenv("MYAPP_OIDC_ADVERTISED_SCOPES", "openid, groups")
+        config = ServerConfig.from_env("MYAPP")
+        assert config.oidc_advertised_scopes == ("openid", "groups")
+        assert config.oidc_required_scopes == ()
+
+    def test_advertised_scopes_default_to_empty(self, monkeypatch: pytest.MonkeyPatch):
+        """Empty means "pvl-core picks", not "advertise nothing"."""
+        monkeypatch.delenv("MYAPP_OIDC_ADVERTISED_SCOPES", raising=False)
+        assert ServerConfig.from_env("MYAPP").oidc_advertised_scopes == ()
+
     def test_reads_event_store_url(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setenv("MYAPP_EVENT_STORE_URL", "file:///data/events")
         config = ServerConfig.from_env("MYAPP")
@@ -822,8 +834,8 @@ class TestServerConfigSurface:
             f.name for f in dataclasses.fields(ServerConfig)
         )
 
-    def test_returns_twenty_one_fields(self):
-        assert len(server_config_surface()) == 21
+    def test_returns_twenty_two_fields(self):
+        assert len(server_config_surface()) == 22
 
     def test_suffix_is_the_upper_cased_field_name(self):
         assert all(c.suffix == c.name.upper() for c in server_config_surface())
@@ -921,6 +933,7 @@ class TestServerConfigSurface:
             "OIDC_CLIENT_SECRET",
             "OIDC_AUDIENCE",
             "OIDC_REQUIRED_SCOPES",
+            "OIDC_ADVERTISED_SCOPES",
             "OIDC_JWT_SIGNING_KEY",
             "OIDC_VERIFY_ACCESS_TOKEN",
         }
@@ -974,7 +987,7 @@ class TestServerConfigSurface:
         assert offenders == {}
 
     def test_every_declared_default_is_unchanged(self):
-        """Full 21-field guard; a spot check would miss a silent default change."""
+        """Full 22-field guard; a spot check would miss a silent default change."""
         expected = {
             "transport": "stdio",
             "host": "127.0.0.1",
@@ -986,6 +999,7 @@ class TestServerConfigSurface:
             "oidc_client_secret": None,
             "oidc_audience": None,
             "oidc_required_scopes": (),
+            "oidc_advertised_scopes": (),
             "oidc_jwt_signing_key": None,
             "oidc_verify_access_token": False,
             "kv_store_url": None,

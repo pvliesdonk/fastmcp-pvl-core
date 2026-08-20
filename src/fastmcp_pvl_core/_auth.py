@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import sys
+from collections.abc import Iterable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, TypeGuard, cast
 
@@ -287,6 +288,91 @@ def build_bearer_auth(config: ServerConfig) -> StaticTokenVerifier | None:
     )
 
 
+# Scopes pvl-core advertises to MCP clients in protected-resource
+# metadata when the operator does not override the set.
+#
+# This is deliberately *not* the same list as ``required_scopes``. The two
+# answer different questions: ``required_scopes`` is "what must be present
+# in a token for this server to accept it", while the advertised set is
+# "what a client should ask the authorization server for". Deriving the
+# second from the first is what issue #280 reported — in ``multi`` mode
+# ``required_scopes`` must be empty (bearer tokens carry no scopes, #249),
+# so the metadata advertised ``[]``, clients requested no scopes at all,
+# and the resulting grant had no ``offline_access`` and therefore no
+# refresh token: every session died at access-token expiry and needed a
+# human at a browser again.
+#
+# ``openid`` makes the grant an OIDC one (subject identity, id_token).
+# ``offline_access`` is what makes the authorization server issue a
+# refresh token.
+_DEFAULT_ADVERTISED_SCOPES: tuple[str, ...] = ("openid", "offline_access")
+
+
+def _dedupe(scopes: Iterable[str]) -> list[str]:
+    """Return *scopes* with duplicates removed, first occurrence winning."""
+    seen: dict[str, None] = {}
+    for scope in scopes:
+        seen.setdefault(scope, None)
+    return list(seen)
+
+
+def _resolve_advertised_scopes(
+    config: ServerConfig,
+    *,
+    provider_scopes_supported: Iterable[str] | None,
+) -> list[str]:
+    """Decide which scopes to advertise to MCP clients.
+
+    The advertised set is pvl-core's :data:`_DEFAULT_ADVERTISED_SCOPES`,
+    or ``config.oidc_advertised_scopes`` when the operator set it, plus
+    ``config.oidc_required_scopes`` — a scope this server *requires* must
+    always be advertised, or clients would never request it and every
+    token would then fail the requirement.
+
+    pvl-core's own default is filtered against the authorization
+    server's published ``scopes_supported`` when there is one: an
+    authorization server that does not support ``offline_access`` may
+    reject the whole authorization request with ``invalid_scope`` rather
+    than ignore it. An operator-set list is taken verbatim — the
+    operator knows their deployment better than discovery does, and a
+    client-level restriction is not visible in discovery anyway.
+
+    Args:
+        config: Populated server configuration.
+        provider_scopes_supported: ``scopes_supported`` as published by
+            the authorization server's discovery document, or ``None``
+            when it publishes none (the field is optional).
+
+    Returns:
+        The scope list to advertise, in request order. May be empty only
+        when discovery contradicts every default and nothing is
+        required.
+    """
+    operator_set = list(config.oidc_advertised_scopes)
+    if operator_set:
+        base = operator_set
+    else:
+        base = list(_DEFAULT_ADVERTISED_SCOPES)
+        if provider_scopes_supported is not None:
+            supported = set(provider_scopes_supported)
+            if supported:
+                dropped = [scope for scope in base if scope not in supported]
+                if dropped:
+                    logger.warning(
+                        "oidc_advertised_scope_dropped scopes=%s — the "
+                        "authorization server does not list them in its "
+                        "discovery document; clients will not request them "
+                        "(no 'offline_access' means no refresh token, so "
+                        "sessions end at access-token expiry)",
+                        ",".join(dropped),
+                    )
+                base = [scope for scope in base if scope in supported]
+
+    advertised = _dedupe([*base, *config.oidc_required_scopes])
+    logger.debug("oidc_advertised_scopes scopes=%s", ",".join(advertised))
+    return advertised
+
+
 def _warn_oidc_caveats(*, required_scopes: list[str], verify_id_token: bool) -> None:
     """Emit operator warnings for misconfiguration-prone OIDC-proxy settings.
 
@@ -317,6 +403,11 @@ def build_oidc_proxy_auth(config: ServerConfig) -> OIDCProxy | None:
     ``required_scopes`` defaults to ``["openid"]`` when *config* does not
     configure any, matching OIDC Core semantics (``openid`` must be
     requested for an id_token to be issued).
+
+    What the proxy *advertises* to clients (and forwards upstream) is a
+    separate, wider set — see :func:`_resolve_advertised_scopes`. It
+    includes ``offline_access`` by default so the upstream grant carries
+    a refresh token.
 
     Args:
         config: Populated server configuration.
@@ -358,7 +449,7 @@ def build_oidc_proxy_auth(config: ServerConfig) -> OIDCProxy | None:
 
     from fastmcp.server.auth.oidc_proxy import OIDCProxy
 
-    return OIDCProxy(
+    proxy = OIDCProxy(
         config_url=oidc_config_url,
         client_id=oidc_client_id,
         client_secret=oidc_client_secret,
@@ -370,6 +461,23 @@ def build_oidc_proxy_auth(config: ServerConfig) -> OIDCProxy | None:
         require_authorization_consent=False,
     )
 
+    # Widen what the proxy advertises (and asks the upstream provider
+    # for) beyond ``required_scopes``, which it would otherwise reuse for
+    # both. The proxy only issues a refresh token of its own when the
+    # upstream response carried one, and upstream only issues one when
+    # ``offline_access`` was requested — so without this the proxy's
+    # sessions expire exactly like the ``remote`` ones in #280.
+    # ``update_default_scopes`` touches the advertised / default / DCR
+    # scope set only; ``proxy.required_scopes`` (what a token must carry
+    # to be accepted) is deliberately left alone.
+    proxy.update_default_scopes(
+        _resolve_advertised_scopes(
+            config,
+            provider_scopes_supported=proxy.oidc_config.scopes_supported,
+        )
+    )
+    return proxy
+
 
 def build_remote_auth(config: ServerConfig) -> RemoteAuthProvider | None:
     """Build a :class:`RemoteAuthProvider` from OIDC discovery.
@@ -378,6 +486,12 @@ def build_remote_auth(config: ServerConfig) -> RemoteAuthProvider | None:
     ``jwks_uri`` and ``issuer``, then constructs a ``JWTVerifier`` for
     local token validation via JWKS.  No client credentials are needed —
     tokens are validated locally.
+
+    The scopes advertised in protected-resource metadata are decided by
+    :func:`_resolve_advertised_scopes`, independently of the verifier's
+    ``required_scopes`` — the former tells clients what to ask the
+    authorization server for, the latter is what a token must carry to
+    be accepted here.
 
     Requires ``base_url`` and ``oidc_config_url`` on *config*.  Returns
     ``None`` only as a precondition signal when either is missing
@@ -439,6 +553,16 @@ def build_remote_auth(config: ServerConfig) -> RemoteAuthProvider | None:
 
     required_scopes: list[str] | None = list(config.oidc_required_scopes) or None
 
+    discovered_scopes = discovery.get("scopes_supported")
+    advertised_scopes = _resolve_advertised_scopes(
+        config,
+        provider_scopes_supported=(
+            [str(scope) for scope in discovered_scopes]
+            if isinstance(discovered_scopes, list)
+            else None
+        ),
+    )
+
     from fastmcp.server.auth import JWTVerifier, RemoteAuthProvider
 
     verifier = JWTVerifier(
@@ -447,10 +571,16 @@ def build_remote_auth(config: ServerConfig) -> RemoteAuthProvider | None:
         audience=config.oidc_audience,
         required_scopes=required_scopes,
     )
+    # ``scopes_supported`` is passed explicitly rather than left to fall
+    # back to the verifier's: the verifier's is derived from
+    # ``required_scopes``, which is empty here whenever the operator
+    # configured none, and an empty advertised list makes clients request
+    # no scopes at all (#280).
     return RemoteAuthProvider(
         token_verifier=verifier,
         authorization_servers=[issuer],
         base_url=config.base_url,
+        scopes_supported=advertised_scopes,
     )
 
 
@@ -460,7 +590,9 @@ def build_auth(config: ServerConfig) -> Any:
     Resolves the auth mode via :func:`resolve_auth_mode` and composes the
     individual builders.  In ``multi`` mode, wraps an OIDC provider and a
     bearer verifier into a single :class:`~fastmcp.server.auth.MultiAuth`
-    with ``required_scopes=[]``.
+    with ``required_scopes=[]``.  That empty list governs acceptance
+    only; the scopes advertised to clients come from the wrapped OIDC
+    provider and are set by :func:`_resolve_advertised_scopes`.
 
     Args:
         config: Populated server configuration.
@@ -534,6 +666,9 @@ def build_auth(config: ServerConfig) -> Any:
             # ``["openid"]`` scope propagates to FastMCP's
             # RequireAuthMiddleware and rejects bearer tokens lacking
             # ``openid`` with 403 insufficient_scope (MV PR #249).
+            # It does not reach the published metadata: ``get_routes``
+            # delegates to ``server``, which advertises the set
+            # ``_resolve_advertised_scopes`` gave it (#280).
             #
             # OIDCProxy / RemoteAuthProvider (both OAuthProvider
             # subclasses) MUST go in ``server=`` — passing an
