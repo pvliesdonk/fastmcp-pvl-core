@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 
-from fastmcp import FastMCP
+from fastmcp import Client, FastMCP
 
 from fastmcp_pvl_core import wire_middleware_stack
 from fastmcp_pvl_core._logging_middleware import RequestLoggingMiddleware
@@ -60,3 +60,29 @@ def test_include_traceback_inferred_off_when_root_above_debug(caplog):
         mcp = FastMCP(name="t")
         wire_middleware_stack(mcp)
     assert _request_logging_mws(mcp)[0].include_traceback is False
+
+
+async def test_real_tool_dispatch_logs_conforming_tool_pair(caplog, monkeypatch):
+    monkeypatch.delenv("FASTMCP_ENABLE_RICH_LOGGING", raising=False)
+    mcp = FastMCP(name="t")
+
+    @mcp.tool
+    def echo(value: str) -> str:
+        return value
+
+    wire_middleware_stack(mcp)
+    logger_name = "fastmcp.middleware.requests"
+    with caplog.at_level(logging.INFO, logger=logger_name):
+        async with Client(mcp) as client:
+            await client.call_tool("echo", {"value": "hello"})
+
+    tool_messages = [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == logger_name and record.getMessage().startswith("tool_call_")
+    ]
+    assert len(tool_messages) == 2
+    assert tool_messages[0].startswith(
+        "tool_call_started tool=echo method=tools/call source=client"
+    )
+    assert tool_messages[1].startswith("tool_call_completed tool=echo duration_ms=")
