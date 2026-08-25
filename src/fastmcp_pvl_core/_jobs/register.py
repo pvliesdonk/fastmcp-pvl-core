@@ -33,6 +33,7 @@ from typing import TYPE_CHECKING, Any
 from fastmcp.exceptions import ToolError
 from mcp.types import Icon, ToolAnnotations
 
+from .._instructions import WORKFLOWS, instructions_for
 from .manager import Jobs
 from .records import JOB_POLL_TOOL_NAME, JobNotFoundError
 
@@ -221,3 +222,12 @@ def register_job_tools(
             return await jobs.poll(job_id)
         except JobNotFoundError as exc:
             raise ToolError(str(exc)) from exc
+
+    instructions_for(mcp).add(
+        "A long-running tool returns a job id when this client cannot run it "
+        f"as a task; poll {JOB_POLL_TOOL_NAME} with that id until the status "
+        "is completed or failed, honouring retry_after_s, instead of invoking "
+        "the tool again.",
+        priority=WORKFLOWS,
+        tools={JOB_POLL_TOOL_NAME},
+    )

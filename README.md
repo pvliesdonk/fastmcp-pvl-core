@@ -156,18 +156,30 @@ See `src/fastmcp_pvl_core/` for the full surface. Typical usage:
 ```python
 from fastmcp import FastMCP
 from fastmcp_pvl_core import (
-    ServerConfig, build_auth, build_instructions,
-    wire_middleware_stack, env,
+    ServerConfig, apply_tool_visibility, build_auth,
+    finalize_instructions, instructions_for, wire_middleware_stack,
 )
 
 config = ServerConfig.from_env("MY_APP")
-mcp = FastMCP(
-    name="my-app",
-    instructions=build_instructions(env_prefix="MY_APP", domain_line="…"),
-    auth=build_auth(config),
-)
+mcp = FastMCP(name="my-app", auth=build_auth(config))
 wire_middleware_stack(mcp)
+
+instructions_for(mcp).identity("A widget service.")
+instructions_for(mcp).documentation("https://example.com/my-app/llms.txt")
+# ... register tools; core register_* helpers add their own workflow snippets ...
+apply_tool_visibility(mcp, config)
+finalize_instructions(mcp, config, env_prefix="MY_APP")
 ```
+
+### Instructions (model-facing guidance)
+
+Instructions carry what no single tool description can carry: identity, a
+documentation pointer, cross-tool workflows, and enforced instance facts.
+Add snippets with `instructions_for(mcp).add(text, priority=..., tools=...)`;
+a snippet naming a tool the operator hid via `TOOLS_ALLOW`/`TOOLS_DENY` is
+dropped at `finalize_instructions`. Operators add deployment context with
+`{PREFIX}_INSTRUCTIONS_EXTRA`. `{PREFIX}_INSTRUCTIONS` (legacy) still
+replaces the whole text and logs a deprecation warning.
 
 ### Tool visibility (operator allow-/denylist)
 

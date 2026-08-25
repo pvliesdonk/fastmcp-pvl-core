@@ -44,10 +44,20 @@ from ._env import (
 from ._errors import ConfigurationError
 from ._factory import (
     build_event_store,
-    build_instructions,
     compute_app_domain,
 )
 from ._icons import IconSpec, make_icon, register_tool_icons
+from ._instructions import (
+    CAPABILITIES,
+    DOCS,
+    IDENTITY,
+    INSTANCE,
+    OPERATOR,
+    WORKFLOWS,
+    InstructionsBuilder,
+    finalize_instructions,
+    instructions_for,
+)
 from ._jobs import (
     JOB_POLL_TOOL_NAME,
     JOB_RETRY_AFTER_S,
@@ -99,11 +109,16 @@ __version__ = "4.11.3"  # PSR overrides at build time
 
 __all__ = [
     "AuthMode",
+    "CAPABILITIES",
     "ConfigField",
     "ConfigurationError",
+    "DOCS",
     "DomainEnvVar",
     "FetchResult",
+    "IDENTITY",
+    "INSTANCE",
     "IconSpec",
+    "InstructionsBuilder",
     "JOB_POLL_TOOL_NAME",
     "JOB_RETRY_AFTER_S",
     "JobHandle",
@@ -113,6 +128,7 @@ __all__ = [
     "JobStatus",
     "Jobs",
     "JobsConfig",
+    "OPERATOR",
     "SecretMaskFilter",
     "ServerConfig",
     "Transport",
@@ -132,6 +148,7 @@ __all__ = [
     "TransferValidator",
     "UpstreamProvider",
     "UpstreamResult",
+    "WORKFLOWS",
     "any_check",
     "app_tool_address",
     "app_tool_meta",
@@ -139,7 +156,6 @@ __all__ = [
     "build_auth",
     "build_bearer_auth",
     "build_event_store",
-    "build_instructions",
     "build_jobs",
     "build_kv_store",
     "build_oidc_proxy_auth",
@@ -156,8 +172,10 @@ __all__ = [
     "env_float",
     "env_int",
     "fetch_url",
+    "finalize_instructions",
     "get_claims",
     "get_subject",
+    "instructions_for",
     "load_acl",
     "make_acl_check",
     "make_claims_check",

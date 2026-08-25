@@ -51,6 +51,7 @@ from mcp.types import Icon, ToolAnnotations
 
 from .._config import ServerConfig
 from .._errors import ConfigurationError
+from .._instructions import WORKFLOWS, instructions_for
 from .config import TransferConfig
 from .routes import make_transfer_handler
 from .sink import TransferKind, TransferSink, TransferValidator
@@ -334,4 +335,14 @@ def register_transfer_routes(
         icons=[_UPLOAD_ICON],
         tags={"write"},
     )(create_upload_link)
+
+    instructions_for(mcp).add(
+        "To upload a file, call create_upload_link and then PUT the bytes to "
+        "the returned URL; to download, call create_download_link and GET the "
+        "returned URL. Each link is a single-use capability URL that expires: "
+        "do not reuse it, share it, or call the link tools speculatively.",
+        priority=WORKFLOWS,
+        tools={"create_download_link", "create_upload_link"},
+    )
+
     return links
