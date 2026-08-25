@@ -62,7 +62,7 @@ New module `_instructions.py`; re-exported from the package root. The old
 IDENTITY, DOCS, CAPABILITIES, WORKFLOWS, INSTANCE, OPERATOR = 0, 100, 200, 300, 400, 500
 
 def instructions_for(mcp: FastMCP) -> InstructionsBuilder
-def finalize_instructions(mcp: FastMCP, env_prefix: str) -> str
+def finalize_instructions(mcp: FastMCP, config: ServerConfig, *, env_prefix: str) -> str
 
 class InstructionsBuilder:
     def add(self, text: str, *, priority: int, tools: Iterable[str] = ()) -> None
@@ -95,16 +95,22 @@ plumbing, not a domain hook, and must not appear on helper signatures.
    `add(...)` calls (read-only line, conventions, OKF, …) from its own module.
 3. Core `register_*` helpers add their workflow snippets.
 4. `apply_tool_visibility(mcp, config)`.
-5. `finalize_instructions(mcp, _ENV_PREFIX)`.
+5. `finalize_instructions(mcp, config.server, env_prefix=_ENV_PREFIX)`.
 
 Steps 2–3 may run in any order. Only step 5's position matters: it must
 follow visibility.
 
 ### `finalize_instructions` — in order
 
-1. **Exposed tools** = names of `Tool` components in
-   `mcp.local_provider._components` with `enabled` true (the enumeration
-   `_icons.py` already uses; same `RuntimeError` on API drift).
+1. **Exposed tools** = registered tool names (enumerated from
+   `mcp.local_provider._components`, as `_icons.py` does; same `RuntimeError`
+   on API drift) filtered by the operator rule pvl-core owns:
+   `config.tools_allow` if set, else minus `config.tools_deny`. FastMCP
+   stores `disable()`/`enable()` as async transforms with no synchronous
+   query, and `make_server` is synchronous — so `finalize` recomputes the
+   rule from `ServerConfig` rather than asking FastMCP. A new helper
+   `exposed_tool_names(mcp, config)` in `_visibility.py` is the single source
+   of that rule, and a test pins it against `Client.list_tools()`.
 2. **Prune**: drop every snippet whose `tools` are not all exposed. `DEBUG`
    log per drop, naming the missing tool.
 3. **Identity**: exactly one snippet at priority `IDENTITY` must remain, else
@@ -163,7 +169,7 @@ snippet about an auth-gated tool should read naturally when the tool is absent
 | Helper | Snippet (gist) | priority | `tools` |
 |---|---|---|---|
 | `register_transfer_routes` | Upload: call `create_upload_link`, then PUT the bytes to the returned URL; the link is single-use and expires. Download: call `create_download_link`, then GET. Links are capability URLs — do not reuse or share them. | `WORKFLOWS` | `{create_upload_link, create_download_link}` |
-| first `register_long_running_tool` / `register_job_tools` | A long-running tool returns a job id when the client cannot run it as a task; poll `get_job_result` with that id until it completes rather than invoking the tool again. Added once per server. | `WORKFLOWS` | `{get_job_result}` |
+| `register_job_tools` (the once-per-server call) | A long-running tool returns a job id when the client cannot run it as a task; poll `get_job_result` with that id until it completes rather than invoking the tool again. | `WORKFLOWS` | `{get_job_result}` |
 | `builder.documentation(url)` | "Full documentation for this server: `<url>`." | `DOCS` | — |
 | `register_server_info_tool`, `register_tool_icons`, `apply_tool_visibility` | nothing | | |
 
@@ -229,7 +235,7 @@ equals `mcp.instructions`.
 1. pvl-core ships this as a major (removes `build_instructions`).
 2. Template: `FastMCP(...)` drops `instructions=`; the `env(...) or
    build_instructions(...)` line becomes `finalize_instructions(mcp,
-   _ENV_PREFIX)` after `apply_tool_visibility`; `docs/configuration.md.jinja`
+   config.server, env_prefix=_ENV_PREFIX)` after `apply_tool_visibility`; `docs/configuration.md.jinja`
    documents `_EXTRA` and marks `INSTRUCTIONS` legacy.
 3. Each downstream moves its identity/domain snippets into
    `instructions_for(mcp)` calls; mvm deletes `config.instructions`.
