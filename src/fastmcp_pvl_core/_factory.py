@@ -4,10 +4,8 @@ Each function returns a piece of the FastMCP wiring so downstream
 projects can compose a ``make_server()`` without inheriting from a
 base class.
 
-Three orthogonal helpers live here:
+Two orthogonal helpers live here:
 
-- :func:`build_instructions` — MCP instructions template parameterized
-  by environment-variable prefix and a domain-describing sentence.
 - :func:`build_event_store` — construct an MCP event store backed by
   the unified storage selected by :func:`build_kv_store`.
 - :func:`compute_app_domain` — derive the MCP Apps iframe domain for CSP
@@ -17,7 +15,6 @@ Three orthogonal helpers live here:
 
 from __future__ import annotations
 
-import logging
 from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
@@ -25,49 +22,6 @@ from ._config import ServerConfig
 
 if TYPE_CHECKING:
     from fastmcp.server.event_store import EventStore
-
-logger = logging.getLogger(__name__)
-
-
-def build_instructions(
-    *,
-    env_prefix: str,
-    domain_line: str,
-) -> str:
-    """Build the default MCP instructions string.
-
-    The returned text concatenates a domain-describing sentence supplied
-    by the caller and a one-line hint telling operators how to override
-    these instructions via environment variable.
-
-    There is deliberately no read-only/read-write announcement (#222).
-    The former ``read_only`` argument only chose a sentence — nothing in
-    pvl-core hid or rejected write tools — so a server could truthfully
-    be told to say it was read-only while every write tool stayed
-    listable and callable. Announcing a guarantee the server does not
-    enforce is worse than announcing nothing. Operators restrict the
-    exposed tool set with ``{PREFIX}_TOOLS_ALLOW`` /
-    ``{PREFIX}_TOOLS_DENY``, which
-    :func:`~fastmcp_pvl_core.apply_tool_visibility` actually enforces.
-
-    Args:
-        env_prefix: Environment-variable prefix for the consuming project
-            (with or without a trailing underscore — it is normalized).
-            Used to construct the override env var name
-            ``{prefix}_INSTRUCTIONS``.
-        domain_line: A sentence describing the service's domain and
-            capabilities.  Included verbatim at the top of the instructions.
-
-    Returns:
-        A single string suitable for :class:`~fastmcp.FastMCP`'s
-        ``instructions`` parameter.
-    """
-    prefix = env_prefix.rstrip("_")
-    return (
-        f"{domain_line} "
-        f"Operators: set {prefix}_INSTRUCTIONS to describe this "
-        "service's domain and capabilities."
-    )
 
 
 def build_event_store(env_prefix: str, config: ServerConfig) -> EventStore:

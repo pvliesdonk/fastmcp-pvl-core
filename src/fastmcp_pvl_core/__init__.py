@@ -44,7 +44,6 @@ from ._env import (
 from ._errors import ConfigurationError
 from ._factory import (
     build_event_store,
-    build_instructions,
     compute_app_domain,
 )
 from ._icons import IconSpec, make_icon, register_tool_icons
@@ -157,7 +156,6 @@ __all__ = [
     "build_auth",
     "build_bearer_auth",
     "build_event_store",
-    "build_instructions",
     "build_jobs",
     "build_kv_store",
     "build_oidc_proxy_auth",

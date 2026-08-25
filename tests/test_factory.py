@@ -9,51 +9,8 @@ import pytest
 from fastmcp_pvl_core import (
     ServerConfig,
     build_event_store,
-    build_instructions,
     compute_app_domain,
 )
-
-
-class TestBuildInstructions:
-    def test_domain_line_and_override_hint(self):
-        text = build_instructions(
-            env_prefix="MY_APP",
-            domain_line="A widget service.",
-        )
-        assert "A widget service." in text
-        assert "MY_APP_INSTRUCTIONS" in text
-
-    def test_no_read_only_announcement(self):
-        """#222: pvl-core enforces no read-only mode, so it announces none.
-
-        The instructions must not claim a write-tool guarantee the server
-        does not keep. Operators restrict tools via TOOLS_ALLOW/TOOLS_DENY,
-        which apply_tool_visibility enforces.
-        """
-        text = build_instructions(
-            env_prefix="MY_APP",
-            domain_line="A widget service.",
-        )
-        assert "READ-ONLY" not in text
-        assert "READ-WRITE" not in text
-
-    def test_read_only_kwarg_is_gone(self):
-        """The removed argument must not be silently swallowed."""
-        with pytest.raises(TypeError):
-            build_instructions(  # type: ignore[call-arg]
-                read_only=True,
-                env_prefix="MY_APP",
-                domain_line="x.",
-            )
-
-    def test_env_prefix_trailing_underscore_stripped(self):
-        """Callers passing 'MY_APP_' or 'MY_APP' should get the same result."""
-        a = build_instructions(env_prefix="MY_APP", domain_line="x.")
-        b = build_instructions(env_prefix="MY_APP_", domain_line="x.")
-        assert a == b
-        assert "MY_APP_INSTRUCTIONS" in a
-        # Should NOT double the underscore.
-        assert "MY_APP__INSTRUCTIONS" not in a
 
 
 class TestBuildEventStore:

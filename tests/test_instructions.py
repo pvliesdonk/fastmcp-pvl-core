@@ -280,3 +280,10 @@ class TestEnvContract:
         assert finalize_instructions(
             a, ServerConfig(), env_prefix="MY_APP"
         ) == finalize_instructions(b, ServerConfig(), env_prefix="MY_APP_")
+
+
+def test_build_instructions_is_gone():
+    import fastmcp_pvl_core
+
+    assert not hasattr(fastmcp_pvl_core, "build_instructions")
+    assert "build_instructions" not in fastmcp_pvl_core.__all__
