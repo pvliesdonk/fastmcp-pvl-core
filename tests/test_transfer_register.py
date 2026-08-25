@@ -38,6 +38,8 @@ from fastmcp_pvl_core import (
     TransferLinks,
     TransferReadResult,
     build_transfer_links,
+    finalize_instructions,
+    instructions_for,
     register_transfer_routes,
 )
 from fastmcp_pvl_core._errors import ConfigurationError
@@ -491,3 +493,27 @@ class TestMixedMode:
     async def test_register_mounts_route_once(self) -> None:
         mcp, _, _ = _register()
         assert _transfer_route_count(mcp) == 1
+
+
+class TestInstructionsSnippet:
+    def test_workflow_snippet_present_when_both_tools_exposed(self) -> None:
+        mcp, _, _ = _register()
+        instructions_for(mcp).identity("T.")
+        text = finalize_instructions(
+            mcp,
+            ServerConfig(base_url="https://x.example.com", kv_store_url="memory://"),
+            env_prefix="T",
+        )
+        assert "create_upload_link" in text and "create_download_link" in text
+        assert "single-use" in text
+
+    def test_snippet_dropped_when_either_tool_hidden(self) -> None:
+        mcp, _, _ = _register()
+        instructions_for(mcp).identity("T.")
+        cfg = ServerConfig(
+            base_url="https://x.example.com",
+            kv_store_url="memory://",
+            tools_deny=("create_upload_link",),
+        )
+        text = finalize_instructions(mcp, cfg, env_prefix="T")
+        assert "create_upload_link" not in text and "create_download_link" not in text
