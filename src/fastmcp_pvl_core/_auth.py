@@ -415,6 +415,11 @@ def build_oidc_proxy_auth(config: ServerConfig) -> OIDCProxy | None:
     Returns:
         A configured :class:`OIDCProxy`, or ``None`` when any of the
         four required fields is missing.
+
+    Raises:
+        ConfigurationError: OIDC discovery at ``config.oidc_config_url``
+            failed (unreachable, non-2xx, malformed, or missing required
+            endpoints). Same contract as :func:`build_remote_auth`.
     """
     # Keep the secret out of the "missing" list so it never enters logs
     # (static-analysis taint tools flag this otherwise).
@@ -447,19 +452,32 @@ def build_oidc_proxy_auth(config: ServerConfig) -> OIDCProxy | None:
         verify_id_token=verify_id_token,
     )
 
+    import httpx
     from fastmcp.server.auth.oidc_proxy import OIDCProxy
 
-    proxy = OIDCProxy(
-        config_url=oidc_config_url,
-        client_id=oidc_client_id,
-        client_secret=oidc_client_secret,
-        base_url=base_url,
-        audience=config.oidc_audience,
-        required_scopes=required_scopes,
-        jwt_signing_key=config.oidc_jwt_signing_key,
-        verify_id_token=verify_id_token,
-        require_authorization_consent=False,
-    )
+    # ``OIDCProxy.__init__`` performs discovery eagerly and re-raises the
+    # raw failure: ``httpx.HTTPError`` from the network layer, and
+    # ``ValueError`` from JSON decoding, pydantic validation (a
+    # ``ValueError`` subclass), or the endpoint check. Normalise to the
+    # same ``ConfigurationError`` contract ``build_remote_auth`` uses so
+    # a consumer's ``except ConfigurationError`` covers every OIDC mode
+    # (#69). Only the URL enters the message; the secret never does.
+    try:
+        proxy = OIDCProxy(
+            config_url=oidc_config_url,
+            client_id=oidc_client_id,
+            client_secret=oidc_client_secret,
+            base_url=base_url,
+            audience=config.oidc_audience,
+            required_scopes=required_scopes,
+            jwt_signing_key=config.oidc_jwt_signing_key,
+            verify_id_token=verify_id_token,
+            require_authorization_consent=False,
+        )
+    except (httpx.HTTPError, ValueError) as exc:
+        raise ConfigurationError(
+            f"OIDC discovery failed at {oidc_config_url}: {exc}"
+        ) from exc
 
     # Widen what the proxy advertises (and asks the upstream provider
     # for) beyond ``required_scopes``, which it would otherwise reuse for
