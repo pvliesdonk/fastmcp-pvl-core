@@ -20,6 +20,8 @@ from fastmcp_pvl_core import (
     JobsConfig,
     ServerConfig,
     build_jobs,
+    finalize_instructions,
+    instructions_for,
     register_job_tools,
     register_long_running_tool,
 )
@@ -337,3 +339,21 @@ class TestUnconfiguredDefaultBackend:
             return {"ok": True}
 
         assert await jobs.run_with_deadline(work(), tool="t") == {"ok": True}
+
+
+class TestInstructionsSnippet:
+    def test_polling_guidance_present(self) -> None:
+        mcp = FastMCP("t")
+        register_job_tools(mcp, _jobs())
+        instructions_for(mcp).identity("T.")
+        text = finalize_instructions(
+            mcp, ServerConfig(kv_store_url="memory://"), env_prefix="T"
+        )
+        assert JOB_POLL_TOOL_NAME in text and "job id" in text
+
+    def test_dropped_when_poll_tool_hidden(self) -> None:
+        mcp = FastMCP("t")
+        register_job_tools(mcp, _jobs())
+        instructions_for(mcp).identity("T.")
+        cfg = ServerConfig(kv_store_url="memory://", tools_deny=(JOB_POLL_TOOL_NAME,))
+        assert JOB_POLL_TOOL_NAME not in finalize_instructions(mcp, cfg, env_prefix="T")
