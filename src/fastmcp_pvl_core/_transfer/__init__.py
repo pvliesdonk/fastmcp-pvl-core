@@ -24,7 +24,12 @@ from __future__ import annotations
 from .base64 import decode_base64_capped
 from .config import TransferConfig
 from .fetch import FetchResult, fetch_url
-from .register import TransferLinks, build_transfer_links, register_transfer_routes
+from .register import (
+    TransferLinks,
+    add_transfer_workflow,
+    build_transfer_links,
+    register_transfer_routes,
+)
 from .sink import (
     TransferBadGatewayError,
     TransferForbiddenError,
@@ -56,6 +61,7 @@ __all__ = [
     "TransferSinkError",
     "TransferUnavailableError",
     "TransferValidator",
+    "add_transfer_workflow",
     "build_transfer_links",
     "decode_base64_capped",
     "fetch_url",
