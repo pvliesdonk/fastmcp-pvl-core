@@ -109,24 +109,29 @@ skipped entirely and its value is used verbatim as the final text — no
 identity requirement, no pruning. The numbered list describes the
 non-legacy path.
 
-1. **Exposed tools** = registered tool names (enumerated from
+1. **Identity**: exactly one snippet at priority `IDENTITY` must exist, else
+   `ConfigurationError`. (Zero: the server has no identity. Two or more: two
+   contributors both claimed it.) Counted before pruning — identity snippets
+   added via `identity()` carry no `tools`, so pruning could not remove them
+   anyway — and before any mutation, so a failure leaves the builder untouched.
+2. **Exposed tools** = registered tool names (enumerated from
    `mcp.local_provider._components`, as `_icons.py` does; same `RuntimeError`
    on API drift) filtered by the operator rule pvl-core owns:
    `config.tools_allow` if set, else minus `config.tools_deny`. FastMCP
    stores `disable()`/`enable()` as async transforms with no synchronous
    query, and `make_server` is synchronous — so `finalize` recomputes the
-   rule from `ServerConfig` rather than asking FastMCP. A new helper
+   rule from `ServerConfig` rather than asking FastMCP. The helper
    `exposed_tool_names(mcp, config)` in `_visibility.py` is the single source
-   of that rule, and a test pins it against `Client.list_tools()`.
-2. **Prune**: drop every snippet whose `tools` are not all exposed. `DEBUG`
+   of that rule, and a test pins it against `Client.list_tools()`. It may
+   raise `ConfigurationError` (both lists set), which is why it runs before
+   step 3.
+3. **Operator context**: if `{P}_INSTRUCTIONS_EXTRA` is set (non-whitespace),
+   add it as one snippet at `OPERATOR`.
+4. **Prune**: drop every snippet whose `tools` are not all exposed. `DEBUG`
    log per drop, naming the missing tool.
-3. **Identity**: exactly one snippet at priority `IDENTITY` must remain, else
-   `ConfigurationError`. (Zero: the server has no identity. Two or more: two
-   contributors both claimed it.)
-4. **Serialize**: sort by `(priority, insertion)`; join snippet texts with a
+5. **Serialize**: sort by `(priority, insertion)`; join snippet texts with a
    blank line. Plain prose, **no markdown headings** — most clients splice the
    text into a system prompt, headings cost tokens and render inconsistently.
-5. **Env contract** (see below).
 6. Set `mcp.instructions`, cache the result, freeze the builder.
 
 Idempotence: a second `finalize` returns the cached string without
