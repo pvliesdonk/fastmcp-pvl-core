@@ -20,7 +20,9 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from ._env import env
 from ._errors import ConfigurationError
+from ._visibility import exposed_tool_names
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
@@ -147,5 +149,70 @@ def instructions_for(mcp: FastMCP) -> InstructionsBuilder:
 
 def finalize_instructions(
     mcp: FastMCP, config: ServerConfig, *, env_prefix: str
-) -> str:  # pragma: no cover
-    raise NotImplementedError
+) -> str:
+    """Render the server's instructions once, apply the env contract, and set them.
+
+    Call after :func:`apply_tool_visibility`, and after every ``register_*``
+    helper and domain contribution. Order of operations:
+
+    1. exactly one identity snippet must remain (checked over the
+       unpruned snippets: identity has no ``tools``, so pruning cannot
+       remove it, and checking first keeps the builder unmutated on
+       failure)
+    2. ``{P}_INSTRUCTIONS_EXTRA`` appended at ``OPERATOR``; legacy
+       ``{P}_INSTRUCTIONS`` replaces the whole text with one ``WARNING``
+    3. exposed tools = :func:`exposed_tool_names` (registered ∧ operator rule)
+    4. drop every snippet whose ``tools`` are not all exposed (``DEBUG`` per drop)
+    5. serialise by ``(priority, insertion)``, blank-line separated
+    6. set ``mcp.instructions``, cache, freeze the builder
+
+    A second call returns the cached string without re-reading env or
+    logging. Per-subject auth visibility is out of scope (see the spec).
+
+    Args:
+        mcp: The server whose builder to finalize.
+        config: Universal server config; only ``tools_allow`` / ``tools_deny``
+            are read.
+        env_prefix: Env-var prefix, with or without a trailing underscore.
+
+    Returns:
+        The final instructions string, also set on ``mcp.instructions``.
+
+    Raises:
+        ConfigurationError: No identity, more than one identity, or both
+            visibility lists set.
+        RuntimeError: FastMCP's component enumeration changed shape.
+    """
+    builder = instructions_for(mcp)
+    if builder._result is not None:
+        return builder._result
+
+    prefix = env_prefix.rstrip("_")
+    legacy = env(prefix, "INSTRUCTIONS") or ""
+    extra = env(prefix, "INSTRUCTIONS_EXTRA") or ""
+
+    if legacy:
+        logger.warning(
+            "%s_INSTRUCTIONS replaces all generated guidance and is deprecated; "
+            "use %s_INSTRUCTIONS_EXTRA to add context.%s",
+            prefix,
+            prefix,
+            f" {prefix}_INSTRUCTIONS_EXTRA is set and was ignored." if extra else "",
+        )
+        text = legacy
+    else:
+        identities = [s for s in builder._snippets if s.priority == IDENTITY]
+        if len(identities) != 1:
+            raise ConfigurationError(
+                "instructions need exactly one identity snippet, found "
+                f"{len(identities)}; call instructions_for(mcp).identity(...) once"
+            )
+        if extra:
+            builder.add(extra, priority=OPERATOR)
+        exposed = exposed_tool_names(mcp, config)
+        text = builder._render(exposed)
+
+    mcp.instructions = text
+    builder._result = text
+    builder._frozen = True
+    return text
