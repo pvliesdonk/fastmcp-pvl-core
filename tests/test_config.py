@@ -827,6 +827,25 @@ class TestServerConfigSurface:
     def test_surface_returns_config_field_records(self):
         assert all(isinstance(c, ConfigField) for c in server_config_surface())
 
+    @pytest.mark.parametrize(
+        ("pattern", "reason"),
+        [
+            (r"\be\.g\.", "Latin abbreviation; write 'for example'"),
+            (r"\bi\.e\.", "Latin abbreviation; write 'that is'"),
+            (r"\betc\.", "Latin abbreviation; rephrase"),
+            (r"\s[\u2014\u2013]\s", "spaced dash; use a comma, period, or parentheses"),
+        ],
+    )
+    def test_help_is_publishable_prose(self, pattern: str, reason: str):
+        """``help`` is public metadata consumers render into Vale-checked docs
+        (#237). Keep it free of the constructs Vale's Google style rejects."""
+        import re
+
+        offenders = [
+            c.name for c in server_config_surface() if re.search(pattern, c.help)
+        ]
+        assert offenders == [], f"{reason}: {offenders}"
+
     def test_covers_every_field_in_declaration_order(self):
         """Declaration order is the contract — it makes generated output stable."""
         surface = server_config_surface()

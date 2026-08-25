@@ -69,7 +69,7 @@ class ServerConfig:
         default=None,
         metadata={
             "help": (
-                "Public base URL of the deployed server, e.g. "
+                "Public base URL of the deployed server, for example "
                 "``https://mcp.example.com``. Required for OIDC. Also the "
                 "fallback source of the MCP Apps domain when ``app_domain`` "
                 "is unset."
@@ -95,7 +95,7 @@ class ServerConfig:
         default=None,
         metadata={
             "help": (
-                "OIDC discovery document URL, e.g. "
+                "OIDC discovery document URL, for example "
                 "``https://auth.example.com/.well-known/openid-configuration``."
             ),
             "tags": ("auth", "oidc"),
@@ -149,7 +149,7 @@ class ServerConfig:
                 "``openid offline_access``; ``oidc_required_scopes`` is always "
                 "added on top. Set this when the registered client is not "
                 "permitted ``offline_access``, or to have clients request "
-                "extra claim scopes (e.g. ``groups``) without also requiring "
+                "extra claim scopes (such as ``groups``) without also requiring "
                 "them in every token."
             ),
             "tags": ("auth", "oidc"),
@@ -160,10 +160,10 @@ class ServerConfig:
         default=None,
         metadata={
             "help": (
-                "Signing key for issued JWTs; used in oidc-proxy mode only. "
+                "Signing key for issued tokens; used in oidc-proxy mode only. "
                 "When unset, the key is derived deterministically from "
-                "``oidc_client_secret``, so tokens survive a restart — but "
-                "rotating that secret invalidates every issued token. Set "
+                "``oidc_client_secret``, so tokens survive a restart. Rotating "
+                "that secret then invalidates every issued token. Set "
                 "this explicitly to decouple token validity from secret "
                 "rotation. Generate with ``openssl rand -hex 32``."
             ),
@@ -190,7 +190,7 @@ class ServerConfig:
                 "``redis://``, ``dynamodb://`` and ``mongodb://`` each need "
                 "their matching extra. When unset, defaults to "
                 "``file:///data/state`` (the volume family Docker images "
-                "mount), or to ``memory://`` — with a warning — on a host "
+                "mount), or to ``memory://`` (with a warning) on a host "
                 "where that directory is not usable."
             ),
             "tags": ("persistence", "readme"),
@@ -201,9 +201,9 @@ class ServerConfig:
         default=None,
         metadata={
             "help": (
-                "Legacy state-backend override, honoured by "
+                "Legacy state-backend override, used by "
                 "``build_event_store`` and ``build_kv_store`` only when "
-                "``kv_store_url`` is unset — it then backs every namespace, "
+                "``kv_store_url`` is unset. It then backs every namespace, "
                 "not just HTTP resumability. Prefer ``kv_store_url`` for new "
                 "deployments."
             ),
