@@ -153,12 +153,23 @@ def finalize_instructions(
     """Render the server's instructions once, apply the env contract, and set them.
 
     Call after :func:`apply_tool_visibility`, and after every ``register_*``
-    helper and domain contribution. Order of operations:
+    helper and domain contribution — ``finalize_instructions`` must run last,
+    after every tool registration and after every server-side visibility
+    call. Under that precondition the pruned set equals what a client lists
+    under the operator rule. Server-side ``disable``/``enable`` before
+    finalize is not modelled, and tools registered after finalize are not
+    seen. Per-subject auth visibility is separately out of scope.
 
-    1. exactly one identity snippet must remain (checked over the
-       unpruned snippets: identity has no ``tools``, so pruning cannot
-       remove it, and checking first keeps the builder unmutated on
-       failure)
+    If ``{P}_INSTRUCTIONS`` is set (non-whitespace), the numbered steps below
+    are skipped entirely and its value is used verbatim — no identity
+    requirement, no pruning. The numbered list describes the non-legacy path.
+
+    Order of operations:
+
+    1. exactly one identity snippet must remain — identity snippets added
+       via ``identity()`` carry no ``tools``, so pruning cannot remove them;
+       the count is taken before pruning, which also keeps the builder
+       unmutated on failure
     2. exposed tools = :func:`exposed_tool_names` (registered ∧ operator
        rule) — computed before any further mutation, since it is the other
        source of :class:`~fastmcp_pvl_core._errors.ConfigurationError`
@@ -171,7 +182,7 @@ def finalize_instructions(
     6. set ``mcp.instructions``, cache, freeze the builder
 
     A second call returns the cached string without re-reading env or
-    logging. Per-subject auth visibility is out of scope (see the spec).
+    logging.
 
     Args:
         mcp: The server whose builder to finalize.

@@ -43,6 +43,19 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _reject_both_lists(config: ServerConfig) -> None:
+    """Raise if *config* sets both ``tools_allow`` and ``tools_deny``.
+
+    Shared by :func:`apply_tool_visibility` and :func:`exposed_tool_names` so
+    the message lives in one place.
+    """
+    if config.tools_allow and config.tools_deny:
+        raise ConfigurationError(
+            "tools_allow and tools_deny are both set; set at most one — "
+            "an allowlist already expresses every exclusion."
+        )
+
+
 def apply_tool_visibility(mcp: FastMCP, config: ServerConfig) -> None:
     """Apply the operator's tool allow-/denylist to *mcp*.
 
@@ -72,13 +85,9 @@ def apply_tool_visibility(mcp: FastMCP, config: ServerConfig) -> None:
             naming the offending env vars; this guard covers directly
             constructed configs.)
     """
+    _reject_both_lists(config)
     allow = config.tools_allow
     deny = config.tools_deny
-    if allow and deny:
-        raise ConfigurationError(
-            "tools_allow and tools_deny are both set; set at most one — "
-            "an allowlist already expresses every exclusion."
-        )
     if allow:
         mcp.disable(components={"tool"})
         mcp.enable(names=set(allow), components={"tool"})
@@ -132,17 +141,18 @@ def exposed_tool_names(mcp: FastMCP, config: ServerConfig) -> frozenset[str]:
     no synchronous query, and ``make_server`` is synchronous. Registered names
     come from the same enumeration ``register_tool_icons`` uses.
 
+    This models only the operator allow-/denylist rule over the tools
+    registered when it is called; it does not model server-side
+    ``mcp.disable()``/``mcp.enable()`` calls, whose transforms FastMCP
+    resolves at listing time.
+
     Raises:
         ConfigurationError: ``tools_allow`` and ``tools_deny`` are both set.
         RuntimeError: FastMCP's component enumeration changed shape.
     """
+    _reject_both_lists(config)
     allow = config.tools_allow
     deny = config.tools_deny
-    if allow and deny:
-        raise ConfigurationError(
-            "tools_allow and tools_deny are both set; set at most one — "
-            "an allowlist already expresses every exclusion."
-        )
     registered = frozenset(_index_tools_by_name(mcp))
     if allow:
         return registered & frozenset(allow)

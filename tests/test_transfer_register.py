@@ -507,13 +507,16 @@ class TestInstructionsSnippet:
         assert "create_upload_link" in text and "create_download_link" in text
         assert "single-use" in text
 
-    def test_snippet_dropped_when_either_tool_hidden(self) -> None:
+    @pytest.mark.parametrize(
+        "hidden_tool", ["create_upload_link", "create_download_link"]
+    )
+    def test_snippet_dropped_when_either_tool_hidden(self, hidden_tool: str) -> None:
         mcp, _, _ = _register()
         instructions_for(mcp).identity("T.")
         cfg = ServerConfig(
             base_url="https://x.example.com",
             kv_store_url="memory://",
-            tools_deny=("create_upload_link",),
+            tools_deny=(hidden_tool,),
         )
         text = finalize_instructions(mcp, cfg, env_prefix="T")
         assert "create_upload_link" not in text and "create_download_link" not in text

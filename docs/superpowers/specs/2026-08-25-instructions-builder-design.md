@@ -38,7 +38,7 @@ Tool descriptions already carry per-tool semantics. The governing principle:
 | Category | Belongs | Example |
 |---|---|---|
 | Identity | yes — exactly one line | "A searchable markdown document vault." |
-| Documentation | yes | "Full documentation for this server: `<llms.txt URL>`." |
+| Documentation | yes | "Full documentation for this server: `<llms.txt URL>`" |
 | Capability map | yes | "Reach for X when …" — matters because clients may defer or hide the tool list, so this is the only reliable overview |
 | Cross-tool workflows | yes | "`write` updates the index; never call `reindex` after it." |
 | Instance facts | yes, **only when enforced** (#222) | read-only, OKF mode, conventions filename, summarize batch limit |
@@ -78,7 +78,9 @@ class InstructionsBuilder:
   missing one step is worse than absent).
 - `identity` and `documentation` exist so pvl-core owns the *shape* of those
   two lines while downstream supplies the domain value (identity text, docs
-  URL). Both are thin wrappers over `add`.
+  URL). Both are thin wrappers over `add`. `documentation`'s sentence has no
+  terminal period after the URL — deliberate: a period after a bare URL is a
+  parser hazard.
 
 ### One builder per server
 
@@ -101,6 +103,11 @@ Steps 2–3 may run in any order. Only step 5's position matters: it must
 follow visibility.
 
 ### `finalize_instructions` — in order
+
+If `{P}_INSTRUCTIONS` is set (non-whitespace), the numbered steps below are
+skipped entirely and its value is used verbatim as the final text — no
+identity requirement, no pruning. The numbered list describes the
+non-legacy path.
 
 1. **Exposed tools** = registered tool names (enumerated from
    `mcp.local_provider._components`, as `_icons.py` does; same `RuntimeError`
@@ -148,7 +155,7 @@ change is a breaking change only for downstream *code*, absorbed by a
 | no identity, or more than one | `finalize` | `ConfigurationError` |
 | tool enumeration API missing | `finalize` | `RuntimeError` (as `_icons.py`) |
 
-### Known limit: per-subject auth visibility
+### Known limits
 
 FastMCP filters `list_tools` per caller through component `AuthCheck`s
 (`server.py`, `run_auth_checks(tool.auth, ctx)`), so a tool gated by
@@ -157,11 +164,13 @@ visible to others — within one process, from one instructions string. No
 single-string design can follow that: `initialize` is built from the static
 field, not per subject.
 
-Rule: **pruning covers the process-lifetime exposed set** (registered ∧ not
-operator-hidden), which is fully correct because nothing in the family
-enables/disables tools after `apply_tool_visibility`. Per-subject visibility
-is out of scope; instructions describe the server's full surface, and a
-snippet about an auth-gated tool should read naturally when the tool is absent
+`finalize_instructions` must run last — after every tool registration and
+after every server-side visibility call. Under that precondition the pruned
+set equals what a client lists under the operator rule. Server-side
+`disable`/`enable` before finalize is not modelled, and tools registered
+after finalize are not seen. Per-subject auth visibility is separately out
+of scope; instructions describe the server's full surface, and a snippet
+about an auth-gated tool should read naturally when the tool is absent
 ("if `delete` is available, …").
 
 ## Core contributions
@@ -170,7 +179,7 @@ snippet about an auth-gated tool should read naturally when the tool is absent
 |---|---|---|---|
 | `register_transfer_routes` | Upload: call `create_upload_link`, then PUT the bytes to the returned URL; the link is single-use and expires. Download: call `create_download_link`, then GET. Links are capability URLs — do not reuse or share them. | `WORKFLOWS` | `{create_upload_link, create_download_link}` |
 | `register_job_tools` (the once-per-server call) | A long-running tool returns a job id when the client cannot run it as a task; poll `get_job_result` with that id until it completes rather than invoking the tool again. | `WORKFLOWS` | `{get_job_result}` |
-| `builder.documentation(url)` | "Full documentation for this server: `<url>`." | `DOCS` | — |
+| `builder.documentation(url)` | "Full documentation for this server: `<url>`" (no terminal period) | `DOCS` | — |
 | `register_server_info_tool`, `register_tool_icons`, `apply_tool_visibility` | nothing | | |
 
 The exact wording is fixed in the implementation and covered by tests; the

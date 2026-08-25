@@ -9,6 +9,7 @@ from fastmcp import Client, FastMCP
 from fastmcp.exceptions import ToolError
 
 from fastmcp_pvl_core import ConfigurationError, ServerConfig, apply_tool_visibility
+from fastmcp_pvl_core._visibility import exposed_tool_names
 
 
 def build_server() -> FastMCP:
@@ -181,16 +182,12 @@ class TestExposedToolNames:
     """Sync rule must agree with client visibility after apply_tool_visibility."""
 
     async def test_no_filter_exposes_all(self):
-        from fastmcp_pvl_core._visibility import exposed_tool_names
-
         mcp = build_server()
         cfg = ServerConfig()
         apply_tool_visibility(mcp, cfg)
         assert exposed_tool_names(mcp, cfg) == frozenset(await visible_tools(mcp))
 
     async def test_denylist(self):
-        from fastmcp_pvl_core._visibility import exposed_tool_names
-
         mcp = build_server()
         cfg = ServerConfig(tools_deny=("beta", "nonexistent"))
         apply_tool_visibility(mcp, cfg)
@@ -201,8 +198,6 @@ class TestExposedToolNames:
         )
 
     async def test_allowlist(self):
-        from fastmcp_pvl_core._visibility import exposed_tool_names
-
         mcp = build_server()
         cfg = ServerConfig(tools_allow=("gamma", "nonexistent"))
         apply_tool_visibility(mcp, cfg)
@@ -213,8 +208,6 @@ class TestExposedToolNames:
         )
 
     def test_both_set_raises_like_apply(self):
-        from fastmcp_pvl_core._visibility import exposed_tool_names
-
         with pytest.raises(ConfigurationError):
             exposed_tool_names(
                 build_server(), ServerConfig(tools_allow=("a",), tools_deny=("b",))
