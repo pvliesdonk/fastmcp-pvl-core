@@ -33,6 +33,7 @@ import logging
 from typing import TYPE_CHECKING
 
 from ._errors import ConfigurationError
+from ._icons import _index_tools_by_name
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
@@ -121,3 +122,30 @@ def _warn_if_no_tools_exposed(mcp: FastMCP, allow: tuple[str, ...]) -> None:
             "or names gone stale after an upgrade.",
             ", ".join(sorted(allow)),
         )
+
+
+def exposed_tool_names(mcp: FastMCP, config: ServerConfig) -> frozenset[str]:
+    """Tool names *mcp* exposes under the operator allow-/denylist in *config*.
+
+    Evaluates the same rule :func:`apply_tool_visibility` installs, without
+    asking FastMCP: it stores ``disable``/``enable`` as async transforms with
+    no synchronous query, and ``make_server`` is synchronous. Registered names
+    come from the same enumeration ``register_tool_icons`` uses.
+
+    Raises:
+        ConfigurationError: ``tools_allow`` and ``tools_deny`` are both set.
+        RuntimeError: FastMCP's component enumeration changed shape.
+    """
+    allow = config.tools_allow
+    deny = config.tools_deny
+    if allow and deny:
+        raise ConfigurationError(
+            "tools_allow and tools_deny are both set; set at most one — "
+            "an allowlist already expresses every exclusion."
+        )
+    registered = frozenset(_index_tools_by_name(mcp))
+    if allow:
+        return registered & frozenset(allow)
+    if deny:
+        return registered - frozenset(deny)
+    return registered
