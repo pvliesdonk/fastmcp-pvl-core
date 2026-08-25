@@ -37,6 +37,7 @@ from fastmcp_pvl_core import (
     TransferConfig,
     TransferLinks,
     TransferReadResult,
+    add_transfer_workflow,
     build_transfer_links,
     finalize_instructions,
     instructions_for,
@@ -493,6 +494,83 @@ class TestMixedMode:
     async def test_register_mounts_route_once(self) -> None:
         mcp, _, _ = _register()
         assert _transfer_route_count(mcp) == 1
+
+
+class TestAddTransferWorkflow:
+    """The core-shaped capability-link prose, reusable by path-2 servers (#288)."""
+
+    _TAIL_PAIR = (
+        "Each link is a single-use capability URL that expires: do not reuse "
+        "it, share it, or call the link tools speculatively."
+    )
+    _TAIL_ONE = (
+        "The link is a single-use capability URL that expires: do not reuse "
+        "it, share it, or call the tool speculatively."
+    )
+
+    @staticmethod
+    def _finalize(mcp: FastMCP, **cfg: Any) -> str:
+        instructions_for(mcp).identity("T.")
+        return finalize_instructions(
+            mcp, ServerConfig(kv_store_url="memory://", **cfg), env_prefix="T"
+        )
+
+    @staticmethod
+    def _server(*tool_names: str) -> FastMCP:
+        mcp = FastMCP("t")
+        for name in tool_names:
+            mcp.tool(name=name)(lambda: "x")
+        return mcp
+
+    def test_both_directions(self):
+        mcp = self._server("push", "pull")
+        add_transfer_workflow(mcp, upload_tool="push", download_tool="pull")
+        text = self._finalize(mcp)
+        assert text == (
+            "T.\n\nTo upload a file, call push and then PUT the bytes to the "
+            "returned URL; to download, call pull and GET the returned URL. "
+            f"{self._TAIL_PAIR}"
+        )
+
+    def test_download_only(self):
+        mcp = self._server("share_document")
+        add_transfer_workflow(mcp, download_tool="share_document")
+        text = self._finalize(mcp)
+        assert text == (
+            "T.\n\nTo download a file, call share_document and then GET the "
+            f"returned URL. {self._TAIL_ONE}"
+        )
+        assert "upload" not in text
+
+    def test_upload_only(self):
+        mcp = self._server("ingest")
+        add_transfer_workflow(mcp, upload_tool="ingest")
+        text = self._finalize(mcp)
+        assert text == (
+            "T.\n\nTo upload a file, call ingest and then PUT the bytes to the "
+            f"returned URL. {self._TAIL_ONE}"
+        )
+        assert "download" not in text
+
+    def test_neither_name_is_a_configuration_error(self):
+        with pytest.raises(ConfigurationError, match="at least one"):
+            add_transfer_workflow(FastMCP("t"))
+
+    @pytest.mark.parametrize("blank", ["", "   "])
+    def test_blank_name_is_a_configuration_error(self, blank: str):
+        with pytest.raises(ConfigurationError, match="at least one"):
+            add_transfer_workflow(FastMCP("t"), upload_tool=blank)
+
+    def test_snippet_is_pruned_when_a_named_tool_is_hidden(self):
+        mcp = self._server("push", "pull")
+        add_transfer_workflow(mcp, upload_tool="push", download_tool="pull")
+        text = self._finalize(mcp, tools_deny=("pull",))
+        assert text == "T."
+
+    def test_snippet_is_pruned_when_the_named_tool_is_never_registered(self):
+        mcp = self._server()
+        add_transfer_workflow(mcp, download_tool="ghost")
+        assert self._finalize(mcp) == "T."
 
 
 class TestInstructionsSnippet:

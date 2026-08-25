@@ -182,6 +182,71 @@ class TransferLinks:
         return await self._mint(sink_handle, "upload", ttl_s)
 
 
+def add_transfer_workflow(
+    mcp: FastMCP,
+    *,
+    upload_tool: str | None = None,
+    download_tool: str | None = None,
+) -> None:
+    """Contribute the capability-link workflow to *mcp*'s server instructions.
+
+    :func:`register_transfer_routes` calls this with the generic tool pair it
+    registers. A **path-2** server calls it itself, naming the tools it built
+    on :class:`TransferLinks`, so it does not hand-write prose about pvl-core's
+    own link semantics (#288).
+
+    Args:
+        mcp: The server whose instructions builder receives the snippet.
+        upload_tool: Domain hook — the name of the tool that mints upload
+            links, or ``None`` when this server mints none.
+        download_tool: Domain hook — the name of the tool that mints download
+            links, or ``None`` when this server mints none.
+
+    The prose itself is **shape**: pvl-core owns the wording and there is no
+    override for it. Only the names are the caller's, because pvl-core cannot
+    know what a downstream called its tool. The snippet declares those names,
+    so it is pruned whole if an operator hides either one.
+
+    Raises:
+        ConfigurationError: Neither name is a non-blank string — the snippet
+            would then reference no tool and could never be true.
+    """
+    upload = (upload_tool or "").strip()
+    download = (download_tool or "").strip()
+    if not upload and not download:
+        raise ConfigurationError(
+            "add_transfer_workflow needs at least one of upload_tool / "
+            "download_tool: a workflow snippet naming no tool cannot be true"
+        )
+
+    if upload and download:
+        body = (
+            f"To upload a file, call {upload} and then PUT the bytes to the "
+            f"returned URL; to download, call {download} and GET the returned "
+            "URL. Each link is a single-use capability URL that expires: do "
+            "not reuse it, share it, or call the link tools speculatively."
+        )
+    elif upload:
+        body = (
+            f"To upload a file, call {upload} and then PUT the bytes to the "
+            "returned URL. The link is a single-use capability URL that "
+            "expires: do not reuse it, share it, or call the tool "
+            "speculatively."
+        )
+    else:
+        body = (
+            f"To download a file, call {download} and then GET the returned "
+            "URL. The link is a single-use capability URL that expires: do "
+            "not reuse it, share it, or call the tool speculatively."
+        )
+
+    instructions_for(mcp).add(
+        body,
+        priority=WORKFLOWS,
+        tools={name for name in (upload, download) if name},
+    )
+
+
 def build_transfer_links(
     mcp: FastMCP,
     config: ServerConfig,
@@ -336,13 +401,8 @@ def register_transfer_routes(
         tags={"write"},
     )(create_upload_link)
 
-    instructions_for(mcp).add(
-        "To upload a file, call create_upload_link and then PUT the bytes to "
-        "the returned URL; to download, call create_download_link and GET the "
-        "returned URL. Each link is a single-use capability URL that expires: "
-        "do not reuse it, share it, or call the link tools speculatively.",
-        priority=WORKFLOWS,
-        tools={"create_download_link", "create_upload_link"},
+    add_transfer_workflow(
+        mcp, upload_tool="create_upload_link", download_tool="create_download_link"
     )
 
     return links
