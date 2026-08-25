@@ -11,6 +11,14 @@
   §11 #1 table describes the original implementation, not the current one; the
   security requirement it served (never dial an unvalidated address) is
   unchanged and now holds per hop.
+- **Amended by:** #276 — the `TRANSFER_FETCH_MAX_BYTES` /
+  `TRANSFER_FETCH_TIMEOUT_S` env vars listed in §7 (and the "fetch config
+  knobs" in the §11 #1 row) were never implemented and are withdrawn.
+  `fetch_url`'s bounds are caller-supplied kwargs: how many bytes a fetch may
+  be is decided by the domain (an oversized note is not an oversized image),
+  so it fails the operator-config classification. Both consumers already
+  pass domain-derived caps. §4 and §5 are reworded to match; the §7 table now
+  lists only the five vars `TransferConfig` reads.
 
 > This is an **implementor design**, not a wire specification. It deliberately
 > does **not** live under `docs/specs/`, which `CLAUDE.md` reserves for
@@ -143,8 +151,9 @@ acceptable,"* which pvl-core cannot answer for a downstream's domain.
 ### The sink is byte-oriented by deliberate choice (bounded, not streamed)
 
 `TransferSink.read` returns `bytes` and `write` accepts `bytes` — the whole
-body is materialized in memory, bounded by `TRANSFER_MAX_UPLOAD_BYTES` /
-`TRANSFER_FETCH_MAX_BYTES` (§7). This is a **conscious decision, not an
+body is materialized in memory, bounded by `TRANSFER_MAX_UPLOAD_BYTES` (§7)
+on upload and by the caller's `max_bytes` on `fetch_url` / `decode_base64_capped`
+(amended by #276). This is a **conscious decision, not an
 oversight**, and it is faithful to every implementation this ADR lifts: vault's
 route buffers `b"".join(chunks)` before `write` and `b64decode(...)` before
 serving; vault's `fetch` buffers `b"".join(chunks)`; image-gen's `artifacts.py`
@@ -194,7 +203,10 @@ feature:
 - `decode_base64_capped(data, *, max_bytes) -> bytes` — decode with a size
   cap.
 
-`register_transfer_routes` **consumes** these; it does not own them. This is
+`register_transfer_routes` does not own them — nor, on `main`, does it call
+them (amended by #276): the packaged route serves only the upload-link source,
+while a downstream composes the url-fetch and base64-inline sources from the
+primitives inside its own tools, passing its domain's size cap. This is
 not a contradiction of the "framework, not toolkit" decision: the *packaged
 route and tools* are framework (pvl-core owns their shape), while an
 SSRF-hardened fetch is its own reusable capability that happens to also be a
@@ -346,8 +358,12 @@ Already generic in `ServerConfig`: `base_url`, `kv_store_url`. New
 | `TRANSFER_GRACE_TTL_S` | post-success grace window; `complete` shrinks the TTL to `min(remaining, this)` (§6.2) |
 | `TRANSFER_LEASE_S` | crashed-handler reclaim window for an `in_flight` reservation (§6.2) |
 | `TRANSFER_MAX_UPLOAD_BYTES` | per-upload size cap |
-| `TRANSFER_FETCH_MAX_BYTES` | per-fetch size cap |
-| `TRANSFER_FETCH_TIMEOUT_S` | fetch timeout |
+
+There is deliberately **no** `TRANSFER_FETCH_MAX_BYTES` / `TRANSFER_FETCH_TIMEOUT_S`
+(amended by #276; earlier revisions listed both). `fetch_url` takes `max_bytes`
+and `timeout_s` as kwargs because the acceptable size of a fetched body is a
+domain answer — the caller derives it from its own limit (attachment size,
+input-image size), which an operator-wide transfer knob could not express.
 
 The scheme allowlist (`http`, `https`) is **fixed = shape**, not configurable —
 loosening it is an SSRF policy change pvl-core owns. Per-domain concerns (the
@@ -471,7 +487,7 @@ deliver reusable value **before** the full transfer feature exists.
 
 | # | Issue | Depends on | Notes |
 |---|---|---|---|
-| 1 | `fetch_url` SSRF-hardened primitive + fetch config knobs | — | standalone, no store; smallest, highest reuse; ships first. Creates the `_transfer/` package; the residual `_file_exchange/` (§2.5/§10.4) is an untracked empty dir with nothing to remove from git — this PR just confirms no residue remains |
+| 1 | `fetch_url` SSRF-hardened primitive (the "fetch config knobs" originally listed here were withdrawn by #276 — see §7) | — | standalone, no store; smallest, highest reuse; ships first. Creates the `_transfer/` package; the residual `_file_exchange/` (§2.5/§10.4) is an untracked empty dir with nothing to remove from git — this PR just confirms no residue remains |
 | 2 | `decode_base64_capped` primitive | — | tiny; may ride with #1 |
 | 3 | KV-backed `TransferStore` (state machine + TTL + release-on-failure) | — | store only, no routes; §6 is its spec |
 | 4 | `TransferSink` / `TransferValidator` protocols + `make_transfer_handler` route | 3 | egress + ingest handler |
