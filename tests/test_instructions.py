@@ -159,16 +159,39 @@ class TestFinalize:
         text = finalize_instructions(mcp, cfg, env_prefix="MY_APP")
         assert text == "Ident.\n\nuses alpha"
 
-    def test_freezes_and_is_idempotent(self, caplog: pytest.LogCaptureFixture):
+    def test_visibility_conflict_leaves_builder_unmutated(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """exposed_tool_names raises before the extra snippet is added, so a
+        ConfigurationError from a bad visibility config never leaves the
+        builder holding the extra snippet or frozen."""
+        monkeypatch.setenv("MY_APP_INSTRUCTIONS_EXTRA", "extra")
+        mcp = _server()
+        b = instructions_for(mcp)
+        b.identity("Ident.")
+        cfg = ServerConfig(tools_allow=("a",), tools_deny=("b",))
+        with pytest.raises(ConfigurationError):
+            finalize_instructions(mcp, cfg, env_prefix="MY_APP")
+        assert [s.priority for s in b._snippets] == [IDENTITY]
+        assert b._frozen is False
+
+    def test_freezes_and_is_idempotent(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ):
         mcp = _server()
         b = instructions_for(mcp)
         b.identity("Ident.")
         first = finalize_instructions(mcp, ServerConfig(), env_prefix="MY_APP")
         with pytest.raises(RuntimeError, match="finalized"):
             b.add("late", priority=WORKFLOWS)
+        # If the cache were not consulted, the second call would take the
+        # legacy branch below and both change the text and log a WARNING.
+        monkeypatch.setenv("MY_APP_INSTRUCTIONS", "changed")
+        monkeypatch.setenv("MY_APP_INSTRUCTIONS_EXTRA", "changed-extra")
         caplog.clear()
-        second = finalize_instructions(mcp, ServerConfig(), env_prefix="MY_APP")
-        assert first == second == mcp.instructions
+        with caplog.at_level(logging.WARNING, logger="fastmcp_pvl_core._instructions"):
+            second = finalize_instructions(mcp, ServerConfig(), env_prefix="MY_APP")
+        assert first == second == mcp.instructions == "Ident."
         assert caplog.records == []
 
 

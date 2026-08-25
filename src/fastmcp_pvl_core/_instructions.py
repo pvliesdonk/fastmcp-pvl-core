@@ -159,9 +159,13 @@ def finalize_instructions(
        unpruned snippets: identity has no ``tools``, so pruning cannot
        remove it, and checking first keeps the builder unmutated on
        failure)
-    2. ``{P}_INSTRUCTIONS_EXTRA`` appended at ``OPERATOR``; legacy
+    2. exposed tools = :func:`exposed_tool_names` (registered ∧ operator
+       rule) — computed before any further mutation, since it is the other
+       source of :class:`~fastmcp_pvl_core._errors.ConfigurationError`
+       (both visibility lists set) and must also leave the builder
+       unmutated on failure
+    3. ``{P}_INSTRUCTIONS_EXTRA`` appended at ``OPERATOR``; legacy
        ``{P}_INSTRUCTIONS`` replaces the whole text with one ``WARNING``
-    3. exposed tools = :func:`exposed_tool_names` (registered ∧ operator rule)
     4. drop every snippet whose ``tools`` are not all exposed (``DEBUG`` per drop)
     5. serialise by ``(priority, insertion)``, blank-line separated
     6. set ``mcp.instructions``, cache, freeze the builder
@@ -207,9 +211,9 @@ def finalize_instructions(
                 "instructions need exactly one identity snippet, found "
                 f"{len(identities)}; call instructions_for(mcp).identity(...) once"
             )
+        exposed = exposed_tool_names(mcp, config)
         if extra:
             builder.add(extra, priority=OPERATOR)
-        exposed = exposed_tool_names(mcp, config)
         text = builder._render(exposed)
 
     mcp.instructions = text
