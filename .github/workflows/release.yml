@@ -28,6 +28,17 @@ jobs:
       group: release
       cancel-in-progress: false
 
+    # PSR is invoked directly (below) rather than through its Docker actions, so
+    # these pins are ours to set. Keep both steps on the same pair.
+    env:
+      PSR_SPEC: "python-semantic-release==10.5.3"
+      # GitPython 3.1.60 (2026-08-25) removed ``Actor.name_email_regex``, which
+      # PSR's config loader calls unconditionally, so every PSR version up to
+      # and including the current 10.6.1 aborts before doing anything. Upstream:
+      # python-semantic-release#1475 / #1476. Drop this pin once PSR ships a
+      # release that no longer uses the removed attribute.
+      PSR_GITPYTHON_PIN: "gitpython<3.1.60"
+
     permissions:
       contents: write
       id-token: write
@@ -54,27 +65,53 @@ jobs:
       - name: Setup Python
         run: uv python install 3.12
 
+      # Runs PSR directly instead of python-semantic-release/python-semantic-release@vX.
+      # That action is a Docker action whose image pip-installs PSR at run time
+      # with no GitPython upper bound, so there is nowhere to pin the dependency
+      # that broke it (see PSR_GITPYTHON_PIN above); a release that worked on
+      # 2026-08-20 failed on 2026-08-25 with no change on our side. The flags
+      # below reproduce the action's own input mapping, and PSR writes
+      # ``released``/``version``/``tag`` (and the rest) to ``$GITHUB_OUTPUT``
+      # itself, so ``steps.release.outputs.*`` is unchanged.
       - name: Semantic Version Release
         id: release
-        uses: python-semantic-release/python-semantic-release@v10.5.3
-        with:
-          github_token: ${{ secrets.RELEASE_TOKEN }}
-          git_committer_name: "github-actions"
-          git_committer_email: "actions@users.noreply.github.com"
-          force: ${{ inputs.force }}
-          prerelease: ${{ inputs.prerelease }}
-          prerelease_token: rc
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          GIT_COMMIT_AUTHOR: "github-actions <actions@users.noreply.github.com>"
+          PRERELEASE: ${{ inputs.prerelease }}
+          FORCE: ${{ inputs.force }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions"
+          git config user.email "actions@users.noreply.github.com"
+
+          # Inputs reach the shell as env vars, never interpolated into it.
+          args=()
+          if [ "$PRERELEASE" = "true" ]; then
+            args+=(--as-prerelease)
+          fi
+          if [ -n "$FORCE" ]; then
+            args+=("--$FORCE")
+          fi
+
+          uv tool run --from "$PSR_SPEC" --with "$PSR_GITPYTHON_PIN" \
+            semantic-release -v version "${args[@]}" --prerelease-token rc
 
       - name: Build package
         if: steps.release.outputs.released == 'true'
         run: uv build
 
+      # publish-action@vX is the same Docker-action shape with the same
+      # unpinned install, so it fails identically; run ``publish`` directly too.
       - name: Upload to GitHub Release Assets
-        uses: python-semantic-release/publish-action@v10.5.3
         if: steps.release.outputs.released == 'true'
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          tag: ${{ steps.release.outputs.tag }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          set -euo pipefail
+          uv tool run --from "$PSR_SPEC" --with "$PSR_GITPYTHON_PIN" \
+            semantic-release -v publish --tag "$TAG"
 
       - name: Upload build artifacts
         if: steps.release.outputs.released == 'true'
