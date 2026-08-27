@@ -15,6 +15,7 @@ from __future__ import annotations
 from ._jobs import (
     JOB_POLL_TOOL_NAME,
     JOB_RETRY_AFTER_S,
+    DeferredJobHandle,
     JobHandle,
     JobLimitExceededError,
     JobNotFoundError,
@@ -30,6 +31,7 @@ from ._jobs import (
 __all__ = [
     "JOB_POLL_TOOL_NAME",
     "JOB_RETRY_AFTER_S",
+    "DeferredJobHandle",
     "JobHandle",
     "JobLimitExceededError",
     "JobNotFoundError",

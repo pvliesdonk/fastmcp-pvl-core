@@ -61,6 +61,7 @@ from ._instructions import (
 from ._jobs import (
     JOB_POLL_TOOL_NAME,
     JOB_RETRY_AFTER_S,
+    DeferredJobHandle,
     JobHandle,
     JobLimitExceededError,
     JobNotFoundError,
@@ -114,6 +115,7 @@ __all__ = [
     "ConfigField",
     "ConfigurationError",
     "DOCS",
+    "DeferredJobHandle",
     "DomainEnvVar",
     "FetchResult",
     "IDENTITY",

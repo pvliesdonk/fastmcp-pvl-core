@@ -49,6 +49,18 @@ class JobHandle(TypedDict):
     message: str
 
 
+class DeferredJobHandle(JobHandle):
+    """A handle for work deliberately deferred by domain logic.
+
+    ``reason`` is a runtime fact supplied by the downstream, such as an
+    upstream provider's rate-limit response. It is present only on handles
+    returned by :meth:`Jobs.defer`; existing ``start`` and deadline-promotion
+    handles keep their established shape.
+    """
+
+    reason: str
+
+
 @dataclass(frozen=True)
 class JobRecord:
     """One background job as stored and as returned by lookups.

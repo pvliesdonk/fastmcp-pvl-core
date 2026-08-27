@@ -211,9 +211,49 @@ class TestStart:
 
         handle = await jobs.start(work(), tool="t")
         assert handle["status"] == "working"
+        assert "reason" not in handle
         await _drain(jobs)
         payload = await jobs.poll(handle["job_id"])
         assert payload["status"] == "completed"
+
+    async def test_defer_returns_domain_reason_and_poll_interval(self):
+        jobs = _jobs()
+
+        async def work() -> dict[str, Any]:
+            await asyncio.sleep(0.1)
+            return {"done": True}
+
+        handle = await jobs.defer(
+            work(),
+            tool="search_papers",
+            reason="Semantic Scholar asked this client to retry later.",
+            retry_after_s=30.0,
+        )
+
+        assert handle["status"] == "working"
+        assert handle["poll_with"] == JOB_POLL_TOOL_NAME
+        assert handle["reason"] == "Semantic Scholar asked this client to retry later."
+        assert handle["retry_after_s"] == 30.0
+        assert "still running after" not in handle["message"]
+        await _drain(jobs)
+        assert (await jobs.poll(handle["job_id"]))["result"] == {"done": True}
+
+    @pytest.mark.parametrize("retry_after_s", [0.0, -1.0, float("inf"), float("nan")])
+    async def test_defer_rejects_non_positive_or_nonfinite_poll_interval(
+        self, retry_after_s: float
+    ):
+        jobs = _jobs()
+
+        async def work() -> dict[str, Any]:
+            return {"done": True}
+
+        with pytest.raises(ValueError, match="finite positive"):
+            await jobs.defer(
+                work(),
+                tool="search_papers",
+                reason="Semantic Scholar asked this client to retry later.",
+                retry_after_s=retry_after_s,
+            )
 
 
 class TestSubjectScoping:
