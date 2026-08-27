@@ -26,6 +26,7 @@ from .manager import Jobs, build_jobs
 from .records import (
     JOB_POLL_TOOL_NAME,
     JOB_RETRY_AFTER_S,
+    DeferredJobHandle,
     JobHandle,
     JobLimitExceededError,
     JobNotFoundError,
@@ -37,6 +38,7 @@ from .register import register_job_tools, register_long_running_tool
 __all__ = [
     "JOB_POLL_TOOL_NAME",
     "JOB_RETRY_AFTER_S",
+    "DeferredJobHandle",
     "JobHandle",
     "JobLimitExceededError",
     "JobNotFoundError",

@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import math
 import time
 from typing import TYPE_CHECKING, Any
 
@@ -35,6 +36,7 @@ from .config import JobsConfig
 from .records import (
     JOB_POLL_TOOL_NAME,
     JOB_RETRY_AFTER_S,
+    DeferredJobHandle,
     JobHandle,
     JobLimitExceededError,
     JobRecord,
@@ -220,6 +222,57 @@ class Jobs:
         logger.info("job_started tool=%s job_id=%s", tool, record.job_id)
         return self._handle(record.job_id, tool=tool)
 
+    async def defer(
+        self,
+        coro: Coroutine[Any, Any, Any],
+        *,
+        tool: str,
+        reason: str,
+        retry_after_s: float = JOB_RETRY_AFTER_S,
+    ) -> DeferredJobHandle:
+        """Start background work deferred by a domain-specific condition.
+
+        Use when a domain tool knows why foreground work cannot proceed yet,
+        such as an upstream rate limit. This is additive to :meth:`start`:
+        existing callers keep its established handle shape.
+
+        Args:
+            coro: The domain work to continue in the background.
+            tool: The registered domain tool name, a domain hook used in the
+                generic handle message.
+            reason: Client-visible explanation of the deferral, a required
+                domain hook because pvl-core cannot know the runtime cause.
+            retry_after_s: Suggested delay before the first poll, a domain
+                hook when an upstream response supplies a better interval;
+                otherwise pvl-core's standard polling interval applies.
+
+        Returns:
+            The shared job handle plus the supplied ``reason``.
+
+        Raises:
+            JobLimitExceededError: If the caller is at its live-job cap.
+            ValueError: If ``retry_after_s`` is not a finite positive number.
+        """
+        if not math.isfinite(retry_after_s) or retry_after_s <= 0:
+            # The coroutine was constructed by the caller before it reached
+            # this validation branch; close it so rejecting the handle does
+            # not leave an unawaited coroutine behind.
+            coro.close()
+            raise ValueError("retry_after_s must be a finite positive number")
+        handle = await self.start(coro, tool=tool)
+        return DeferredJobHandle(
+            status=handle["status"],
+            job_id=handle["job_id"],
+            poll_with=handle["poll_with"],
+            retry_after_s=retry_after_s,
+            message=(
+                f"{tool} was deferred and continues in the background. Call "
+                f"{JOB_POLL_TOOL_NAME} with job_id={handle['job_id']!r} to "
+                f"retrieve the outcome (poll after {retry_after_s:g}s)."
+            ),
+            reason=reason,
+        )
+
     async def get(self, job_id: str) -> JobRecord:
         """Return the calling subject's record for *job_id*.
 
@@ -334,8 +387,8 @@ def build_jobs(config: ServerConfig, jobs_config: JobsConfig) -> Jobs:
             typically ``JobsConfig.from_env("<PREFIX>")``.
 
     Returns:
-        A :class:`Jobs` object ready for ``run_with_deadline`` /
-        ``start`` / ``get`` / ``poll``.
+        A :class:`Jobs` object ready for ``run_with_deadline`` / ``start`` /
+        ``defer`` / ``get`` / ``poll``.
     """
     storage = build_kv_store(config, namespace="jobs")
     store = JobStore(

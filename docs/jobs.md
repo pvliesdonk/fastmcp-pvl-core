@@ -114,6 +114,20 @@ the SEP-1686 task lifecycle minus `input_required`, so a later move to
 protocol-native tasks is a mechanical change for clients, not a semantic
 one.
 
+When domain logic deliberately defers work, the initial handle also names
+the runtime reason:
+
+```json
+{
+  "status": "working",
+  "job_id": "…",
+  "poll_with": "get_job_result",
+  "retry_after_s": 30.0,
+  "reason": "Semantic Scholar asked this client to retry later.",
+  "message": "…"
+}
+```
+
 ## Semantics you can rely on (and their limits)
 
 - **Subject scoping.** Every job belongs to the calling subject (via
@@ -184,6 +198,13 @@ The `Jobs` verbs:
   checks which mode it is in.
 - `start(coro, *, tool)` — background unconditionally, handle
   immediately.
+- `defer(coro, *, tool, reason, retry_after_s=5.0)` — background
+  unconditionally with a required domain reason in the initial handle.
+  Use it for runtime conditions pvl-core cannot know, such as an upstream
+  rate limit. Pass the upstream retry interval when it provides one;
+  otherwise the standard poll interval applies. An explicit interval must
+  be finite and positive. This is additive:
+  `start` and deadline-promoted handles retain their established shape.
 - `get(job_id)` / `poll(job_id)` — the calling subject's record / the
   exact polling payload the generic tool returns. Use `poll` if a domain
   tool of yours reports job state, so the payload shape stays identical.
@@ -218,6 +239,9 @@ If your server carries a bespoke job store and its own polling tool
 3. Map your old statuses onto the SEP-1686 vocabulary
    (`in_progress` → `working`).
 4. Delete per-tool TTL/eviction knobs in favour of the `JOBS_*` surface.
+5. Where a tool currently returns a bespoke queued payload after a runtime
+   deferral, use `jobs.defer(...)` and return its handle unchanged. Supply
+   the client-visible reason and an upstream retry interval when available.
 
 ## Testing your integration
 

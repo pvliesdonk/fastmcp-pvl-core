@@ -13,6 +13,7 @@ from fastmcp_pvl_core import jobs
 _EXPECTED = {
     "JOB_POLL_TOOL_NAME",
     "JOB_RETRY_AFTER_S",
+    "DeferredJobHandle",
     "JobHandle",
     "JobLimitExceededError",
     "JobNotFoundError",

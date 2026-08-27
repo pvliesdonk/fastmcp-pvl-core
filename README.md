@@ -317,9 +317,11 @@ A server whose long-running tool the wrapper cannot express (its own
 promotion decision, a handle minted from a route) composes on the same
 mechanics without the wrapper — `from fastmcp_pvl_core.jobs import
 build_jobs` and use `jobs.run_with_deadline(...)` / `jobs.start(...)`
-inside its own tool; the handles resolve through the same generic
-polling tool. Do not reach into `fastmcp_pvl_core._jobs` internals; the
-`jobs` namespace is the supported seam.
+inside its own tool. For intentional, runtime deferrals such as an
+upstream rate limit, `jobs.defer(...)` adds the client-visible reason and
+first-poll interval. The handles resolve through the same generic polling
+tool. Do not reach into `fastmcp_pvl_core._jobs` internals; the `jobs`
+namespace is the supported seam.
 
 The downstream contract — payload shapes, inline-failure semantics,
 scoping/retention limits, and the path-2 rules — lives in the docstrings
