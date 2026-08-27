@@ -4,8 +4,8 @@ Instructions carry what no single tool description can carry: identity, a
 documentation pointer, the capability map, cross-tool workflows, enforced
 instance facts, and operator context. Core features and domain code each
 add snippets to the one builder per server; :func:`finalize_instructions`
-prunes snippets whose tools the operator hid, serialises by priority, applies
-the env contract, and sets ``FastMCP.instructions``.
+prunes snippets whose tools are absent or operator-hidden, serialises by
+priority, applies the env contract, and sets ``FastMCP.instructions``.
 
 Design: ``docs/superpowers/specs/2026-08-25-instructions-builder-design.md``.
 
@@ -70,8 +70,10 @@ class InstructionsBuilder:
             text: Model-facing prose. Surrounding whitespace is stripped.
             priority: Sort key; ties keep insertion order. Use the anchors
                 (``IDENTITY`` … ``OPERATOR``) or an offset from one.
-            tools: Tool names the snippet references. If any is hidden or
-                absent at finalize, the whole snippet is dropped.
+            tools: Tool names the snippet references. If any is absent or
+                hidden by the ``TOOLS_ALLOW`` / ``TOOLS_DENY`` operator rule
+                at finalize, the whole snippet is dropped. Server-side
+                ``disable`` / ``enable`` transforms are not modelled.
 
         Raises:
             ConfigurationError: *text* is empty or whitespace.
@@ -154,10 +156,10 @@ def finalize_instructions(
 
     Call after :func:`apply_tool_visibility`, and after every ``register_*``
     helper and domain contribution — ``finalize_instructions`` must run last,
-    after every tool registration and after every server-side visibility
-    call. Under that precondition the pruned set equals what a client lists
-    under the operator rule. Server-side ``disable``/``enable`` before
-    finalize is not modelled, and tools registered after finalize are not
+    after every tool registration and after :func:`apply_tool_visibility`.
+    Under that precondition the pruned set equals what a client lists under
+    the operator rule. Server-side ``disable``/``enable`` transforms before
+    finalize are not modelled, and tools registered after finalize are not
     seen. Per-subject auth visibility is separately out of scope.
 
     If ``{P}_INSTRUCTIONS`` is set (non-whitespace), the numbered steps below
