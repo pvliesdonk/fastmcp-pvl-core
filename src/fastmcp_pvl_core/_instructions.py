@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING
 
 from ._env import env
 from ._errors import ConfigurationError
-from ._visibility import exposed_tool_names
+from ._visibility import exposed_tool_names, registered_tool_names
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
@@ -50,6 +50,46 @@ class _Snippet:
     seq: int
 
 
+def _drop_reason(missing: frozenset[str], registered: frozenset[str]) -> str:
+    """Explain why *missing* tool names are not exposed.
+
+    The two cases call for different action and are not otherwise
+    distinguishable from the log: a registered name was hidden by the
+    operator's ``TOOLS_ALLOW`` / ``TOOLS_DENY``, while an unregistered one is
+    either a tool this instance's configuration did not register — the case
+    ``tools=`` exists for — or a rename or typo in the ``tools=`` declaration.
+    """
+    hidden = sorted(missing & registered)
+    absent = sorted(missing - registered)
+    parts = []
+    if hidden:
+        parts.append("hidden by the operator visibility rule: " + ", ".join(hidden))
+    if absent:
+        parts.append("not registered on this server: " + ", ".join(absent))
+    return "; ".join(parts)
+
+
+def _identity_error(count: int) -> str:
+    """Message for a mis-filled ``IDENTITY`` slot.
+
+    Naming the slot rather than :meth:`InstructionsBuilder.identity` matters
+    for the over-filled case: a second snippet added with
+    ``add(..., priority=IDENTITY)`` is what usually causes it, and pointing at
+    ``identity()`` sends the reader to count calls they will find correct.
+    """
+    if count == 0:
+        return (
+            "instructions need a snippet at priority IDENTITY, found none; "
+            "call instructions_for(mcp).identity(...) once"
+        )
+    return (
+        f"instructions allow one snippet at priority IDENTITY, found {count}; "
+        "identity() and add(priority=IDENTITY) both fill that slot, so check "
+        "for both — prose that should follow the identity belongs at a later "
+        "priority such as IDENTITY + 10"
+    )
+
+
 class InstructionsBuilder:
     """Ordered, tool-aware collection of instruction snippets for one server.
 
@@ -70,6 +110,11 @@ class InstructionsBuilder:
             text: Model-facing prose. Surrounding whitespace is stripped.
             priority: Sort key; ties keep insertion order. Use the anchors
                 (``IDENTITY`` … ``OPERATOR``) or an offset from one.
+                ``IDENTITY`` is the one anchor with a cardinality: exactly
+                one snippet may sit there, whether it arrived through
+                :meth:`identity` or through ``add(..., priority=IDENTITY)``.
+                For prose that should follow the identity, offset it —
+                ``IDENTITY + 10``.
             tools: Tool names the snippet references. If any is absent or
                 hidden by the ``TOOLS_ALLOW`` / ``TOOLS_DENY`` operator rule
                 at finalize, the whole snippet is dropped. Server-side
@@ -94,7 +139,9 @@ class InstructionsBuilder:
     def identity(self, text: str) -> None:
         """Add the one-line identity (``priority=IDENTITY``).
 
-        Exactly one is required.
+        A convenience wrapper over :meth:`add`, not a distinct mechanism:
+        the slot at ``IDENTITY`` holds exactly one snippet however it was
+        filled, and finalize requires it to be filled.
         """
         self.add(text, priority=IDENTITY)
 
@@ -108,22 +155,21 @@ class InstructionsBuilder:
             raise ConfigurationError("documentation url is empty")
         self.add(f"Full documentation for this server: {cleaned}", priority=DOCS)
 
-    def _render(self, exposed: frozenset[str]) -> str:
+    def _render(self, exposed: frozenset[str], registered: frozenset[str]) -> str:
         """Prune against *exposed* tool names and serialise.
 
-        No env, no identity check.
+        *registered* is every tool name on the server before the operator
+        rule; it does not change which snippets are dropped, only how the
+        ``DEBUG`` line explains a drop. No env, no identity check.
         """
         kept: list[_Snippet] = []
         for s in self._snippets:
             missing = s.tools - exposed
             if missing:
                 logger.debug(
-                    (
-                        "instructions: dropping snippet at priority %d; "
-                        "tool(s) not exposed: %s"
-                    ),
+                    "instructions: dropping snippet at priority %d; %s",
                     s.priority,
-                    ", ".join(sorted(missing)),
+                    _drop_reason(missing, registered),
                 )
                 continue
             kept.append(s)
@@ -168,10 +214,11 @@ def finalize_instructions(
 
     Order of operations:
 
-    1. exactly one identity snippet must remain — identity snippets added
-       via ``identity()`` carry no ``tools``, so pruning cannot remove them;
-       the count is taken before pruning, which also keeps the builder
-       unmutated on failure
+    1. exactly one snippet must sit at priority ``IDENTITY``, whether
+       :meth:`InstructionsBuilder.identity` or ``add(priority=IDENTITY)``
+       put it there — such snippets carry no ``tools``, so pruning cannot
+       remove them; the count is taken before pruning, which also keeps the
+       builder unmutated on failure
     2. exposed tools = :func:`exposed_tool_names` (registered ∧ operator
        rule) — computed before any further mutation, since it is the other
        source of :class:`~fastmcp_pvl_core._errors.ConfigurationError`
@@ -179,7 +226,9 @@ def finalize_instructions(
        unmutated on failure
     3. ``{P}_INSTRUCTIONS_EXTRA`` appended at ``OPERATOR``; legacy
        ``{P}_INSTRUCTIONS`` replaces the whole text with one ``WARNING``
-    4. drop every snippet whose ``tools`` are not all exposed (``DEBUG`` per drop)
+    4. drop every snippet whose ``tools`` are not all exposed — one
+       ``DEBUG`` per drop, naming the missing tools and saying of each
+       whether it was operator-hidden or never registered
     5. serialise by ``(priority, insertion)``, blank-line separated
     6. set ``mcp.instructions``, cache, freeze the builder
 
@@ -196,8 +245,8 @@ def finalize_instructions(
         The final instructions string, also set on ``mcp.instructions``.
 
     Raises:
-        ConfigurationError: No identity, more than one identity, or both
-            visibility lists set.
+        ConfigurationError: No snippet at priority ``IDENTITY``, more than
+            one, or both visibility lists set.
         RuntimeError: FastMCP's component enumeration changed shape.
     """
     builder = instructions_for(mcp)
@@ -220,14 +269,12 @@ def finalize_instructions(
     else:
         identities = [s for s in builder._snippets if s.priority == IDENTITY]
         if len(identities) != 1:
-            raise ConfigurationError(
-                "instructions need exactly one identity snippet, found "
-                f"{len(identities)}; call instructions_for(mcp).identity(...) once"
-            )
+            raise ConfigurationError(_identity_error(len(identities)))
         exposed = exposed_tool_names(mcp, config)
+        registered = registered_tool_names(mcp)
         if extra:
             builder.add(extra, priority=OPERATOR)
-        text = builder._render(exposed)
+        text = builder._render(exposed, registered)
 
     mcp.instructions = text
     builder._result = text
