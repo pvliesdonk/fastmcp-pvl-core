@@ -163,6 +163,11 @@ class TestRegistry:
         assert instructions_for(FastMCP("a")) is not instructions_for(FastMCP("b"))
 
 
+def _raise_drift(mcp: FastMCP) -> frozenset[str]:
+    """Stand in for an enumeration that hit FastMCP API drift."""
+    raise RuntimeError("component enumeration drift")
+
+
 def _server(*tool_names: str) -> FastMCP:
     mcp = FastMCP("t")
     for name in tool_names:
@@ -249,6 +254,25 @@ class TestFinalize:
             "hidden by the operator visibility rule: beta" in m for m in messages
         )
         assert any("not registered on this server: ghost" in m for m in messages)
+
+    def test_enumeration_failure_leaves_builder_unmutated(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Both enumerations must precede the extra-snippet add, not just the
+        first: a RuntimeError from registered_tool_names has to leave the
+        builder as unmutated as a ConfigurationError from exposed_tool_names."""
+        monkeypatch.setenv("MY_APP_INSTRUCTIONS_EXTRA", "extra")
+        monkeypatch.setattr(
+            "fastmcp_pvl_core._instructions.registered_tool_names",
+            _raise_drift,
+        )
+        mcp = _server("alpha")
+        b = instructions_for(mcp)
+        b.identity("Ident.")
+        with pytest.raises(RuntimeError, match="drift"):
+            finalize_instructions(mcp, ServerConfig(), env_prefix="MY_APP")
+        assert [s.priority for s in b._snippets] == [IDENTITY]
+        assert b._frozen is False
 
     def test_visibility_conflict_leaves_builder_unmutated(
         self, monkeypatch: pytest.MonkeyPatch

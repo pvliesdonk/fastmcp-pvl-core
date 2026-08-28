@@ -51,7 +51,7 @@ class _Snippet:
 
 
 def _drop_reason(missing: frozenset[str], registered: frozenset[str]) -> str:
-    """Explain why *missing* tool names are not exposed.
+    """Explain why the non-empty *missing* tool names are not exposed.
 
     The two cases call for different action and are not otherwise
     distinguishable from the log: a registered name was hidden by the
@@ -220,10 +220,11 @@ def finalize_instructions(
        remove them; the count is taken before pruning, which also keeps the
        builder unmutated on failure
     2. exposed tools = :func:`exposed_tool_names` (registered ∧ operator
-       rule) — computed before any further mutation, since it is the other
-       source of :class:`~fastmcp_pvl_core._errors.ConfigurationError`
-       (both visibility lists set) and must also leave the builder
-       unmutated on failure
+       rule), plus :func:`registered_tool_names` for the drop diagnostics —
+       both computed before any further mutation, since the first is the
+       other source of :class:`~fastmcp_pvl_core._errors.ConfigurationError`
+       (both visibility lists set) and either can raise ``RuntimeError`` on
+       enumeration drift; a failure must leave the builder unmutated
     3. ``{P}_INSTRUCTIONS_EXTRA`` appended at ``OPERATOR``; legacy
        ``{P}_INSTRUCTIONS`` replaces the whole text with one ``WARNING``
     4. drop every snippet whose ``tools`` are not all exposed — one
@@ -270,6 +271,8 @@ def finalize_instructions(
         identities = [s for s in builder._snippets if s.priority == IDENTITY]
         if len(identities) != 1:
             raise ConfigurationError(_identity_error(len(identities)))
+        # Both enumerations precede the add() below: either can raise, and
+        # a failed finalize must leave the builder unmutated and unfrozen.
         exposed = exposed_tool_names(mcp, config)
         registered = registered_tool_names(mcp)
         if extra:
