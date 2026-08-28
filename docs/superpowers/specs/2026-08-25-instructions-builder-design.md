@@ -72,7 +72,9 @@ class InstructionsBuilder:
 
 - **Priority is the mechanism; the constants are named anchors.** Snippets
   sort by `(priority, insertion order)`. A contributor that wants "just after
-  the capability map" writes `CAPABILITIES + 10`.
+  the capability map" writes `CAPABILITIES + 10`. `IDENTITY` is the one anchor
+  carrying a cardinality: exactly one snippet may sit there (see finalize step
+  1), so prose that should follow the identity goes at `IDENTITY + 10`.
 - `tools` declares the tool names the snippet references. At finalize, a
   snippet is **dropped if any referenced tool is not exposed** (a workflow
   missing one step is worse than absent).
@@ -111,9 +113,13 @@ non-legacy path.
 
 1. **Identity**: exactly one snippet at priority `IDENTITY` must exist, else
    `ConfigurationError`. (Zero: the server has no identity. Two or more: two
-   contributors both claimed it.) Counted before pruning — identity snippets
-   added via `identity()` carry no `tools`, so pruning could not remove them
-   anyway — and before any mutation, so a failure leaves the builder untouched.
+   contributors both claimed it.) The rule is **slot exclusivity** — the count
+   is over the priority, so `add(..., priority=IDENTITY)` fills the slot just
+   as `identity()` does, and the error names the slot rather than `identity()`
+   so an over-filled slot does not send the reader to count `identity()` calls
+   they will find correct (#297). Counted before pruning — snippets in that
+   slot carry no `tools`, so pruning could not remove them anyway — and before
+   any mutation, so a failure leaves the builder untouched.
 2. **Exposed tools** = registered tool names (enumerated from
    `mcp.local_provider._components`, as `_icons.py` does; same `RuntimeError`
    on API drift) filtered by the operator rule pvl-core owns:
@@ -128,7 +134,14 @@ non-legacy path.
 3. **Operator context**: if `{P}_INSTRUCTIONS_EXTRA` is set (non-whitespace),
    add it as one snippet at `OPERATOR`.
 4. **Prune**: drop every snippet whose `tools` are not all exposed. `DEBUG`
-   log per drop, naming the missing tool.
+   log per drop, naming the missing tools and saying of each whether it was
+   hidden by the operator rule or never registered — the two call for
+   different action and are otherwise indistinguishable from the log. The
+   level stays `DEBUG` for both: config-gated registration makes absence
+   routine, so escalating would fire on correctly-configured instances
+   (#296). Telling them apart needs the pre-visibility set, so `_render`
+   takes `registered_tool_names(mcp)` alongside the exposed set; it does not
+   change which snippets are dropped.
 5. **Serialize**: sort by `(priority, insertion)`; join snippet texts with a
    blank line. Plain prose, **no markdown headings** — most clients splice the
    text into a system prompt, headings cost tokens and render inconsistently.
@@ -157,7 +170,7 @@ change is a breaking change only for downstream *code*, absorbed by a
 |---|---|---|
 | `add` with empty / whitespace text | `add` | `ConfigurationError` |
 | `add` after finalize | `add` | `RuntimeError` |
-| no identity, or more than one | `finalize` | `ConfigurationError` |
+| zero or more than one snippet at priority `IDENTITY` | `finalize` | `ConfigurationError` |
 | tool enumeration API missing | `finalize` | `RuntimeError` (as `_icons.py`) |
 
 ### Known limits

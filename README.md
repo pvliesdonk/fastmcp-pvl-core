@@ -177,7 +177,10 @@ Instructions carry what no single tool description can carry: identity, a
 documentation pointer, cross-tool workflows, and enforced instance facts.
 Add snippets with `instructions_for(mcp).add(text, priority=..., tools=...)`;
 a snippet naming a tool the operator hid via `TOOLS_ALLOW`/`TOOLS_DENY` is
-dropped at `finalize_instructions`. Operators add deployment context with
+dropped at `finalize_instructions`. Priority is the mechanism and the
+constants are anchors, so prose that should follow the identity goes at
+`IDENTITY + 10` — the `IDENTITY` slot itself holds exactly one snippet,
+whether `identity()` or `add(priority=IDENTITY)` filled it. Operators add deployment context with
 `{PREFIX}_INSTRUCTIONS_EXTRA`. `{PREFIX}_INSTRUCTIONS` (legacy) still
 replaces the whole text and logs a deprecation warning.
 

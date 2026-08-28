@@ -9,7 +9,7 @@ from fastmcp import Client, FastMCP
 from fastmcp.exceptions import ToolError
 
 from fastmcp_pvl_core import ConfigurationError, ServerConfig, apply_tool_visibility
-from fastmcp_pvl_core._visibility import exposed_tool_names
+from fastmcp_pvl_core._visibility import exposed_tool_names, registered_tool_names
 
 
 def build_server() -> FastMCP:
@@ -212,3 +212,21 @@ class TestExposedToolNames:
             exposed_tool_names(
                 build_server(), ServerConfig(tools_allow=("a",), tools_deny=("b",))
             )
+
+
+class TestRegisteredToolNames:
+    """The pre-visibility set that tells "hidden" and "never registered" apart."""
+
+    def test_lists_every_tool_regardless_of_visibility_config(self):
+        mcp = build_server()
+        cfg = ServerConfig(tools_deny=("beta",))
+        apply_tool_visibility(mcp, cfg)
+        assert registered_tool_names(mcp) == {"alpha", "beta", "gamma"}
+
+    def test_exposed_is_a_subset(self):
+        mcp = build_server()
+        cfg = ServerConfig(tools_allow=("gamma",))
+        apply_tool_visibility(mcp, cfg)
+        registered = registered_tool_names(mcp)
+        assert exposed_tool_names(mcp, cfg) < registered
+        assert "beta" in registered

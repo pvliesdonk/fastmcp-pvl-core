@@ -47,7 +47,7 @@ class TestAdd:
         b.add("first", priority=IDENTITY)
         b.add("third", priority=WORKFLOWS)
         b.add("between", priority=CAPABILITIES + 10)
-        assert b._render(ALL) == "first\n\nbetween\n\nsecond\n\nthird"
+        assert b._render(ALL, ALL) == "first\n\nbetween\n\nsecond\n\nthird"
 
     @pytest.mark.parametrize("text", ["", "   ", "\n\t"])
     def test_rejects_blank_text(self, text: str):
@@ -58,20 +58,20 @@ class TestAdd:
     def test_strips_surrounding_whitespace(self):
         b = InstructionsBuilder()
         b.add("  padded  \n", priority=IDENTITY)
-        assert b._render(ALL) == "padded"
+        assert b._render(ALL, ALL) == "padded"
 
     def test_identity_is_add_at_identity_priority(self):
         b = InstructionsBuilder()
         b.add("later", priority=DOCS)
         b.identity("Who I am.")
-        assert b._render(ALL) == "Who I am.\n\nlater"
+        assert b._render(ALL, ALL) == "Who I am.\n\nlater"
 
     def test_documentation_is_core_shaped_sentence_at_docs(self):
         b = InstructionsBuilder()
         b.identity("X.")
         b.add("caps", priority=CAPABILITIES)
         b.documentation("https://example.test/llms.txt")
-        assert b._render(ALL) == (
+        assert b._render(ALL, ALL) == (
             "X.\n\nFull documentation for this server: "
             "https://example.test/llms.txt\n\ncaps"
         )
@@ -85,30 +85,73 @@ class TestPrune:
     def test_snippet_without_tools_is_kept(self):
         b = InstructionsBuilder()
         b.add("kept", priority=WORKFLOWS)
-        assert b._render(frozenset()) == "kept"
+        assert b._render(frozenset(), ALL) == "kept"
 
     def test_snippet_whose_tools_are_all_exposed_is_kept(self):
         b = InstructionsBuilder()
         b.add("kept", priority=WORKFLOWS, tools={"alpha", "beta"})
-        assert b._render(ALL) == "kept"
+        assert b._render(ALL, ALL) == "kept"
 
     def test_snippet_with_one_missing_tool_is_dropped(self):
         b = InstructionsBuilder()
         b.add("dropped", priority=WORKFLOWS, tools={"alpha", "zeta"})
         b.add("kept", priority=WORKFLOWS)
-        assert b._render(ALL) == "kept"
+        assert b._render(ALL, ALL) == "kept"
+
+    def _drop_message(
+        self,
+        caplog: pytest.LogCaptureFixture,
+        tools: set[str],
+        exposed: frozenset[str],
+        registered: frozenset[str],
+    ) -> str:
+        """Render one dropped snippet and return its single DEBUG message."""
+        b = InstructionsBuilder()
+        b.add("dropped", priority=WORKFLOWS, tools=tools)
+        caplog.clear()
+        with caplog.at_level(logging.DEBUG, logger="fastmcp_pvl_core._instructions"):
+            assert b._render(exposed, registered) == ""
+        messages = [
+            r.getMessage()
+            for r in caplog.records
+            if r.levelno == logging.DEBUG and r.name == "fastmcp_pvl_core._instructions"
+        ]
+        assert len(messages) == 1
+        return messages[0]
 
     def test_drop_is_logged_at_debug_naming_the_tool(
         self, caplog: pytest.LogCaptureFixture
     ):
-        b = InstructionsBuilder()
-        b.add("dropped", priority=WORKFLOWS, tools={"zeta"})
-        with caplog.at_level(logging.DEBUG, logger="fastmcp_pvl_core._instructions"):
-            b._render(ALL)
-        assert any(
-            "zeta" in r.getMessage() and r.levelno == logging.DEBUG
-            for r in caplog.records
-        )
+        assert "zeta" in self._drop_message(caplog, {"zeta"}, ALL, ALL | {"zeta"})
+
+    def test_drop_log_says_operator_hidden_for_a_registered_tool(
+        self, caplog: pytest.LogCaptureFixture
+    ):
+        """A registered-but-denied tool is deliberate operator configuration."""
+        message = self._drop_message(caplog, {"zeta"}, ALL, ALL | {"zeta"})
+        assert "hidden by the operator visibility rule: zeta" in message
+        assert "not registered" not in message
+
+    def test_drop_log_says_unregistered_for_an_unknown_tool(
+        self, caplog: pytest.LogCaptureFixture
+    ):
+        """An unregistered name is config-gated absence — or a rename or typo."""
+        message = self._drop_message(caplog, {"zeta"}, ALL, ALL)
+        assert "not registered on this server: zeta" in message
+        assert "hidden by the operator" not in message
+
+    def test_drop_log_reports_both_reasons_in_one_line(
+        self, caplog: pytest.LogCaptureFixture
+    ):
+        message = self._drop_message(caplog, {"zeta", "omega"}, ALL, ALL | {"zeta"})
+        assert "hidden by the operator visibility rule: zeta" in message
+        assert "not registered on this server: omega" in message
+
+    def test_drop_log_names_every_tool_of_one_reason(
+        self, caplog: pytest.LogCaptureFixture
+    ):
+        message = self._drop_message(caplog, {"zeta", "omega"}, ALL, ALL)
+        assert "not registered on this server: omega, zeta" in message
 
 
 class TestRegistry:
@@ -118,6 +161,11 @@ class TestRegistry:
 
     def test_different_servers_different_builders(self):
         assert instructions_for(FastMCP("a")) is not instructions_for(FastMCP("b"))
+
+
+def _raise_drift(mcp: FastMCP) -> frozenset[str]:
+    """Stand in for an enumeration that hit FastMCP API drift."""
+    raise RuntimeError("component enumeration drift")
 
 
 def _server(*tool_names: str) -> FastMCP:
@@ -137,15 +185,39 @@ class TestFinalize:
 
     def test_zero_identities_raise(self):
         mcp = _server()
-        with pytest.raises(ConfigurationError, match="identity"):
+        with pytest.raises(ConfigurationError, match="found none") as exc:
             finalize_instructions(mcp, ServerConfig(), env_prefix="MY_APP")
+        assert "priority IDENTITY" in str(exc.value)
+        assert "identity(...) once" in str(exc.value)
+
+    def test_add_at_identity_priority_satisfies_the_requirement(self):
+        """The slot is what counts, not which method filled it (#296)."""
+        mcp = _server()
+        instructions_for(mcp).add("Ident.", priority=IDENTITY)
+        assert (
+            finalize_instructions(mcp, ServerConfig(), env_prefix="MY_APP") == "Ident."
+        )
+
+    def test_second_identity_added_via_add_raises_naming_the_slot(self):
+        """The over-filled message must not send the reader to count
+        identity() calls they will find correct (#297)."""
+        mcp = _server()
+        b = instructions_for(mcp)
+        b.identity("one")
+        b.add("two", priority=IDENTITY)
+        with pytest.raises(ConfigurationError, match="found 2") as exc:
+            finalize_instructions(mcp, ServerConfig(), env_prefix="MY_APP")
+        message = str(exc.value)
+        assert "priority IDENTITY" in message
+        assert "add(priority=IDENTITY)" in message
+        assert "IDENTITY + 10" in message
 
     def test_two_identities_raise(self):
         mcp = _server()
         b = instructions_for(mcp)
         b.identity("one")
         b.identity("two")
-        with pytest.raises(ConfigurationError, match="identity"):
+        with pytest.raises(ConfigurationError, match="found 2"):
             finalize_instructions(mcp, ServerConfig(), env_prefix="MY_APP")
 
     def test_prunes_operator_hidden_and_absent_tools(self):
@@ -158,6 +230,49 @@ class TestFinalize:
         cfg = ServerConfig(tools_deny=("beta",))
         text = finalize_instructions(mcp, cfg, env_prefix="MY_APP")
         assert text == "Ident.\n\nuses alpha"
+
+    def test_drop_log_tells_the_two_causes_apart_end_to_end(
+        self, caplog: pytest.LogCaptureFixture
+    ):
+        """finalize must pass the pre-visibility registered set through, or
+        an operator-denied tool reads as a typo in the log."""
+        mcp = _server("alpha", "beta")
+        b = instructions_for(mcp)
+        b.identity("Ident.")
+        b.add("uses beta", priority=WORKFLOWS, tools={"beta"})
+        b.add("uses ghost", priority=WORKFLOWS, tools={"ghost"})
+        with caplog.at_level(logging.DEBUG, logger="fastmcp_pvl_core._instructions"):
+            finalize_instructions(
+                mcp, ServerConfig(tools_deny=("beta",)), env_prefix="MY_APP"
+            )
+        messages = [
+            r.getMessage()
+            for r in caplog.records
+            if r.name == "fastmcp_pvl_core._instructions" and r.levelno == logging.DEBUG
+        ]
+        assert any(
+            "hidden by the operator visibility rule: beta" in m for m in messages
+        )
+        assert any("not registered on this server: ghost" in m for m in messages)
+
+    def test_enumeration_failure_leaves_builder_unmutated(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Both enumerations must precede the extra-snippet add, not just the
+        first: a RuntimeError from registered_tool_names has to leave the
+        builder as unmutated as a ConfigurationError from exposed_tool_names."""
+        monkeypatch.setenv("MY_APP_INSTRUCTIONS_EXTRA", "extra")
+        monkeypatch.setattr(
+            "fastmcp_pvl_core._instructions.registered_tool_names",
+            _raise_drift,
+        )
+        mcp = _server("alpha")
+        b = instructions_for(mcp)
+        b.identity("Ident.")
+        with pytest.raises(RuntimeError, match="drift"):
+            finalize_instructions(mcp, ServerConfig(), env_prefix="MY_APP")
+        assert [s.priority for s in b._snippets] == [IDENTITY]
+        assert b._frozen is False
 
     def test_visibility_conflict_leaves_builder_unmutated(
         self, monkeypatch: pytest.MonkeyPatch

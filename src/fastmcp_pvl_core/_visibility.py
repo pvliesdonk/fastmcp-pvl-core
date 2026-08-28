@@ -133,6 +133,21 @@ def _warn_if_no_tools_exposed(mcp: FastMCP, allow: tuple[str, ...]) -> None:
         )
 
 
+def registered_tool_names(mcp: FastMCP) -> frozenset[str]:
+    """Names of every tool registered on *mcp*, before any visibility rule.
+
+    The enumeration ``register_tool_icons`` uses, and the set
+    :func:`exposed_tool_names` filters. Callers that already have the exposed
+    set use this to tell the two reasons a name is missing from it apart: a
+    name in this set was hidden by the operator rule, a name outside it was
+    never registered.
+
+    Raises:
+        RuntimeError: FastMCP's component enumeration changed shape.
+    """
+    return frozenset(_index_tools_by_name(mcp))
+
+
 def exposed_tool_names(mcp: FastMCP, config: ServerConfig) -> frozenset[str]:
     """Tool names *mcp* exposes under the operator allow-/denylist in *config*.
 
@@ -153,7 +168,7 @@ def exposed_tool_names(mcp: FastMCP, config: ServerConfig) -> frozenset[str]:
     _reject_both_lists(config)
     allow = config.tools_allow
     deny = config.tools_deny
-    registered = frozenset(_index_tools_by_name(mcp))
+    registered = registered_tool_names(mcp)
     if allow:
         return registered & frozenset(allow)
     if deny:
