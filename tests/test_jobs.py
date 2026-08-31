@@ -19,6 +19,7 @@ from fastmcp_pvl_core import (
     JOB_POLL_TOOL_NAME,
     JobsConfig,
     ServerConfig,
+    apply_tool_visibility,
     build_jobs,
     finalize_instructions,
     instructions_for,
@@ -385,7 +386,7 @@ class TestInstructionsSnippet:
     def test_polling_guidance_present(self) -> None:
         mcp = FastMCP("t")
         register_job_tools(mcp, _jobs())
-        instructions_for(mcp).identity("T.")
+        instructions_for(mcp).identity("t", "T.")
         text = finalize_instructions(
             mcp, ServerConfig(kv_store_url="memory://"), env_prefix="T"
         )
@@ -394,6 +395,7 @@ class TestInstructionsSnippet:
     def test_dropped_when_poll_tool_hidden(self) -> None:
         mcp = FastMCP("t")
         register_job_tools(mcp, _jobs())
-        instructions_for(mcp).identity("T.")
+        instructions_for(mcp).identity("t", "T.")
         cfg = ServerConfig(kv_store_url="memory://", tools_deny=(JOB_POLL_TOOL_NAME,))
+        apply_tool_visibility(mcp, cfg)
         assert JOB_POLL_TOOL_NAME not in finalize_instructions(mcp, cfg, env_prefix="T")

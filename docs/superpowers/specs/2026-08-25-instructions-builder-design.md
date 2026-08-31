@@ -1,5 +1,10 @@
 # `InstructionsBuilder` — composable server instructions (issue #283)
 
+> This document records the shipped pvl-core 5.x design. Issue #299's
+> [instruction roles and client-compatibility budget design](2026-08-31-instruction-roles-budget-design.md)
+> supersedes its public ordering and environment semantics for pvl-core 6;
+> the 5.x rationale remains here as migration history.
+
 ## Problem
 
 `build_instructions(env_prefix, domain_line)` returns one finished string, and

@@ -38,6 +38,7 @@ from fastmcp_pvl_core import (
     TransferLinks,
     TransferReadResult,
     add_transfer_workflow,
+    apply_tool_visibility,
     build_transfer_links,
     finalize_instructions,
     instructions_for,
@@ -510,10 +511,10 @@ class TestAddTransferWorkflow:
 
     @staticmethod
     def _finalize(mcp: FastMCP, **cfg: Any) -> str:
-        instructions_for(mcp).identity("T.")
-        return finalize_instructions(
-            mcp, ServerConfig(kv_store_url="memory://", **cfg), env_prefix="T"
-        )
+        instructions_for(mcp).identity("t", "T.")
+        config = ServerConfig(kv_store_url="memory://", **cfg)
+        apply_tool_visibility(mcp, config)
+        return finalize_instructions(mcp, config, env_prefix="T")
 
     @staticmethod
     def _server(*tool_names: str) -> FastMCP:
@@ -527,7 +528,7 @@ class TestAddTransferWorkflow:
         add_transfer_workflow(mcp, upload_tool="push", download_tool="pull")
         text = self._finalize(mcp)
         assert text == (
-            "T.\n\nTo upload a file, call push and then PUT the bytes to the "
+            "t: T.\n\nTo upload a file, call push and then PUT the bytes to the "
             "returned URL; to download, call pull and GET the returned URL. "
             f"{self._TAIL_PAIR}"
         )
@@ -537,7 +538,7 @@ class TestAddTransferWorkflow:
         add_transfer_workflow(mcp, download_tool="share_document")
         text = self._finalize(mcp)
         assert text == (
-            "T.\n\nTo download a file, call share_document and then GET the "
+            "t: T.\n\nTo download a file, call share_document and then GET the "
             f"returned URL. {self._TAIL_ONE}"
         )
         assert "upload" not in text
@@ -547,7 +548,7 @@ class TestAddTransferWorkflow:
         add_transfer_workflow(mcp, upload_tool="ingest")
         text = self._finalize(mcp)
         assert text == (
-            "T.\n\nTo upload a file, call ingest and then PUT the bytes to the "
+            "t: T.\n\nTo upload a file, call ingest and then PUT the bytes to the "
             f"returned URL. {self._TAIL_ONE}"
         )
         assert "download" not in text
@@ -565,18 +566,18 @@ class TestAddTransferWorkflow:
         mcp = self._server("push", "pull")
         add_transfer_workflow(mcp, upload_tool="push", download_tool="pull")
         text = self._finalize(mcp, tools_deny=("pull",))
-        assert text == "T."
+        assert text == "t: T."
 
     def test_snippet_is_pruned_when_the_named_tool_is_never_registered(self):
         mcp = self._server()
         add_transfer_workflow(mcp, download_tool="ghost")
-        assert self._finalize(mcp) == "T."
+        assert self._finalize(mcp) == "t: T."
 
 
 class TestInstructionsSnippet:
     def test_workflow_snippet_present_when_both_tools_exposed(self) -> None:
         mcp, _, _ = _register()
-        instructions_for(mcp).identity("T.")
+        instructions_for(mcp).identity("t", "T.")
         text = finalize_instructions(
             mcp,
             ServerConfig(base_url="https://x.example.com", kv_store_url="memory://"),
@@ -590,11 +591,12 @@ class TestInstructionsSnippet:
     )
     def test_snippet_dropped_when_either_tool_hidden(self, hidden_tool: str) -> None:
         mcp, _, _ = _register()
-        instructions_for(mcp).identity("T.")
+        instructions_for(mcp).identity("t", "T.")
         cfg = ServerConfig(
             base_url="https://x.example.com",
             kv_store_url="memory://",
             tools_deny=(hidden_tool,),
         )
+        apply_tool_visibility(mcp, cfg)
         text = finalize_instructions(mcp, cfg, env_prefix="T")
         assert "create_upload_link" not in text and "create_download_link" not in text

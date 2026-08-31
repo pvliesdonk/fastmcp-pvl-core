@@ -33,7 +33,7 @@ from typing import TYPE_CHECKING, Any
 from fastmcp.exceptions import ToolError
 from mcp.types import Icon, ToolAnnotations
 
-from .._instructions import WORKFLOWS, instructions_for
+from .._instructions import InstructionRole, instructions_for
 from .manager import Jobs
 from .records import JOB_POLL_TOOL_NAME, JobNotFoundError
 
@@ -228,6 +228,6 @@ def register_job_tools(
         f"as a task; poll {JOB_POLL_TOOL_NAME} with that id until the status "
         "is completed or failed, honouring retry_after_s, instead of invoking "
         "the tool again.",
-        priority=WORKFLOWS,
-        tools={JOB_POLL_TOOL_NAME},
+        role=InstructionRole.WORKFLOWS,
+        requires_tools={JOB_POLL_TOOL_NAME},
     )
