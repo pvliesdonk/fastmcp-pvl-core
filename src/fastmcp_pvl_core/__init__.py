@@ -48,15 +48,13 @@ from ._factory import (
 )
 from ._icons import IconSpec, make_icon, register_tool_icons
 from ._instructions import (
-    CAPABILITIES,
-    DOCS,
-    IDENTITY,
-    INSTANCE,
-    OPERATOR,
-    WORKFLOWS,
+    CLAUDE_CODE_INSTRUCTIONS_LIMIT_UTF16,
+    GENERATED_INSTRUCTIONS_TARGET_UTF16,
+    InstructionRole,
     InstructionsBuilder,
     finalize_instructions,
     instructions_for,
+    utf16_code_units,
 )
 from ._jobs import (
     JOB_POLL_TOOL_NAME,
@@ -111,17 +109,16 @@ __version__ = "5.1.0"  # PSR overrides at build time
 
 __all__ = [
     "AuthMode",
-    "CAPABILITIES",
+    "CLAUDE_CODE_INSTRUCTIONS_LIMIT_UTF16",
     "ConfigField",
     "ConfigurationError",
-    "DOCS",
     "DeferredJobHandle",
     "DomainEnvVar",
     "FetchResult",
-    "IDENTITY",
-    "INSTANCE",
+    "GENERATED_INSTRUCTIONS_TARGET_UTF16",
     "IconSpec",
     "InstructionsBuilder",
+    "InstructionRole",
     "JOB_POLL_TOOL_NAME",
     "JOB_RETRY_AFTER_S",
     "JobHandle",
@@ -131,7 +128,6 @@ __all__ = [
     "JobStatus",
     "Jobs",
     "JobsConfig",
-    "OPERATOR",
     "SecretMaskFilter",
     "ServerConfig",
     "Transport",
@@ -151,7 +147,6 @@ __all__ = [
     "TransferValidator",
     "UpstreamProvider",
     "UpstreamResult",
-    "WORKFLOWS",
     "any_check",
     "app_tool_address",
     "app_tool_meta",
@@ -199,5 +194,6 @@ __all__ = [
     "resolve_auth_mode",
     "server_config_env_suffixes",
     "server_config_surface",
+    "utf16_code_units",
     "wire_middleware_stack",
 ]

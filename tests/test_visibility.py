@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 import pytest
@@ -9,7 +10,7 @@ from fastmcp import Client, FastMCP
 from fastmcp.exceptions import ToolError
 
 from fastmcp_pvl_core import ConfigurationError, ServerConfig, apply_tool_visibility
-from fastmcp_pvl_core._visibility import exposed_tool_names, registered_tool_names
+from fastmcp_pvl_core._visibility import effective_tool_names, registered_tool_names
 
 
 def build_server() -> FastMCP:
@@ -41,6 +42,11 @@ def build_server() -> FastMCP:
 async def visible_tools(mcp: FastMCP) -> list[str]:
     async with Client(mcp) as client:
         return sorted(t.name for t in await client.list_tools())
+
+
+def visible_tools_sync(mcp: FastMCP) -> list[str]:
+    """List through a real client outside an already-running event loop."""
+    return asyncio.run(visible_tools(mcp))
 
 
 class TestDenylist:
@@ -178,40 +184,95 @@ class TestGuards:
             )
 
 
-class TestExposedToolNames:
-    """Sync rule must agree with client visibility after apply_tool_visibility."""
+class TestEffectiveToolNames:
+    """FastMCP listing is the synchronous finalizer's visibility oracle."""
 
-    async def test_no_filter_exposes_all(self):
+    def test_no_filter_exposes_all(self):
         mcp = build_server()
         cfg = ServerConfig()
         apply_tool_visibility(mcp, cfg)
-        assert exposed_tool_names(mcp, cfg) == frozenset(await visible_tools(mcp))
+        assert effective_tool_names(mcp, cfg) == frozenset(visible_tools_sync(mcp))
 
-    async def test_denylist(self):
+    def test_denylist(self):
         mcp = build_server()
         cfg = ServerConfig(tools_deny=("beta", "nonexistent"))
         apply_tool_visibility(mcp, cfg)
         assert (
-            exposed_tool_names(mcp, cfg)
-            == frozenset(await visible_tools(mcp))
+            effective_tool_names(mcp, cfg)
+            == frozenset(visible_tools_sync(mcp))
             == {"alpha", "gamma"}
         )
 
-    async def test_allowlist(self):
+    def test_allowlist(self):
         mcp = build_server()
         cfg = ServerConfig(tools_allow=("gamma", "nonexistent"))
         apply_tool_visibility(mcp, cfg)
         assert (
-            exposed_tool_names(mcp, cfg)
-            == frozenset(await visible_tools(mcp))
+            effective_tool_names(mcp, cfg)
+            == frozenset(visible_tools_sync(mcp))
             == {"gamma"}
         )
 
     def test_both_set_raises_like_apply(self):
         with pytest.raises(ConfigurationError):
-            exposed_tool_names(
+            effective_tool_names(
                 build_server(), ServerConfig(tools_allow=("a",), tools_deny=("b",))
             )
+
+    def test_tag_disable_uses_fastmcp_effective_visibility(self):
+        mcp = build_server()
+        mcp.disable(tags={"hidden"}, components={"tool"})
+
+        @mcp.tool(tags={"hidden"})
+        def hidden() -> str:
+            return "hidden"
+
+        assert (
+            effective_tool_names(mcp, ServerConfig())
+            == frozenset(visible_tools_sync(mcp))
+            == {"alpha", "beta", "gamma"}
+        )
+
+    def test_later_transform_overrides_earlier_transform(self):
+        mcp = build_server()
+        mcp.disable(names={"beta"}, components={"tool"})
+        mcp.enable(names={"beta"}, components={"tool"})
+        assert (
+            effective_tool_names(mcp, ServerConfig())
+            == frozenset(visible_tools_sync(mcp))
+            == {"alpha", "beta", "gamma"}
+        )
+
+    def test_key_disable_uses_fastmcp_effective_visibility(self):
+        mcp = build_server()
+        beta_key = next(
+            tool.key for tool in asyncio.run(mcp.list_tools()) if tool.name == "beta"
+        )
+        mcp.disable(keys={beta_key})
+        assert (
+            effective_tool_names(mcp, ServerConfig())
+            == frozenset(visible_tools_sync(mcp))
+            == {"alpha", "gamma"}
+        )
+
+    def test_mounted_namespaced_tools_are_included(self):
+        child = FastMCP("child")
+
+        @child.tool
+        def mounted() -> str:
+            return "mounted"
+
+        mcp = build_server()
+        mcp.mount(child, namespace="child")
+        assert (
+            effective_tool_names(mcp, ServerConfig())
+            == frozenset(visible_tools_sync(mcp))
+            == {"alpha", "beta", "child_mounted", "gamma"}
+        )
+
+    async def test_active_event_loop_is_rejected(self):
+        with pytest.raises(RuntimeError, match="synchronous server construction"):
+            effective_tool_names(build_server(), ServerConfig())
 
 
 class TestRegisteredToolNames:
@@ -228,5 +289,5 @@ class TestRegisteredToolNames:
         cfg = ServerConfig(tools_allow=("gamma",))
         apply_tool_visibility(mcp, cfg)
         registered = registered_tool_names(mcp)
-        assert exposed_tool_names(mcp, cfg) < registered
+        assert effective_tool_names(mcp, cfg) < registered
         assert "beta" in registered

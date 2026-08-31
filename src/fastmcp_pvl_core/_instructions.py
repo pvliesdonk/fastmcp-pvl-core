@@ -5,9 +5,9 @@ documentation pointer, the capability map, cross-tool workflows, enforced
 instance facts, and operator context. Core features and domain code each
 add snippets to the one builder per server; :func:`finalize_instructions`
 prunes snippets whose tools are absent or operator-hidden, serialises by
-priority, applies the env contract, and sets ``FastMCP.instructions``.
+semantic role, applies the env contract, and sets ``FastMCP.instructions``.
 
-Design: ``docs/superpowers/specs/2026-08-25-instructions-builder-design.md``.
+Design: ``docs/superpowers/specs/2026-08-31-instruction-roles-budget-design.md``.
 
 Intra-package imports stay relative so a fold-in is a directory rename.
 """
@@ -18,11 +18,12 @@ import logging
 import weakref
 from collections.abc import Iterable
 from dataclasses import dataclass
+from enum import Enum
 from typing import TYPE_CHECKING
 
 from ._env import env
 from ._errors import ConfigurationError
-from ._visibility import exposed_tool_names, registered_tool_names
+from ._visibility import effective_tool_names, registered_tool_names
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
@@ -31,23 +32,45 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-#: Named anchors on the priority scale. Priority is the mechanism; a
-#: contributor that wants "just after the capability map" writes
-#: ``CAPABILITIES + 10``.
-IDENTITY = 0
-DOCS = 100
-CAPABILITIES = 200
-WORKFLOWS = 300
-INSTANCE = 400
-OPERATOR = 500
+
+class InstructionRole(Enum):
+    """Semantic placement and ownership of one instruction fragment."""
+
+    IDENTITY = "identity"
+    ROUTING = "routing"
+    INSTANCE = "instance"
+    POLICY = "policy"
+    CAPABILITIES = "capabilities"
+    WORKFLOWS = "workflows"
+    DOCUMENTATION = "documentation"
+
+
+CLAUDE_CODE_INSTRUCTIONS_LIMIT_UTF16 = 2_048
+GENERATED_INSTRUCTIONS_TARGET_UTF16 = 1_536
+
+_ROLE_ORDER = {role: index for index, role in enumerate(InstructionRole)}
+_CONTRIBUTOR_ROLES = frozenset(
+    {
+        InstructionRole.INSTANCE,
+        InstructionRole.CAPABILITIES,
+        InstructionRole.WORKFLOWS,
+    }
+)
+_OPERATOR_ROLES = frozenset({InstructionRole.ROUTING, InstructionRole.POLICY})
+_SEPARATOR = "\n\n"
 
 
 @dataclass(frozen=True)
 class _Snippet:
     text: str
-    priority: int
-    tools: frozenset[str]
+    role: InstructionRole
+    requires_tools: frozenset[str]
     seq: int
+
+
+def utf16_code_units(text: str) -> int:
+    """Return JavaScript-compatible UTF-16 code units for *text*."""
+    return len(text.encode("utf-16-le", errors="surrogatepass")) // 2
 
 
 def _drop_reason(missing: frozenset[str], registered: frozenset[str]) -> str:
@@ -57,7 +80,7 @@ def _drop_reason(missing: frozenset[str], registered: frozenset[str]) -> str:
     distinguishable from the log: a registered name was hidden by the
     operator's ``TOOLS_ALLOW`` / ``TOOLS_DENY``, while an unregistered one is
     either a tool this instance's configuration did not register — the case
-    ``tools=`` exists for — or a rename or typo in the ``tools=`` declaration.
+    ``requires_tools=`` exists for — or a rename or typo in that declaration.
     """
     hidden = sorted(missing & registered)
     absent = sorted(missing - registered)
@@ -70,23 +93,109 @@ def _drop_reason(missing: frozenset[str], registered: frozenset[str]) -> str:
 
 
 def _identity_error(count: int) -> str:
-    """Message for a mis-filled ``IDENTITY`` slot.
-
-    Naming the slot rather than :meth:`InstructionsBuilder.identity` matters
-    for the over-filled case: a second snippet added with
-    ``add(..., priority=IDENTITY)`` is what usually causes it, and pointing at
-    ``identity()`` sends the reader to count calls they will find correct.
-    """
+    """Return the error for a missing or duplicated shaped identity."""
     if count == 0:
         return (
-            "instructions need a snippet at priority IDENTITY, found none; "
-            "call instructions_for(mcp).identity(...) once"
+            "instructions need one IDENTITY fragment, found none; call "
+            "instructions_for(mcp).identity(server_name, product_description) once"
         )
     return (
-        f"instructions allow one snippet at priority IDENTITY, found {count}; "
-        "identity() and add(priority=IDENTITY) both fill that slot, so check "
-        "for both — prose that should follow the identity belongs at a later "
-        "priority such as IDENTITY + 10"
+        f"instructions allow one IDENTITY fragment, found {count}; "
+        "call identity(server_name, product_description) exactly once"
+    )
+
+
+def _clean_one_line(value: str, *, name: str) -> str:
+    """Strip and validate one non-empty, single-line identity value."""
+    cleaned = value.strip()
+    if not cleaned:
+        raise ConfigurationError(f"instruction identity {name} is empty")
+    if "\n" in cleaned or "\r" in cleaned:
+        raise ConfigurationError(f"instruction identity {name} must be one line")
+    return cleaned
+
+
+def _join_snippets(snippets: Iterable[_Snippet]) -> str:
+    """Join already ordered snippets in the model-facing plain-text shape."""
+    return _SEPARATOR.join(snippet.text for snippet in snippets)
+
+
+def _role_units(snippets: tuple[_Snippet, ...]) -> str:
+    """Format non-empty per-role UTF-16 contributions for diagnostics."""
+    totals = {role: 0 for role in InstructionRole}
+    for snippet in snippets:
+        totals[snippet.role] += utf16_code_units(snippet.text)
+    return ",".join(
+        f"{role.value}:{totals[role]}" for role in InstructionRole if totals[role]
+    )
+
+
+def _separator_units(snippets: tuple[_Snippet, ...]) -> int:
+    """Return UTF-16 units occupied by blank-line separators."""
+    return max(0, len(snippets) - 1) * utf16_code_units(_SEPARATOR)
+
+
+def _crossing_role(snippets: tuple[_Snippet, ...], threshold: int) -> str:
+    """Return the first role whose cumulative end exceeds *threshold*."""
+    cumulative = 0
+    for index, snippet in enumerate(snippets):
+        if index:
+            cumulative += utf16_code_units(_SEPARATOR)
+        cumulative += utf16_code_units(snippet.text)
+        if cumulative > threshold:
+            return snippet.role.value
+    raise AssertionError("instruction text did not cross the supplied threshold")
+
+
+def _warn_generated_budget(prefix: str, snippets: tuple[_Snippet, ...]) -> None:
+    """Warn when retained non-operator guidance exceeds its family target."""
+    generated = tuple(s for s in snippets if s.role not in _OPERATOR_ROLES)
+    units = utf16_code_units(_join_snippets(generated))
+    if units <= GENERATED_INSTRUCTIONS_TARGET_UTF16:
+        return
+    logger.warning(
+        "instructions_generated_budget_exceeded phase=generated units=%s target=%s "
+        "crossing_role=%s role_units=%s separator_units=%s env_prefix=%s",
+        units,
+        GENERATED_INSTRUCTIONS_TARGET_UTF16,
+        _crossing_role(generated, GENERATED_INSTRUCTIONS_TARGET_UTF16),
+        _role_units(generated),
+        _separator_units(generated),
+        prefix,
+    )
+
+
+def _warn_client_budget(prefix: str, text: str, snippets: tuple[_Snippet, ...]) -> None:
+    """Warn when final guidance exceeds Claude Code's known boundary."""
+    units = utf16_code_units(text)
+    if units <= CLAUDE_CODE_INSTRUCTIONS_LIMIT_UTF16:
+        return
+    logger.warning(
+        "instructions_client_budget_exceeded phase=final client=claude-code "
+        "units=%s limit=%s crossing_role=%s role_units=%s separator_units=%s "
+        "env_prefix=%s",
+        units,
+        CLAUDE_CODE_INSTRUCTIONS_LIMIT_UTF16,
+        _crossing_role(snippets, CLAUDE_CODE_INSTRUCTIONS_LIMIT_UTF16),
+        _role_units(snippets),
+        _separator_units(snippets),
+        prefix,
+    )
+
+
+def _warn_legacy_client_budget(prefix: str, text: str) -> None:
+    """Warn when a legacy full replacement exceeds the client boundary."""
+    units = utf16_code_units(text)
+    if units <= CLAUDE_CODE_INSTRUCTIONS_LIMIT_UTF16:
+        return
+    logger.warning(
+        "instructions_client_budget_exceeded phase=final client=claude-code "
+        "units=%s limit=%s crossing_role=legacy_override "
+        "role_units=legacy_override:%s separator_units=0 env_prefix=%s",
+        units,
+        CLAUDE_CODE_INSTRUCTIONS_LIMIT_UTF16,
+        units,
+        prefix,
     )
 
 
@@ -94,8 +203,8 @@ class InstructionsBuilder:
     """Ordered, tool-aware collection of instruction snippets for one server.
 
     Obtain it with :func:`instructions_for`; do not construct one per call
-    site. Every ``add`` is a plain string with a priority and the tool names
-    it references. Rendering happens once, in :func:`finalize_instructions`.
+    site. Every ``add`` is a plain string with a semantic role and the tool
+    names it requires. Rendering happens once, in :func:`finalize_instructions`.
     """
 
     def __init__(self) -> None:
@@ -103,27 +212,14 @@ class InstructionsBuilder:
         self._frozen = False
         self._result: str | None = None
 
-    def add(self, text: str, *, priority: int, tools: Iterable[str] = ()) -> None:
-        """Add one snippet.
-
-        Args:
-            text: Model-facing prose. Surrounding whitespace is stripped.
-            priority: Sort key; ties keep insertion order. Use the anchors
-                (``IDENTITY`` … ``OPERATOR``) or an offset from one.
-                ``IDENTITY`` is the one anchor with a cardinality: exactly
-                one snippet may sit there, whether it arrived through
-                :meth:`identity` or through ``add(..., priority=IDENTITY)``.
-                For prose that should follow the identity, offset it —
-                ``IDENTITY + 10``.
-            tools: Tool names the snippet references. If any is absent or
-                hidden by the ``TOOLS_ALLOW`` / ``TOOLS_DENY`` operator rule
-                at finalize, the whole snippet is dropped. Server-side
-                ``disable`` / ``enable`` transforms are not modelled.
-
-        Raises:
-            ConfigurationError: *text* is empty or whitespace.
-            RuntimeError: The builder was already finalized.
-        """
+    def _append(
+        self,
+        text: str,
+        *,
+        role: InstructionRole,
+        requires_tools: Iterable[str] = (),
+    ) -> None:
+        """Validate and append one fragment, including reserved roles."""
         if self._frozen:
             raise RuntimeError(
                 "instructions already finalized; "
@@ -133,48 +229,96 @@ class InstructionsBuilder:
         if not cleaned:
             raise ConfigurationError("instruction snippet text is empty")
         self._snippets.append(
-            _Snippet(cleaned, priority, frozenset(tools), len(self._snippets))
+            _Snippet(
+                cleaned,
+                role,
+                frozenset(requires_tools),
+                len(self._snippets),
+            )
         )
 
-    def identity(self, text: str) -> None:
-        """Add the one-line identity (``priority=IDENTITY``).
+    def add(
+        self,
+        text: str,
+        *,
+        role: InstructionRole,
+        requires_tools: Iterable[str] = (),
+    ) -> None:
+        """Add one snippet.
 
-        A convenience wrapper over :meth:`add`, not a distinct mechanism:
-        the slot at ``IDENTITY`` holds exactly one snippet however it was
-        filled, and finalize requires it to be filled.
+        Args:
+            text: Model-facing prose. Surrounding whitespace is stripped.
+            role: Contributor-owned semantic placement. Only ``INSTANCE``,
+                ``CAPABILITIES``, and ``WORKFLOWS`` are accepted here.
+            requires_tools: Tool names required by the snippet. If any is
+                absent or hidden by the operator visibility rule at finalize,
+                the whole snippet is dropped.
+
+        Raises:
+            ConfigurationError: *text* is empty or *role* is reserved.
+            RuntimeError: The builder was already finalized.
         """
-        self.add(text, priority=IDENTITY)
+        if not isinstance(role, InstructionRole):
+            raise ConfigurationError(f"invalid instruction role: {role!r}")
+        if role not in _CONTRIBUTOR_ROLES:
+            raise ConfigurationError(
+                f"instruction role {role.value} is reserved; use its shaped API"
+            )
+        self._append(text, role=role, requires_tools=requires_tools)
+
+    def identity(self, server_name: str, product_description: str) -> None:
+        """Add the one-line deployment and product identity.
+
+        Args:
+            server_name: Configured FastMCP server name.
+            product_description: Concise description shared by the product.
+        """
+        name = _clean_one_line(server_name, name="server_name")
+        description = _clean_one_line(product_description, name="product_description")
+        self._append(f"{name}: {description}", role=InstructionRole.IDENTITY)
 
     def documentation(self, url: str) -> None:
         """Add the documentation pointer in pvl-core's fixed shape.
 
-        Priority: ``DOCS``.
+        Role: ``DOCUMENTATION``.
         """
         cleaned = url.strip()
         if not cleaned:
             raise ConfigurationError("documentation url is empty")
-        self.add(f"Full documentation for this server: {cleaned}", priority=DOCS)
+        self._append(
+            f"Full documentation for this server: {cleaned}",
+            role=InstructionRole.DOCUMENTATION,
+        )
 
-    def _render(self, exposed: frozenset[str], registered: frozenset[str]) -> str:
-        """Prune against *exposed* tool names and serialise.
+    def _retained(
+        self,
+        exposed: frozenset[str],
+        registered: frozenset[str],
+        additional: Iterable[_Snippet] = (),
+    ) -> tuple[_Snippet, ...]:
+        """Prune against *exposed* tool names and order retained snippets.
 
         *registered* is every tool name on the server before the operator
         rule; it does not change which snippets are dropped, only how the
-        ``DEBUG`` line explains a drop. No env, no identity check.
+        ``DEBUG`` line explains a drop. No env or identity check.
         """
         kept: list[_Snippet] = []
-        for s in self._snippets:
-            missing = s.tools - exposed
+        for snippet in (*self._snippets, *additional):
+            missing = snippet.requires_tools - exposed
             if missing:
                 logger.debug(
-                    "instructions: dropping snippet at priority %d; %s",
-                    s.priority,
+                    "instructions_snippet_dropped role=%s reason=%s",
+                    snippet.role.value,
                     _drop_reason(missing, registered),
                 )
                 continue
-            kept.append(s)
-        kept.sort(key=lambda s: (s.priority, s.seq))
-        return "\n\n".join(s.text for s in kept)
+            kept.append(snippet)
+        kept.sort(key=lambda snippet: (_ROLE_ORDER[snippet.role], snippet.seq))
+        return tuple(kept)
+
+    def _render(self, exposed: frozenset[str], registered: frozenset[str]) -> str:
+        """Prune, order, and serialize builder-owned snippets."""
+        return _join_snippets(self._retained(exposed, registered))
 
 
 _builders: weakref.WeakKeyDictionary[FastMCP, InstructionsBuilder] = (
@@ -195,6 +339,83 @@ def instructions_for(mcp: FastMCP) -> InstructionsBuilder:
     return builder
 
 
+def _legacy_instructions(prefix: str, legacy: str, routing: str, policy: str) -> str:
+    """Apply legacy replacement diagnostics and return its verbatim text."""
+    ignored = [
+        key
+        for key, value in (
+            (f"{prefix}_INSTANCE_DESCRIPTION", routing),
+            (f"{prefix}_INSTRUCTIONS_EXTRA", policy),
+        )
+        if value
+    ]
+    logger.warning(
+        "instructions_legacy_override env_var=%s deprecated=true ignored=%s",
+        f"{prefix}_INSTRUCTIONS",
+        ",".join(ignored) if ignored else "none",
+    )
+    _warn_legacy_client_budget(prefix, legacy)
+    return legacy
+
+
+def _operator_snippets(
+    builder: InstructionsBuilder, routing: str, policy: str
+) -> tuple[_Snippet, ...]:
+    """Build finalizer-owned routing and policy fragments without mutation."""
+    snippets: list[_Snippet] = []
+    for role, text in (
+        (InstructionRole.ROUTING, routing),
+        (InstructionRole.POLICY, policy),
+    ):
+        if text:
+            snippets.append(
+                _Snippet(
+                    text,
+                    role,
+                    frozenset(),
+                    len(builder._snippets) + len(snippets),
+                )
+            )
+    return tuple(snippets)
+
+
+def _instruction_availability(
+    mcp: FastMCP,
+    config: ServerConfig,
+    builder: InstructionsBuilder,
+) -> tuple[frozenset[str], frozenset[str]]:
+    """Validate identity and obtain effective plus registered tool names."""
+    identities = [
+        snippet
+        for snippet in builder._snippets
+        if snippet.role is InstructionRole.IDENTITY
+    ]
+    if len(identities) != 1:
+        raise ConfigurationError(_identity_error(len(identities)))
+
+    exposed = effective_tool_names(mcp, config)
+    registered = registered_tool_names(mcp)
+    return exposed, registered
+
+
+def _generated_instructions(
+    mcp: FastMCP,
+    config: ServerConfig,
+    builder: InstructionsBuilder,
+    prefix: str,
+) -> str:
+    """Build, render, and budget the non-legacy instruction path."""
+    exposed, registered = _instruction_availability(mcp, config, builder)
+    routing = env(prefix, "INSTANCE_DESCRIPTION") or ""
+    policy = env(prefix, "INSTRUCTIONS_EXTRA") or ""
+    operator_snippets = _operator_snippets(builder, routing, policy)
+    retained = builder._retained(exposed, registered, operator_snippets)
+    text = _join_snippets(retained)
+    _warn_generated_budget(prefix, retained)
+    _warn_client_budget(prefix, text, retained)
+    return text
+
+
 def finalize_instructions(
     mcp: FastMCP, config: ServerConfig, *, env_prefix: str
 ) -> str:
@@ -203,10 +424,13 @@ def finalize_instructions(
     Call after :func:`apply_tool_visibility`, and after every ``register_*``
     helper and domain contribution — ``finalize_instructions`` must run last,
     after every tool registration and after :func:`apply_tool_visibility`.
-    Under that precondition the pruned set equals what a client lists under
-    the operator rule. Server-side ``disable``/``enable`` transforms before
-    finalize are not modelled, and tools registered after finalize are not
-    seen. Per-subject auth visibility is separately out of scope.
+    It runs during synchronous server construction, before entering an event
+    loop, because FastMCP's authoritative tool listing path is asynchronous.
+    Under that precondition the pruned set reflects FastMCP's global provider,
+    mount, namespace, and ordered visibility transforms. Tools registered after
+    finalize are not seen. Per-session transforms and per-subject authorization
+    are separately out of scope because one static instruction string cannot
+    vary by request.
 
     If ``{P}_INSTRUCTIONS`` is set (non-whitespace), the numbered steps below
     are skipped entirely and its value is used verbatim — no identity
@@ -214,24 +438,20 @@ def finalize_instructions(
 
     Order of operations:
 
-    1. exactly one snippet must sit at priority ``IDENTITY``, whether
-       :meth:`InstructionsBuilder.identity` or ``add(priority=IDENTITY)``
-       put it there — such snippets carry no ``tools``, so pruning cannot
-       remove them; the count is taken before pruning, which also keeps the
-       builder unmutated on failure
-    2. exposed tools = :func:`exposed_tool_names` (registered ∧ operator
-       rule), plus :func:`registered_tool_names` for the drop diagnostics —
-       both computed before any further mutation, since the first is the
-       other source of :class:`~fastmcp_pvl_core._errors.ConfigurationError`
-       (both visibility lists set) and either can raise ``RuntimeError`` on
-       enumeration drift; a failure must leave the builder unmutated
-    3. ``{P}_INSTRUCTIONS_EXTRA`` appended at ``OPERATOR``; legacy
-       ``{P}_INSTRUCTIONS`` replaces the whole text with one ``WARNING``
-    4. drop every snippet whose ``tools`` are not all exposed — one
+    1. exactly one shaped ``IDENTITY`` fragment must exist; it carries no tool
+       dependencies and cannot be pruned
+    2. exposed tools = :func:`effective_tool_names`, using FastMCP's global
+       listing path, plus :func:`registered_tool_names` for drop diagnostics —
+       both computed before rendering so a failure leaves the builder mutable
+    3. ``{P}_INSTANCE_DESCRIPTION`` and ``{P}_INSTRUCTIONS_EXTRA`` become
+       ``ROUTING`` and ``POLICY`` fragments; legacy ``{P}_INSTRUCTIONS``
+       replaces the whole text with one deprecation ``WARNING``
+    4. drop every snippet whose ``requires_tools`` are not all exposed — one
        ``DEBUG`` per drop, naming the missing tools and saying of each
        whether it was operator-hidden or never registered
-    5. serialise by ``(priority, insertion)``, blank-line separated
-    6. set ``mcp.instructions``, cache, freeze the builder
+    5. serialise by semantic role then insertion order, blank-line separated
+    6. measure generated and final UTF-16 units and warn above known budgets
+    7. set ``mcp.instructions``, cache, freeze the builder
 
     A second call returns the cached string without re-reading env or
     logging.
@@ -246,9 +466,10 @@ def finalize_instructions(
         The final instructions string, also set on ``mcp.instructions``.
 
     Raises:
-        ConfigurationError: No snippet at priority ``IDENTITY``, more than
-            one, or both visibility lists set.
+        ConfigurationError: No ``IDENTITY`` fragment, more than one, or both
+            visibility lists set.
         RuntimeError: FastMCP's component enumeration changed shape.
+            Also raised when called from an active event loop.
     """
     builder = instructions_for(mcp)
     if builder._result is not None:
@@ -256,28 +477,13 @@ def finalize_instructions(
 
     prefix = env_prefix.rstrip("_")
     legacy = env(prefix, "INSTRUCTIONS") or ""
-    extra = env(prefix, "INSTRUCTIONS_EXTRA") or ""
 
     if legacy:
-        logger.warning(
-            "%s_INSTRUCTIONS replaces all generated guidance and is deprecated; "
-            "use %s_INSTRUCTIONS_EXTRA to add context.%s",
-            prefix,
-            prefix,
-            f" {prefix}_INSTRUCTIONS_EXTRA is set and was ignored." if extra else "",
-        )
-        text = legacy
+        routing = env(prefix, "INSTANCE_DESCRIPTION") or ""
+        policy = env(prefix, "INSTRUCTIONS_EXTRA") or ""
+        text = _legacy_instructions(prefix, legacy, routing, policy)
     else:
-        identities = [s for s in builder._snippets if s.priority == IDENTITY]
-        if len(identities) != 1:
-            raise ConfigurationError(_identity_error(len(identities)))
-        # Both enumerations precede the add() below: either can raise, and
-        # a failed finalize must leave the builder unmutated and unfrozen.
-        exposed = exposed_tool_names(mcp, config)
-        registered = registered_tool_names(mcp)
-        if extra:
-            builder.add(extra, priority=OPERATOR)
-        text = builder._render(exposed, registered)
+        text = _generated_instructions(mcp, config, builder, prefix)
 
     mcp.instructions = text
     builder._result = text

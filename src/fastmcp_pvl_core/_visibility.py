@@ -32,6 +32,8 @@ import asyncio
 import logging
 from typing import TYPE_CHECKING
 
+from fastmcp.server.context import reset_transport, set_transport
+
 from ._errors import ConfigurationError
 from ._icons import _index_tools_by_name
 
@@ -46,7 +48,7 @@ logger = logging.getLogger(__name__)
 def _reject_both_lists(config: ServerConfig) -> None:
     """Raise if *config* sets both ``tools_allow`` and ``tools_deny``.
 
-    Shared by :func:`apply_tool_visibility` and :func:`exposed_tool_names` so
+    Shared by :func:`apply_tool_visibility` and :func:`effective_tool_names` so
     the message lives in one place.
     """
     if config.tools_allow and config.tools_deny:
@@ -136,11 +138,10 @@ def _warn_if_no_tools_exposed(mcp: FastMCP, allow: tuple[str, ...]) -> None:
 def registered_tool_names(mcp: FastMCP) -> frozenset[str]:
     """Names of every tool registered on *mcp*, before any visibility rule.
 
-    The enumeration ``register_tool_icons`` uses, and the set
-    :func:`exposed_tool_names` filters. Callers that already have the exposed
-    set use this to tell the two reasons a name is missing from it apart: a
-    name in this set was hidden by the operator rule, a name outside it was
-    never registered.
+    The enumeration ``register_tool_icons`` uses. Callers that already have the
+    effective set use this to tell two reasons a name is missing apart: a local
+    name in this set was hidden by visibility, while a name outside it was
+    never registered locally (or arrives only through a mounted provider).
 
     Raises:
         RuntimeError: FastMCP's component enumeration changed shape.
@@ -148,29 +149,45 @@ def registered_tool_names(mcp: FastMCP) -> frozenset[str]:
     return frozenset(_index_tools_by_name(mcp))
 
 
-def exposed_tool_names(mcp: FastMCP, config: ServerConfig) -> frozenset[str]:
-    """Tool names *mcp* exposes under the operator allow-/denylist in *config*.
+async def _list_effective_tools(mcp: FastMCP) -> frozenset[str]:
+    """List the global stdio tool surface without request middleware or auth."""
+    transport_token = set_transport("stdio")
+    try:
+        tools = await mcp.list_tools(run_middleware=False)
+    finally:
+        reset_transport(transport_token)
+    return frozenset(tool.name for tool in tools)
 
-    Evaluates the same rule :func:`apply_tool_visibility` installs, without
-    asking FastMCP: it stores ``disable``/``enable`` as async transforms with
-    no synchronous query, and ``make_server`` is synchronous. Registered names
-    come from the same enumeration ``register_tool_icons`` uses.
 
-    This models only the operator allow-/denylist rule over the tools
-    registered when it is called; it does not model server-side
-    ``mcp.disable()``/``mcp.enable()`` calls, whose transforms FastMCP
-    resolves at listing time.
+def _list_effective_tools_in_new_loop(mcp: FastMCP) -> frozenset[str]:
+    """Run FastMCP's asynchronous listing oracle in a fresh event loop."""
+    return asyncio.run(_list_effective_tools(mcp))
+
+
+def effective_tool_names(mcp: FastMCP, config: ServerConfig) -> frozenset[str]:
+    """Return globally visible tool names after FastMCP transforms.
+
+    FastMCP's listing path is the authority for provider mounts, namespaces,
+    and ordered key/name/tag visibility transforms. The stdio transport context
+    intentionally bypasses component auth: one static instruction string
+    cannot vary by authenticated subject. Request middleware and session
+    transforms are likewise outside this global startup view.
+
+    The public finalizer is synchronous and must run during synchronous server
+    construction. An active event loop is rejected rather than moving
+    potentially loop-affine providers onto an unsafe worker loop.
 
     Raises:
         ConfigurationError: ``tools_allow`` and ``tools_deny`` are both set.
-        RuntimeError: FastMCP's component enumeration changed shape.
+        RuntimeError: Called from an active event loop, or FastMCP's effective
+            listing fails.
     """
     _reject_both_lists(config)
-    allow = config.tools_allow
-    deny = config.tools_deny
-    registered = registered_tool_names(mcp)
-    if allow:
-        return registered & frozenset(allow)
-    if deny:
-        return registered - frozenset(deny)
-    return registered
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return _list_effective_tools_in_new_loop(mcp)
+    raise RuntimeError(
+        "instruction finalization requires synchronous server construction; "
+        "call finalize_instructions before entering an event loop"
+    )

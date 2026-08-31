@@ -156,7 +156,7 @@ See `src/fastmcp_pvl_core/` for the full surface. Typical usage:
 ```python
 from fastmcp import FastMCP
 from fastmcp_pvl_core import (
-    ServerConfig, apply_tool_visibility, build_auth,
+    InstructionRole, ServerConfig, apply_tool_visibility, build_auth,
     finalize_instructions, instructions_for, wire_middleware_stack,
 )
 
@@ -164,8 +164,13 @@ config = ServerConfig.from_env("MY_APP")
 mcp = FastMCP(name="my-app", auth=build_auth(config))
 wire_middleware_stack(mcp)
 
-instructions_for(mcp).identity("A widget service.")
-instructions_for(mcp).documentation("https://example.com/my-app/llms.txt")
+instructions = instructions_for(mcp)
+instructions.identity("my-app", "A widget service.")
+instructions.add(
+    "This instance is READ-ONLY.",
+    role=InstructionRole.INSTANCE,
+)
+instructions.documentation("https://example.com/my-app/llms.txt")
 # ... register tools; core register_* helpers add their own workflow snippets ...
 apply_tool_visibility(mcp, config)
 finalize_instructions(mcp, config, env_prefix="MY_APP")
@@ -175,14 +180,48 @@ finalize_instructions(mcp, config, env_prefix="MY_APP")
 
 Instructions carry what no single tool description can carry: identity, a
 documentation pointer, cross-tool workflows, and enforced instance facts.
-Add snippets with `instructions_for(mcp).add(text, priority=..., tools=...)`;
-a snippet naming a tool the operator hid via `TOOLS_ALLOW`/`TOOLS_DENY` is
-dropped at `finalize_instructions`. Priority is the mechanism and the
-constants are anchors, so prose that should follow the identity goes at
-`IDENTITY + 10` — the `IDENTITY` slot itself holds exactly one snippet,
-whether `identity()` or `add(priority=IDENTITY)` filled it. Operators add deployment context with
-`{PREFIX}_INSTRUCTIONS_EXTRA`. `{PREFIX}_INSTRUCTIONS` (legacy) still
-replaces the whole text and logs a deprecation warning.
+
+| Role | Owner | Meaning | Tool dependencies |
+|---|---|---|---|
+| `IDENTITY` | pvl-core shape, template values | Deployed server and product identity | forbidden |
+| `ROUTING` | operator | Data or domain this deployment serves | forbidden |
+| `INSTANCE` | domain/core | Enforced configuration facts and limits | allowed when the fact depends on named tools |
+| `POLICY` | operator | Deployment-specific behavioral policy | forbidden |
+| `CAPABILITIES` | domain/core | Classes of work the server performs | allowed |
+| `WORKFLOWS` | domain/core | How multiple tools compose | allowed |
+| `DOCUMENTATION` | template/core | Where complete documentation lives | forbidden |
+
+Add domain snippets with
+`instructions_for(mcp).add(text, role=..., requires_tools=...)`. General
+contributors use only `INSTANCE`, `CAPABILITIES`, and `WORKFLOWS`; pvl-core
+reserves identity, operator routing/policy, and documentation so their shape
+and ownership stay consistent. A snippet requiring a tool FastMCP hides through
+global provider, mount, namespace, or ordered visibility transforms is dropped
+at `finalize_instructions`. Per-session transforms and per-subject authorization
+remain outside this static instruction string; guidance for an auth-gated tool
+must read naturally when that tool is unavailable to the current caller.
+Finalization runs during synchronous server construction, before entering an
+event loop, so FastMCP can evaluate its asynchronous global listing path safely.
+
+The rendered survival order is deployment identity, operator routing, enforced
+instance facts, operator policy, capabilities, workflows, then documentation.
+The operator environment contract is:
+
+- `{PREFIX}_SERVER_NAME` is passed by the server factory to
+  `identity(server_name, product_description)` and identifies the deployment.
+- `{PREFIX}_INSTANCE_DESCRIPTION` concisely describes which material or
+  responsibility distinguishes this instance for routing.
+- `{PREFIX}_INSTRUCTIONS_EXTRA` supplies deployment-specific behavioral policy.
+- `{PREFIX}_INSTRUCTIONS` is a deprecated full replacement. When set, it
+  ignores both additive operator variables and logs a warning naming them.
+
+pvl-core measures instructions in UTF-16 code units, matching JavaScript
+`String.length`. Generated guidance targets at most 1,536 units, reserving 512
+units for normal operator routing and policy within Claude Code's known 2,048
+unit boundary. Exceeding either threshold logs a role-level warning; pvl-core
+does not truncate instructions or fail startup. Use `utf16_code_units`,
+`GENERATED_INSTRUCTIONS_TARGET_UTF16`, and
+`CLAUDE_CODE_INSTRUCTIONS_LIMIT_UTF16` to enforce the same profile in tests.
 
 ### Tool visibility (operator allow-/denylist)
 

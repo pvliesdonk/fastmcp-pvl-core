@@ -51,7 +51,7 @@ from mcp.types import Icon, ToolAnnotations
 
 from .._config import ServerConfig
 from .._errors import ConfigurationError
-from .._instructions import WORKFLOWS, instructions_for
+from .._instructions import InstructionRole, instructions_for
 from .config import TransferConfig
 from .routes import make_transfer_handler
 from .sink import TransferKind, TransferSink, TransferValidator
@@ -242,8 +242,8 @@ def add_transfer_workflow(
 
     instructions_for(mcp).add(
         body,
-        priority=WORKFLOWS,
-        tools={name for name in (upload, download) if name},
+        role=InstructionRole.WORKFLOWS,
+        requires_tools={name for name in (upload, download) if name},
     )
 
 
