@@ -93,7 +93,7 @@ class TestImportErrorGuard:
 
         try:
             sys.modules[suppress_key] = None  # type: ignore[assignment]
-            with pytest.raises(ImportError, match="3.3.1"):
+            with pytest.raises(ImportError, match="fastmcp >= 4"):
                 importlib.import_module(apps_module_key)
         finally:
             if saved_module is not None:
