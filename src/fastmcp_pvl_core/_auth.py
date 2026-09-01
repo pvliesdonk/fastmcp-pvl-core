@@ -452,16 +452,18 @@ def build_oidc_proxy_auth(config: ServerConfig) -> OIDCProxy | None:
         verify_id_token=verify_id_token,
     )
 
-    import httpx
+    import httpx2
     from fastmcp.server.auth.oidc_proxy import OIDCProxy
 
     # ``OIDCProxy.__init__`` performs discovery eagerly and re-raises the
-    # raw failure: ``httpx.HTTPError`` from the network layer, and
-    # ``ValueError`` from JSON decoding, pydantic validation (a
-    # ``ValueError`` subclass), or the endpoint check. Normalise to the
-    # same ``ConfigurationError`` contract ``build_remote_auth`` uses so
-    # a consumer's ``except ConfigurationError`` covers every OIDC mode
-    # (#69). Only the URL enters the message; the secret never does.
+    # raw failure: ``httpx2.HTTPError`` from fastmcp's network layer
+    # (fastmcp performs this fetch itself, on httpx2 — pvl-core's own
+    # ``httpx`` never enters this path), and ``ValueError`` from JSON
+    # decoding, pydantic validation (a ``ValueError`` subclass), or the
+    # endpoint check. Normalise to the same ``ConfigurationError``
+    # contract ``build_remote_auth`` uses so a consumer's
+    # ``except ConfigurationError`` covers every OIDC mode (#69). Only
+    # the URL enters the message; the secret never does.
     try:
         proxy = OIDCProxy(
             config_url=oidc_config_url,
@@ -474,7 +476,7 @@ def build_oidc_proxy_auth(config: ServerConfig) -> OIDCProxy | None:
             verify_id_token=verify_id_token,
             require_authorization_consent=False,
         )
-    except (httpx.HTTPError, ValueError) as exc:
+    except (httpx2.HTTPError, ValueError) as exc:
         raise ConfigurationError(
             f"OIDC discovery failed at {oidc_config_url}: {exc}"
         ) from exc

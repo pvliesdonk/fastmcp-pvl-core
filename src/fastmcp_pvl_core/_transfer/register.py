@@ -83,7 +83,7 @@ _UPLOAD_SVG = (
 def _icon(svg: str) -> Icon:
     """Return an :class:`Icon` with a base64 data URI for *svg*."""
     payload = base64.b64encode(svg.encode()).decode("ascii")
-    return Icon(src=f"data:image/svg+xml;base64,{payload}", mimeType="image/svg+xml")
+    return Icon(src=f"data:image/svg+xml;base64,{payload}", mime_type="image/svg+xml")
 
 
 _DOWNLOAD_ICON = _icon(_DOWNLOAD_SVG)
@@ -367,9 +367,9 @@ def register_transfer_routes(
         description=_describe(create_download_link, download_note),
         annotations=ToolAnnotations(
             title="Create Download Link",
-            readOnlyHint=True,
-            destructiveHint=False,
-            idempotentHint=False,
+            read_only_hint=True,
+            destructive_hint=False,
+            idempotent_hint=False,
         ),
         icons=[_DOWNLOAD_ICON],
     )(create_download_link)
@@ -393,9 +393,9 @@ def register_transfer_routes(
         description=_describe(create_upload_link, upload_note),
         annotations=ToolAnnotations(
             title="Create Upload Link",
-            readOnlyHint=False,
-            destructiveHint=False,
-            idempotentHint=False,
+            read_only_hint=False,
+            destructive_hint=False,
+            idempotent_hint=False,
         ),
         icons=[_UPLOAD_ICON],
         tags={"write"},

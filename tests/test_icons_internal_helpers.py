@@ -149,7 +149,7 @@ def test_index_raises_runtime_error_on_api_change() -> None:
 def test_resolve_entry_relative_returns_icon(tmp_path: Path) -> None:
     _write(tmp_path, "ping.svg", SVG_BYTES)
     icon = _resolve_icon_entry("ping.svg", tmp_path.resolve(), "ping")
-    assert icon.mimeType == "image/svg+xml"
+    assert icon.mime_type == "image/svg+xml"
     assert base64.b64decode(icon.src.split(",", 1)[1]) == SVG_BYTES
 
 
@@ -159,7 +159,7 @@ def test_resolve_entry_absolute_bypasses_containment(
     elsewhere = tmp_path_factory.mktemp("elsewhere")
     absolute = _write(elsewhere, "abs.svg", SVG_BYTES)
     icon = _resolve_icon_entry(absolute, tmp_path.resolve(), "ping")
-    assert icon.mimeType == "image/svg+xml"
+    assert icon.mime_type == "image/svg+xml"
 
 
 def test_resolve_entry_relative_traversal_rejected(tmp_path: Path) -> None:

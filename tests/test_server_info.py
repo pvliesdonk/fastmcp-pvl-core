@@ -171,7 +171,7 @@ class TestRegisterServerInfoTool:
         tools = await mcp.list_tools()
         target = next(t for t in tools if t.name == "get_server_info")
         assert target.annotations is not None
-        assert target.annotations.readOnlyHint is True
+        assert target.annotations.read_only_hint is True
 
     async def test_tool_has_default_title(self):
         """Title-aware clients (e.g. VS Code) need a human-readable label."""

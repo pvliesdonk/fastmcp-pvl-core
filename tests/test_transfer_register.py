@@ -162,16 +162,16 @@ class TestToolRegistration:
         tool = await mcp.get_tool("create_download_link")
         assert tool.annotations is not None
         assert tool.annotations.title == "Create Download Link"
-        assert tool.annotations.readOnlyHint is True
-        assert tool.annotations.destructiveHint is False
+        assert tool.annotations.read_only_hint is True
+        assert tool.annotations.destructive_hint is False
 
     async def test_upload_link_has_annotations(self) -> None:
         mcp, _, _ = _register()
         tool = await mcp.get_tool("create_upload_link")
         assert tool.annotations is not None
         assert tool.annotations.title == "Create Upload Link"
-        assert tool.annotations.readOnlyHint is False
-        assert tool.annotations.destructiveHint is False
+        assert tool.annotations.read_only_hint is False
+        assert tool.annotations.destructive_hint is False
 
     async def test_download_link_has_icon(self) -> None:
         mcp, _, _ = _register()
@@ -179,7 +179,7 @@ class TestToolRegistration:
         assert tool.icons is not None
         assert len(tool.icons) == 1
         assert tool.icons[0].src.startswith("data:image/svg+xml;base64,")
-        assert tool.icons[0].mimeType == "image/svg+xml"
+        assert tool.icons[0].mime_type == "image/svg+xml"
 
     async def test_upload_link_has_icon(self) -> None:
         mcp, _, _ = _register()
@@ -187,7 +187,7 @@ class TestToolRegistration:
         assert tool.icons is not None
         assert len(tool.icons) == 1
         assert tool.icons[0].src.startswith("data:image/svg+xml;base64,")
-        assert tool.icons[0].mimeType == "image/svg+xml"
+        assert tool.icons[0].mime_type == "image/svg+xml"
 
     async def test_upload_link_has_write_tag(self) -> None:
         mcp, _, _ = _register()

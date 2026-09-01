@@ -137,9 +137,7 @@ class TestRunWithDeadline:
             task_id = "t1"
             task_scope = None
 
-        monkeypatch.setattr(
-            "fastmcp.server.dependencies.get_task_context", lambda: _Ctx()
-        )
+        monkeypatch.setattr("fastmcp_tasks.context.get_task_context", lambda: _Ctx())
         jobs = _jobs(JobsConfig(soft_deadline_s=0.01, result_ttl_s=60.0))
 
         async def work() -> dict[str, Any]:

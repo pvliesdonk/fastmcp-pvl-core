@@ -2,7 +2,7 @@
 
 How to give a slow tool dual-mode behaviour with `fastmcp_pvl_core.jobs`
 (ADR 0002 §5): protocol-native background-task execution for clients that
-speak MCP tasks (SEP-1686), and a job-handle + polling fallback for the
+speak MCP tasks (SEP-2663), and a job-handle + polling fallback for the
 clients that don't — today, that is every Anthropic client.
 
 > This is an implementor guide for `*-mcp` family servers. Design
@@ -13,7 +13,7 @@ clients that don't — today, that is every Anthropic client.
 ## The problem this solves
 
 A tool that can run for minutes will outlive the client's request
-timeout. fastmcp's native answer is SEP-1686 tasks — but a client that
+timeout. fastmcp's native answer is SEP-2663 tasks — but a client that
 does not send task metadata gets plain synchronous execution, which is
 exactly the timeout failure again. The jobs subsystem closes that gap:
 register the tool once, and
@@ -46,7 +46,7 @@ from fastmcp_pvl_core import (
 config = ServerConfig.from_env("MY_APP")
 jobs_config = JobsConfig.from_env("MY_APP")     # MY_APP_JOBS_* knobs
 
-configure_task_backend("MY_APP", config)        # native-path backend (ADR §4)
+configure_task_backend(mcp, "MY_APP", config)   # native-path backend (ADR §4)
 jobs = build_jobs(config, jobs_config)          # one Jobs object per server
 
 @register_long_running_tool(mcp, jobs, tags={"reports"})
@@ -110,7 +110,7 @@ and, once the work lands, one of:
 
 A non-`dict` return value is wrapped as `{"value": …}` in `result`. The
 status vocabulary (`working` / `completed` / `failed` / `cancelled`) is
-the SEP-1686 task lifecycle minus `input_required`, so a later move to
+the SEP-2663 task lifecycle minus `input_required`, so a later move to
 protocol-native tasks is a mechanical change for clients, not a semantic
 one.
 
@@ -236,7 +236,7 @@ If your server carries a bespoke job store and its own polling tool
 2. Replace the bespoke polling tool with `register_job_tools`. The old
    tool name disappears; clients follow the `poll_with` field in the
    handle, so the rename is self-describing at the protocol level.
-3. Map your old statuses onto the SEP-1686 vocabulary
+3. Map your old statuses onto the SEP-2663 vocabulary
    (`in_progress` → `working`).
 4. Delete per-tool TTL/eviction knobs in favour of the `JOBS_*` surface.
 5. Where a tool currently returns a bespoke queued payload after a runtime

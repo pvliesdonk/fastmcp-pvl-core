@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import logging
 
-import fastmcp
 import pytest
+from fastmcp import FastMCP
 
 from fastmcp_pvl_core import ConfigurationError, ServerConfig, configure_task_backend
 
@@ -13,17 +13,13 @@ _AVAILABLE = "fastmcp.server.dependencies.is_docket_available"
 
 
 @pytest.fixture(autouse=True)
-def _neutral_docket_settings(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Pin ``fastmcp.settings.docket`` and its env vars to a known baseline.
+def _neutral_docket_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Clear the native Docket env vars to a known baseline.
 
-    ``configure_task_backend`` mutates the process-global settings object;
-    ``monkeypatch.setattr`` restores the original values on teardown so
-    tests cannot leak state into each other (or into unrelated suites).
-    The native env vars are cleared so the "operator set FASTMCP_DOCKET_*"
-    scenarios are opt-in per test.
+    ``TasksExtension`` resolves anything not passed explicitly from
+    ``FASTMCP_DOCKET_*``; clearing makes the "operator set a native var"
+    scenarios opt-in per test.
     """
-    monkeypatch.setattr(fastmcp.settings.docket, "url", "memory://")
-    monkeypatch.setattr(fastmcp.settings.docket, "name", "fastmcp")
     monkeypatch.delenv("FASTMCP_DOCKET_URL", raising=False)
     monkeypatch.delenv("FASTMCP_DOCKET_NAME", raising=False)
 
@@ -39,25 +35,35 @@ def docket_installed(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(_AVAILABLE, lambda: True)
 
 
-class TestExplicitTasksUrl:
-    def test_redis_url_written_to_settings(self, docket_installed):
-        config = ServerConfig(tasks_url="redis://queue-host:6379/0")
-        configure_task_backend("MY_APP", config)
-        assert fastmcp.settings.docket.url == "redis://queue-host:6379/0"
+@pytest.fixture
+def mcp() -> FastMCP:
+    """A fresh, unstarted server to register the extension on."""
+    return FastMCP("tasks-test")
 
-    def test_memory_url_accepted(self, docket_installed):
+
+def _settings(extension):
+    assert extension is not None, "expected a registered TasksExtension"
+    return extension.docket_settings
+
+
+class TestExplicitTasksUrl:
+    def test_redis_url_reaches_extension(self, docket_installed, mcp):
+        config = ServerConfig(tasks_url="redis://queue-host:6379/0")
+        ext = configure_task_backend(mcp, "MY_APP", config)
+        assert _settings(ext).url == "redis://queue-host:6379/0"
+
+    def test_memory_url_accepted(self, docket_installed, mcp):
         config = ServerConfig(tasks_url="memory://")
-        configure_task_backend("MY_APP", config)
-        assert fastmcp.settings.docket.url == "memory://"
+        ext = configure_task_backend(mcp, "MY_APP", config)
+        assert _settings(ext).url == "memory://"
 
     @pytest.mark.parametrize("bad", ["file:///data/q", "postgres://h/db", "redis"])
-    def test_unsupported_scheme_raises_naming_var(self, docket_installed, bad):
+    def test_unsupported_scheme_raises_naming_var(self, docket_installed, mcp, bad):
         config = ServerConfig(tasks_url=bad)
         with pytest.raises(ConfigurationError, match="MY_APP_TASKS_URL"):
-            configure_task_backend("MY_APP", config)
-        assert fastmcp.settings.docket.url == "memory://"
+            configure_task_backend(mcp, "MY_APP", config)
 
-    def test_invalid_scheme_raises_even_without_pydocket(self, monkeypatch):
+    def test_invalid_scheme_raises_even_without_pydocket(self, monkeypatch, mcp):
         """The strict validation must not be short-circuited by the no-op.
 
         An operator typo in an explicitly-set var fails fast regardless of
@@ -66,67 +72,61 @@ class TestExplicitTasksUrl:
         monkeypatch.setattr(_AVAILABLE, lambda: False)
         config = ServerConfig(tasks_url="file:///data/q")
         with pytest.raises(ConfigurationError, match="MY_APP_TASKS_URL"):
-            configure_task_backend("MY_APP", config)
+            configure_task_backend(mcp, "MY_APP", config)
 
-    def test_error_names_scheme_not_url(self, docket_installed):
+    def test_error_names_scheme_not_url(self, docket_installed, mcp):
         """Redaction: the raw URL (possible credentials) never appears."""
         config = ServerConfig(tasks_url="amqp://user:hunter2@host/vq")
         with pytest.raises(ConfigurationError) as exc_info:
-            configure_task_backend("MY_APP", config)
+            configure_task_backend(mcp, "MY_APP", config)
         assert "hunter2" not in str(exc_info.value)
         assert "'amqp'" in str(exc_info.value)
 
-    def test_wins_over_redis_kv_store_url(self, docket_installed):
+    def test_wins_over_redis_kv_store_url(self, docket_installed, mcp):
         config = ServerConfig(
             tasks_url="redis://tasks-host:6379/1",
             kv_store_url="redis://kv-host:6379/0",
         )
-        configure_task_backend("MY_APP", config)
-        assert fastmcp.settings.docket.url == "redis://tasks-host:6379/1"
+        ext = configure_task_backend(mcp, "MY_APP", config)
+        assert _settings(ext).url == "redis://tasks-host:6379/1"
 
 
 class TestKvDerivation:
-    def test_redis_kv_store_url_reused(self, docket_installed):
+    def test_redis_kv_store_url_reused(self, docket_installed, mcp):
         config = ServerConfig(kv_store_url="redis://kv-host:6379/0")
-        configure_task_backend("MY_APP", config)
-        assert fastmcp.settings.docket.url == "redis://kv-host:6379/0"
+        ext = configure_task_backend(mcp, "MY_APP", config)
+        assert _settings(ext).url == "redis://kv-host:6379/0"
 
-    def test_legacy_event_store_url_reused(self, docket_installed):
+    def test_legacy_event_store_url_reused(self, docket_installed, mcp):
         config = ServerConfig(event_store_url="redis://legacy-host:6379/0")
-        configure_task_backend("MY_APP", config)
-        assert fastmcp.settings.docket.url == "redis://legacy-host:6379/0"
+        ext = configure_task_backend(mcp, "MY_APP", config)
+        assert _settings(ext).url == "redis://legacy-host:6379/0"
 
     @pytest.mark.parametrize(
         "kv_url", ["memory://", "file:///data/state", "mongodb://h:27017/db", None]
     )
-    def test_non_redis_kv_leaves_url_untouched(self, docket_installed, kv_url):
+    def test_non_redis_kv_leaves_url_untouched(self, docket_installed, mcp, kv_url):
         config = ServerConfig(kv_store_url=kv_url)
-        configure_task_backend("MY_APP", config)
-        assert fastmcp.settings.docket.url == "memory://"
+        ext = configure_task_backend(mcp, "MY_APP", config)
+        assert _settings(ext).url == "memory://"
 
 
 class TestNativeEscapeHatch:
-    def test_native_url_beats_kv_derivation(self, docket_installed, monkeypatch):
+    def test_native_url_beats_kv_derivation(self, docket_installed, mcp, monkeypatch):
         """An explicit FASTMCP_DOCKET_URL outranks the derived default."""
         monkeypatch.setenv("FASTMCP_DOCKET_URL", "redis://native-host:6379/2")
-        monkeypatch.setattr(
-            fastmcp.settings.docket, "url", "redis://native-host:6379/2"
-        )
         config = ServerConfig(kv_store_url="redis://kv-host:6379/0")
-        configure_task_backend("MY_APP", config)
-        assert fastmcp.settings.docket.url == "redis://native-host:6379/2"
+        ext = configure_task_backend(mcp, "MY_APP", config)
+        assert _settings(ext).url == "redis://native-host:6379/2"
 
     def test_explicit_tasks_url_beats_native_with_warning(
-        self, docket_installed, monkeypatch, caplog
+        self, docket_installed, mcp, monkeypatch, caplog
     ):
         monkeypatch.setenv("FASTMCP_DOCKET_URL", "redis://native-host:6379/2")
-        monkeypatch.setattr(
-            fastmcp.settings.docket, "url", "redis://native-host:6379/2"
-        )
         config = ServerConfig(tasks_url="redis://tasks-host:6379/1")
         with caplog.at_level(logging.WARNING, logger="fastmcp_pvl_core._tasks"):
-            configure_task_backend("MY_APP", config)
-        assert fastmcp.settings.docket.url == "redis://tasks-host:6379/1"
+            ext = configure_task_backend(mcp, "MY_APP", config)
+        assert _settings(ext).url == "redis://tasks-host:6379/1"
         warning = "\n".join(
             r.getMessage() for r in caplog.records if r.levelno == logging.WARNING
         )
@@ -134,55 +134,112 @@ class TestNativeEscapeHatch:
         assert "FASTMCP_DOCKET_URL" in warning
 
     def test_agreeing_explicit_values_do_not_warn(
-        self, docket_installed, monkeypatch, caplog
+        self, docket_installed, mcp, monkeypatch, caplog
     ):
         monkeypatch.setenv("FASTMCP_DOCKET_URL", "redis://same-host:6379/0")
         config = ServerConfig(tasks_url="redis://same-host:6379/0")
         with caplog.at_level(logging.WARNING, logger="fastmcp_pvl_core._tasks"):
-            configure_task_backend("MY_APP", config)
+            configure_task_backend(mcp, "MY_APP", config)
         assert not [r for r in caplog.records if r.levelno == logging.WARNING]
 
-    def test_native_name_respected(self, docket_installed, monkeypatch):
+    def test_native_name_respected(self, docket_installed, mcp, monkeypatch):
         monkeypatch.setenv("FASTMCP_DOCKET_NAME", "operator-queue")
-        monkeypatch.setattr(fastmcp.settings.docket, "name", "operator-queue")
-        configure_task_backend("MY_APP", ServerConfig())
-        assert fastmcp.settings.docket.name == "operator-queue"
+        ext = configure_task_backend(mcp, "MY_APP", ServerConfig())
+        assert _settings(ext).name == "operator-queue"
+
+    def test_empty_native_url_counts_as_unset(self, docket_installed, mcp, monkeypatch):
+        """FASTMCP_DOCKET_URL="" must not suppress the kv derivation."""
+        monkeypatch.setenv("FASTMCP_DOCKET_URL", "")
+        config = ServerConfig(kv_store_url="redis://kv-host:6379/0")
+        ext = configure_task_backend(mcp, "MY_APP", config)
+        assert _settings(ext).url == "redis://kv-host:6379/0"
+
+    def test_empty_native_name_counts_as_unset(
+        self, docket_installed, mcp, monkeypatch
+    ):
+        """FASTMCP_DOCKET_NAME="" must not collapse servers onto one
+        empty queue name — the derivation still applies."""
+        monkeypatch.setenv("FASTMCP_DOCKET_NAME", "  ")
+        ext = configure_task_backend(mcp, "MY_APP", ServerConfig())
+        assert _settings(ext).name == "my-app"
 
 
 class TestQueueName:
-    def test_derived_from_prefix(self, docket_installed):
-        configure_task_backend("MY_APP", ServerConfig())
-        assert fastmcp.settings.docket.name == "my-app"
+    def test_derived_from_prefix(self, docket_installed, mcp):
+        ext = configure_task_backend(mcp, "MY_APP", ServerConfig())
+        assert _settings(ext).name == "my-app"
 
-    def test_trailing_underscore_normalised(self, docket_installed):
-        configure_task_backend("MY_APP_", ServerConfig())
-        assert fastmcp.settings.docket.name == "my-app"
+    def test_trailing_underscore_normalised(self, docket_installed, mcp):
+        ext = configure_task_backend(mcp, "MY_APP_", ServerConfig())
+        assert _settings(ext).name == "my-app"
 
-    def test_derived_even_when_url_untouched(self, docket_installed):
+    def test_derived_even_when_url_untouched(self, docket_installed, mcp):
         """Queue identity is set on every path, not only when a URL resolves.
 
         Two family servers pointed at one Redis via native vars must still
         get distinct queues.
         """
         config = ServerConfig(kv_store_url="file:///data/state")
-        configure_task_backend("SCHOLAR_MCP", config)
-        assert fastmcp.settings.docket.name == "scholar-mcp"
+        ext = configure_task_backend(mcp, "SCHOLAR_MCP", config)
+        assert _settings(ext).name == "scholar-mcp"
+
+
+class TestExtensionRegistration:
+    async def test_extension_is_registered_on_the_server(self, docket_installed, mcp):
+        """The §4.4 guarantee: a task=True tool starts without downstream
+        wiring once ``configure_task_backend`` ran."""
+        from fastmcp import Client
+        from fastmcp.utilities.tasks import TaskConfig
+
+        configure_task_backend(mcp, "MY_APP", ServerConfig())
+
+        @mcp.tool(task=TaskConfig(mode="optional"))
+        async def slow() -> str:
+            return "done"
+
+        # Startup performs the task-enabled-tools-need-the-extension check;
+        # connecting a client exercises it.
+        async with Client(mcp) as client:
+            tools = await client.list_tools()
+        assert "slow" in [t.name for t in tools]
+
+    def test_second_call_raises_on_duplicate_extension(self, docket_installed, mcp):
+        """fastmcp rejects duplicate extension identifiers; calling the
+        helper twice on one server is a caller bug, surfaced loudly."""
+        configure_task_backend(mcp, "MY_APP", ServerConfig())
+        with pytest.raises(ValueError):
+            configure_task_backend(mcp, "MY_APP", ServerConfig())
 
 
 class TestNoPydocket:
-    def test_noop_without_pydocket(self, monkeypatch):
+    def test_noop_without_pydocket(self, monkeypatch, mcp):
         monkeypatch.setattr(_AVAILABLE, lambda: False)
         config = ServerConfig(kv_store_url="redis://kv-host:6379/0")
-        configure_task_backend("MY_APP", config)
-        assert fastmcp.settings.docket.url == "memory://"
-        assert fastmcp.settings.docket.name == "fastmcp"
+        assert configure_task_backend(mcp, "MY_APP", config) is None
 
-    def test_explicit_tasks_url_warns_when_dropped(self, monkeypatch, caplog):
+    def test_noop_without_fastmcp_tasks_module(self, monkeypatch, mcp, caplog):
+        """A stripped fork: pydocket compatible but fastmcp_tasks absent.
+
+        ``sys.modules[name] = None`` makes ``import fastmcp_tasks`` raise
+        ModuleNotFoundError, the exact exception the guard narrows to.
+        """
+        import sys
+
+        monkeypatch.setattr(_AVAILABLE, lambda: True)
+        monkeypatch.setitem(sys.modules, "fastmcp_tasks", None)
+        config = ServerConfig(tasks_url="redis://tasks-host:6379/1")
+        with caplog.at_level(logging.WARNING, logger="fastmcp_pvl_core._tasks"):
+            assert configure_task_backend(mcp, "MY_APP", config) is None
+        warning = "\n".join(
+            r.getMessage() for r in caplog.records if r.levelno == logging.WARNING
+        )
+        assert "MY_APP_TASKS_URL" in warning
+
+    def test_explicit_tasks_url_warns_when_dropped(self, monkeypatch, mcp, caplog):
         monkeypatch.setattr(_AVAILABLE, lambda: False)
         config = ServerConfig(tasks_url="redis://tasks-host:6379/1")
         with caplog.at_level(logging.WARNING, logger="fastmcp_pvl_core._tasks"):
-            configure_task_backend("MY_APP", config)
-        assert fastmcp.settings.docket.url == "memory://"
+            assert configure_task_backend(mcp, "MY_APP", config) is None
         warning = "\n".join(
             r.getMessage() for r in caplog.records if r.levelno == logging.WARNING
         )
@@ -191,28 +248,30 @@ class TestNoPydocket:
 
 
 class TestMemoryBackendSignal:
-    def test_memory_plus_http_logs_process_local_note(self, docket_installed, caplog):
+    def test_memory_plus_http_logs_process_local_note(
+        self, docket_installed, mcp, caplog
+    ):
         config = ServerConfig(transport="http")
         with caplog.at_level(logging.INFO, logger="fastmcp_pvl_core._tasks"):
-            configure_task_backend("MY_APP", config)
+            configure_task_backend(mcp, "MY_APP", config)
         messages = "\n".join(r.getMessage() for r in caplog.records)
         assert "backend=memory" in messages
         assert "process_local=true" in messages
 
-    def test_memory_plus_stdio_logs_plain_line(self, docket_installed, caplog):
+    def test_memory_plus_stdio_logs_plain_line(self, docket_installed, mcp, caplog):
         config = ServerConfig(transport="stdio")
         with caplog.at_level(logging.INFO, logger="fastmcp_pvl_core._tasks"):
-            configure_task_backend("MY_APP", config)
+            configure_task_backend(mcp, "MY_APP", config)
         messages = "\n".join(r.getMessage() for r in caplog.records)
         assert "process_local" not in messages
 
-    def test_redis_logs_scheme_and_queue_only(self, docket_installed, caplog):
+    def test_redis_logs_scheme_and_queue_only(self, docket_installed, mcp, caplog):
         """Redaction: host/credentials never reach the log line."""
         config = ServerConfig(
             transport="http", tasks_url="redis://user:hunter2@tasks-host:6379/1"
         )
         with caplog.at_level(logging.INFO, logger="fastmcp_pvl_core._tasks"):
-            configure_task_backend("MY_APP", config)
+            configure_task_backend(mcp, "MY_APP", config)
         messages = "\n".join(r.getMessage() for r in caplog.records)
         assert "backend=redis" in messages
         assert "queue=my-app" in messages

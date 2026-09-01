@@ -7,7 +7,7 @@ own path-1 wrapper, so these types are exported rather than re-invented
 per server. Tool *identity* on path 2 belongs to the downstream; the
 payload and status *shape* stays pvl-core's.
 
-The status vocabulary is the SEP-1686 ``TaskStatus`` literal set minus
+The status vocabulary is the SEP-2663 ``TaskStatus`` literal set minus
 ``input_required`` (the fallback has no elicitation channel).
 ``"cancelled"`` is reserved for parity with the protocol lifecycle; the
 fallback store does not emit it today.

@@ -1,14 +1,16 @@
 """Background-task backend wiring (ADR 0002 §4).
 
-fastmcp's SEP-1686 background tasks (Docket, via ``fastmcp[tasks]`` —
-a pvl-core **base** dependency, so every consumer has it) select their
-backend through the native ``FASTMCP_DOCKET_*`` env surface, outside
-pvl-core's unified ``kv_store_url`` contract.
-:func:`configure_task_backend` closes that gap: it resolves the task
-backend from pvl-core's own operator config and injects the result into
-``fastmcp.settings.docket`` before the server starts — fastmcp reads
-those settings lazily, at root-lifespan entry, so a pre-``run()``
-assignment is all the integration required.
+fastmcp's SEP-2663 background tasks live in the ``fastmcp-tasks``
+extension package (via ``fastmcp[tasks]`` — a pvl-core **base**
+dependency, so every consumer has it). Two things must happen before
+the server starts: a ``TasksExtension`` must be registered (fastmcp
+refuses to start a server carrying ``task=``-enabled tools without
+one), and the extension's Docket backend must be selected — natively
+through the ``FASTMCP_DOCKET_*`` env surface, outside pvl-core's
+unified ``kv_store_url`` contract. :func:`configure_task_backend`
+closes both gaps: it resolves the backend from pvl-core's own operator
+config, constructs a ``TasksExtension`` with the result, and registers
+it on the server.
 
 Docket supports exactly two backends: ``memory://`` (in-process, single
 process only) and ``redis://`` (distributed). It is a task queue, not an
@@ -18,19 +20,26 @@ this module unifies is the *operator configuration surface*.
 Worker tunables (``FASTMCP_DOCKET_CONCURRENCY``, ``…_WORKER_NAME``,
 ``…_REDELIVERY_TIMEOUT``, ``…_RECONNECTION_DELAY``,
 ``…_MINIMUM_CHECK_INTERVAL``) are deliberately not wrapped: they are
-worker tuning with sensible upstream defaults, part of the acknowledged
-native ``FASTMCP_*`` axis (ADR 0002 §4.3).
+worker tuning with sensible upstream defaults, read by the extension's
+own settings as part of the acknowledged native ``FASTMCP_*`` axis
+(ADR 0002 §4.3).
 """
 
 from __future__ import annotations
 
 import logging
 import os
+from typing import TYPE_CHECKING
 from urllib.parse import urlparse
+
+from fastmcp import FastMCP
 
 from ._config import ServerConfig
 from ._env import _resolve_key
 from ._errors import ConfigurationError
+
+if TYPE_CHECKING:
+    from fastmcp_tasks import TasksExtension
 
 logger = logging.getLogger(__name__)
 
@@ -50,49 +59,90 @@ def _derive_queue_name(env_prefix: str) -> str:
     return env_prefix.rstrip("_").lower().replace("_", "-")
 
 
-def configure_task_backend(env_prefix: str, config: ServerConfig) -> None:
-    """Resolve the background-task backend and inject it into fastmcp.
+def _tasks_available() -> bool:
+    """Whether the tasks extension can actually run in this environment.
 
-    Mutates the process-global ``fastmcp.settings.docket`` (fastmcp offers
-    no constructor-level injection point); call once, before
-    ``mcp.run(...)``. Argument categories per the ``CLAUDE.md`` axis:
-    *env_prefix* is caller identity (parameterized, like the sibling
-    ``build_*`` helpers), *config* carries operator configuration. There
-    are no hook or shape kwargs — backend selection is operator config,
-    and every naming/derivation decision here is pvl-core-owned shape.
+    Mirrors fastmcp's own activation conditions: a compatible pydocket
+    (``is_docket_available``) *and* an importable ``fastmcp_tasks``. Both
+    ship with pvl-core's base dependencies; the guard survives for
+    stripped forks and incompatible-pydocket environments.
+    """
+    from fastmcp.server.dependencies import is_docket_available
+
+    if not is_docket_available():
+        return False
+    # Deliberately ModuleNotFoundError, not ImportError (mirroring the
+    # guard in ``_jobs/manager.py``): a *present* fastmcp_tasks that
+    # fails to import is version skew and must stay loud, not be
+    # misreported as "not installed".
+    try:
+        import fastmcp_tasks  # noqa: F401
+    except ModuleNotFoundError:
+        return False
+    return True
+
+
+def configure_task_backend(
+    mcp: FastMCP, env_prefix: str, config: ServerConfig
+) -> TasksExtension | None:
+    """Resolve the background-task backend and register the tasks extension.
+
+    Constructs a ``fastmcp_tasks.TasksExtension`` with the resolved
+    backend and registers it via ``mcp.add_extension(...)`` — fastmcp
+    rejects duplicate extension identifiers and post-startup
+    registration, so call once, before ``mcp.run(...)``. Anything not
+    resolved here falls back to the extension's own ``FASTMCP_DOCKET_*``
+    env defaults. Argument categories per the ``CLAUDE.md`` axis: *mcp*
+    is the server under assembly, *env_prefix* is caller identity
+    (parameterized, like the sibling ``build_*`` helpers), *config*
+    carries operator configuration. There are no hook or shape kwargs —
+    backend selection is operator config, and every naming/derivation
+    decision here is pvl-core-owned shape.
 
     URL resolution (ADR 0002 §4.2):
 
     1. ``config.tasks_url`` set → validated against Docket's schemes
-       (``memory://``, ``redis://``) and written to
-       ``fastmcp.settings.docket.url``.
+       (``memory://``, ``redis://``) and passed to the extension.
     2. Unset, and ``config.kv_store_url`` (or the legacy
        ``event_store_url``) has scheme ``redis://`` → that same URL is
        reused, so one ``<PREFIX>_KV_STORE_URL=redis://…`` configures
        every stateful subsystem *and* the task queue. This is a derived
        *default*: an explicitly-set ``FASTMCP_DOCKET_URL`` outranks it
        (only an explicit ``tasks_url`` overrides an explicit native var).
-    3. Otherwise the URL is left untouched: fastmcp's own default
-       (``memory://``) applies, and a directly-set ``FASTMCP_DOCKET_URL``
-       keeps working as the native escape hatch.
+    3. Otherwise no URL is passed: the extension's own default applies
+       (``FASTMCP_DOCKET_URL`` when set, ``memory://`` otherwise), so a
+       directly-set native var keeps working as the escape hatch.
 
     When both ``<PREFIX>_TASKS_URL`` and ``FASTMCP_DOCKET_URL`` are set
     and disagree, pvl-core's surface wins and a warning names both vars.
+
+    Native-var precedence is read from the **process environment** only.
+    ``DocketSettings`` additionally loads an optional dotenv file
+    (``FASTMCP_ENV_FILE``, default ``.env``); a ``FASTMCP_DOCKET_*``
+    value supplied only there is invisible to these checks and is
+    overridden by pvl-core's derived URL and queue name.
 
     The Docket queue *name* is always derived from *env_prefix* (see
     :func:`_derive_queue_name`) unless the operator explicitly set
     ``FASTMCP_DOCKET_NAME``, which is respected as the native escape
     hatch — pvl-core exposes no variable of its own for it.
 
-    pydocket ships with pvl-core's base dependencies, so a compatible
-    install always has it; the availability guard survives for stripped
-    forks and incompatible-pydocket environments, mirroring fastmcp's own
-    activation conditions. In that degenerate case the helper is a no-op
-    (debug log) — except that an explicitly set ``tasks_url`` is still
-    validated (an operator typo must fail fast regardless) and, when
-    valid, dropped with a warning rather than silently.
+    ``fastmcp-tasks`` and pydocket ship with pvl-core's base
+    dependencies, so a compatible install always has them; the
+    availability guard survives for stripped forks and
+    incompatible-pydocket environments, mirroring fastmcp's own
+    activation conditions. In that degenerate case the helper registers
+    nothing and returns ``None`` (debug log) — except that an explicitly
+    set ``tasks_url`` is still validated (an operator typo must fail
+    fast regardless) and, when valid, dropped with a warning rather
+    than silently.
 
     Args:
+        mcp: The server under assembly; the extension is registered on
+            it. Must not have started yet, and must be the root server
+            you ``run()`` — a mounted child's extensions do not
+            propagate to the root, so registering on a to-be-mounted
+            server leaves its task tools without a running extension.
         env_prefix: Env-var prefix of the consuming project (trailing
             underscore optional). Names the vars in diagnostics and
             derives the queue name.
@@ -100,13 +150,17 @@ def configure_task_backend(env_prefix: str, config: ServerConfig) -> None:
             ``kv_store_url``/``event_store_url`` and ``transport`` are
             consulted.
 
+    Returns:
+        The registered ``TasksExtension``, or ``None`` when the tasks
+        machinery is unavailable and nothing was registered.
+
     Raises:
         ConfigurationError: If ``config.tasks_url`` is set to a URL whose
             scheme Docket does not support.
     """
     # Validate the explicit operator value before anything can short-
     # circuit: a typo in <PREFIX>_TASKS_URL must fail fast even when
-    # pydocket is missing, matching the strict PORT precedent.
+    # the tasks machinery is missing, matching the strict PORT precedent.
     #
     # Error/log messages name the SCHEME only, never the raw URL — an
     # operator-set URL may carry credentials in userinfo (the same
@@ -122,26 +176,32 @@ def configure_task_backend(env_prefix: str, config: ServerConfig) -> None:
             )
         url = config.tasks_url
 
-    from fastmcp.server.dependencies import is_docket_available
-
-    if not is_docket_available():
+    if not _tasks_available():
         if url is not None:
             logger.warning(
-                "%s is set but a compatible pydocket is not installed; "
-                "task backend configuration skipped. pydocket ships with "
-                "fastmcp-pvl-core's base dependencies — this environment "
-                "is missing it or pins an incompatible version.",
+                "%s is set but the tasks machinery is unavailable "
+                "(fastmcp-tasks or a compatible pydocket is not "
+                "installed); no tasks extension registered. Both ship "
+                "with fastmcp-pvl-core's base dependencies — this "
+                "environment is missing them or pins an incompatible "
+                "version.",
                 _resolve_key(env_prefix, "TASKS_URL"),
             )
         else:
-            logger.debug("task backend configuration skipped: pydocket not installed")
-        return
+            logger.debug(
+                "tasks extension not registered: fastmcp-tasks/pydocket not installed"
+            )
+        return None
 
-    native_url = os.environ.get("FASTMCP_DOCKET_URL")
+    # An empty or whitespace-only native var counts as unset for the
+    # precedence decisions below — otherwise FASTMCP_DOCKET_URL="" would
+    # suppress the kv derivation and FASTMCP_DOCKET_NAME="" would
+    # collapse every family server onto one empty queue name.
+    native_url = (os.environ.get("FASTMCP_DOCKET_URL") or "").strip() or None
     if url is not None:
         # Explicit vs explicit: pvl-core's documented surface wins, and
         # the divergence is never silent.
-        if native_url is not None and native_url.strip() != url:
+        if native_url is not None and native_url != url:
             logger.warning(
                 "%s and FASTMCP_DOCKET_URL are both set and disagree; "
                 "using %s (the pvl-core surface). Unset one of them.",
@@ -159,15 +219,19 @@ def configure_task_backend(env_prefix: str, config: ServerConfig) -> None:
         if kv_url and urlparse(kv_url).scheme == "redis":
             url = kv_url
 
-    import fastmcp
+    name: str | None = None
+    if not (os.environ.get("FASTMCP_DOCKET_NAME") or "").strip():
+        name = _derive_queue_name(env_prefix)
 
-    if url is not None:
-        fastmcp.settings.docket.url = url
+    from fastmcp_tasks import TasksExtension
 
-    if os.environ.get("FASTMCP_DOCKET_NAME") is None:
-        fastmcp.settings.docket.name = _derive_queue_name(env_prefix)
+    # ``None`` kwargs fall back to the extension's FASTMCP_DOCKET_* env
+    # defaults, which is exactly the escape-hatch semantics above.
+    extension = TasksExtension(url=url, name=name)
+    mcp.add_extension(extension)
 
-    effective_scheme = urlparse(fastmcp.settings.docket.url).scheme
+    effective = extension.docket_settings
+    effective_scheme = urlparse(effective.url).scheme
     if effective_scheme == "memory" and config.transport in ("http", "sse"):
         logger.info(
             "task backend=memory process_local=true lost_on_restart=true "
@@ -179,5 +243,6 @@ def configure_task_backend(env_prefix: str, config: ServerConfig) -> None:
         logger.info(
             "task backend=%s queue=%s",
             effective_scheme,
-            fastmcp.settings.docket.name,
+            effective.name,
         )
+    return extension
