@@ -69,6 +69,22 @@ Redis-streams semantics, **not** an `AsyncKeyValue` — the kv-store backends
 cannot literally back it (per #264's scope boundary, the unification target
 is the *operator configuration surface*, not the storage protocol).
 
+**Revised for FastMCP 4 (pvl-core v7, 2026-09-01):** the findings above
+describe fastmcp 3. FastMCP 4 removed the global `fastmcp.settings.docket`
+object and moved the task machinery into the `fastmcp-tasks` extension
+package (SEP-2663, `io.modelcontextprotocol/tasks`): the injection point is
+now constructor-level — `TasksExtension(url=..., name=..., ...)`, registered
+via `mcp.add_extension(...)` before startup — with anything not passed
+falling back to the unchanged `FASTMCP_DOCKET_*` env surface.
+`configure_task_backend` gained the `mcp` parameter, registers the
+extension, and returns it. The §4.2 precedence rules carry over as
+refined during implementation (an explicitly-set `FASTMCP_DOCKET_URL`
+outranks the kv-derived default; only an explicit `tasks_url` overrides
+an explicit native var), and §4.4's base-dependency decision carries
+over unchanged. The `settings.docket` mechanics referenced in §3.1,
+§4.2, §5.3, and §8 are superseded the same way — each carries a pointer
+back to this note. See PR #311 (epic #307).
+
 ### 2.2 The primitives for a dual mode (all present in 3.3.1)
 
 - **Per-request routing** — `server/tasks/routing.py::check_background_task`
@@ -118,7 +134,8 @@ downstream today, and is the entire subject of #265.
 1. **#264 — one new `ServerConfig` field, `tasks_url`** (env
    `<PREFIX>_TASKS_URL`), resolved with a derivation rule (§4) and injected
    programmatically into `fastmcp.settings.docket` by a new factory helper
-   before serve. The Docket **queue name** is derived from the server's
+   before serve. *(Revised for FastMCP 4: injection is now a registered
+   `TasksExtension` — see the §2.1 note.)* The Docket **queue name** is derived from the server's
    identity (parameterized, per the foldability rule) — pvl-core picks it;
    it is not operator config and not a kwarg. All remaining Docket worker
    tunables stay native `FASTMCP_DOCKET_*` vars.
@@ -153,7 +170,10 @@ tasks_url: str | None    # <PREFIX>_TASKS_URL
 ```
 
 Resolution, applied by a new `configure_task_backend(env_prefix, config)`
-factory helper (name illustrative):
+factory helper (name illustrative). *(Revised for FastMCP 4: the target is
+`TasksExtension` constructor kwargs, not `fastmcp.settings.docket`, and
+rule 3's native escape hatch outranks rule 2's derivation — see the §2.1
+note.)*
 
 1. `config.tasks_url` set → written to `fastmcp.settings.docket.url`.
    Accepted schemes are Docket's: `memory://`, `redis://`; anything else is
@@ -318,7 +338,8 @@ builds its server — and therefore its own domain tools — separately:
   `get_task_context`, capability probe) is internal and swaps behind it.
   Mirroring SEP-2663's status shape in the polling result (above) is the
   concrete hedge. No pre-abstraction beyond that: pvl-core pins `<4`, and
-  the 4.x adaptation is its own future change.
+  the 4.x adaptation is its own future change. *(That change has since
+  landed — pvl-core v7 pins `>=4,<5`; see the §2.1 note.)*
 
 ### 5.4 Failure and lifecycle notes for implementation
 
@@ -380,7 +401,9 @@ native path assumes PR 1's backend wiring exists.
 - pvl-core takes on a small amount of global-state mutation
   (`fastmcp.settings.docket`) — justified because fastmcp offers no
   constructor-level injection point, and confined to one helper that tests
-  can exercise and reset.
+  can exercise and reset. *(Revised for FastMCP 4: the global is gone and
+  the mutation with it — `TasksExtension` is the constructor-level
+  injection point this trade-off wished for; see the §2.1 note.)*
 - The fallback promotes on the serving process only; operators needing
   durable cross-restart execution use the native path with Redis. This is
   a documented limit, not a gap to engineer around now.

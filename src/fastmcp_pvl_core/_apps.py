@@ -10,7 +10,7 @@ try:
 except ImportError as exc:
     raise ImportError(
         "fastmcp.apps.config and fastmcp.server.providers.addressing are required "
-        "(fastmcp >= 3.3.1). Pin fastmcp accordingly in pyproject.toml."
+        "(fastmcp >= 4). Pin fastmcp accordingly in pyproject.toml."
     ) from exc
 
 if TYPE_CHECKING:
