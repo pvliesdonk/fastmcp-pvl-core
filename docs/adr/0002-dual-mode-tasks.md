@@ -69,6 +69,17 @@ Redis-streams semantics, **not** an `AsyncKeyValue` — the kv-store backends
 cannot literally back it (per #264's scope boundary, the unification target
 is the *operator configuration surface*, not the storage protocol).
 
+**Revised for FastMCP 4 (pvl-core v7, 2026-09-01):** the findings above
+describe fastmcp 3. FastMCP 4 removed the global `fastmcp.settings.docket`
+object and moved the task machinery into the `fastmcp-tasks` extension
+package (SEP-2663, `io.modelcontextprotocol/tasks`): the injection point is
+now constructor-level — `TasksExtension(url=..., name=..., ...)`, registered
+via `mcp.add_extension(...)` before startup — with anything not passed
+falling back to the unchanged `FASTMCP_DOCKET_*` env surface.
+`configure_task_backend` gained the `mcp` parameter, registers the
+extension, and returns it; the §4.2 precedence rules and §4.4's
+base-dependency decision carry over unchanged. See PR #311 (epic #307).
+
 ### 2.2 The primitives for a dual mode (all present in 3.3.1)
 
 - **Per-request routing** — `server/tasks/routing.py::check_background_task`
