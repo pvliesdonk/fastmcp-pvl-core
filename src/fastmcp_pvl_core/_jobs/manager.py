@@ -152,10 +152,21 @@ class Jobs:
                 decided, in which case its result is returned inline and
                 no error is raised).
         """
-        from fastmcp.server.dependencies import get_task_context
+        # ``fastmcp_tasks`` ships with pvl-core's base dependencies; the
+        # guard survives for stripped forks, where the native SEP-2663
+        # path cannot be active and the fallback below must still work.
+        # Deliberately ModuleNotFoundError, not ImportError: a *present*
+        # fastmcp_tasks missing the symbol is version skew that must
+        # stay loud, not be silently routed to the fallback.
+        try:
+            from fastmcp_tasks.context import get_task_context
+        except ModuleNotFoundError:
+            task_context = None
+        else:
+            task_context = get_task_context()
 
-        if get_task_context() is not None:
-            # Native SEP-1686 execution: Docket owns the lifecycle,
+        if task_context is not None:
+            # Native SEP-2663 execution: Docket owns the lifecycle,
             # results, and TTL — nothing for the fallback to do.
             return await coro
 

@@ -65,7 +65,7 @@ def make_icon(
 
     Returns:
         An :class:`mcp.types.Icon` whose ``src`` is
-        ``"data:<mime>;base64,<payload>"`` and whose ``mimeType`` matches
+        ``"data:<mime>;base64,<payload>"`` and whose ``mime_type`` matches
         the file extension.
 
     Raises:
@@ -84,7 +84,7 @@ def make_icon(
     payload = base64.b64encode(file_path.read_bytes()).decode("ascii")
     return Icon(
         src=f"data:{mime};base64,{payload}",
-        mimeType=mime,
+        mime_type=mime,
         sizes=sizes,
     )
 

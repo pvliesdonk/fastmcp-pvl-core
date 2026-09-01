@@ -48,7 +48,7 @@ class TestRegisterToolIcons:
 
         icons = _tool_icons(mcp, "ping")
         assert len(icons) == 1
-        assert icons[0].mimeType == "image/svg+xml"
+        assert icons[0].mime_type == "image/svg+xml"
         assert icons[0].src.startswith("data:image/svg+xml;base64,")
         payload = icons[0].src.split(",", 1)[1]
         assert base64.b64decode(payload) == SVG_BYTES
@@ -61,7 +61,7 @@ class TestRegisterToolIcons:
         register_tool_icons(mcp, {"ping": ["a.svg", "b.png"]}, static_dir=tmp_path)
 
         icons = _tool_icons(mcp, "ping")
-        assert [i.mimeType for i in icons] == ["image/svg+xml", "image/png"]
+        assert [i.mime_type for i in icons] == ["image/svg+xml", "image/png"]
 
     @pytest.mark.parametrize(
         ("filename", "data", "expected_mime"),
@@ -86,7 +86,7 @@ class TestRegisterToolIcons:
         register_tool_icons(mcp, {"ping": filename}, static_dir=tmp_path)
 
         icons = _tool_icons(mcp, "ping")
-        assert icons[0].mimeType == expected_mime
+        assert icons[0].mime_type == expected_mime
         assert icons[0].src.startswith(f"data:{expected_mime};base64,")
 
     def test_unknown_extension_rejected(self, tmp_path: Path):
@@ -143,7 +143,7 @@ class TestRegisterToolIcons:
 
         icons = _tool_icons(mcp, "ping")
         assert len(icons) == 1
-        assert icons[0].mimeType == "image/png"
+        assert icons[0].mime_type == "image/png"
 
     def test_empty_mapping_is_noop(self, tmp_path: Path):
         mcp = _make_mcp_with_tool()
@@ -199,7 +199,7 @@ class TestRegisterToolIcons:
 
         register_tool_icons(mcp, {"ping": "ping.svg"}, static_dir=str(tmp_path))
 
-        assert _tool_icons(mcp, "ping")[0].mimeType == "image/svg+xml"
+        assert _tool_icons(mcp, "ping")[0].mime_type == "image/svg+xml"
 
     def test_mapping_accepts_path_object(self, tmp_path: Path):
         _write(tmp_path, "ping.svg", SVG_BYTES)
@@ -207,7 +207,7 @@ class TestRegisterToolIcons:
 
         register_tool_icons(mcp, {"ping": Path("ping.svg")}, static_dir=tmp_path)
 
-        assert _tool_icons(mcp, "ping")[0].mimeType == "image/svg+xml"
+        assert _tool_icons(mcp, "ping")[0].mime_type == "image/svg+xml"
 
     def test_mapping_accepts_absolute_path(self, tmp_path: Path, tmp_path_factory):
         # Absolute paths bypass static_dir resolution.
@@ -218,7 +218,7 @@ class TestRegisterToolIcons:
         register_tool_icons(mcp, {"ping": absolute}, static_dir=tmp_path)
 
         icons = _tool_icons(mcp, "ping")
-        assert icons[0].mimeType == "image/svg+xml"
+        assert icons[0].mime_type == "image/svg+xml"
         payload = icons[0].src.split(",", 1)[1]
         assert base64.b64decode(payload) == SVG_BYTES
 
@@ -253,7 +253,7 @@ class TestRegisterToolIcons:
         )
 
         icons = _tool_icons(mcp, "ping")
-        assert [i.mimeType for i in icons] == ["image/svg+xml", "image/png"]
+        assert [i.mime_type for i in icons] == ["image/svg+xml", "image/png"]
 
 
 class TestMakeIcon:
@@ -262,7 +262,7 @@ class TestMakeIcon:
 
         icon = make_icon(path)
 
-        assert icon.mimeType == "image/svg+xml"
+        assert icon.mime_type == "image/svg+xml"
         assert icon.src.startswith("data:image/svg+xml;base64,")
         assert base64.b64decode(icon.src.split(",", 1)[1]) == SVG_BYTES
         assert icon.sizes is None
@@ -272,7 +272,7 @@ class TestMakeIcon:
 
         icon = make_icon(str(path))
 
-        assert icon.mimeType == "image/png"
+        assert icon.mime_type == "image/png"
 
     def test_sizes_passed_through(self, tmp_path: Path):
         path = _write(tmp_path, "x.svg", SVG_BYTES)
@@ -294,7 +294,7 @@ class TestMakeIcon:
 
         icon = make_icon(path)
 
-        assert icon.mimeType == "image/svg+xml"
+        assert icon.mime_type == "image/svg+xml"
 
     def test_missing_file_raises(self, tmp_path: Path):
         with pytest.raises(FileNotFoundError):
@@ -310,4 +310,4 @@ class TestMakeIcon:
 
         icons = _tool_icons(mcp, "search")
         assert len(icons) == 1
-        assert icons[0].mimeType == "image/svg+xml"
+        assert icons[0].mime_type == "image/svg+xml"

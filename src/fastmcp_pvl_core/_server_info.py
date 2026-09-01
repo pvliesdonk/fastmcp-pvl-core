@@ -154,7 +154,7 @@ def register_server_info_tool(
         name=tool_name,
         description=default_description if description is None else description,
         annotations=ToolAnnotations(
-            readOnlyHint=True,
+            read_only_hint=True,
             title="Server Info" if title is None else title,
         ),
     )(get_server_info)

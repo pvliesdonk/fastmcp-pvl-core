@@ -3,7 +3,7 @@
 Two entry points, both built on the :class:`~.manager.Jobs` seam:
 
 - :func:`register_long_running_tool` — **path 1**: register a domain
-  coroutine once and get both behaviours — native SEP-1686 task execution
+  coroutine once and get both behaviours — native SEP-2663 task execution
   when the request is task-augmented (the tool is registered with
   ``task=TaskConfig(mode="optional")``), and foreground execution with
   soft-deadline promotion otherwise.
@@ -56,7 +56,7 @@ _POLL_SVG = (
 )
 _POLL_ICON = Icon(
     src="data:image/svg+xml;base64," + base64.b64encode(_POLL_SVG.encode()).decode(),
-    mimeType="image/svg+xml",
+    mime_type="image/svg+xml",
 )
 
 
@@ -89,7 +89,7 @@ def register_long_running_tool(
     is executed. The wrapped body delegates to
     :meth:`Jobs.run_with_deadline`, so a call behaves as:
 
-    - **task-augmented request** (a client that speaks SEP-1686 tasks) →
+    - **task-augmented request** (a client that speaks SEP-2663 tasks) →
       native background-task execution; Docket owns lifecycle and
       results.
     - **plain request, finishes within the soft deadline** → the
@@ -117,7 +117,9 @@ def register_long_running_tool(
     Pair with :func:`register_job_tools` (once per server, same *jobs*)
     so promoted handles are actually retrievable; a server whose tool
     this wrapper cannot express composes on :func:`~.manager.build_jobs`
-    directly instead — see :class:`Jobs`.
+    directly instead — see :class:`Jobs`. A ``task=``-registered tool
+    also makes fastmcp require the SEP-2663 tasks extension at startup;
+    ``configure_task_backend`` registers it during server assembly.
 
     Args:
         mcp: The server to register on.
@@ -209,12 +211,12 @@ def register_job_tools(
         tags={"jobs"},
         annotations=ToolAnnotations(
             title="Get Job Result",
-            readOnlyHint=True,
-            destructiveHint=False,
+            read_only_hint=True,
+            destructive_hint=False,
             # The same job_id yields "working" then a terminal result as
             # the background work lands — not idempotent across time.
-            idempotentHint=False,
-            openWorldHint=False,
+            idempotent_hint=False,
+            open_world_hint=False,
         ),
     )
     async def get_job_result(job_id: str) -> dict[str, Any]:

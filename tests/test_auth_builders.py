@@ -144,16 +144,18 @@ class TestBuildOIDCProxyAuthDiscoveryFailure:
     _URL = "https://idp.example/.well-known/openid-configuration"
 
     def test_network_error_becomes_configuration_error(self):
-        import httpx
+        # fastmcp's OIDCProxy performs discovery on httpx2 (its own HTTP
+        # layer); the raw failure it re-raises is an httpx2 exception.
+        import httpx2
 
-        mock_cls = MagicMock(side_effect=httpx.ConnectError("network down"))
+        mock_cls = MagicMock(side_effect=httpx2.ConnectError("network down"))
         with patch("fastmcp.server.auth.oidc_proxy.OIDCProxy", mock_cls):
             with pytest.raises(ConfigurationError) as excinfo:
                 build_oidc_proxy_auth(_oidc_config())
         assert f"OIDC discovery failed at {self._URL}: network down" in str(
             excinfo.value
         )
-        assert isinstance(excinfo.value.__cause__, httpx.ConnectError)
+        assert isinstance(excinfo.value.__cause__, httpx2.ConnectError)
 
     def test_invalid_document_becomes_configuration_error(self):
         mock_cls = MagicMock(side_effect=ValueError("Missing required OIDC endpoints"))
@@ -165,29 +167,30 @@ class TestBuildOIDCProxyAuthDiscoveryFailure:
         assert isinstance(excinfo.value.__cause__, ValueError)
 
     def test_secret_never_enters_message(self):
-        import httpx
+        import httpx2
 
-        mock_cls = MagicMock(side_effect=httpx.ConnectError("boom"))
+        mock_cls = MagicMock(side_effect=httpx2.ConnectError("boom"))
         with patch("fastmcp.server.auth.oidc_proxy.OIDCProxy", mock_cls):
             with pytest.raises(ConfigurationError) as excinfo:
                 build_oidc_proxy_auth(_oidc_config(oidc_client_secret="s3cr3t"))
         assert "s3cr3t" not in str(excinfo.value)
 
     def test_real_proxy_unreachable_idp(self, monkeypatch: pytest.MonkeyPatch):
-        """Drive the real ``OIDCProxy`` with ``httpx.get`` stubbed to fail."""
-        import httpx
+        """Drive the real ``OIDCProxy`` with ``httpx2.get`` stubbed to fail
+        (httpx2 is the HTTP layer fastmcp's discovery fetch runs on)."""
+        import httpx2
 
         def _raise(*a, **kw):
-            raise httpx.ConnectError("connection refused")
+            raise httpx2.ConnectError("connection refused")
 
-        monkeypatch.setattr(httpx, "get", _raise)
+        monkeypatch.setattr(httpx2, "get", _raise)
         with pytest.raises(ConfigurationError, match="OIDC discovery failed at"):
             build_oidc_proxy_auth(_oidc_config())
 
     def test_real_proxy_malformed_document(self, monkeypatch: pytest.MonkeyPatch):
         """A discovery document missing endpoints fails validation inside
         the real ``OIDCProxy``; that must also normalise."""
-        import httpx
+        import httpx2
 
         class _Resp:
             def raise_for_status(self) -> None:
@@ -196,7 +199,7 @@ class TestBuildOIDCProxyAuthDiscoveryFailure:
             def json(self) -> dict[str, object]:
                 return {"issuer": "https://idp.example"}
 
-        monkeypatch.setattr(httpx, "get", lambda *a, **kw: _Resp())
+        monkeypatch.setattr(httpx2, "get", lambda *a, **kw: _Resp())
         with pytest.raises(ConfigurationError, match="OIDC discovery failed at"):
             build_oidc_proxy_auth(_oidc_config())
 

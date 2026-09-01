@@ -296,17 +296,18 @@ the ELK stack or Splunk.
 
 ### Background task backend
 
-SEP-1686 task support (`fastmcp[tasks]` / Docket) is a pvl-core **base
-dependency** — nearly every family server carries long-running tools, and
-fastmcp raises `ImportError` at registration time for any `task=True` tool
-when pydocket is missing, so the ~10 MB is deliberately always present.
-Servers that register task-enabled tools call `configure_task_backend` once
-before `mcp.run(...)`:
+SEP-2663 task support (`fastmcp[tasks]`, the `fastmcp-tasks` extension on
+Docket) is a pvl-core **base dependency** — nearly every family server
+carries long-running tools, and fastmcp refuses to start a server carrying
+`task=True` tools when no tasks extension is registered, so the ~10 MB is
+deliberately always present. Servers that register task-enabled tools call
+`configure_task_backend` once before `mcp.run(...)`; it registers the tasks
+extension on the server with the resolved backend:
 
 ```python
 from fastmcp_pvl_core import configure_task_backend
 
-configure_task_backend("MY_APP", config)
+configure_task_backend(mcp, "MY_APP", config)
 ```
 
 Backend selection then follows pvl-core's unified surface: an explicit
@@ -317,19 +318,23 @@ configures every stateful subsystem *and* tasks; otherwise fastmcp's
 development, not for a multi-process deployment). The Docket queue name is
 derived from the env prefix so family servers sharing one Redis do not share
 a queue. The helper degrades to a no-op in the degenerate case of a
-stripped fork or an incompatible pydocket pin.
+stripped fork or an incompatible pydocket pin — a server that still
+registers `task=`-enabled tools then fails at startup with fastmcp's own
+missing-extension error — and returns the registered extension otherwise.
 
 The remaining Docket worker tunables are native fastmcp variables,
 deliberately not wrapped: `FASTMCP_DOCKET_CONCURRENCY`,
 `FASTMCP_DOCKET_WORKER_NAME`, `FASTMCP_DOCKET_REDELIVERY_TIMEOUT`,
 `FASTMCP_DOCKET_RECONNECTION_DELAY`, `FASTMCP_DOCKET_MINIMUM_CHECK_INTERVAL`.
 `FASTMCP_DOCKET_URL` / `FASTMCP_DOCKET_NAME` also keep working as native
-escape hatches when the pvl-core surface leaves them untouched.
+escape hatches when the pvl-core surface leaves them untouched — read from
+the process environment; a value supplied only via the extension's optional
+dotenv file is overridden by pvl-core's derived URL and queue name.
 
 ### Long-running tools (dual mode)
 
 A tool that may outlive the client's request timeout registers once and
-gets both behaviours: protocol-native SEP-1686 task execution when the
+gets both behaviours: protocol-native SEP-2663 task execution when the
 request is task-augmented, and foreground execution with soft-deadline
 promotion to a pollable background job otherwise:
 

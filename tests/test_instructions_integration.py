@@ -18,6 +18,7 @@ from fastmcp_pvl_core import (
     TransferReadResult,
     apply_tool_visibility,
     build_jobs,
+    configure_task_backend,
     finalize_instructions,
     instructions_for,
     register_job_tools,
@@ -41,10 +42,16 @@ async def _validate(ref: str, kind: str) -> str:
 
 
 async def _client_view(mcp: FastMCP) -> tuple[str | None, set[str]]:
-    """Return initialize instructions and the real client tool listing."""
+    """Return negotiated instructions and the real client tool listing.
+
+    ``Client.instructions`` is the era-stable accessor: it is populated
+    from the ``InitializeResult`` on the legacy handshake era and from the
+    ``DiscoverResult`` on the sessionless era (where ``initialize_result``
+    is ``None``).
+    """
     async with Client(mcp) as client:
         return (
-            client.initialize_result.instructions,
+            client.instructions,
             {tool.name for tool in await client.list_tools()},
         )
 
@@ -58,6 +65,9 @@ def test_client_receives_pruned_finalized_instructions(monkeypatch):
         tools_deny=("create_upload_link",),
     )
     mcp = FastMCP("app")
+    # Task-enabled tools (register_long_running_tool below) need the tasks
+    # extension registered before a client can connect.
+    configure_task_backend(mcp, "APP", config)
     builder = instructions_for(mcp)
     builder.identity("app", "A demo server.")
     builder.add("This instance is READ-WRITE.", role=InstructionRole.INSTANCE)
