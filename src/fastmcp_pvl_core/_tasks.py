@@ -82,6 +82,60 @@ def _tasks_available() -> bool:
     return True
 
 
+def _env_override(var: str) -> str | None:
+    """The native env var's value, with empty/whitespace treated as unset.
+
+    Otherwise ``FASTMCP_DOCKET_URL=""`` would suppress the kv derivation
+    and ``FASTMCP_DOCKET_NAME=""`` would collapse every family server
+    onto one empty queue name.
+    """
+    return (os.environ.get(var) or "").strip() or None
+
+
+def _resolve_url_override(
+    env_prefix: str, config: ServerConfig, explicit_url: str | None
+) -> str | None:
+    """Resolve the ``url`` constructor override for the extension.
+
+    Implements the URL precedence rules documented on
+    :func:`configure_task_backend`. ``None`` means "no override": the
+    extension falls back to its own ``FASTMCP_DOCKET_*`` env defaults.
+    """
+    native_url = _env_override("FASTMCP_DOCKET_URL")
+    if explicit_url is not None:
+        # Explicit vs explicit: pvl-core's documented surface wins, and
+        # the divergence is never silent. (``not in`` covers both "env
+        # unset" and "env agrees".)
+        if native_url not in (None, explicit_url):
+            logger.warning(
+                "%s and FASTMCP_DOCKET_URL are both set and disagree; "
+                "using %s (the pvl-core surface). Unset one of them.",
+                _resolve_key(env_prefix, "TASKS_URL"),
+                _resolve_key(env_prefix, "TASKS_URL"),
+            )
+        return explicit_url
+    if native_url is not None:
+        # The native escape hatch stands; leave the env value in charge.
+        return None
+    # Reuse the unified kv backend when it is a Redis Docket can use.
+    # Same legacy-fallback order as build_kv_store: kv_store_url,
+    # then event_store_url (whose own deprecation warning is emitted
+    # by build_kv_store; not duplicated here). This is a *derived
+    # default*, so an explicitly-set FASTMCP_DOCKET_URL — checked
+    # above — outranks it, unlike the explicit tasks_url branch.
+    kv_url = config.kv_store_url or config.event_store_url
+    if kv_url and urlparse(kv_url).scheme == "redis":
+        return kv_url
+    return None
+
+
+def _resolve_name_override(env_prefix: str) -> str | None:
+    """Derive the queue name unless ``FASTMCP_DOCKET_NAME`` is set."""
+    if _env_override("FASTMCP_DOCKET_NAME") is None:
+        return _derive_queue_name(env_prefix)
+    return None
+
+
 def configure_task_backend(
     mcp: FastMCP, env_prefix: str, config: ServerConfig
 ) -> TasksExtension | None:
@@ -193,35 +247,8 @@ def configure_task_backend(
             )
         return None
 
-    # An empty or whitespace-only native var counts as unset for the
-    # precedence decisions below — otherwise FASTMCP_DOCKET_URL="" would
-    # suppress the kv derivation and FASTMCP_DOCKET_NAME="" would
-    # collapse every family server onto one empty queue name.
-    native_url = (os.environ.get("FASTMCP_DOCKET_URL") or "").strip() or None
-    if url is not None:
-        # Explicit vs explicit: pvl-core's documented surface wins, and
-        # the divergence is never silent.
-        if native_url is not None and native_url != url:
-            logger.warning(
-                "%s and FASTMCP_DOCKET_URL are both set and disagree; "
-                "using %s (the pvl-core surface). Unset one of them.",
-                _resolve_key(env_prefix, "TASKS_URL"),
-                _resolve_key(env_prefix, "TASKS_URL"),
-            )
-    elif native_url is None:
-        # Reuse the unified kv backend when it is a Redis Docket can use.
-        # Same legacy-fallback order as build_kv_store: kv_store_url,
-        # then event_store_url (whose own deprecation warning is emitted
-        # by build_kv_store; not duplicated here). This is a *derived
-        # default*, so an explicitly-set FASTMCP_DOCKET_URL — checked
-        # above — outranks it, unlike the explicit tasks_url branch.
-        kv_url = config.kv_store_url or config.event_store_url
-        if kv_url and urlparse(kv_url).scheme == "redis":
-            url = kv_url
-
-    name: str | None = None
-    if not (os.environ.get("FASTMCP_DOCKET_NAME") or "").strip():
-        name = _derive_queue_name(env_prefix)
+    url = _resolve_url_override(env_prefix, config, url)
+    name = _resolve_name_override(env_prefix)
 
     from fastmcp_tasks import TasksExtension
 

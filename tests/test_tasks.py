@@ -46,6 +46,13 @@ def _settings(extension):
     return extension.docket_settings
 
 
+def _warning_text(caplog: pytest.LogCaptureFixture) -> str:
+    """Join the captured WARNING messages for content assertions."""
+    return "\n".join(
+        r.getMessage() for r in caplog.records if r.levelno == logging.WARNING
+    )
+
+
 class TestExplicitTasksUrl:
     def test_redis_url_reaches_extension(self, docket_installed, mcp):
         config = ServerConfig(tasks_url="redis://queue-host:6379/0")
@@ -112,7 +119,11 @@ class TestKvDerivation:
 
 
 class TestNativeEscapeHatch:
-    def test_native_url_beats_kv_derivation(self, docket_installed, mcp, monkeypatch):
+    @pytest.fixture(autouse=True)
+    def _docket(self, docket_installed) -> None:
+        """Every escape-hatch scenario assumes an installed pydocket."""
+
+    def test_native_url_beats_kv_derivation(self, mcp, monkeypatch):
         """An explicit FASTMCP_DOCKET_URL outranks the derived default."""
         monkeypatch.setenv("FASTMCP_DOCKET_URL", "redis://native-host:6379/2")
         config = ServerConfig(kv_store_url="redis://kv-host:6379/0")
@@ -120,43 +131,37 @@ class TestNativeEscapeHatch:
         assert _settings(ext).url == "redis://native-host:6379/2"
 
     def test_explicit_tasks_url_beats_native_with_warning(
-        self, docket_installed, mcp, monkeypatch, caplog
+        self, mcp, monkeypatch, caplog
     ):
         monkeypatch.setenv("FASTMCP_DOCKET_URL", "redis://native-host:6379/2")
         config = ServerConfig(tasks_url="redis://tasks-host:6379/1")
         with caplog.at_level(logging.WARNING, logger="fastmcp_pvl_core._tasks"):
             ext = configure_task_backend(mcp, "MY_APP", config)
         assert _settings(ext).url == "redis://tasks-host:6379/1"
-        warning = "\n".join(
-            r.getMessage() for r in caplog.records if r.levelno == logging.WARNING
-        )
+        warning = _warning_text(caplog)
         assert "MY_APP_TASKS_URL" in warning
         assert "FASTMCP_DOCKET_URL" in warning
 
-    def test_agreeing_explicit_values_do_not_warn(
-        self, docket_installed, mcp, monkeypatch, caplog
-    ):
+    def test_agreeing_explicit_values_do_not_warn(self, mcp, monkeypatch, caplog):
         monkeypatch.setenv("FASTMCP_DOCKET_URL", "redis://same-host:6379/0")
         config = ServerConfig(tasks_url="redis://same-host:6379/0")
         with caplog.at_level(logging.WARNING, logger="fastmcp_pvl_core._tasks"):
             configure_task_backend(mcp, "MY_APP", config)
         assert not [r for r in caplog.records if r.levelno == logging.WARNING]
 
-    def test_native_name_respected(self, docket_installed, mcp, monkeypatch):
+    def test_native_name_respected(self, mcp, monkeypatch):
         monkeypatch.setenv("FASTMCP_DOCKET_NAME", "operator-queue")
         ext = configure_task_backend(mcp, "MY_APP", ServerConfig())
         assert _settings(ext).name == "operator-queue"
 
-    def test_empty_native_url_counts_as_unset(self, docket_installed, mcp, monkeypatch):
+    def test_empty_native_url_counts_as_unset(self, mcp, monkeypatch):
         """FASTMCP_DOCKET_URL="" must not suppress the kv derivation."""
         monkeypatch.setenv("FASTMCP_DOCKET_URL", "")
         config = ServerConfig(kv_store_url="redis://kv-host:6379/0")
         ext = configure_task_backend(mcp, "MY_APP", config)
         assert _settings(ext).url == "redis://kv-host:6379/0"
 
-    def test_empty_native_name_counts_as_unset(
-        self, docket_installed, mcp, monkeypatch
-    ):
+    def test_empty_native_name_counts_as_unset(self, mcp, monkeypatch):
         """FASTMCP_DOCKET_NAME="" must not collapse servers onto one
         empty queue name — the derivation still applies."""
         monkeypatch.setenv("FASTMCP_DOCKET_NAME", "  ")
@@ -230,19 +235,14 @@ class TestNoPydocket:
         config = ServerConfig(tasks_url="redis://tasks-host:6379/1")
         with caplog.at_level(logging.WARNING, logger="fastmcp_pvl_core._tasks"):
             assert configure_task_backend(mcp, "MY_APP", config) is None
-        warning = "\n".join(
-            r.getMessage() for r in caplog.records if r.levelno == logging.WARNING
-        )
-        assert "MY_APP_TASKS_URL" in warning
+        assert "MY_APP_TASKS_URL" in _warning_text(caplog)
 
     def test_explicit_tasks_url_warns_when_dropped(self, monkeypatch, mcp, caplog):
         monkeypatch.setattr(_AVAILABLE, lambda: False)
         config = ServerConfig(tasks_url="redis://tasks-host:6379/1")
         with caplog.at_level(logging.WARNING, logger="fastmcp_pvl_core._tasks"):
             assert configure_task_backend(mcp, "MY_APP", config) is None
-        warning = "\n".join(
-            r.getMessage() for r in caplog.records if r.levelno == logging.WARNING
-        )
+        warning = _warning_text(caplog)
         assert "MY_APP_TASKS_URL" in warning
         assert "pydocket" in warning
 
