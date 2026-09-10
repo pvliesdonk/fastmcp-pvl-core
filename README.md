@@ -332,6 +332,96 @@ keyed by `method=`. Set `FASTMCP_ENABLE_RICH_LOGGING=false` to emit one JSON
 object per record instead of `key=value` text — for log aggregators such as
 the ELK stack or Splunk.
 
+### Telemetry (OpenTelemetry traces)
+
+pvl-core ships **no** telemetry code and **no** OpenTelemetry dependency.
+Trace export is operator and container configuration, not a library
+concern — see [ADR 0003](docs/adr/0003-opentelemetry-classification.md)
+for the reasoning. This section records the posture so the family
+converges on one way of doing it.
+
+FastMCP instruments itself using the OpenTelemetry *API* only, so its MCP
+spans are a no-op until an SDK is installed and configured. The supported
+way to supply one is OpenTelemetry's own zero-code wrapper — no
+application code, and no `import opentelemetry` anywhere in your server:
+
+```dockerfile
+CMD ["opentelemetry-instrument", "my-mcp", "serve", "--transport", "http"]
+```
+
+with the SDK packages in the image:
+
+```
+opentelemetry-distro
+opentelemetry-exporter-otlp-proto-http
+opentelemetry-instrumentation-starlette   # spans for non-MCP HTTP routes
+opentelemetry-instrumentation-logging     # trace ids in log records
+```
+
+The wrapper discovers and activates every installed instrumentor for
+you. pvl-core offers no `configure_telemetry_from_env()` equivalent
+because such a helper would have to hand-wire each instrumentor by name
+and gain a new branch for every library the family adds — duplicating
+`opentelemetry-distro` with nothing domain-specific of its own.
+
+**`opentelemetry-distro` turns on all three signals.** It `setdefault`s
+`OTEL_TRACES_EXPORTER`, `OTEL_METRICS_EXPORTER` *and* `OTEL_LOGS_EXPORTER`
+to `otlp`, and the protocol to `grpc`. For traces only — the posture
+described here — pin the other two off explicitly:
+
+```
+OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+OTEL_EXPORTER_OTLP_ENDPOINT=http://collector:4318
+OTEL_SERVICE_NAME=my-mcp
+OTEL_METRICS_EXPORTER=none
+OTEL_LOGS_EXPORTER=none
+OTEL_PYTHON_LOG_CORRELATION=true
+```
+
+Leaving `OTEL_LOGS_EXPORTER` at its default ships **your application's
+log records to the collector**, because the logs pipeline attaches an
+OTLP handler to the root logger. That may be what you want; it is not
+what this section describes, and it is easy to enable by accident.
+
+| Variable | Effect |
+| --- | --- |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | Collector base URL. **Absent ⇒ falls back to `http://localhost:4318`**, not "off". |
+| `OTEL_EXPORTER_OTLP_PROTOCOL` | **Set to `http/protobuf`** with the HTTP exporter above; the distro defaults it to `grpc`. |
+| `OTEL_TRACES_EXPORTER` | Already `otlp` under the distro. Set `none` to disable traces (does not affect logs/metrics). |
+| `OTEL_METRICS_EXPORTER` / `OTEL_LOGS_EXPORTER` | Set `none` for a traces-only posture (see above). |
+| `OTEL_SERVICE_NAME` | Populates `service.name`. `OTEL_RESOURCE_ATTRIBUTES=service.name=…` sets it too. |
+| `OTEL_PYTHON_LOG_CORRELATION` | `true` injects `trace_id` / `span_id` into log records — and calls `logging.basicConfig`, adding a stderr handler with OpenTelemetry's own text format. |
+| `OTEL_SDK_DISABLED` | `true` disables the SDK wholesale. |
+| `FASTMCP_TELEMETRY_MODE` | `native` (default), `propagation_only`, or `off`. Read at import — set it in the container environment, not in code. |
+
+Three failure modes are worth recognising before you enable this:
+
+- **`OTEL_TRACES_EXPORTER=otlp` means gRPC by default.** Paired with the
+  HTTP-only exporter package it raises at startup, prints a traceback,
+  and the server then runs on **with no traces at all**. Setting
+  `OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf` is what prevents this.
+- **An unreachable collector may say nothing.** The exporter logs a
+  `Transient error … Connection refused … retrying in Ns` warning per
+  attempt plus an error per dropped batch — but whether those reach
+  stderr depends on `OTEL_PYTHON_LOG_CORRELATION`, which is what
+  installs a stderr handler on the root logger. With correlation on
+  they are loud (and multiply across `/v1/traces` and `/v1/logs` if the
+  logs pipeline is left enabled). With it off, the root logger's only
+  handler is the SDK's own OTLP one, and a server exporting nothing
+  looks perfectly healthy. Verify your first deployment against the
+  collector rather than trusting the logs.
+- **Correlation reformats the log stream.** The stderr handler it
+  installs uses OpenTelemetry's text format, which mixes with the
+  one-JSON-object-per-record output described above under
+  `FASTMCP_ENABLE_RICH_LOGGING=false`.
+
+Trace correlation reaches your own loggers but **not** anything under the
+`fastmcp.*` namespace, because FastMCP attaches a bare `%(message)s`
+handler to that logger and stops propagation. That includes pvl-core's
+own request log (`fastmcp.middleware.requests`) — the
+`tool_call_started` / `tool_call_completed` / `tool_call_failed` lines
+shown above carry no trace or span id.
+
 ### Health and readiness routes
 
 `register_health_routes` serves two unauthenticated routes so a container
