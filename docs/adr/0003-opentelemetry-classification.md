@@ -192,11 +192,18 @@ SDK reads natively. Operator-side configuration is a separate axis from
 the kwarg surface — env vars, not code — and this axis is entirely
 populated by a contract pvl-core does not own and should not re-express.
 
-A pvl-core helper would additionally be **strictly less capable** than
-the wrapper it replaced. Anything callable from a downstream `main()`
-runs after the application's imports, so it cannot pre-import-patch
-Starlette or the logging module; it would deliver MCP spans only, losing
-§2.3's HTTP-route spans and log correlation.
+A pvl-core helper would additionally be **pure duplication**. It is not
+that such a helper is impossible: called from `main()` after the
+application's imports, `StarletteInstrumentor().instrument_app(app)`
+instruments an already-constructed app and
+`LoggingInstrumentor().instrument(set_logging_format=True)` patches the
+record factory — verified, both produced §2.3's `http.route` span and
+trace-id injection with no process wrapper. The objection is that the
+helper would have to name and wire each instrumentor by hand, and grow
+a new branch for every library the family later adds, to re-derive what
+`opentelemetry-distro` discovers automatically from installed entry
+points. Under the `CLAUDE.md` test that is code with no domain-specific
+content — pvl-core re-expressing someone else's decision.
 
 Consequently pvl-core ships:
 
@@ -242,10 +249,18 @@ involved, because pvl-core resolves nothing.
 **A — a `configure_telemetry_from_env(env_prefix, service_name)` helper
 at the `configure_logging_from_env` seam.** This was the expected
 answer before the probes. Rejected because it duplicates
-`opentelemetry-distro`'s configurator while being strictly less capable
-(§3): called from `main()`, it is too late to instrument Starlette or
-logging. It would also introduce a `service_name` argument whose only
-job is to reproduce `OTEL_SERVICE_NAME`.
+`opentelemetry-distro`'s configurator without contributing anything
+domain-specific (§3) — hand-wiring instrumentors that the distro finds
+by entry point, and needing a pvl-core release each time the family
+adds a library worth instrumenting. It would also introduce a
+`service_name` argument whose only job is to reproduce
+`OTEL_SERVICE_NAME`.
+
+Note this is *not* rejected on the grounds that it cannot work.
+Post-import instrumentation is real: `instrument_app()` on a built app
+and `LoggingInstrumentor().instrument()` both function from `main()`
+(§3). Rejecting it for an impossibility it does not have would be a
+weaker argument, and a falsifiable one.
 
 **B — a `telemetry` optional extra pinning the SDK, exporter and
 instrumentors, with no code.** A legitimate "the family picks one

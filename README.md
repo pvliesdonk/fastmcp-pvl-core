@@ -358,9 +358,11 @@ opentelemetry-instrumentation-starlette   # spans for non-MCP HTTP routes
 opentelemetry-instrumentation-logging     # trace ids in log records
 ```
 
-The wrapper runs before your application is imported, which is what lets
-it instrument Starlette and logging as well as MCP. A helper called from
-`main()` could not — that is why pvl-core does not offer one.
+The wrapper discovers and activates every installed instrumentor for
+you. pvl-core offers no `configure_telemetry_from_env()` equivalent
+because such a helper would have to hand-wire each instrumentor by name
+and gain a new branch for every library the family adds — duplicating
+`opentelemetry-distro` with nothing domain-specific of its own.
 
 **`opentelemetry-distro` turns on all three signals.** It `setdefault`s
 `OTEL_TRACES_EXPORTER`, `OTEL_METRICS_EXPORTER` *and* `OTEL_LOGS_EXPORTER`
