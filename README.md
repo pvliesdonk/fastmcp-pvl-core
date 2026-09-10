@@ -354,7 +354,7 @@ See [Telemetry](#telemetry-opentelemetry-traces) for enabling export.
 
 ### Telemetry (OpenTelemetry traces)
 
-pvl-core ships **no** telemetry code and **no** OpenTelemetry dependency.
+pvl-core ships **no** OpenTelemetry SDK, exporter, or bootstrap code.
 Trace export is operator and container configuration, not a library
 concern — see [ADR 0003](docs/adr/0003-opentelemetry-classification.md)
 for the reasoning. This section records the posture so the family
