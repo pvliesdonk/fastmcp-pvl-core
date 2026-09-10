@@ -106,7 +106,7 @@ from ._transfer import (
 )
 from ._visibility import apply_tool_visibility
 
-__version__ = "7.0.0"  # PSR overrides at build time
+__version__ = "7.1.0"  # PSR overrides at build time
 
 __all__ = [
     "AuthMode",
