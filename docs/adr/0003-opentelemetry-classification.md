@@ -108,7 +108,7 @@ applied conditionally.
 Both seams are in the template's `docker-entrypoint.sh.jinja`, not in
 pvl-core.
 
-### 2.5 Two sharp edges the operator posture must document
+### 2.5 Three sharp edges the operator posture must document
 
 - **The gRPC default.** `OTEL_TRACES_EXPORTER=otlp` resolves to
   `otlp_proto_grpc`. With only the HTTP exporter installed, bootstrap
