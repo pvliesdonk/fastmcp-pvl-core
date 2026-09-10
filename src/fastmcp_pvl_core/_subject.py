@@ -59,6 +59,30 @@ def set_current_auth_mode(mode: AuthMode | None) -> None:
     _current_auth_mode.set(mode)
 
 
+def get_current_auth_mode() -> AuthMode | None:
+    """Return the auth mode :func:`fastmcp_pvl_core.build_auth` resolved.
+
+    Lets a caller report or branch on the mode without calling
+    :func:`fastmcp_pvl_core.resolve_auth_mode` a second time. That
+    recompute is what every downstream server had to do to report the
+    mode, because ``build_auth`` returned the provider and not the mode
+    (#310).
+
+    Reads the same pointer :func:`get_subject` does, so the module
+    comment above applies in full: it is a :class:`~contextvars.ContextVar`,
+    last writer wins, and a caller composing two ``FastMCP`` instances in
+    one process sees only the mode of the most recent ``build_auth``
+    call unless each is wrapped in its own ``copy_context().run(...)``.
+
+    Returns:
+        One of the :data:`AuthMode` literals once ``build_auth`` has run
+        in this context, or ``None`` if it has not run — or was reset by
+        ``set_current_auth_mode(None)``. ``"none"`` is a resolved mode
+        and is distinct from ``None``.
+    """
+    return _current_auth_mode.get()
+
+
 def _extract_claims(access_token: object) -> dict[str, Any]:
     raw_claims = getattr(access_token, "claims", None)
     return raw_claims if isinstance(raw_claims, dict) else {}

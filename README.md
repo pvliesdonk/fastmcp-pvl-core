@@ -279,6 +279,44 @@ configure_logging_from_env(verbose=True)
 logging.getLogger("docket.worker").setLevel(logging.DEBUG)
 ```
 
+`build_auth` announces the resolved auth mode once per call — once per server
+in the normal case — on every resolution path, whether the mode came from
+`AUTH_MODE` or from auto-detection:
+
+```
+auth_mode_resolved mode=oidc-proxy source=auto-detected
+auth_mode_resolved mode=remote source=explicit
+```
+
+The level is chosen by the provider `build_auth` ends up with, not by the
+mode. Any server that ends up with no provider accepts unauthenticated
+connections, and that announces at `WARNING` rather than `INFO` so an
+operator sees it without raising the log level:
+
+```
+auth_mode_resolved mode=none source=auto-detected — server accepts unauthenticated connections
+auth_mode_resolved mode=oidc-proxy source=explicit — server accepts unauthenticated connections
+```
+
+The second line is the case a mode-derived level would miss: `AUTH_MODE`
+selected `oidc-proxy`, the client credentials were absent, and the builder
+returned no provider — so the server starts unauthenticated while its
+resolved mode says otherwise. That fall-through is tracked as #316; the
+announcement makes it visible but does not change whether the server starts.
+
+A builder that raises announces too, before the exception propagates, so a
+server that fails to start still says which mode it was building:
+
+```
+auth_mode_resolved mode=remote source=explicit — auth provider construction failed; server will not start
+```
+
+`resolve_auth_mode` never announces the mode. It is a public export a caller
+may invoke any number of times, so announcing from inside it would emit the
+line once per call rather than once per server. Its one remaining log is an
+`auth_mode_unknown` warning when `AUTH_MODE` names a value it does not
+recognise.
+
 `wire_middleware_stack` installs a single conforming request-logging
 middleware. Every line it emits starts with a bare snake_case event name,
 followed by `key=value` pairs, with request timing carried inline:
@@ -476,6 +514,31 @@ Resolution order:
 2. **No token, `auth_mode == "none"`:** returns the literal `"local"`.
 3. **No token, auth required:** returns `None` — caller decides whether
    to fall back or error.
+
+`fastmcp_pvl_core.get_current_auth_mode()` returns the mode `build_auth`
+resolved, so a caller that needs to report or branch on it does not call
+`resolve_auth_mode` a second time:
+
+```python
+from fastmcp_pvl_core import build_auth, get_current_auth_mode
+
+auth = build_auth(config)
+mcp = FastMCP(name="my-app", auth=auth)
+mode = get_current_auth_mode()   # e.g. "oidc-proxy"
+```
+
+It reports the mode that was **resolved**, which is not the same question as
+whether the server is authenticated — `auth_mode_resolved mode=oidc-proxy …
+server accepts unauthenticated connections` is a reachable startup line
+(#316). Do not test it against `"none"` to decide that; check whether
+`build_auth` returned a provider, which is the same predicate pvl-core's own
+warning uses.
+
+`"none"` is a resolved mode and is distinct from `None`, which means
+`build_auth` has not run in this context. The mode is stored in a
+`ContextVar` with the same scoping caveats as `get_subject`: last writer
+wins, so a process composing two servers reads the mode of whichever
+`build_auth` ran last.
 
 ### Authorization (opt-in) — native auth checks
 
