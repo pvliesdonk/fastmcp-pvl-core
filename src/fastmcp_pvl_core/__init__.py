@@ -79,7 +79,7 @@ from ._server_info import (
     UpstreamResult,
     register_server_info_tool,
 )
-from ._subject import get_claims, get_subject
+from ._subject import get_claims, get_current_auth_mode, get_subject
 from ._tasks import configure_task_backend
 from ._transfer import (
     FetchResult,
@@ -173,6 +173,7 @@ __all__ = [
     "fetch_url",
     "finalize_instructions",
     "get_claims",
+    "get_current_auth_mode",
     "get_subject",
     "instructions_for",
     "load_acl",

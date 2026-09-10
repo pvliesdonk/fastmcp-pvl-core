@@ -12,7 +12,7 @@ import logging
 import sys
 from collections.abc import Iterable
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, TypeGuard, cast
+from typing import TYPE_CHECKING, Any, Final, Literal, TypeGuard, cast
 
 if sys.version_info >= (3, 11):
     from typing import assert_never
@@ -57,6 +57,24 @@ def _is_valid_override(value: str) -> TypeGuard[Literal["remote", "oidc-proxy"]]
     return value in _VALID_MODES
 
 
+# Distinguishes "the builder never returned" from the ``None`` the
+# ``none`` arm legitimately returns, so :func:`build_auth` can announce a
+# failed build without catching the exception it is about to re-raise.
+_UNBUILT: Final = object()
+
+
+def _normalise_override(raw: str | None) -> str:
+    """Canonicalise a raw ``AUTH_MODE`` value for comparison.
+
+    Shared by :func:`_resolve_explicit_override` and
+    :func:`_has_explicit_override` so a value one honours is the value
+    the other reports as ``source=explicit``. Without it,
+    ``AUTH_MODE="  ReMoTe  "`` would resolve to ``remote`` and then be
+    announced as ``source=auto-detected``.
+    """
+    return (raw or "").strip().lower()
+
+
 def _resolve_explicit_override(
     raw: str | None,
 ) -> Literal["remote", "oidc-proxy"] | None:
@@ -67,17 +85,86 @@ def _resolve_explicit_override(
     silently; any other non-empty value yields ``None`` with a warning.
     Callers fall back to auto-detection whenever this returns ``None``.
     """
-    explicit = (raw or "").strip().lower()
+    explicit = _normalise_override(raw)
     if not explicit:
         return None
     if _is_valid_override(explicit):
-        logger.info("auth_mode=%s (explicit via AUTH_MODE)", explicit)
         return explicit
     logger.warning(
         "auth_mode_unknown value=%r — ignoring, falling back to auto-detection",
         explicit,
     )
     return None
+
+
+def _has_explicit_override(raw: str | None) -> bool:
+    """Whether ``AUTH_MODE`` names a mode the override actually honours.
+
+    Deliberately pure: :func:`_resolve_explicit_override` warns about
+    unrecognised values, so calling it a second time purely to learn the
+    provenance would emit that warning twice.
+    """
+    return _is_valid_override(_normalise_override(raw))
+
+
+def _announce_auth_mode(
+    mode: AuthMode,
+    config: ServerConfig,
+    provider: object,
+    *,
+    failed: bool = False,
+) -> None:
+    """Log the resolved auth mode as a startup side effect.
+
+    Called only from :func:`build_auth`, exactly once per call, on every
+    resolution path — including the paths where a builder raises, which
+    is when the operator most needs to know which mode was being built.
+    Nothing dedupes it: a caller that builds auth for two servers
+    announces twice.
+
+    :func:`resolve_auth_mode` never announces the mode. It is a public
+    export a caller may invoke any number of times, so announcing from
+    inside it emitted the line once per call rather than once per server
+    (#310). Its one remaining log is the ``auth_mode_unknown`` warning
+    for an ``AUTH_MODE`` value it does not recognise.
+
+    On a successful build the level is chosen by *provider*, not by
+    *mode*. A server whose builder returned no provider accepts
+    unauthenticated connections whatever mode was resolved, and that is
+    a security posture an operator should see without raising the log
+    level. Deriving the level from ``mode == "none"`` instead would stay
+    silent on a misconfigured ``oidc-proxy`` that fell through to no
+    provider at all (#316).
+
+    Args:
+        mode: The mode :func:`resolve_auth_mode` returned.
+        config: The same config it was resolved from, read only to
+            report whether the mode came from ``AUTH_MODE`` or from
+            auto-detection.
+        provider: The provider :func:`build_auth` is about to return.
+            ``None`` means the server will accept unauthenticated
+            connections. Ignored when *failed* is ``True``.
+        failed: ``True`` when the builder raised and the exception is
+            about to propagate, so no server starts at all — a different
+            outcome from an unauthenticated one.
+    """
+    source = "explicit" if _has_explicit_override(config.auth_mode) else "auto-detected"
+    if failed:
+        logger.warning(
+            "auth_mode_resolved mode=%s source=%s "
+            "— auth provider construction failed; server will not start",
+            mode,
+            source,
+        )
+    elif provider is None:
+        logger.warning(
+            "auth_mode_resolved mode=%s source=%s "
+            "— server accepts unauthenticated connections",
+            mode,
+            source,
+        )
+    else:
+        logger.info("auth_mode_resolved mode=%s source=%s", mode, source)
 
 
 def resolve_auth_mode(config: ServerConfig) -> AuthMode:
@@ -604,15 +691,110 @@ def build_remote_auth(config: ServerConfig) -> RemoteAuthProvider | None:
     )
 
 
+def _build_multi_auth(config: ServerConfig) -> Any:
+    """Compose the OIDC + bearer pair that ``multi`` mode returns.
+
+    Split out of the dispatch so the dispatcher stays close to pure
+    dispatch: this arm carries provider construction, two invariant
+    checks, and the load-bearing ``required_scopes=[]`` contract, all
+    of which belong together and none of which the other arms share.
+    """
+    # ``build_remote_auth`` raises ``ConfigurationError`` on
+    # discovery / dependency failures, so the only way for either
+    # ``oidc_auth`` or ``bearer_auth`` to be ``None`` here is a
+    # precondition mismatch (e.g. ``build_oidc_proxy_auth`` finds
+    # missing fields and ``build_remote_auth`` likewise returns
+    # ``None`` from its precondition check).  In multi mode that
+    # is itself a misconfiguration: ``resolve_auth_mode`` only
+    # picks "multi" when both bearer and OIDC inputs are present
+    # at startup.  Hard-fail rather than silent-degrade.
+    oidc_auth: OIDCProxy | RemoteAuthProvider | None = build_oidc_proxy_auth(
+        config
+    ) or build_remote_auth(config)
+    bearer_auth = build_bearer_auth(config)
+
+    if oidc_auth is None:
+        raise ConfigurationError(
+            "multi-mode auth requires both OIDC and bearer providers; "
+            "OIDC builder returned None — check OIDC configuration "
+            "(base_url, oidc_config_url, and the proxy fields if used). "
+            "Refusing to start without OIDC; would otherwise silently "
+            "degrade to bearer-only and break the operator's "
+            "real-identity contract."
+        )
+    if bearer_auth is None:
+        raise ConfigurationError(
+            "multi-mode auth requires both OIDC and bearer providers; "
+            "bearer builder returned None — check bearer configuration "
+            "(bearer_token or bearer_tokens_file)."
+        )
+
+    from fastmcp.server.auth import MultiAuth
+
+    # ``required_scopes=[]`` is load-bearing: without it, OIDC's
+    # ``["openid"]`` scope propagates to FastMCP's
+    # RequireAuthMiddleware and rejects bearer tokens lacking
+    # ``openid`` with 403 insufficient_scope (MV PR #249).
+    # It does not reach the published metadata: ``get_routes``
+    # delegates to ``server``, which advertises the set
+    # ``_resolve_advertised_scopes`` gave it (#280).
+    #
+    # OIDCProxy / RemoteAuthProvider (both OAuthProvider
+    # subclasses) MUST go in ``server=`` — passing an
+    # ``OAuthProvider`` in ``verifiers=`` silently drops its OAuth
+    # routes because ``get_routes`` / ``get_well_known_routes``
+    # only delegate to ``self.server``.
+    return MultiAuth(
+        server=oidc_auth,
+        verifiers=[bearer_auth],
+        required_scopes=[],
+    )
+
+
+def _build_provider(config: ServerConfig, mode: AuthMode) -> Any:
+    """Construct the provider for an already-resolved *mode*.
+
+    Split out of :func:`build_auth` so the announcement can wrap it:
+    a builder that raises must still tell the operator which mode was
+    being built, which an announcement placed after an inline dispatch
+    cannot do.
+    """
+    # ``match``-based dispatch with an explicit ``case _`` calling
+    # ``assert_never`` makes adding a new :data:`AuthMode` literal a
+    # mypy error rather than a silent fall-through.
+    provider: Any
+    match mode:
+        case "none":
+            provider = None
+        case "bearer-single" | "bearer-mapped":
+            provider = build_bearer_auth(config)
+        case "oidc-proxy":
+            provider = build_oidc_proxy_auth(config)
+        case "remote":
+            provider = build_remote_auth(config)
+        case "multi":
+            provider = _build_multi_auth(config)
+        case _:
+            assert_never(mode)
+    return provider
+
+
 def build_auth(config: ServerConfig) -> Any:
     """Dispatch to the correct FastMCP auth provider for *config*.
 
-    Resolves the auth mode via :func:`resolve_auth_mode` and composes the
-    individual builders.  In ``multi`` mode, wraps an OIDC provider and a
-    bearer verifier into a single :class:`~fastmcp.server.auth.MultiAuth`
-    with ``required_scopes=[]``.  That empty list governs acceptance
-    only; the scopes advertised to clients come from the wrapped OIDC
-    provider and are set by :func:`_resolve_advertised_scopes`.
+    Resolves the auth mode via :func:`resolve_auth_mode` and composes
+    the individual builders.  In ``multi`` mode, wraps an OIDC provider
+    and a bearer verifier into a single
+    :class:`~fastmcp.server.auth.MultiAuth` with ``required_scopes=[]``.
+    That empty list governs acceptance only; the scopes advertised to
+    clients come from the wrapped OIDC provider and are set by
+    :func:`_resolve_advertised_scopes`.
+
+    Records the resolved mode for
+    :func:`fastmcp_pvl_core.get_current_auth_mode` and announces it to
+    the operator log (see :func:`_announce_auth_mode`), both as startup
+    side effects. Nothing dedupes either: a caller composing two servers
+    calls this twice and the second call wins the recorded mode.
 
     Args:
         config: Populated server configuration.
@@ -632,73 +814,27 @@ def build_auth(config: ServerConfig) -> Any:
           see implementation comment).
     """
     mode = resolve_auth_mode(config)
-    # Record the resolved mode for ``get_subject``; must run before the
-    # early ``return None`` in the ``mode == "none"`` branch below so
-    # tools called in stdio/no-auth servers still get ``"local"``.
+    # Record the resolved mode for ``get_subject`` and
+    # ``get_current_auth_mode``; must run before the dispatch below so
+    # tools called in stdio/no-auth servers still get ``"local"`` even
+    # though the ``none`` arm yields no provider.
     set_current_auth_mode(mode)
 
-    # ``match``-based dispatch with an explicit ``case _`` calling
-    # ``assert_never`` makes adding a new :data:`AuthMode` literal a
-    # mypy error rather than a silent fall-through.
-    match mode:
-        case "none":
-            return None
-        case "bearer-single" | "bearer-mapped":
-            return build_bearer_auth(config)
-        case "oidc-proxy":
-            return build_oidc_proxy_auth(config)
-        case "remote":
-            return build_remote_auth(config)
-        case "multi":
-            # ``build_remote_auth`` raises ``ConfigurationError`` on
-            # discovery / dependency failures, so the only way for either
-            # ``oidc_auth`` or ``bearer_auth`` to be ``None`` here is a
-            # precondition mismatch (e.g. ``build_oidc_proxy_auth`` finds
-            # missing fields and ``build_remote_auth`` likewise returns
-            # ``None`` from its precondition check).  In multi mode that
-            # is itself a misconfiguration: ``resolve_auth_mode`` only
-            # picks "multi" when both bearer and OIDC inputs are present
-            # at startup.  Hard-fail rather than silent-degrade.
-            oidc_auth: OIDCProxy | RemoteAuthProvider | None = build_oidc_proxy_auth(
-                config
-            ) or build_remote_auth(config)
-            bearer_auth = build_bearer_auth(config)
-
-            if oidc_auth is None:
-                raise ConfigurationError(
-                    "multi-mode auth requires both OIDC and bearer providers; "
-                    "OIDC builder returned None — check OIDC configuration "
-                    "(base_url, oidc_config_url, and the proxy fields if used). "
-                    "Refusing to start without OIDC; would otherwise silently "
-                    "degrade to bearer-only and break the operator's "
-                    "real-identity contract."
-                )
-            if bearer_auth is None:
-                raise ConfigurationError(
-                    "multi-mode auth requires both OIDC and bearer providers; "
-                    "bearer builder returned None — check bearer configuration "
-                    "(bearer_token or bearer_tokens_file)."
-                )
-
-            from fastmcp.server.auth import MultiAuth
-
-            # ``required_scopes=[]`` is load-bearing: without it, OIDC's
-            # ``["openid"]`` scope propagates to FastMCP's
-            # RequireAuthMiddleware and rejects bearer tokens lacking
-            # ``openid`` with 403 insufficient_scope (MV PR #249).
-            # It does not reach the published metadata: ``get_routes``
-            # delegates to ``server``, which advertises the set
-            # ``_resolve_advertised_scopes`` gave it (#280).
-            #
-            # OIDCProxy / RemoteAuthProvider (both OAuthProvider
-            # subclasses) MUST go in ``server=`` — passing an
-            # ``OAuthProvider`` in ``verifiers=`` silently drops its OAuth
-            # routes because ``get_routes`` / ``get_well_known_routes``
-            # only delegate to ``self.server``.
-            return MultiAuth(
-                server=oidc_auth,
-                verifiers=[bearer_auth],
-                required_scopes=[],
-            )
-        case _:
-            assert_never(mode)
+    # The announcement runs in a ``finally`` rather than after the call so
+    # that a builder which raises still names the mode it was building —
+    # a failed startup is exactly when the operator needs that, and the
+    # exception alone does not carry it. The sentinel distinguishes "no
+    # provider was built" from the legitimate ``None`` the ``none`` arm
+    # returns, without catching and re-raising anything.
+    provider: Any = _UNBUILT
+    try:
+        provider = _build_provider(config, mode)
+    finally:
+        built = provider is not _UNBUILT
+        _announce_auth_mode(
+            mode,
+            config,
+            provider if built else None,
+            failed=not built,
+        )
+    return provider
