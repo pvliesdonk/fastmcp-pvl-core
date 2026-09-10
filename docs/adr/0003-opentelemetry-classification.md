@@ -173,13 +173,31 @@ and it is the case that does not work.
 
 This sits at a seam pvl-core owns, so it is the one finding here that
 could become pvl-core work. It is **not** part of this classification —
-it is a logging defect, not SDK/exporter wiring — and is filed
+it is a logging defect, not SDK/exporter wiring — and was filed
 separately as [#319] (§7).
+
+**Resolved in [#319].** The middleware now reads the ambient span itself
+and stamps `trace_id` / `span_id` onto its own lines, in both text and
+JSON modes, so the stream described above is correlated without
+`OTEL_PYTHON_LOG_CORRELATION` and without touching FastMCP's handler.
+Records emitted by FastMCP *itself* are still uncorrelated; that part
+remains FastMCP's formatter to own.
 
 ## 3. Decision
 
-**pvl-core owns no OpenTelemetry code and no OpenTelemetry
-dependency.** Trace export is operator/container configuration.
+**pvl-core owns no OpenTelemetry SDK, exporter, or bootstrap code.**
+Trace export is operator/container configuration.
+
+> **Amended 2026-09-10, resolving [#319].** As originally written this
+> paragraph said "no OpenTelemetry code and no OpenTelemetry
+> dependency". That was about SDK/exporter wiring, but read literally it
+> also barred the §2.6 follow-up this ADR itself filed. pvl-core now
+> declares `opentelemetry-api` and imports it in one place: the
+> request-logging middleware reads the ambient span to stamp `trace_id`
+> and `span_id` on its own log lines. The API is a guaranteed transitive
+> (the `mcp` SDK depends on it unconditionally) and creates no span,
+> exports nothing, and configures no provider. Everything below about
+> the SDK, exporters and the bootstrap stands unchanged.
 
 Applying the `CLAUDE.md` classification test to the SDK/exporter wiring:
 
@@ -303,12 +321,13 @@ in the issue:
    `opentelemetry-instrument` prefix at the two `exec` seams in
    `docker-entrypoint.sh.jinja`, the image package set, and the operator
    documentation for the `OTEL_*` contract.
-2. **pvl-core** — [#319]: the `fastmcp.*` log-correlation gap from §2.6,
+2. ~~**pvl-core**~~ — **resolved.** [#319]: the `fastmcp.*` log-correlation gap from §2.6,
    which costs the request-logging middleware's own `tool_call_*` stream
    its trace and span ids. A logging-seam defect, independent of whether
    telemetry is ever adopted.
 
 [#319]: https://github.com/pvliesdonk/fastmcp-pvl-core/issues/319
+[#323]: https://github.com/pvliesdonk/fastmcp-pvl-core/issues/323
 [fastmcp-server-template#606]: https://github.com/pvliesdonk/fastmcp-server-template/issues/606
 
 ## 8. Limitations of this study
@@ -319,7 +338,16 @@ Stated so a later reader does not over-read the evidence:
   a template-generated server.
 - The wrapper was **not** exercised through `gosu appuser "$@"`, nor in
   a container at all.
-- Metrics and logs over OTLP were out of scope, per [#314]. Traces only.
+- Metrics and logs over OTLP were not probed — [#314] bounded this study
+  to traces. **That was the study's boundary, not the family's
+  intention**: all three signals are wanted, sequenced behind traces.
+  The classification in §3 is expected to hold for them (the distro
+  configures all three from the same `OTEL_*` contract), but that is
+  `[unverified]` here. One concrete blocker is already known for logs —
+  [#323] — the export handler attaches to the *root* logger while FastMCP
+  sets `propagate = False` on the `fastmcp` logger, so enabling log
+  export silently drops that whole namespace, pvl-core's request log
+  included.
 - Zero-code instrumentation normally activates via a process wrapper, so
   a **stdio** server launched by an MCP client (`uvx scholar-mcp`) needs
   the wrapper in the client's own command configuration. It is not the

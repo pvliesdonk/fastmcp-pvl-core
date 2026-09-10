@@ -332,9 +332,29 @@ keyed by `method=`. Set `FASTMCP_ENABLE_RICH_LOGGING=false` to emit one JSON
 object per record instead of `key=value` text — for log aggregators such as
 the ELK stack or Splunk.
 
+When an OpenTelemetry span is in scope, every line also carries the ids
+needed to join it to that trace:
+
+```
+tool_call_completed tool=read duration_ms=68.57 trace_id=dc538b4bb2b968a6017c12d54c45bfb8 span_id=7108b0b132270b25
+```
+
+This needs no configuration. Both fields are omitted whenever no valid
+span context is in scope — the usual case with no OpenTelemetry SDK
+installed — so an untraced server's output is byte-identical to the
+lines above.
+
+"No SDK" and "no span" are not quite the same thing, though: FastMCP
+extracts an inbound `traceparent` from request `_meta` without requiring
+an SDK, so a client that propagates trace context gets correlated lines
+even from an otherwise untraced server. In that case `span_id` is the
+caller's span, because the server created none of its own.
+
+See [Telemetry](#telemetry-opentelemetry-traces) for enabling export.
+
 ### Telemetry (OpenTelemetry traces)
 
-pvl-core ships **no** telemetry code and **no** OpenTelemetry dependency.
+pvl-core ships **no** OpenTelemetry SDK, exporter, or bootstrap code.
 Trace export is operator and container configuration, not a library
 concern — see [ADR 0003](docs/adr/0003-opentelemetry-classification.md)
 for the reasoning. This section records the posture so the family
@@ -366,8 +386,12 @@ and gain a new branch for every library the family adds — duplicating
 
 **`opentelemetry-distro` turns on all three signals.** It `setdefault`s
 `OTEL_TRACES_EXPORTER`, `OTEL_METRICS_EXPORTER` *and* `OTEL_LOGS_EXPORTER`
-to `otlp`, and the protocol to `grpc`. For traces only — the posture
-described here — pin the other two off explicitly:
+to `otlp`, and the protocol to `grpc`.
+
+This section describes **traces first**, not traces forever — metrics and
+logs are intended too, sequenced behind traces rather than excluded. Start
+by pinning the other two off, so a first rollout has one signal to reason
+about, and turn them on deliberately:
 
 ```
 OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
@@ -380,8 +404,15 @@ OTEL_PYTHON_LOG_CORRELATION=true
 
 Leaving `OTEL_LOGS_EXPORTER` at its default ships **your application's
 log records to the collector**, because the logs pipeline attaches an
-OTLP handler to the root logger. That may be what you want; it is not
-what this section describes, and it is easy to enable by accident.
+OTLP handler to the root logger. That may well be what you want, but it
+is easy to enable by accident before you have decided.
+
+It is also, today, **incomplete**: because the handler sits on the *root*
+logger and FastMCP sets `propagate = False` on the `fastmcp` logger,
+enabling log export silently drops the whole `fastmcp.*` namespace —
+including the request log shown under [Logging](#logging). Application
+records are exported; the server's own structured request stream is not.
+Tracked as [#323](https://github.com/pvliesdonk/fastmcp-pvl-core/issues/323).
 
 | Variable | Effect |
 | --- | --- |
@@ -415,12 +446,15 @@ Three failure modes are worth recognising before you enable this:
   one-JSON-object-per-record output described above under
   `FASTMCP_ENABLE_RICH_LOGGING=false`.
 
-Trace correlation reaches your own loggers but **not** anything under the
-`fastmcp.*` namespace, because FastMCP attaches a bare `%(message)s`
-handler to that logger and stops propagation. That includes pvl-core's
-own request log (`fastmcp.middleware.requests`) — the
-`tool_call_started` / `tool_call_completed` / `tool_call_failed` lines
-shown above carry no trace or span id.
+`OTEL_PYTHON_LOG_CORRELATION` reaches your own loggers but **not**
+anything under the `fastmcp.*` namespace, because FastMCP attaches a bare
+`%(message)s` handler to that logger and stops propagation.
+
+pvl-core's request log is the exception, and it needs no variable at all:
+`wire_middleware_stack`'s `tool_call_*` / `request_*` / `notification_*`
+lines stamp `trace_id` and `span_id` themselves whenever a valid span is
+in scope, in both text and JSON modes. FastMCP's *own* records remain
+uncorrelated.
 
 ### Health and readiness routes
 
