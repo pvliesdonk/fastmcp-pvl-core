@@ -332,6 +332,87 @@ keyed by `method=`. Set `FASTMCP_ENABLE_RICH_LOGGING=false` to emit one JSON
 object per record instead of `key=value` text — for log aggregators such as
 the ELK stack or Splunk.
 
+### Health and readiness routes
+
+`register_health_routes` serves two unauthenticated routes so a container
+orchestrator can probe for more than an open socket. They sit outside the MCP
+mount and outside auth, which is what a probe needs: the MCP endpoint still
+answers `401` while these answer normally.
+
+```python
+from fastmcp_pvl_core import register_health_routes
+
+register_health_routes(
+    mcp, config,
+    server_version=__version__,        # the name comes from mcp.name
+    http_path=args.http_path,          # the same value passed to mcp.run
+    env_prefix="MY_APP",
+    checks={"upstream_key": lambda: keepalive.last_ok},   # optional
+)
+```
+
+The two routes answer different questions, and conflating them is how a
+temporarily unreachable Redis gets "fixed" by restarting a healthy process:
+
+| Route | Question | Behaviour |
+|---|---|---|
+| `<prefix>/health` | Is the process serving? | Static, no I/O, `200` while it serves. A failure means restart me. |
+| `<prefix>/health/ready` | Can it do its job? | Runs every check; `503` if any fails. A failure means take me out of rotation. |
+
+`<prefix>` is the mount path with a conventional trailing `mcp` segment
+removed, so `/myserver/mcp` publishes `/myserver/health` and the default `/mcp`
+publishes `/health`. A mount that is not the conventional segment keeps its
+whole path, so `/scholar` publishes `/scholar/health` rather than colliding with
+every other single-segment mount at the root. This is derived rather than fixed
+at the host root because a custom route registers at the ASGI app root
+regardless of where MCP is mounted, and two servers sharing a hostname would
+otherwise collide on `/health`.
+
+`checks` is a domain hook. pvl-core registers one check of its own, `kv_store`,
+which writes a short-lived key so a backend that has silently vanished is
+detected — a read alone returns `None` from a store whose directory has been
+deleted, which is the failure this route exists to catch, while a write raises.
+There is no readback: a write that returns has been accepted on every supported
+backend, and reading it back would assume read-your-write, which DynamoDB's
+default `get_item` and a Mongo secondary read do not give. It covers the event
+store too, since both resolve through the same factory. It does *not* cover the
+task backend, which resolves `FASTMCP_DOCKET_URL` and `tasks_url` ahead of the
+shared KV URL and opens its own client, nor a backend that fell back to
+`memory://` at startup because its state directory was unusable. pvl-core cannot know
+whether *your* upstream API key is still valid or your index has loaded, so
+those are yours to supply. A check is any zero-arg callable, sync or
+async: returning falsy or raising means not-ready, and a raise never fails the
+route. Checks run concurrently, so a probe costs the slowest check rather than
+their sum, and async ones are bounded by a five-second ceiling so a blackholed
+backend cannot hold a probe open until the OS TCP timeout. A synchronous check
+that blocks is beyond reach, which is why anything touching the network should
+be async. The name `kv_store` is reserved.
+
+A check answers "does this make the server unable to serve". Whether a given
+domain signal clears that bar is your judgment — there is deliberately no
+severity knob, so a partial degradation you would rather not take the server
+out of rotation for belongs in `get_server_info` instead.
+
+`<PREFIX>_HEALTH_DETAIL` decides how much the bodies say, because the bodies are
+readable by anyone who can reach the port. An unrecognised value warns and falls
+back to `standard`.
+
+| Level | `/health` | `/health/ready` |
+|---|---|---|
+| `status` | `{"status": "ok"}` | `{"status": "ready"}` |
+| `standard` (default) | adds `server` name and version | adds `checks`, a boolean per check |
+| `full` | same as `standard` | adds `errors`, naming the exception type and reason for each check that *raised* |
+
+A check that simply returned falsy has no reason to report, so it appears in
+`checks` and not in `errors`; `full` adds nothing over `standard` for it.
+
+Use `full` only where the port is reachable from a trusted network. It strips
+userinfo and query strings from every URL in a reason — backend URLs in this
+codebase carry credentials — but a reason is upstream text, and trusting it
+fully is a choice you make per deployment. The stripping also stops at `/`, so a
+password carrying a raw `/` (which RFC 3986 requires to be percent-encoded)
+survives it.
+
 ### Background task backend
 
 SEP-2663 task support (`fastmcp[tasks]`, the `fastmcp-tasks` extension on
