@@ -46,6 +46,7 @@ from ._factory import (
     build_event_store,
     compute_app_domain,
 )
+from ._health import HealthCheck, register_health_routes
 from ._icons import IconSpec, make_icon, register_tool_icons
 from ._instructions import (
     CLAUDE_CODE_INSTRUCTIONS_LIMIT_UTF16,
@@ -116,6 +117,7 @@ __all__ = [
     "DomainEnvVar",
     "FetchResult",
     "GENERATED_INSTRUCTIONS_TARGET_UTF16",
+    "HealthCheck",
     "IconSpec",
     "InstructionsBuilder",
     "InstructionRole",
@@ -187,6 +189,7 @@ __all__ = [
     "parse_claim_grants",
     "parse_list",
     "parse_scopes",
+    "register_health_routes",
     "register_job_tools",
     "register_long_running_tool",
     "register_server_info_tool",
