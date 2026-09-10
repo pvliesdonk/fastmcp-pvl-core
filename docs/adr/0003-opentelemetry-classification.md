@@ -327,6 +327,7 @@ in the issue:
    telemetry is ever adopted.
 
 [#319]: https://github.com/pvliesdonk/fastmcp-pvl-core/issues/319
+[#323]: https://github.com/pvliesdonk/fastmcp-pvl-core/issues/323
 [fastmcp-server-template#606]: https://github.com/pvliesdonk/fastmcp-server-template/issues/606
 
 ## 8. Limitations of this study
@@ -337,7 +338,16 @@ Stated so a later reader does not over-read the evidence:
   a template-generated server.
 - The wrapper was **not** exercised through `gosu appuser "$@"`, nor in
   a container at all.
-- Metrics and logs over OTLP were out of scope, per [#314]. Traces only.
+- Metrics and logs over OTLP were not probed — [#314] bounded this study
+  to traces. **That was the study's boundary, not the family's
+  intention**: all three signals are wanted, sequenced behind traces.
+  The classification in §3 is expected to hold for them (the distro
+  configures all three from the same `OTEL_*` contract), but that is
+  `[unverified]` here. One concrete blocker is already known for logs —
+  [#323] — the export handler attaches to the *root* logger while FastMCP
+  sets `propagate = False` on the `fastmcp` logger, so enabling log
+  export silently drops that whole namespace, pvl-core's request log
+  included.
 - Zero-code instrumentation normally activates via a process wrapper, so
   a **stdio** server launched by an MCP client (`uvx scholar-mcp`) needs
   the wrapper in the client's own command configuration. It is not the

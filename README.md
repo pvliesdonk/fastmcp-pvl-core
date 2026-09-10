@@ -386,8 +386,12 @@ and gain a new branch for every library the family adds — duplicating
 
 **`opentelemetry-distro` turns on all three signals.** It `setdefault`s
 `OTEL_TRACES_EXPORTER`, `OTEL_METRICS_EXPORTER` *and* `OTEL_LOGS_EXPORTER`
-to `otlp`, and the protocol to `grpc`. For traces only — the posture
-described here — pin the other two off explicitly:
+to `otlp`, and the protocol to `grpc`.
+
+This section describes **traces first**, not traces forever — metrics and
+logs are intended too, sequenced behind traces rather than excluded. Start
+by pinning the other two off, so a first rollout has one signal to reason
+about, and turn them on deliberately:
 
 ```
 OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
@@ -400,8 +404,15 @@ OTEL_PYTHON_LOG_CORRELATION=true
 
 Leaving `OTEL_LOGS_EXPORTER` at its default ships **your application's
 log records to the collector**, because the logs pipeline attaches an
-OTLP handler to the root logger. That may be what you want; it is not
-what this section describes, and it is easy to enable by accident.
+OTLP handler to the root logger. That may well be what you want, but it
+is easy to enable by accident before you have decided.
+
+It is also, today, **incomplete**: because the handler sits on the *root*
+logger and FastMCP sets `propagate = False` on the `fastmcp` logger,
+enabling log export silently drops the whole `fastmcp.*` namespace —
+including the request log shown under [Logging](#logging). Application
+records are exported; the server's own structured request stream is not.
+Tracked as [#323](https://github.com/pvliesdonk/fastmcp-pvl-core/issues/323).
 
 | Variable | Effect |
 | --- | --- |
