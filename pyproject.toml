@@ -27,6 +27,13 @@ dependencies = [
   # because `_auth.py` imports it to catch the exceptions fastmcp's own
   # OIDC discovery raises. No floor: fastmcp owns the version.
   "httpx2",
+  # opentelemetry-api is what the request-logging middleware reads the
+  # ambient span from, to stamp `trace_id`/`span_id` on its log lines
+  # (#319). A guaranteed transitive — the `mcp` SDK depends on it
+  # unconditionally — but declared because pvl-core imports it directly.
+  # No floor: mcp owns the version. This is the *API* only; pvl-core
+  # still ships no SDK or exporter (ADR 0003).
+  "opentelemetry-api",
   # tomli is the 3.10 backport of stdlib tomllib (3.11+); the bearer
   # tokens-file loader uses it transparently via a sys.version_info
   # gate. Drop this dep once ``requires-python`` is bumped to >=3.11.
@@ -64,6 +71,11 @@ dev = [
   "diff-cover>=9",
   "httpx>=0.27",
   "pre-commit>=3.5",
+  # Test-only: the request-logging middleware reads the ambient span via the
+  # OpenTelemetry *API* (a runtime dependency), but creating a span with a
+  # valid context needs an SDK TracerProvider. Never shipped — pvl-core owns
+  # no SDK/exporter wiring (ADR 0003).
+  "opentelemetry-sdk",
 ]
 
 [tool.hatch.build.targets.wheel]

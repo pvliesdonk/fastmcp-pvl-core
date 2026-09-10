@@ -22,8 +22,44 @@ from fastmcp.server.middleware.middleware import (
     Middleware,
     MiddlewareContext,
 )
+from opentelemetry import trace
 
 _DEFAULT_LOGGER_NAME = "fastmcp.middleware.requests"
+
+
+def _trace_fields() -> dict[str, object]:
+    """Return ``trace_id`` / ``span_id`` when a valid span is in scope.
+
+    Reads the ambient OpenTelemetry span context — the middleware runs
+    inside FastMCP's own MCP span, so these ids join a log line to the
+    trace containing it.
+
+    Returns an empty dict when no valid span context is in scope. That
+    covers the common untraced case — with no OpenTelemetry SDK the API
+    hands back ``INVALID_SPAN``, whose context reports
+    ``is_valid == False`` — so such servers keep byte-identical log
+    output.
+
+    It is *not* the same as "no SDK installed". FastMCP extracts an
+    inbound ``traceparent`` from request ``_meta`` without gating on an
+    SDK, and the resulting remote ``NonRecordingSpan`` has a valid
+    context. A client that propagates trace context therefore gets
+    correlated log lines out of an otherwise untraced server, which is
+    the desirable behaviour. Note the referent shifts in that case:
+    ``span_id`` is the *caller's* span, since the server created none of
+    its own.
+
+    Ids use the W3C hex forms (32 and 16 lowercase hex digits) rather
+    than the ints the API exposes, so they can be pasted straight into a
+    trace backend's search box.
+    """
+    span_context = trace.get_current_span().get_span_context()
+    if not span_context.is_valid:
+        return {}
+    return {
+        "trace_id": format(span_context.trace_id, "032x"),
+        "span_id": format(span_context.span_id, "016x"),
+    }
 
 
 def _duration_ms(start: float) -> float:
@@ -151,6 +187,9 @@ class RequestLoggingMiddleware(Middleware):
         # ``assert record.exc_info is None`` assertions.  Always pass None for
         # the "no traceback" case; logging treats None identically to False.
         effective_exc_info = sys.exc_info() if exc_info else None
+        # Appended last so the leading shape of every existing line is
+        # unchanged for servers that do have tracing configured.
+        fields = {**fields, **_trace_fields()}
         if self.structured:
             payload: dict[str, object] = {"event": event}
             payload.update(fields)

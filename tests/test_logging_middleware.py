@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 
 import pytest
 from fastmcp.server.middleware.middleware import MiddlewareContext
@@ -205,3 +206,128 @@ async def test_render_value_escapes_control_chars_to_one_line(caplog, raw, escap
     msg = caplog.records[-1].getMessage()
     assert raw not in msg
     assert 'error="line one' + escaped + 'line two"' in msg
+
+
+# --- trace correlation (#319) -------------------------------------------------
+
+
+def _records(caplog):
+    """Only the middleware's own records.
+
+    ``caplog`` installs its handler on the root logger, so a sibling
+    logger's record would otherwise shift the indices below — turning an
+    assertion failure into a confusing ``AttributeError``.
+    """
+    return [r for r in caplog.records if r.name == _LOGGER_NAME]
+
+
+def _tracer():
+    """A tracer backed by a real SDK provider, without touching global state.
+
+    ``trace.set_tracer_provider`` is set-once per process, so tests use a
+    local provider; ``start_as_current_span`` still attaches to the ambient
+    context, which is what the middleware reads.
+    """
+    from opentelemetry.sdk.trace import TracerProvider
+
+    return TracerProvider().get_tracer("test")
+
+
+async def test_tool_call_lines_carry_trace_and_span_ids(caplog):
+    mw = RequestLoggingMiddleware()
+    ctx = _context(method="tools/call", message=_ToolParams("read"))
+    with caplog.at_level(logging.INFO, logger=_LOGGER_NAME):
+        with _tracer().start_as_current_span("outer"):
+            await mw.on_message(ctx, _ok_call_next)
+
+    started = _records(caplog)[0].getMessage()
+    assert re.search(r"\btrace_id=[0-9a-f]{32}\b", started), started
+    assert re.search(r"\bspan_id=[0-9a-f]{16}\b", started), started
+
+
+async def test_started_and_completed_share_the_same_trace(caplog):
+    """The whole point: the pair must be joinable to one trace."""
+    mw = RequestLoggingMiddleware()
+    ctx = _context(method="tools/call", message=_ToolParams("read"))
+    with caplog.at_level(logging.INFO, logger=_LOGGER_NAME):
+        with _tracer().start_as_current_span("outer"):
+            await mw.on_message(ctx, _ok_call_next)
+
+    ids = [
+        re.search(r"trace_id=([0-9a-f]{32})", r.getMessage()).group(1)
+        for r in _records(caplog)
+    ]
+    assert len(ids) == 2
+    assert ids[0] == ids[1]
+
+
+async def test_structured_mode_carries_trace_ids_as_json_keys(caplog):
+    mw = RequestLoggingMiddleware(structured=True)
+    ctx = _context(method="tools/call", message=_ToolParams("read"))
+    with caplog.at_level(logging.INFO, logger=_LOGGER_NAME):
+        with _tracer().start_as_current_span("outer"):
+            await mw.on_message(ctx, _ok_call_next)
+
+    payload = json.loads(_records(caplog)[0].getMessage())
+    assert re.fullmatch(r"[0-9a-f]{32}", payload["trace_id"])
+    assert re.fullmatch(r"[0-9a-f]{16}", payload["span_id"])
+
+
+async def test_failed_line_carries_trace_ids(caplog):
+    mw = RequestLoggingMiddleware()
+    ctx = _context(method="tools/call", message=_ToolParams("read"))
+    with caplog.at_level(logging.INFO, logger=_LOGGER_NAME):
+        with _tracer().start_as_current_span("outer"):
+            with pytest.raises(ValueError):
+                await mw.on_message(ctx, _failing_call_next(ValueError("boom")))
+
+    failed = _records(caplog)[-1].getMessage()
+    assert failed.startswith("tool_call_failed ")
+    assert re.search(r"\btrace_id=[0-9a-f]{32}\b", failed), failed
+
+
+async def test_no_trace_fields_when_no_span_is_active(caplog):
+    """Servers without tracing must see byte-identical output to before."""
+    mw = RequestLoggingMiddleware()
+    ctx = _context(method="tools/call", message=_ToolParams("read"))
+    with caplog.at_level(logging.INFO, logger=_LOGGER_NAME):
+        await mw.on_message(ctx, _ok_call_next)
+
+    for record in _records(caplog):
+        assert "trace_id=" not in record.getMessage()
+        assert "span_id=" not in record.getMessage()
+
+
+async def test_no_trace_fields_in_structured_mode_without_span(caplog):
+    mw = RequestLoggingMiddleware(structured=True)
+    ctx = _context(method="tools/call", message=_ToolParams("read"))
+    with caplog.at_level(logging.INFO, logger=_LOGGER_NAME):
+        await mw.on_message(ctx, _ok_call_next)
+
+    payload = json.loads(_records(caplog)[0].getMessage())
+    assert "trace_id" not in payload
+    assert "span_id" not in payload
+
+
+async def test_inbound_traceparent_correlates_without_an_sdk(caplog):
+    """A propagated trace must correlate even with no SDK configured.
+
+    FastMCP extracts ``traceparent`` from request ``_meta`` without
+    gating on an SDK, so "no SDK" does not imply "no trace ids".
+    """
+    from opentelemetry import context as otel_context
+    from opentelemetry import propagate
+
+    carrier = {"traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"}
+    token = otel_context.attach(propagate.extract(carrier))
+    try:
+        mw = RequestLoggingMiddleware()
+        ctx = _context(method="tools/call", message=_ToolParams("read"))
+        with caplog.at_level(logging.INFO, logger=_LOGGER_NAME):
+            await mw.on_message(ctx, _ok_call_next)
+    finally:
+        otel_context.detach(token)
+
+    started = _records(caplog)[0].getMessage()
+    assert "trace_id=4bf92f3577b34da6a3ce929d0e0e4736" in started
+    assert "span_id=00f067aa0ba902b7" in started

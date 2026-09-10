@@ -332,6 +332,26 @@ keyed by `method=`. Set `FASTMCP_ENABLE_RICH_LOGGING=false` to emit one JSON
 object per record instead of `key=value` text — for log aggregators such as
 the ELK stack or Splunk.
 
+When an OpenTelemetry span is in scope, every line also carries the ids
+needed to join it to that trace:
+
+```
+tool_call_completed tool=read duration_ms=68.57 trace_id=dc538b4bb2b968a6017c12d54c45bfb8 span_id=7108b0b132270b25
+```
+
+This needs no configuration. Both fields are omitted whenever no valid
+span context is in scope — the usual case with no OpenTelemetry SDK
+installed — so an untraced server's output is byte-identical to the
+lines above.
+
+"No SDK" and "no span" are not quite the same thing, though: FastMCP
+extracts an inbound `traceparent` from request `_meta` without requiring
+an SDK, so a client that propagates trace context gets correlated lines
+even from an otherwise untraced server. In that case `span_id` is the
+caller's span, because the server created none of its own.
+
+See [Telemetry](#telemetry-opentelemetry-traces) for enabling export.
+
 ### Telemetry (OpenTelemetry traces)
 
 pvl-core ships **no** telemetry code and **no** OpenTelemetry dependency.
@@ -415,12 +435,15 @@ Three failure modes are worth recognising before you enable this:
   one-JSON-object-per-record output described above under
   `FASTMCP_ENABLE_RICH_LOGGING=false`.
 
-Trace correlation reaches your own loggers but **not** anything under the
-`fastmcp.*` namespace, because FastMCP attaches a bare `%(message)s`
-handler to that logger and stops propagation. That includes pvl-core's
-own request log (`fastmcp.middleware.requests`) — the
-`tool_call_started` / `tool_call_completed` / `tool_call_failed` lines
-shown above carry no trace or span id.
+`OTEL_PYTHON_LOG_CORRELATION` reaches your own loggers but **not**
+anything under the `fastmcp.*` namespace, because FastMCP attaches a bare
+`%(message)s` handler to that logger and stops propagation.
+
+pvl-core's request log is the exception, and it needs no variable at all:
+`wire_middleware_stack`'s `tool_call_*` / `request_*` / `notification_*`
+lines stamp `trace_id` and `span_id` themselves whenever a valid span is
+in scope, in both text and JSON modes. FastMCP's *own* records remain
+uncorrelated.
 
 ### Health and readiness routes
 
