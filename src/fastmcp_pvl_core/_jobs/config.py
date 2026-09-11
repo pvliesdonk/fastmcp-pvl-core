@@ -2,7 +2,7 @@
 
 ``JobsConfig`` is the env section for dual-mode long-running tools: the
 inline soft-deadline before promotion, the retention TTL for job records,
-and the per-subject live-job cap. Per the ``CLAUDE.md`` axis, operator
+and the per-subject live-job cap. Per the ``AGENTS.md`` axis, operator
 tuning is env config (never kwargs) and domain behaviour is hooks (never
 config) — this holds the tuning; the domain coroutine is the hook.
 

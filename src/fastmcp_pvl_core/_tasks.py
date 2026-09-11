@@ -146,7 +146,7 @@ def configure_task_backend(
     rejects duplicate extension identifiers and post-startup
     registration, so call once, before ``mcp.run(...)``. Anything not
     resolved here falls back to the extension's own ``FASTMCP_DOCKET_*``
-    env defaults. Argument categories per the ``CLAUDE.md`` axis: *mcp*
+    env defaults. Argument categories per the ``AGENTS.md`` axis: *mcp*
     is the server under assembly, *env_prefix* is caller identity
     (parameterized, like the sibling ``build_*`` helpers), *config*
     carries operator configuration. There are no hook or shape kwargs —

@@ -228,7 +228,7 @@ Path-2 rules:
 
 If your server carries a bespoke job store and its own polling tool
 (e.g. a `get_summary`-style companion), migrate rather than adapt
-(`CLAUDE.md`: shape divergence resolves by downstream migration):
+(`AGENTS.md`: shape divergence resolves by downstream migration):
 
 1. Re-register the slow tool with `register_long_running_tool` (or
    path 2 if it is handle-first) and delete the bespoke store,

@@ -2,7 +2,7 @@
 
 ``TransferConfig`` is the env section for the ``/transfer`` feature: link
 lifetimes, the post-success grace window, the crashed-handler lease, and the
-per-upload size cap. Per the ``CLAUDE.md`` axis, operator tuning is env config
+per-upload size cap. Per the ``AGENTS.md`` axis, operator tuning is env config
 (never kwargs) and domain behaviour is hooks (never config) — so this holds the
 tuning while :data:`TransferSink` / :data:`TransferValidator` hold the domain
 seam.

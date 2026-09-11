@@ -145,7 +145,7 @@ def _resolve_required(component: object) -> str | None:
 
     The required scope comes solely from the component annotation;
     pvl-core does not offer a per-check override of that shape decision
-    (see ``CLAUDE.md``'s kwarg-classification rule).
+    (see ``AGENTS.md``'s kwarg-classification rule).
     """
     meta = getattr(component, "meta", None) or {}
     value = meta.get("required_scope")
