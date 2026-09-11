@@ -73,10 +73,16 @@ about library behaviour was probed on that stack.
 `configure_logging_from_env` becomes the sole owner of the root logger's
 console output.
 
-**fastmcp** is neutralised by setting `fastmcp.settings.log_enabled = False`
-and removing the two `RichHandler`s fastmcp attached to the `fastmcp` logger
-at import time, then restoring `propagate=True`. The settings object is
-mutable at runtime. `configure_logging` returns immediately when
+**fastmcp** is neutralised by setting `fastmcp.settings.log_enabled = False`,
+removing every handler fastmcp attached to the `fastmcp` logger at import time
+(two `RichHandler`s by default; one plain `StreamHandler` when
+`FASTMCP_ENABLE_RICH_LOGGING=false` is set at import), restoring
+`propagate=True`, and resetting the logger's level to `NOTSET`. The level
+reset is load-bearing: fastmcp's import-time configuration sets the `fastmcp`
+logger to `INFO` explicitly, and left in place it blocks every `fastmcp.*`
+DEBUG record — the middleware's included — before it reaches root. The
+`FASTMCP_LOG_LEVEL=DEBUG` environment write removed in §6 existed to work
+around exactly this. The settings object is mutable at runtime. `configure_logging` returns immediately when
 `log_enabled` is false (`utilities/logging.py:57`), so later calls — including
 the one inside `temporary_log_level`, which is what reverted the parked #323
 fix — can no longer reattach handlers or reset `propagate`. `log_enabled` is
@@ -94,15 +100,21 @@ Invariants:
 
 1. **stderr only.** Nothing pvl-core installs writes to stdout, which is the
    protocol channel under stdio transport.
-2. **Idempotent.** Repeated calls never stack handlers at root.
+2. **Idempotent.** pvl-core marks the handlers it installs and removes its
+   own before installing on every call, so repeated calls — in either mode,
+   and across a mode change — leave exactly one chain at root.
 3. **Exclusive over the console, tolerant of everything else.** pvl-core
-   removes pre-existing root handlers whose stream is `sys.stdout`,
-   `sys.stderr`, `sys.__stdout__` or `sys.__stderr__` (the double-render
-   source when `opentelemetry-instrument` has installed a console handler),
-   and leaves every other handler untouched — OTLP `LoggingHandler`, file,
-   syslog. The rule keys on **stream identity, not handler type**: pytest's
-   `LogCaptureHandler` is a `StreamHandler` subclass over a `StringIO`, so a
-   type-based rule would detach `caplog` across the test suite.
+   removes pre-existing root handlers that write to the console (the
+   double-render source when `opentelemetry-instrument` has installed a
+   console handler), and leaves every other handler untouched — OTLP
+   `LoggingHandler`, file, syslog. A handler writes to the console when its
+   output stream is `sys.stdout`, `sys.stderr`, `sys.__stdout__` or
+   `sys.__stderr__`, read from `StreamHandler.stream` or from
+   `RichHandler.console.file` — `RichHandler` is not a `StreamHandler` and
+   has no `.stream`. The rule keys on **stream identity, not handler type**:
+   pytest's `LogCaptureHandler` is a `StreamHandler` subclass over a
+   `StringIO`, so a type-based rule would detach `caplog` across the test
+   suite.
 
 **Tracebacks.** fastmcp's chain includes a compressed-traceback companion
 handler (framework frames suppressed, 3-frame cap). In Rich mode pvl-core
@@ -165,8 +177,9 @@ parseable output with no configuration; an interactive terminal gets Rich.
 **Rich mode.** `RichHandler` at root plus the traceback companion (§1). The
 middleware's documented `event key=value` line (`README.md:320-328`) is
 unchanged byte for byte. When stderr is not a TTY, pvl-core sets the Rich
-`Console` width explicitly instead of accepting the 80-column default, so a
-structured line does not wrap (template#608).
+`Console` width to 200 columns instead of accepting the 80-column default —
+the width at which the #608 investigation found a structured line stops
+wrapping — so a structured line renders on one row (template#608).
 
 **JSON mode.** Plain `StreamHandler` on stderr with a JSON formatter; one
 object per line. Envelope, in order:
@@ -214,6 +227,11 @@ from auth, a `404`, a `413`, and a readiness `503` remain — none of which
 reach the MCP middleware. The filter is installed on the `uvicorn.access`
 logger; repeated calls leave exactly one instance, and a DEBUG call removes
 it.
+
+uvicorn logs every access record at `INFO`, whatever the status. At
+`<PREFIX>_LOG_LEVEL=WARNING` or above, the level therefore drops 4xx/5xx
+lines before the filter sees them, and no access lines appear at all. That is
+intended: an operator who raised the level asked for less output.
 
 **httpx/httpcore consolidation.** Three downstream copies currently disagree
 on the same loggers in the same process:
@@ -298,8 +316,11 @@ pre-existing root handlers (none / console / non-console / `caplog`).
 
 Named tests:
 
-- **Topology** — one console chain at root; `fastmcp` handler-less and
-  propagating; idempotent; nothing written to stdout.
+- **Topology** — one console chain at root; `fastmcp` handler-less,
+  propagating, level `NOTSET`; idempotent in Rich mode, in JSON mode, and
+  across a mode change; nothing written to stdout.
+- **DEBUG reaches root** — at `<PREFIX>_LOG_LEVEL=DEBUG`, a
+  `fastmcp.middleware.requests` DEBUG record reaches the root handler.
 - **#323 blocker regression** — `temporary_log_level("DEBUG")` then
   `configure_logging()` leave `fastmcp` handler-less and propagating.
 - **#323 fix** — a non-console handler attached at root beforehand survives
@@ -313,7 +334,7 @@ Named tests:
 - **End to end** — `run_http` on an ephemeral port; request `/health` and a
   missing path; assert the 200 is absent and the 404 present at the handler.
 - **Access policy** — 200 dropped; 401 and `/health` 503 kept; all kept at
-  DEBUG; non-conforming record passes.
+  DEBUG; none at WARNING; non-conforming record passes.
 - **Rendering** — Rich middleware line byte-identical to `README.md:320-328`;
   in JSON mode every record parses (middleware, domain, uvicorn access,
   exception, trace ids); non-TTY Rich does not wrap a long line.
