@@ -9,7 +9,10 @@ dist/
 build/
 .coverage
 coverage.xml
-.claude/
+# Everything under .claude/ is local EXCEPT skills/, which holds relative
+# symlinks into the tracked, agent-neutral .agents/skills/.
+.claude/*
+!.claude/skills/
 .superpowers/
 
 # Local codebase-intelligence tooling: regenerated index cache and a

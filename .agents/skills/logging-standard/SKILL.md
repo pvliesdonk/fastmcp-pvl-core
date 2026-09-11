@@ -1,0 +1,114 @@
+---
+name: logging-standard
+description: >-
+  Use before adding or changing any logging call, log-emitting middleware,
+  or logging bootstrap in src/fastmcp_pvl_core/: the message format, log
+  levels, exception handling, and secret redaction every module follows,
+  and which lines pvl-core owns on behalf of every downstream server.
+---
+
+# Logging standard
+
+## Scope
+
+This standard governs first-party code: `src/fastmcp_pvl_core/` and
+`tests/`. pvl-core's position is different from a downstream's. A
+downstream's standard declares the middleware lines out of scope because
+pvl-core already emits them conforming; here, those lines are *ours*:
+
+- **The request-logging middleware** (`_logging_middleware.py`) emits the
+  family-standard line for every MCP message on every downstream: a
+  snake_case event name first, then `key=value` pairs, `tool=<name>` on
+  tool calls, the duration on the terminal `*_completed` / `*_failed`
+  line. A change to it changes every server's log stream at once; treat
+  its line shape, and its logger name, as shared shape.
+- **The logging bootstrap** (`configure_logging_from_env` in
+  `_logging.py`) owns level resolution and third-party level adjustment
+  for every downstream.
+
+Third-party lines (`uvicorn.*`, `mcp.*`, `docket.*`, and FastMCP's own
+records) are out of scope for formatting. pvl-core only adjusts their
+*levels*, through the constants in `_logging.py`, and never reformats
+them.
+
+## Framework
+
+- Standard library `logging` only. Every module:
+  `logger = logging.getLogger(__name__)`. No `print()` for operational
+  output, no third-party logging libraries.
+- The one exception: the request middleware logs on
+  `fastmcp.middleware.requests`. Being under `fastmcp`, its records go to
+  the handler FastMCP's `configure_logging` attaches there (with
+  `propagate = False`), not to the root logger; ADR 0003 and the tests
+  depend on that. The name is shared shape; do not "fix" it to
+  `__name__`.
+- A library does not configure logging at import. No handlers, no
+  `basicConfig`, no level changes at module import. Root and third-party
+  levels change only inside `configure_logging_from_env()`, which a
+  downstream calls at startup.
+- `FASTMCP_LOG_LEVEL` is the single level control; the `-v` CLI flag
+  forces `DEBUG`. Do not add a second level variable.
+
+## Log levels
+
+| Level | Use for |
+|-------|---------|
+| `DEBUG` | Internals: cache hits, parameter values, config resolution, a skipped optional path |
+| `INFO` | Startup and configuration decisions an operator needs to see (`auth_mode_resolved`, the chosen KV backend), and lifecycle events of work pvl-core owns (a job starting, a transfer link claimed or rejected) |
+| `WARNING` | Degraded but continuing: a fallback taken, missing optional config, unexpected data |
+| `ERROR` | Failures affecting the primary result, with `exc_info=True` when the traceback matters |
+
+`INFO` is every downstream's default stream, so anything logged there
+multiplies across the family. Per-message detail the request middleware
+already covers, and anything a loop emits on every iteration, goes to
+`DEBUG`.
+
+## Exception handling
+
+- Operator misconfiguration detected at build or load time raises
+  `ConfigurationError` (`_errors.py`) so the server fails fast. Do not
+  log it and continue with a degraded default.
+- No bare `except:`. `except Exception` only at a boundary whose failure
+  must not take down startup or a request, with a comment saying why
+  (the existing `# noqa: BLE001 — <reason>` form) and a log call carrying
+  `exc_info=True`.
+- Optional enrichment failures: catch, log at `DEBUG` with
+  `exc_info=True`, continue.
+- Re-raise with `from exc` to keep the cause, or `from None` when the
+  cause's message would carry a secret (see redaction below).
+
+## Message format
+
+- Pseudo-structured: `logger.info("event_name key=%s", value)`. The event
+  name is the first token (snake_case), followed by `key=value` pairs
+  through `%s` formatting.
+- Never use f-strings in log calls; they defeat lazy formatting.
+- Some existing lines predate this format. A diff that changes one of
+  them converts it; do not sweep untouched lines in an unrelated PR.
+
+## Secrets and redaction
+
+Operator-supplied values reach log lines and exception messages, and both
+are emit paths: an exception message is rendered in every traceback that
+carries it.
+
+- Never log a token, password, or secret value. Log its presence
+  (`token=<redacted>`) or a non-reversible descriptor.
+- Never log a full operator-supplied URL: userinfo carries credentials and
+  query strings carry tokens. Log `scheme` or the parsed hostname.
+- When you fix a leak on one emit path, sweep every other path that
+  handles the same value in the same change.
+- `SecretMaskFilter` masks `Authorization` header values in formatted
+  messages, but only on a logger or handler it has been attached to, and
+  pvl-core attaches it nowhere itself. It is an opt-in safety net for
+  downstreams, not a licence to log unredacted values.
+
+## Testing log output
+
+`caplog` captures at the root logger. `caplog.at_level(level,
+logger="x")` only sets that logger's level; records from sibling loggers
+are still captured, so assert on the record's `name` when the test is
+about one logger. FastMCP sets `propagate=False` on `fastmcp`, so records
+under `fastmcp.*` (the request middleware's included) reach `caplog` only
+through the autouse `_fastmcp_logger_propagates` fixture in
+`tests/conftest.py`.
