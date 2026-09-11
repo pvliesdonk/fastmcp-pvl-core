@@ -2,8 +2,12 @@
 
 **Date:** 2026-09-11
 **Issues:** umbrella issue to be filed; resolves
-[#323](https://github.com/pvliesdonk/fastmcp-pvl-core/issues/323) and
-[fastmcp-server-template#608](https://github.com/pvliesdonk/fastmcp-server-template/issues/608)
+[#323](https://github.com/pvliesdonk/fastmcp-pvl-core/issues/323);
+blocked on the template side by
+[fastmcp-server-template#611](https://github.com/pvliesdonk/fastmcp-server-template/issues/611);
+supersedes the stopgap in
+[fastmcp-server-template#609](https://github.com/pvliesdonk/fastmcp-server-template/pull/609)
+(which closed [#608](https://github.com/pvliesdonk/fastmcp-server-template/issues/608))
 **Related:** [ADR 0003](../../adr/0003-opentelemetry-classification.md),
 [logging conformance #90/#91](2026-05-15-logging-conformance-90-91-design.md)
 
@@ -39,8 +43,17 @@ Observable consequences:
   middleware lines interleaved with uvicorn's and the domain's plain text.
 - **OTLP log export misses `fastmcp.*`** (#323). An operator's OTLP handler
   at root never sees records from a logger with `propagate=False`.
-- **Container line-wrapping** (template#608). Rich defaults to 80 columns on
-  a non-TTY; structured lines wrap across three rows.
+- **Container output is neither readable nor parseable.** Rich defaults to 80
+  columns on a non-TTY, so structured lines wrapped across three rows
+  (template#608). The stopgap in template#609 sets
+  `FASTMCP_ENABLE_RICH_LOGGING=false` in the image and systemd unit; its own
+  proof output is `INFO: {"event": "request_completed", …}` — a level prefix
+  in front of the JSON, from fastmcp's plain handler — next to
+  `LEVEL name: message` lines from the template's root handler.
+- **First-party records carry no parseable fields.** The family logging
+  standard's `event key=%s` format is followed by 229 of 625 literal-format
+  calls across the six template-generated servers, the template skeleton
+  included, and nothing checks it (template#611).
 - **Fragmented noise policy.** httpx/httpcore quieting exists in three
   mutually inconsistent downstream copies (see §4).
 
@@ -176,16 +189,19 @@ parseable output with no configuration; an interactive terminal gets Rich.
 
 **Rich mode.** `RichHandler` at root plus the traceback companion (§1). The
 middleware's documented `event key=value` line (`README.md:320-328`) is
-unchanged byte for byte. When stderr is not a TTY, pvl-core sets the Rich
-`Console` width to 200 columns instead of accepting the 80-column default —
-the width at which the #608 investigation found a structured line stops
-wrapping — so a structured line renders on one row (template#608).
+unchanged byte for byte. Rich on a non-TTY is now only reached by an operator
+explicitly setting `<PREFIX>_LOG_FORMAT=rich` in a container; pvl-core does
+not adjust its width. template#609 found that forcing a wide console
+(`COLUMNS=200`) stops the wrapping but pads every record with trailing spaces
+and keeps the blank time and source columns, and documents `COLUMNS` as the
+operator's escape hatch — that stands.
 
 **JSON mode.** Plain `StreamHandler` on stderr with a JSON formatter; one
 object per line. Envelope, in order:
 
 - `ts` (ISO-8601 UTC), `level`, `logger`
-- middleware records: `event`, then the event's fields
+- conforming records (§3a) — the middleware's and first-party code's alike:
+  `event`, then the event's fields
 - all other records: `message` (the formatted message)
 - `trace_id`, `span_id` when a valid span context is in scope
 - `exception` when the record carries a traceback
@@ -194,17 +210,69 @@ object per line. Envelope, in order:
 emitted with `client`, `method`, `path`, `status` fields rather than a
 formatted string.
 
-**Layering change.** The middleware stops rendering. It attaches the event
-name and field dict to the record under a namespaced attribute, and the
-formatter renders them. The middleware's `structured=` constructor flag and
-the `FASTMCP_ENABLE_RICH_LOGGING` read in `_middleware.py:40-43` are removed.
+**Layering change.** The middleware stops rendering. It logs through the
+same grammar as first-party code (§3a), and the formatter renders the result.
+The middleware's `structured=` constructor flag and the
+`FASTMCP_ENABLE_RICH_LOGGING` read in `_middleware.py:40-43` are removed.
 
-**Known limitation.** The family logging standard
-(`logging-standard` skill: "event name as first token, then key=value pairs
-via `%s` formatting") produces pre-rendered text. In JSON mode, domain records
-therefore appear as `{"message": "event_name key=value …"}` — valid JSON, not
-exploded fields. Structured domain fields would need a new producer-side
-convention in the standard; that is out of scope here.
+## §3a Fields from the log-call grammar
+
+Every first-party record must reach JSON mode as real fields, not a
+`message` blob. The family standard already writes
+`logger.info("event_name key=%s", value)`, and stdlib keeps the two halves
+apart on every record: `record.msg` is the template the developer wrote,
+`record.args` holds the values. pvl-core parses the **template** — a literal
+in source code, never the rendered text — and pairs each field with its
+argument, so values keep their types and no value is ever re-parsed out of a
+string.
+
+**Grammar** (owned by pvl-core, one private module consumed by both
+formatters and the conformance check):
+
+```
+template := event ( " " field )*
+event    := [a-z][a-z0-9_]*
+field    := name "=" ( placeholder | literal )
+name     := [a-z][a-z0-9_]*
+placeholder := one %-conversion (e.g. %s %d %r %.1f), consuming the next arg
+literal  := one or more characters, none of them space, "%" or "="
+```
+
+A template conforms when it matches in full and its placeholders consume
+exactly `record.args`. Decided cases the current standard leaves open
+(template#611): a literal value (`status=configured`) conforms, as a string
+field; a compound or suffixed placeholder (`attempt=%d/%d`, `waiting=%.1fs`)
+does not — it is written as separate fields (`attempt=%d max_attempts=%d
+waiting_s=%.1f`); any prose, including a prefix before the pairs, does not;
+a `%%` escape does not (it is neither a placeholder nor a literal).
+
+**Rendering a conforming record.** JSON: `event`, then each field — a
+placeholder field carries its argument as-is when it is a JSON-native type
+(`str`, `int`, `float`, `bool`, `None`) and `str(arg)` otherwise; a literal
+field is a string. Rich: `event` followed by `key=value` pairs, each value
+the placeholder's own conversion applied to its argument, then quoted by the
+existing `_render_value` rule (whitespace or `"` → quoted and escaped). For
+the middleware this is byte-identical to today; for first-party records the
+only visible change is that a value containing whitespace or a `"` is now
+quoted and escaped.
+
+**A non-conforming record** renders as `message` in JSON and as its normal
+formatted text in Rich. It is never dropped and never raises.
+
+**Conformance check.** pvl-core exports
+`find_nonconforming_log_calls(root: Path) -> list[LogCallViolation]`: it
+parses every `*.py` under `root` with `ast` and reports each call to a
+standard level method (`debug`, `info`, `warning`, `error`, `exception`,
+`critical`) on the receiver the standard mandates
+(`logger = logging.getLogger(__name__)`) whose first argument is not a
+conforming literal — an f-string or non-literal first argument is a
+violation. Each violation carries path, line and the offending template. It
+reads source only; nothing is imported. The template runs it as a test
+(template#611); a second implementation of the grammar in the template would
+drift from the formatter's.
+
+Parsing is per template string and cached, so the per-record cost is a
+dictionary lookup.
 
 ## §4 Level and filter policy
 
@@ -286,7 +354,9 @@ and keeping identity a caller argument (`CLAUDE.md`, foldability).
 | `FASTMCP_ENABLE_RICH_LOGGING` | — | — | no longer read by pvl-core; see below |
 
 `FASTMCP_ENABLE_RICH_LOGGING` is not bridged. Its only use was selecting JSON
-in deployed containers, and the auto default produces JSON on a non-TTY.
+in deployed containers — which is what template#609 sets it for in the image
+and systemd unit — and the auto default produces JSON on a non-TTY. The
+template cutover removes #609's default.
 
 Deleted with the rename: the `os.environ["FASTMCP_LOG_LEVEL"] = "DEBUG"`
 write on the verbose path (`_logging.py:80`), which existed only to align
@@ -337,7 +407,15 @@ Named tests:
   DEBUG; none at WARNING; non-conforming record passes.
 - **Rendering** — Rich middleware line byte-identical to `README.md:320-328`;
   in JSON mode every record parses (middleware, domain, uvicorn access,
-  exception, trace ids); non-TTY Rich does not wrap a long line.
+  exception, trace ids).
+- **Grammar** — table-driven over every decided case in §3a: plain
+  placeholder, non-`%s` conversion, literal value, compound placeholder,
+  unit suffix, prose prefix, arg-count mismatch, `%%`. A conforming
+  first-party record yields typed JSON fields and the quoted Rich form; a
+  non-conforming one yields `message` and never raises.
+- **Conformance check** — reports f-strings, non-literal first arguments and
+  non-conforming literals with path and line; ignores calls on other
+  receivers; imports nothing from the scanned tree.
 - **Bridge** — exactly one `WARNING`, naming the prefixed variable, only when
   the fallback is used.
 - **Noise policy** — per-logger levels at INFO and DEBUG, including httpx and
@@ -348,29 +426,48 @@ and Rich's width handling are interpreter- and environment-sensitive.
 
 ## §8 Staging and release
 
-Sequenced PRs to `main`, one major release, one template cutover.
+Sequenced PRs to `main`, one major release, one template cutover — preceded
+by one non-breaking release so template#611 and the downstream migration can
+start immediately.
 
+0. **PR 0 — grammar and conformance check** (non-breaking, `feat:`). The
+   §3a grammar module and `find_nonconforming_log_calls`, with no change to
+   runtime logging. Released on its own as a minor version, because it is the
+   only part of this design that does not depend on the topology and it
+   unblocks template#611 now.
 1. **PR 1 — topology** (breaking). Root ownership with the Rich renderer
    reproduced at root, fastmcp neutralised, `configure_logging_from_env(env_prefix)`
    and the bridge, §4 policy, the new fixture.
 2. **PR 2 — `run_http` and `ServerConfig.shutdown_grace_s`** (breaking).
-3. **PR 3 — rendering** (breaking). JSON formatter, auto selection, non-TTY
-   width, middleware emits fields; `structured=` and
-   `FASTMCP_ENABLE_RICH_LOGGING` removed. Closes template#608.
+3. **PR 3 — rendering** (breaking). JSON formatter and Rich field rendering
+   over the §3a grammar, auto selection, middleware logs through the grammar;
+   `structured=` and `FASTMCP_ENABLE_RICH_LOGGING` removed.
 4. **PR 4 — #323 recipe**, from a literal run; README and ADR 0003 note.
    Folds into PR 1 if small. Closes #323.
 5. **Release** the major version.
-6. **Template cutover**, one PR: delete the `_root` handler block and the
-   `-v` httpx block; call `configure_logging_from_env(_ENV_PREFIX, verbose=...)`
-   and `run_http`; rename logging variables in `compose.yml`, with
+6. **template#611**, after PR 0's release and independent of PRs 1–4: the
+   `logging-standard` skill states the §3a grammar; the template runs
+   `find_nonconforming_log_calls` over `src/` as a test; the skeleton's own
+   non-conforming calls are rewritten. Consequence, accepted: each
+   downstream's `copier update` PR fails that test until the downstream's
+   calls conform — per-repo migration issues track it.
+7. **Template cutover**, one PR, after the major release: delete the `_root`
+   handler block and the `-v` httpx block; call
+   `configure_logging_from_env(_ENV_PREFIX, verbose=...)` and `run_http`;
+   remove template#609's `FASTMCP_ENABLE_RICH_LOGGING=false` default from the
+   image and systemd unit; rename logging variables in `compose.yml`, with
    `<PREFIX>_LOG_FORMAT=rich` present but commented; update the
-   `logging-standard` skill to describe format as a renderer choice.
-7. **Downstream issues**: markdown-vault-mcp (delete `_http_logging.py`;
-   graceful-shutdown value now from pvl-core), scholar-mcp (inherited httpx
-   copy).
+   `logging-standard` skill's Scope and Framework sections for the new env
+   contract and renderer choice.
+8. **Downstream issues**: per-repo log-call migration for the six
+   template-generated servers (template#611's table); markdown-vault-mcp also
+   deletes `_http_logging.py` and takes the graceful-shutdown value from
+   pvl-core; scholar-mcp drops its inherited httpx copy.
 
 ## Out of scope
 
-- Structured fields for domain log records (§3, known limitation).
+- Fields for third-party records (httpx, `uvicorn.error`, the MCP SDK):
+  their templates are not ours, so they render as `message`. `uvicorn.access`
+  is the one exception (§3).
 - Any OpenTelemetry code in pvl-core (ADR 0003).
 - Changes to the middleware's event vocabulary.
