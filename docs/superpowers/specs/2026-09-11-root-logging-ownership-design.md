@@ -5,7 +5,7 @@
 [#323](https://github.com/pvliesdonk/fastmcp-pvl-core/issues/323);
 blocked on the template side by
 [fastmcp-server-template#611](https://github.com/pvliesdonk/fastmcp-server-template/issues/611);
-supersedes the stopgap in
+supersedes the earlier, narrower fix in
 [fastmcp-server-template#609](https://github.com/pvliesdonk/fastmcp-server-template/pull/609)
 (which closed [#608](https://github.com/pvliesdonk/fastmcp-server-template/issues/608))
 **Related:** [ADR 0003](../../adr/0003-opentelemetry-classification.md),
@@ -45,8 +45,9 @@ Observable consequences:
   at root never sees records from a logger with `propagate=False`.
 - **Container output is neither readable nor parseable.** Rich defaults to 80
   columns on a non-TTY, so structured lines wrapped across three rows
-  (template#608). The stopgap in template#609 sets
-  `FASTMCP_ENABLE_RICH_LOGGING=false` in the image and systemd unit; its own
+  (template#608). The predecessor fix in template#609 sets
+  `FASTMCP_ENABLE_RICH_LOGGING=false` in the image and systemd unit, which
+  removes the wrapping; its own
   proof output is `INFO: {"event": "request_completed", …}` — a level prefix
   in front of the JSON, from fastmcp's plain handler — next to
   `LEVEL name: message` lines from the template's root handler.
@@ -296,6 +297,24 @@ reach the MCP middleware. The filter is installed on the `uvicorn.access`
 logger; repeated calls leave exactly one instance, and a DEBUG call removes
 it.
 
+**Secrets in the access line.** uvicorn logs
+`get_path_with_query_string(scope)`, so the kept lines carry both. pvl-core
+rewrites the path on every record it passes, in Rich and JSON alike:
+
+- **The query string is stripped**, always. No route in the family carries
+  diagnostic query parameters — `/mcp` and `/health` use none — and the ones
+  that do are the OAuth routes, where the parameters are authorization codes
+  and PKCE material (`mcp/server/auth/handlers/authorize.py:146-147`).
+- **The segment after pvl-core's own `/transfer/` route is redacted**
+  (`(^|/)transfer/[^/]+` → `transfer/<redacted>`). The transfer token is in
+  the path, not the query (`_transfer/register.py:106`,
+  `_ROUTE_PATH = "/transfer/{token}"`), and an expired link produces exactly
+  the 4xx this policy keeps.
+
+This follows the same rule as `_health.py::_redact_reason` and
+`_transfer.fetch`: a credential never reaches a log line, and every emit path
+is swept when one is.
+
 uvicorn logs every access record at `INFO`, whatever the status. At
 `<PREFIX>_LOG_LEVEL=WARNING` or above, the level therefore drops 4xx/5xx
 lines before the filter sees them, and no access lines appear at all. That is
@@ -405,6 +424,10 @@ Named tests:
   missing path; assert the 200 is absent and the 404 present at the handler.
 - **Access policy** — 200 dropped; 401 and `/health` 503 kept; all kept at
   DEBUG; none at WARNING; non-conforming record passes.
+- **Access-line redaction** — a kept line for `/authorize?code=…&state=…`
+  carries no query string, and one for `/transfer/<token>` carries
+  `transfer/<redacted>`, in both Rich and JSON. Asserted on the handler's
+  output, not on the filter's return value.
 - **Rendering** — Rich middleware line byte-identical to `README.md:320-328`;
   in JSON mode every record parses (middleware, domain, uvicorn access,
   exception, trace ids).
