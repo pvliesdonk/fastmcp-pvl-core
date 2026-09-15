@@ -60,37 +60,46 @@ class LogCallViolation:
     template: str | None
 
 
+def _is_get_logger_call(call: ast.Call) -> bool:
+    """Whether *call* invokes ``getLogger``, qualified or bare.
+
+    Covers both ``logging.getLogger(...)`` (an ``ast.Attribute`` whose
+    ``attr`` is ``"getLogger"``) and a bare ``getLogger(...)`` reached via
+    ``from logging import getLogger`` (an ``ast.Name``).
+    """
+    func = call.func
+    return (isinstance(func, ast.Attribute) and func.attr == "getLogger") or (
+        isinstance(func, ast.Name) and func.id == "getLogger"
+    )
+
+
+def _assigned_names(node: ast.Assign | ast.AnnAssign) -> list[str]:
+    """Bare names *node* binds; anything else (tuple, attribute, ...) is skipped.
+
+    ``ast.Assign`` and ``ast.AnnAssign`` are distinct node types with a
+    differently shaped target: the former's ``targets`` is a list (it
+    supports chained assignment, ``a = b = ...``), the latter's ``target`` is
+    a single node.
+    """
+    targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+    return [target.id for target in targets if isinstance(target, ast.Name)]
+
+
 def _logger_names(tree: ast.Module) -> set[str]:
     """Names bound to a ``logging.getLogger(...)`` call anywhere in *tree*.
 
     Handles both plain assignment (``logger = logging.getLogger(__name__)``)
     and the annotated form the spec mandates (``logger: logging.Logger =
-    logging.getLogger(__name__)``) — ``ast.Assign`` and ``ast.AnnAssign`` are
-    distinct node types with a differently shaped target.
+    logging.getLogger(__name__)``).
     """
     names: set[str] = set()
     for node in ast.walk(tree):
-        targets: list[ast.expr]
-        value: ast.expr | None
-        if isinstance(node, ast.Assign):
-            value = node.value
-            targets = list(node.targets)
-        elif isinstance(node, ast.AnnAssign):
-            value = node.value
-            targets = [node.target]
-        else:
+        if not isinstance(node, (ast.Assign, ast.AnnAssign)):
             continue
-        if value is None or not isinstance(value, ast.Call):
+        value = node.value
+        if not (isinstance(value, ast.Call) and _is_get_logger_call(value)):
             continue
-        func = value.func
-        is_get_logger = (
-            isinstance(func, ast.Attribute) and func.attr == "getLogger"
-        ) or (isinstance(func, ast.Name) and func.id == "getLogger")
-        if not is_get_logger:
-            continue
-        for target in targets:
-            if isinstance(target, ast.Name):
-                names.add(target.id)
+        names.update(_assigned_names(node))
     return names
 
 
