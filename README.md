@@ -352,6 +352,47 @@ caller's span, because the server created none of its own.
 
 See [Telemetry](#telemetry-opentelemetry-traces) for enabling export.
 
+### The log-call grammar
+
+Every first-party log call follows one shape, so a log consumer can read it
+as fields rather than a sentence:
+
+```python
+logger.info("cache_write key=%s ttl=%d", key, ttl)
+```
+
+An event name in snake_case, then `name=value` fields — each value either a
+single `%`-conversion or a fixed token with no space, `%` or `=`. Prose, a
+compound placeholder (`attempt=%d/%d`), a unit suffix (`waiting=%.1fs`) and
+`%%` are all outside it.
+
+`find_nonconforming_log_calls` reports calls that break it, so a project can
+fail its build rather than find out from an aggregator:
+
+```python
+from pathlib import Path
+
+from fastmcp_pvl_core import find_nonconforming_log_calls
+
+
+def test_log_calls_conform():
+    src = Path(__file__).parents[1] / "src"
+    assert find_nonconforming_log_calls(src) == []
+```
+
+(`parents[1]` assumes the test file lives at `tests/test_*.py`, one level
+below the project root that contains `src/`; adjust the index to match
+where your test file actually sits.) `find_nonconforming_log_calls` raises
+`NotADirectoryError` if the path does not exist or is not a directory,
+rather than reporting a clean, unscanned tree as conforming.
+
+It parses source with `ast` and imports nothing from the tree it scans. Each
+violation carries `path`, `line`, `reason` and — except for an f-string or
+other non-literal message, where it is `None` — the offending `template`.
+
+pvl-core's own log calls do not yet follow this grammar — 36 of them predate
+it — and migrating the codebase is tracked as [#328](https://github.com/pvliesdonk/fastmcp-pvl-core/issues/328).
+
 ### Telemetry (OpenTelemetry traces)
 
 pvl-core ships **no** OpenTelemetry SDK, exporter, or bootstrap code.
