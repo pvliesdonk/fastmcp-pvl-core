@@ -616,7 +616,7 @@ In `src/fastmcp_pvl_core/__init__.py`, add the import beside the other `from ._x
 from ._log_conformance import LogCallViolation, find_nonconforming_log_calls
 ```
 
-and add both names to `__all__`, keeping its existing alphabetical order — `"LogCallViolation"` goes between `"JobsConfig"` and `"SecretMaskFilter"`; `"find_nonconforming_log_calls"` goes between `"fetch_url"` and `"finalize_instructions"`.
+and add both names to `__all__`, keeping its existing alphabetical order — `"LogCallViolation"` goes between `"JobsConfig"` and `"SecretMaskFilter"`; `"find_nonconforming_log_calls"` goes between `"finalize_instructions"` and `"get_claims"` (`fina` sorts before `find`).
 
 - [ ] **Step 4: Run the test to verify it passes**
 
