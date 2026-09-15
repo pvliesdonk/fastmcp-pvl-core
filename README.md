@@ -327,6 +327,31 @@ tool_call_completed tool=read duration_ms=68.57
 tool_call_failed    tool=read duration_ms=109.84 error_type=ValueError error="Section '1.3' not found"
 ```
 
+Non-tool messages use a generic `request_*` / `notification_*` vocabulary
+keyed by `method=`. Set `FASTMCP_ENABLE_RICH_LOGGING=false` to emit one JSON
+object per record instead of `key=value` text — for log aggregators such as
+the ELK stack or Splunk.
+
+When an OpenTelemetry span is in scope, every line also carries the ids
+needed to join it to that trace:
+
+```
+tool_call_completed tool=read duration_ms=68.57 trace_id=dc538b4bb2b968a6017c12d54c45bfb8 span_id=7108b0b132270b25
+```
+
+This needs no configuration. Both fields are omitted whenever no valid
+span context is in scope — the usual case with no OpenTelemetry SDK
+installed — so an untraced server's output is byte-identical to the
+lines above.
+
+"No SDK" and "no span" are not quite the same thing, though: FastMCP
+extracts an inbound `traceparent` from request `_meta` without requiring
+an SDK, so a client that propagates trace context gets correlated lines
+even from an otherwise untraced server. In that case `span_id` is the
+caller's span, because the server created none of its own.
+
+See [Telemetry](#telemetry-opentelemetry-traces) for enabling export.
+
 ### The log-call grammar
 
 Every first-party log call follows one shape, so a log consumer can read it
@@ -357,30 +382,8 @@ def test_log_calls_conform():
 It parses source with `ast` and imports nothing from the tree it scans. Each
 violation carries `path`, `line`, `reason` and the offending `template`.
 
-Non-tool messages use a generic `request_*` / `notification_*` vocabulary
-keyed by `method=`. Set `FASTMCP_ENABLE_RICH_LOGGING=false` to emit one JSON
-object per record instead of `key=value` text — for log aggregators such as
-the ELK stack or Splunk.
-
-When an OpenTelemetry span is in scope, every line also carries the ids
-needed to join it to that trace:
-
-```
-tool_call_completed tool=read duration_ms=68.57 trace_id=dc538b4bb2b968a6017c12d54c45bfb8 span_id=7108b0b132270b25
-```
-
-This needs no configuration. Both fields are omitted whenever no valid
-span context is in scope — the usual case with no OpenTelemetry SDK
-installed — so an untraced server's output is byte-identical to the
-lines above.
-
-"No SDK" and "no span" are not quite the same thing, though: FastMCP
-extracts an inbound `traceparent` from request `_meta` without requiring
-an SDK, so a client that propagates trace context gets correlated lines
-even from an otherwise untraced server. In that case `span_id` is the
-caller's span, because the server created none of its own.
-
-See [Telemetry](#telemetry-opentelemetry-traces) for enabling export.
+pvl-core's own log calls do not yet follow this grammar — 36 of them predate
+it — and migrating the codebase is tracked as [#328](https://github.com/pvliesdonk/fastmcp-pvl-core/issues/328).
 
 ### Telemetry (OpenTelemetry traces)
 
