@@ -1,7 +1,7 @@
 # Root logging ownership — one handler chain, one format
 
 **Date:** 2026-09-11
-**Issues:** umbrella issue to be filed; resolves
+**Issues:** [#327](https://github.com/pvliesdonk/fastmcp-pvl-core/issues/327) (epic); resolves
 [#323](https://github.com/pvliesdonk/fastmcp-pvl-core/issues/323);
 blocked on the template side by
 [fastmcp-server-template#611](https://github.com/pvliesdonk/fastmcp-server-template/issues/611);
