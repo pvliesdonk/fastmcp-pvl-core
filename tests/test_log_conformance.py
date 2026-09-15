@@ -93,6 +93,22 @@ def test_any_name_bound_to_getlogger_is_a_receiver(tmp_path):
     assert reasons(tmp_path) == ["non-conforming-template"]
 
 
+def test_annotated_receiver_is_a_receiver(tmp_path):
+    """``logger: logging.Logger = logging.getLogger(__name__)`` is the
+    spec-mandated receiver form with a type annotation. ``ast.AnnAssign`` is
+    a different node type from ``ast.Assign`` with a single ``target``
+    rather than a ``targets`` list; before handling it, a file using only
+    this form was silently skipped in full — a false negative in a build
+    gate.
+    """
+    (tmp_path / "mod.py").write_text(
+        "import logging\n\n"
+        "logger: logging.Logger = logging.getLogger(__name__)\n\n"
+        'logger.info("Prose here")\n'
+    )
+    assert reasons(tmp_path) == ["non-conforming-template"]
+
+
 def test_violation_carries_path_line_and_template(tmp_path):
     path = write(tmp_path, '\nlogger.info("Service started")\n')
     (violation,) = find_nonconforming_log_calls(tmp_path)
@@ -102,13 +118,28 @@ def test_violation_carries_path_line_and_template(tmp_path):
 
 
 def test_results_are_sorted_by_path_then_line(tmp_path):
-    write(tmp_path, 'logger.info("B one")\nlogger.info("B two")\n', name="b.py")
-    write(tmp_path, 'logger.info("A one")\n', name="a.py")
+    """The final ``sorted(...)`` in the implementation is load-bearing, not
+    decorative. ``ast.walk`` is breadth-first: for a module with a call
+    nested inside a function defined *before* a later module-level call, it
+    yields the module-level call first even though it has the higher line
+    number. A test built only from module-level calls (as this test used to
+    be) can't tell a real sort from a no-op, because ``ast.walk`` already
+    hands those back in line order on its own.
+    """
+    body = (
+        "def helper():\n"
+        '    logger.info("prose in function")\n'
+        "\n\n"
+        'logger.info("prose at module level")\n'
+    )
+    write(tmp_path, body, name="b.py")
+    write(tmp_path, body, name="a.py")
     found = find_nonconforming_log_calls(tmp_path)
     assert [(v.path.name, v.line) for v in found] == [
-        ("a.py", 5),
-        ("b.py", 5),
+        ("a.py", 6),
+        ("a.py", 9),
         ("b.py", 6),
+        ("b.py", 9),
     ]
 
 
@@ -127,6 +158,48 @@ def test_syntax_error_propagates(tmp_path):
     (tmp_path / "broken.py").write_text("def (:\n")
     with pytest.raises(SyntaxError):
         find_nonconforming_log_calls(tmp_path)
+
+
+def test_missing_root_raises(tmp_path):
+    """A build gate calls this expecting ``== []``. A wrong or stale path
+    must not silently scan nothing and report clean.
+    """
+    with pytest.raises(NotADirectoryError):
+        find_nonconforming_log_calls(tmp_path / "does-not-exist")
+
+
+def test_root_that_is_a_file_raises(tmp_path):
+    path = tmp_path / "not_a_dir.py"
+    path.write_text('logger.info("Prose here")\n')
+    with pytest.raises(NotADirectoryError):
+        find_nonconforming_log_calls(path)
+
+
+def test_non_ascii_source_is_read_independent_of_locale(tmp_path, monkeypatch):
+    """The checker must decode source the way the interpreter does (bytes
+    through ``ast.parse``, honouring PEP 263 / a BOM), not via
+    ``Path.read_text()``, which decodes with the *locale* encoding. Under a
+    non-UTF-8 locale (e.g. ``LC_ALL=C``), a file containing a non-ASCII
+    identifier or string would otherwise raise ``UnicodeDecodeError``.
+
+    Reproducing a real non-UTF-8 locale from inside a running interpreter
+    isn't reliable (the encoding is resolved once at process start, and
+    Python's C-locale coercion silently upgrades ``LC_ALL=C`` back to
+    UTF-8 on many platforms — see PEP 538). Instead, this makes
+    ``Path.read_text`` itself explode, which proves this code path never
+    calls it: with the pre-fix ``path.read_text()`` implementation, this
+    test fails with the injected error instead of returning a violation.
+    """
+
+    def read_text_must_not_be_called(self, *args, **kwargs):
+        raise UnicodeDecodeError(
+            "ascii", b"", 0, 1, "read_text must not be used to decode source"
+        )
+
+    write(tmp_path, 'logger.info("café_event key=%s", 1)\n')
+    monkeypatch.setattr(Path, "read_text", read_text_must_not_be_called)
+
+    assert reasons(tmp_path) == ["non-conforming-template"]
 
 
 def test_public_export():

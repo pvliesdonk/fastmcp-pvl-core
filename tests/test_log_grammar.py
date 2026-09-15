@@ -55,6 +55,7 @@ NON_CONFORMING = [
     " event key=%s",  # leading space
     "event key=%s ",  # trailing space
     "event  key=%s",  # doubled separator
+    "event k=% d",  # space flag: no longer a valid conversion character
 ]
 
 

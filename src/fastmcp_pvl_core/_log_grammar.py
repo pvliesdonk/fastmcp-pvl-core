@@ -27,8 +27,11 @@ from functools import lru_cache
 _EVENT = r"[a-z][a-z0-9_]*"
 _NAME = r"[a-z][a-z0-9_]*"
 # One %-conversion, e.g. ``%s`` ``%d`` ``%.1f`` ``%r``. ``%%`` is excluded by
-# construction: its second character is not a type character.
-_CONVERSION = r"%[-#0+ ]*\d*(?:\.\d+)?[sdifeEgGxXor]"
+# construction: its second character is not a type character. The type
+# character set is deliberately narrow — it is the subset of %-conversions
+# the family standard uses, so an exotic one such as ``%a`` or ``%c`` is
+# treated as non-conforming rather than silently accepted.
+_CONVERSION = r"%[-#0+]*\d*(?:\.\d+)?[sdifeEgGxXor]"
 # A fixed value, e.g. ``status=configured``. No space (it would start a new
 # field), no ``%`` (it would be a malformed placeholder), no ``=``.
 _LITERAL = r"[^\s%=]+"

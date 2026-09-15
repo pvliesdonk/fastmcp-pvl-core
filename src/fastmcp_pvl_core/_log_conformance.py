@@ -9,9 +9,10 @@ production.
 It reads source with :mod:`ast` and never imports the tree it scans, so it is
 safe to point at a package whose dependencies are not installed.
 
-Kept separate from :mod:`._log_grammar` because that module is imported on
-every log record once the formatters consume it, and this one pulls in
-``ast`` for the benefit of a single test.
+Kept separate from :mod:`._log_grammar` for separation of concerns: the
+grammar is the contract a template either follows or does not, while this
+module is a tool built on that contract — a project's build gate, not
+something a running server depends on.
 """
 
 from __future__ import annotations
@@ -43,7 +44,12 @@ class LogCallViolation:
     Attributes:
         path: File the call is in.
         line: 1-based line of the call.
-        reason: Why it does not conform — one of the ``REASON_*`` constants.
+        reason: Why it does not conform. One of the six literal strings
+            ``"f-string"``, ``"non-literal-message"``, ``"no-arguments"``,
+            ``"starred-arguments"``, ``"non-conforming-template"`` and
+            ``"argument-count-mismatch"`` — the module-level ``REASON_*``
+            constants are these same values but are private, so filter on
+            the literal string rather than importing a constant.
         template: The literal template, when the call had one; ``None`` when
             the message was an f-string or another non-literal expression.
     """
@@ -55,18 +61,34 @@ class LogCallViolation:
 
 
 def _logger_names(tree: ast.Module) -> set[str]:
-    """Names bound to a ``logging.getLogger(...)`` call anywhere in *tree*."""
+    """Names bound to a ``logging.getLogger(...)`` call anywhere in *tree*.
+
+    Handles both plain assignment (``logger = logging.getLogger(__name__)``)
+    and the annotated form the spec mandates (``logger: logging.Logger =
+    logging.getLogger(__name__)``) — ``ast.Assign`` and ``ast.AnnAssign`` are
+    distinct node types with a differently shaped target.
+    """
     names: set[str] = set()
     for node in ast.walk(tree):
-        if not isinstance(node, ast.Assign) or not isinstance(node.value, ast.Call):
+        targets: list[ast.expr]
+        value: ast.expr | None
+        if isinstance(node, ast.Assign):
+            value = node.value
+            targets = list(node.targets)
+        elif isinstance(node, ast.AnnAssign):
+            value = node.value
+            targets = [node.target]
+        else:
             continue
-        func = node.value.func
+        if value is None or not isinstance(value, ast.Call):
+            continue
+        func = value.func
         is_get_logger = (
             isinstance(func, ast.Attribute) and func.attr == "getLogger"
         ) or (isinstance(func, ast.Name) and func.id == "getLogger")
         if not is_get_logger:
             continue
-        for target in node.targets:
+        for target in targets:
             if isinstance(target, ast.Name):
                 names.add(target.id)
     return names
@@ -114,13 +136,23 @@ def find_nonconforming_log_calls(root: Path) -> list[LogCallViolation]:
         Violations, sorted; empty when everything conforms.
 
     Raises:
+        NotADirectoryError: If *root* does not exist or is not a directory.
+            A build gate that calls this expecting ``== []`` must not have a
+            wrong or stale path silently pass having scanned nothing.
         SyntaxError: If a file under *root* cannot be parsed. The scanned
             tree is the caller's own source, so unparseable input is a
             defect in it rather than something to report as a violation.
     """
+    if not root.is_dir():
+        raise NotADirectoryError(f"not a directory: {root}")
     violations: list[LogCallViolation] = []
     for path in sorted(root.rglob("*.py")):
-        tree = ast.parse(path.read_text(), filename=str(path))
+        # Bytes, not str: ``ast.parse`` decodes per PEP 263 (an encoding
+        # cookie or a BOM) the same way the interpreter does, independent of
+        # the locale. ``Path.read_text()`` would decode with the locale
+        # encoding instead, so a non-ASCII source file would raise
+        # ``UnicodeDecodeError`` under e.g. ``LC_ALL=C``.
+        tree = ast.parse(path.read_bytes(), filename=str(path))
         receivers = _logger_names(tree)
         if not receivers:
             continue

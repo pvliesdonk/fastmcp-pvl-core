@@ -376,11 +376,19 @@ from fastmcp_pvl_core import find_nonconforming_log_calls
 
 
 def test_log_calls_conform():
-    assert find_nonconforming_log_calls(Path("src")) == []
+    src = Path(__file__).parents[1] / "src"
+    assert find_nonconforming_log_calls(src) == []
 ```
 
+(`parents[1]` assumes the test file lives at `tests/test_*.py`, one level
+below the project root that contains `src/`; adjust the index to match
+where your test file actually sits.) `find_nonconforming_log_calls` raises
+`NotADirectoryError` if the path does not exist or is not a directory,
+rather than reporting a clean, unscanned tree as conforming.
+
 It parses source with `ast` and imports nothing from the tree it scans. Each
-violation carries `path`, `line`, `reason` and the offending `template`.
+violation carries `path`, `line`, `reason` and — except for an f-string or
+other non-literal message, where it is `None` — the offending `template`.
 
 pvl-core's own log calls do not yet follow this grammar — 36 of them predate
 it — and migrating the codebase is tracked as [#328](https://github.com/pvliesdonk/fastmcp-pvl-core/issues/328).
