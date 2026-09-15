@@ -127,3 +127,11 @@ def test_syntax_error_propagates(tmp_path):
     (tmp_path / "broken.py").write_text("def (:\n")
     with pytest.raises(SyntaxError):
         find_nonconforming_log_calls(tmp_path)
+
+
+def test_public_export():
+    import fastmcp_pvl_core
+
+    assert "find_nonconforming_log_calls" in fastmcp_pvl_core.__all__
+    assert "LogCallViolation" in fastmcp_pvl_core.__all__
+    assert fastmcp_pvl_core.find_nonconforming_log_calls is find_nonconforming_log_calls

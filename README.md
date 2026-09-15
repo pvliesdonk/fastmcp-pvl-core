@@ -327,6 +327,36 @@ tool_call_completed tool=read duration_ms=68.57
 tool_call_failed    tool=read duration_ms=109.84 error_type=ValueError error="Section '1.3' not found"
 ```
 
+### The log-call grammar
+
+Every first-party log call follows one shape, so a log consumer can read it
+as fields rather than a sentence:
+
+```python
+logger.info("cache_write key=%s ttl=%d", key, ttl)
+```
+
+An event name in snake_case, then `name=value` fields — each value either a
+single `%`-conversion or a fixed token with no space, `%` or `=`. Prose, a
+compound placeholder (`attempt=%d/%d`), a unit suffix (`waiting=%.1fs`) and
+`%%` are all outside it.
+
+`find_nonconforming_log_calls` reports calls that break it, so a project can
+fail its build rather than find out from an aggregator:
+
+```python
+from pathlib import Path
+
+from fastmcp_pvl_core import find_nonconforming_log_calls
+
+
+def test_log_calls_conform():
+    assert find_nonconforming_log_calls(Path("src")) == []
+```
+
+It parses source with `ast` and imports nothing from the tree it scans. Each
+violation carries `path`, `line`, `reason` and the offending `template`.
+
 Non-tool messages use a generic `request_*` / `notification_*` vocabulary
 keyed by `method=`. Set `FASTMCP_ENABLE_RICH_LOGGING=false` to emit one JSON
 object per record instead of `key=value` text — for log aggregators such as

@@ -73,6 +73,7 @@ from ._jobs import (
     register_long_running_tool,
 )
 from ._kv_store import build_kv_store
+from ._log_conformance import LogCallViolation, find_nonconforming_log_calls
 from ._logging import SecretMaskFilter, configure_logging_from_env
 from ._middleware import wire_middleware_stack
 from ._server_info import (
@@ -130,6 +131,7 @@ __all__ = [
     "JobStatus",
     "Jobs",
     "JobsConfig",
+    "LogCallViolation",
     "SecretMaskFilter",
     "ServerConfig",
     "Transport",
@@ -174,6 +176,7 @@ __all__ = [
     "env_int",
     "fetch_url",
     "finalize_instructions",
+    "find_nonconforming_log_calls",
     "get_claims",
     "get_current_auth_mode",
     "get_subject",
