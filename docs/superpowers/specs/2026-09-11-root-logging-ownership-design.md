@@ -272,6 +272,16 @@ reads source only; nothing is imported. The template runs it as a test
 (template#611); a second implementation of the grammar in the template would
 drift from the formatter's.
 
+**Limitation: receiver scope.** The check only sees calls to a level method
+on a module-level name bound directly to `logging.getLogger(...)` (plain or
+annotated assignment) in the same file. A logger reached through an
+attribute — `self.logger.info(...)` — or imported from another module is
+not checked, and `logger.log(level, ...)` is outside the level-method set
+entirely. In particular, the request middleware currently logs via
+`self.logger.log(...)` (`_logging_middleware.py:196`), so it is invisible to
+this check today; the PR that makes the middleware log through this grammar
+must reconcile that gap rather than assume the checker already covers it.
+
 Parsing is per template string and cached, so the per-record cost is a
 dictionary lookup.
 

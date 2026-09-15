@@ -38,7 +38,7 @@ Two modules rather than one because the grammar is imported on every record in P
 ## Not in scope, and tracked
 
 - **Rendering.** Binding `record.args` to the parsed fields, and the JSON/Rich formatters, land in PR 4 of #327. This PR only *parses*.
-- **pvl-core's own log calls.** 8 of 55 conform (14%) under this grammar, measured at `5bd1dff`. Migrating them is a separate child of #327, filed before this PR merges — the library cannot enforce on downstream what it does not follow. Deliberately not bundled here: it is ~47 unrelated call-site edits that would triple this diff.
+- **pvl-core's own log calls.** 19 of 55 conform (35%) under this grammar, measured with the shipped checker against this repo's `src/`. Migrating them is a separate child of #327, filed before this PR merges — the library cannot enforce on downstream what it does not follow. Deliberately not bundled here: it is 36 unrelated call-site edits that would triple this diff.
 - **Wiring the checker into pvl-core's own CI.** It would fail on the call sites above. It goes in with that migration.
 
 ---
