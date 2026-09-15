@@ -119,6 +119,47 @@ def _violation(path: Path, call: ast.Call) -> LogCallViolation | None:
     return None
 
 
+def _is_level_call(call: ast.Call, receivers: set[str]) -> bool:
+    """Whether *call* invokes a level method on one of *receivers*.
+
+    A qualifying call is an attribute call (``receiver.method(...)``) whose
+    method is one of :data:`_LEVEL_METHODS` and whose receiver is a bare name
+    bound in *receivers* — the set :func:`_logger_names` already collected for
+    the file *call* was found in.
+    """
+    return (
+        isinstance(call.func, ast.Attribute)
+        and call.func.attr in _LEVEL_METHODS
+        and isinstance(call.func.value, ast.Name)
+        and call.func.value.id in receivers
+    )
+
+
+def _scan_file(path: Path) -> list[LogCallViolation]:
+    """Violations in the single file at *path*; empty when it has none.
+
+    Also empty, without walking the tree, when the file binds no
+    ``logging.getLogger(...)`` receiver at all — there is nothing a call in
+    it could conform or fail to conform to.
+    """
+    # Bytes, not str: ``ast.parse`` decodes per PEP 263 (an encoding cookie
+    # or a BOM) the same way the interpreter does, independent of the
+    # locale. ``Path.read_text()`` would decode with the locale encoding
+    # instead, so a non-ASCII source file would raise ``UnicodeDecodeError``
+    # under e.g. ``LC_ALL=C``.
+    tree = ast.parse(path.read_bytes(), filename=str(path))
+    receivers = _logger_names(tree)
+    if not receivers:
+        return []
+    violations: list[LogCallViolation] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and _is_level_call(node, receivers):
+            found = _violation(path, node)
+            if found is not None:
+                violations.append(found)
+    return violations
+
+
 def find_nonconforming_log_calls(root: Path) -> list[LogCallViolation]:
     """Report every logging call under *root* that breaks the grammar.
 
@@ -147,24 +188,5 @@ def find_nonconforming_log_calls(root: Path) -> list[LogCallViolation]:
         raise NotADirectoryError(f"not a directory: {root}")
     violations: list[LogCallViolation] = []
     for path in sorted(root.rglob("*.py")):
-        # Bytes, not str: ``ast.parse`` decodes per PEP 263 (an encoding
-        # cookie or a BOM) the same way the interpreter does, independent of
-        # the locale. ``Path.read_text()`` would decode with the locale
-        # encoding instead, so a non-ASCII source file would raise
-        # ``UnicodeDecodeError`` under e.g. ``LC_ALL=C``.
-        tree = ast.parse(path.read_bytes(), filename=str(path))
-        receivers = _logger_names(tree)
-        if not receivers:
-            continue
-        for node in ast.walk(tree):
-            if (
-                isinstance(node, ast.Call)
-                and isinstance(node.func, ast.Attribute)
-                and node.func.attr in _LEVEL_METHODS
-                and isinstance(node.func.value, ast.Name)
-                and node.func.value.id in receivers
-            ):
-                found = _violation(path, node)
-                if found is not None:
-                    violations.append(found)
+        violations.extend(_scan_file(path))
     return sorted(violations, key=lambda v: (str(v.path), v.line))
