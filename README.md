@@ -631,7 +631,7 @@ Tracked as [#323](https://github.com/pvliesdonk/fastmcp-pvl-core/issues/323).
 | `OTEL_TRACES_EXPORTER` | Already `otlp` under the distro. Set `none` to disable traces (does not affect logs/metrics). |
 | `OTEL_METRICS_EXPORTER` / `OTEL_LOGS_EXPORTER` | Set `none` for a traces-only posture (see above). |
 | `OTEL_SERVICE_NAME` | Populates `service.name`. `OTEL_RESOURCE_ATTRIBUTES=service.name=…` sets it too. |
-| `OTEL_PYTHON_LOG_CORRELATION` | `true` injects `trace_id` / `span_id` into log records — and calls `logging.basicConfig`, adding a stderr handler with OpenTelemetry's own text format. |
+| `OTEL_PYTHON_LOG_CORRELATION` | `true` injects `otelTraceID` / `otelSpanID` (plus `otelServiceName` / `otelTraceSampled`) into log records — and calls `logging.basicConfig`, adding a stderr handler with OpenTelemetry's own text format. |
 | `OTEL_SDK_DISABLED` | `true` disables the SDK wholesale. |
 | `FASTMCP_TELEMETRY_MODE` | `native` (default), `propagation_only`, or `off`. Read at import — set it in the container environment, not in code. |
 

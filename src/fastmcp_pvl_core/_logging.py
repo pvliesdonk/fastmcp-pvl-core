@@ -49,6 +49,7 @@ from ._log_render import (
     _ACCESS_FIELDS_ATTR,
     JsonFormatter,
     _AccessLogFields,
+    _NeverRaiseFilter,
     _or_fallback,
     render_rich,
 )
@@ -307,6 +308,17 @@ def _install_root_handlers(level: int, fmt: str) -> None:
     no separate traceback handler, because in JSON a traceback is the
     ``exception`` field on the same record, and a second handler would
     print it twice.
+
+    Every handler installed here also gets
+    :class:`~._log_render._NeverRaiseFilter`, added before any other
+    filter on that handler. It is what makes a log call never raise
+    regardless of render mode: ``logging.Formatter.format`` calls
+    ``record.getMessage()`` before ``formatMessage`` runs, and
+    ``RichHandler.emit`` calls it again on its ``exc_info`` branch — both
+    bypass :func:`~._log_render.render_rich` and
+    :class:`~._log_render.JsonFormatter` entirely, so only a filter on the
+    handler itself, which runs before either path, can rewrite an
+    unrenderable record in time.
     """
     root = logging.getLogger()
     for handler in root.handlers[:]:
@@ -316,6 +328,7 @@ def _install_root_handlers(level: int, fmt: str) -> None:
     if fmt == "json":
         json_handler = logging.StreamHandler(sys.stderr)
         json_handler.setFormatter(JsonFormatter())
+        json_handler.addFilter(_NeverRaiseFilter())
         setattr(json_handler, _OWNED_ATTR, True)
         root.addHandler(json_handler)
         root.setLevel(level)
@@ -326,6 +339,7 @@ def _install_root_handlers(level: int, fmt: str) -> None:
 
     main = RichHandler(console=console)
     main.setFormatter(formatter)
+    main.addFilter(_NeverRaiseFilter())
     main.addFilter(lambda record: record.exc_info is None)
 
     tracebacks = RichHandler(
@@ -336,6 +350,7 @@ def _install_root_handlers(level: int, fmt: str) -> None:
         tracebacks_max_frames=3,
     )
     tracebacks.setFormatter(formatter)
+    tracebacks.addFilter(_NeverRaiseFilter())
     tracebacks.addFilter(lambda record: record.exc_info is not None)
 
     for handler in (main, tracebacks):

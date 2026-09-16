@@ -374,3 +374,84 @@ def test_json_never_raises_when_field_value_str_raises():
 def test_rich_never_raises_when_field_value_str_raises():
     record = _record("event value=%s", (_RaisingStr(),))
     render_rich(record)
+
+
+# --- reserved-key collision (item 3: a conforming field must not clobber
+# the envelope's own ts/level/logger/event) ----------------------------------
+
+
+def test_json_conforming_field_names_do_not_overwrite_the_envelope():
+    record = _record("e level=%s logger=%s ts=%s", ("L1", "other", "T"))
+    payload = json.loads(JsonFormatter().format(record))
+    # The record's real severity, logger and timestamp survive...
+    assert payload["level"] == "INFO"
+    assert payload["logger"] == _LOGGER_NAME
+    assert payload["ts"] != "T"
+    # ...and the caller's colliding field values are not dropped, just
+    # renamed out of the way.
+    assert payload["field_level"] == "L1"
+    assert payload["field_logger"] == "other"
+    assert payload["field_ts"] == "T"
+
+
+def test_json_field_named_event_does_not_overwrite_the_event_name():
+    # "event" collides with the key _conforming itself writes first, not
+    # just with a later envelope.update — a field named "event" would
+    # otherwise clobber the true event name inside the same dict literal.
+    record = _record("e event=%s", ("other",))
+    payload = json.loads(JsonFormatter().format(record))
+    assert payload["event"] == "e"
+    assert payload["field_event"] == "other"
+
+
+# --- trace correlation (item 4: the otel* attribute fallback) ---------------
+
+
+def test_json_carries_otel_trace_and_span_ids_when_present_on_record():
+    record = _record(
+        "event", (), extra={"otelTraceID": "a" * 32, "otelSpanID": "b" * 16}
+    )
+    payload = json.loads(JsonFormatter().format(record))
+    assert payload["trace_id"] == "a" * 32
+    assert payload["span_id"] == "b" * 16
+
+
+def test_json_omits_otel_ids_that_are_the_no_span_sentinel():
+    # opentelemetry-instrumentation-logging sets both to the literal "0"
+    # when no valid span is in scope; that must not surface as a fake
+    # correlation id on every untraced line.
+    record = _record("event", (), extra={"otelTraceID": "0", "otelSpanID": "0"})
+    payload = json.loads(JsonFormatter().format(record))
+    assert "trace_id" not in payload
+    assert "span_id" not in payload
+
+
+def test_json_explicit_trace_id_wins_over_otel_trace_id():
+    record = _record(
+        "event", (), extra={"trace_id": "explicit", "otelTraceID": "a" * 32}
+    )
+    payload = json.loads(JsonFormatter().format(record))
+    assert payload["trace_id"] == "explicit"
+
+
+# --- json.dumps funnel (item 5: NaN/Infinity and a suffix value whose
+# str() raises must not break the one-JSON-object-per-line stream) ----------
+
+
+def test_json_nan_field_value_does_not_emit_invalid_json():
+    record = _record("event value=%s", (float("nan"),))
+    line = JsonFormatter().format(record)
+    assert "NaN" not in line
+    payload = json.loads(line)
+    assert "message" in payload
+
+
+def test_json_suffix_value_str_raise_does_not_break_line_orientation():
+    # trace_id/span_id come straight from extra= without going through
+    # _conforming's per-field str() guard, so a raising __str__ here only
+    # surfaces inside json.dumps's own default=str callback.
+    record = _record("event", (), extra={"trace_id": _RaisingStr()})
+    line = JsonFormatter().format(record)
+    assert "\n" not in line
+    payload = json.loads(line)
+    assert "message" in payload

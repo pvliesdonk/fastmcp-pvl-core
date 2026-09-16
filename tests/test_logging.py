@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import contextlib
 import io
 import json
 import logging
 import os
+from collections.abc import Iterator
 
 import pytest
 import uvicorn
@@ -173,6 +175,33 @@ def _owned_handlers() -> list[logging.Handler]:
     ]
 
 
+@contextlib.contextmanager
+def _only_owned_handlers_at_root() -> Iterator[None]:
+    """Detach every root handler this module did not install, for the call.
+
+    pytest's own ``LogCaptureHandler`` (behind ``caplog``) sits on root
+    too, unprotected by :class:`~fastmcp_pvl_core._log_render._NeverRaiseFilter`
+    — it is exactly the "handler an operator attached to root" the
+    guarantee does not cover, and it calls ``record.getMessage()`` itself
+    while formatting for its own buffer, which raises straight through it
+    for a genuinely malformed record regardless of what pvl-core's own
+    handlers do. Detaching it for the scope of a never-raise assertion
+    isolates the thing actually under test — the chain
+    ``_install_root_handlers`` built — from that unrelated interference,
+    without weakening the assertion: the handlers left in place are the
+    real objects installed by :func:`configure_logging_from_env`.
+    """
+    root = logging.getLogger()
+    other = [h for h in root.handlers if not getattr(h, "_pvl_core_owned", False)]
+    for handler in other:
+        root.removeHandler(handler)
+    try:
+        yield
+    finally:
+        for handler in other:
+            root.addHandler(handler)
+
+
 def test_format_json_installs_a_single_json_handler(monkeypatch, capsys):
     monkeypatch.setenv("TEST_MCP_LOG_FORMAT", "json")
     configure_logging_from_env("TEST_MCP")
@@ -225,6 +254,53 @@ def test_format_rich_traceback_handler_renders_via_render_rich_too(monkeypatch, 
         logging.getLogger("some.domain.module").exception("probe key=%s", "has space")
     err = capsys.readouterr().err
     assert 'key="has space"' in err
+
+
+def test_never_raise_filter_rich_mode_survives_arg_count_mismatch(monkeypatch, capsys):
+    # Reproduces the installed-path bug directly: logging.Formatter.format
+    # calls record.getMessage() *before* formatMessage ever runs, so an
+    # argument %d cannot format used to raise a TypeError straight out of
+    # this call, bypassing render_rich's own never-raise guarantee
+    # entirely (RichHandler.emit never reaches _RichTextFormatter at all
+    # in that case). Only a filter attached to the handler itself, which
+    # runs before format(), can fix that — see _NeverRaiseFilter.
+    monkeypatch.setenv("TEST_MCP_LOG_FORMAT", "rich")
+    configure_logging_from_env("TEST_MCP")
+    with _only_owned_handlers_at_root():
+        logging.getLogger("some.domain.module").info("e a=%d", "x")  # must not raise
+    err = capsys.readouterr().err
+    assert "unrenderable log record" in err
+
+
+def test_never_raise_filter_json_mode_survives_arg_count_mismatch(monkeypatch, capsys):
+    # JSON mode never called getMessage() early, so it never raised to the
+    # caller — but the same bad record used to render as typed fields with
+    # the unformatted raw argument (JSON mode ignores the %-conversion,
+    # see _conforming), silently hiding the caller's mistake instead of
+    # flagging it the same way Rich mode now does.
+    monkeypatch.setenv("TEST_MCP_LOG_FORMAT", "json")
+    configure_logging_from_env("TEST_MCP")
+    with _only_owned_handlers_at_root():
+        logging.getLogger("some.domain.module").info("e a=%d", "x")  # must not raise
+    line = capsys.readouterr().err.strip()
+    payload = json.loads(line)
+    assert "unrenderable log record" in payload["message"]
+
+
+def test_never_raise_filter_json_mode_survives_getmessage_raising_on_msg_str(
+    monkeypatch, capsys
+):
+    class _RaisingStr:
+        def __str__(self) -> str:
+            raise RuntimeError("str exploded")
+
+    monkeypatch.setenv("TEST_MCP_LOG_FORMAT", "json")
+    configure_logging_from_env("TEST_MCP")
+    with _only_owned_handlers_at_root():
+        logging.getLogger("some.domain.module").info(_RaisingStr())  # must not raise
+    line = capsys.readouterr().err.strip()
+    payload = json.loads(line)
+    assert "unrenderable log record" in payload["message"]
 
 
 def test_format_auto_picks_rich_on_a_tty(monkeypatch):
