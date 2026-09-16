@@ -1,8 +1,17 @@
-"""Logging setup — delegates to FastMCP's ``configure_logging``.
+"""Logging setup — pvl-core owns the root logger; FastMCP is turned off.
+
+``configure_logging_from_env`` installs a single console handler pair at
+the **root** logger and neutralises FastMCP's own logging
+(``fastmcp.settings.log_enabled = False``), rather than delegating to
+FastMCP's ``configure_logging``. That handler pair is the process's only
+console output: every logger — ``fastmcp.*`` included — propagates into it
+instead of rendering through a chain of its own. Rendering is Rich only;
+a JSON alternative does not exist yet.
 
 The ``-v`` CLI flag forces ``DEBUG``; otherwise ``<PREFIX>_LOG_LEVEL``
 wins, with the legacy ``FASTMCP_LOG_LEVEL`` honoured as a deprecated
-fallback for one release; otherwise ``INFO``.
+fallback for one release when ``<PREFIX>_LOG_LEVEL`` is unset; otherwise
+``INFO``.
 
 Three mechanisms keep the operator stream readable at both ends:
 ``_NOISY_THIRD_PARTY_LOGGERS`` (loud at ``INFO``, demoted),
@@ -259,6 +268,22 @@ def configure_logging_from_env(env_prefix: str, *, verbose: bool = False) -> Non
     namespace in the process — FastMCP's included — renders through one
     handler chain.
 
+    Handler installation at root holds three invariants:
+
+    1. **stderr only.** Nothing this function installs writes to stdout,
+       which is the protocol channel under stdio transport.
+    2. **Idempotent.** Handlers this function installed are marked and
+       removed before reinstalling on every call, so repeated calls leave
+       exactly one chain at root.
+    3. **Exclusive over the console, tolerant of everything else.** Any
+       pre-existing root handler that writes to the console is replaced
+       (the double-render source when ``opentelemetry-instrument`` has
+       installed one); every other handler — an OTLP ``LoggingHandler``, a
+       file handler, a syslog handler — is left untouched. Because
+       ``fastmcp.*`` now propagates instead of rendering through its own
+       handlers, a handler an operator attached at root also starts
+       receiving ``fastmcp.*`` records.
+
     Three noisy third-party loggers — ``mcp.server.lowlevel.server`` (the MCP
     SDK request line), ``httpx``, and ``httpcore`` — are demoted to
     ``WARNING`` whenever the resolved level is above ``DEBUG``, so their
@@ -290,10 +315,14 @@ def configure_logging_from_env(env_prefix: str, *, verbose: bool = False) -> Non
     ``logging.getLogger("docket.worker").setLevel(logging.DEBUG)``.
 
     Args:
-        env_prefix: The server's own env var prefix (e.g. ``"MY_APP"``);
-            used to read ``{env_prefix}_LOG_LEVEL``. Required.
-        verbose: If ``True``, force ``DEBUG`` (overrides both
-            ``{env_prefix}_LOG_LEVEL`` and ``FASTMCP_LOG_LEVEL``).
+        env_prefix: Caller-supplied identity, not a pvl-core default — the
+            server's own env var prefix (e.g. ``"MY_APP"``), matching
+            ``ServerConfig.from_env(env_prefix)``. Used to read
+            ``{env_prefix}_LOG_LEVEL``. Required, positional.
+        verbose: CLI flag, not an env var — the caller's ``-v``/``--verbose``
+            switch, passed through as a keyword. If ``True``, forces
+            ``DEBUG`` (overrides both ``{env_prefix}_LOG_LEVEL`` and
+            ``FASTMCP_LOG_LEVEL``).
     """
     level, bridged = _resolve_level(env_prefix, verbose=verbose)
     _neutralise_fastmcp()

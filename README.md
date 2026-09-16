@@ -252,18 +252,58 @@ apply_tool_visibility(mcp, config)   # config: ServerConfig.from_env("MY_APP")
 
 ### Logging
 
-`configure_logging_from_env` resolves the log level from the `-v` CLI flag
-(forces `DEBUG`), then `FASTMCP_LOG_LEVEL`, then defaults to `INFO`.
+`configure_logging_from_env(env_prefix, *, verbose=False)` is the sole owner
+of the process's console logging. It installs one handler pair — a
+`RichHandler` for normal records and a second one that renders only
+tracebacks — on the **root** logger, and neutralises FastMCP's own logging
+(`fastmcp.settings.log_enabled = False`) so every logger in the process,
+`fastmcp.*` included, propagates into that one chain instead of rendering
+through its own. Repeated calls leave exactly one chain at root, and nothing
+pvl-core installs writes to stdout.
 
-At `INFO` and above, two noisy third-party loggers are demoted to `WARNING`
-so they do not flood the operator log stream:
+The log level resolves in this order:
 
-- `uvicorn.access` — the `INFO: <ip> - "POST /mcp ..."` HTTP access log.
-- `mcp.server.lowlevel.server` — the MCP SDK's `Processing request of
-  type ...` line.
+1. `verbose=True` (the `-v` CLI flag) forces `DEBUG`.
+2. Otherwise `{PREFIX}_LOG_LEVEL`, case-insensitive.
+3. Otherwise the legacy `FASTMCP_LOG_LEVEL` — a migration bridge, honoured
+   only when `{PREFIX}_LOG_LEVEL` is unset, and kept for one major release.
+   Using it logs a single `log_level_env_deprecated` warning naming the
+   prefixed replacement; when both variables are set, `{PREFIX}_LOG_LEVEL`
+   wins silently.
+4. Otherwise `INFO`.
 
-Both reappear at `DEBUG` (`-v` or `FASTMCP_LOG_LEVEL=DEBUG`). `uvicorn.error`
-is never demoted — it carries genuine bind / startup failures.
+An unrecognised level name falls back to `INFO` rather than raising.
+
+At `INFO` and above, three noisy third-party loggers are demoted to
+`WARNING` so they do not flood the operator log stream: `httpx`, `httpcore`,
+and `mcp.server.lowlevel.server` — the MCP SDK's `Processing request of
+type ...` line. All three reappear (`NOTSET`) at `DEBUG`. `uvicorn.error` is
+never touched, at any level — it carries genuine bind / startup failures.
+
+`uvicorn.access` (the HTTP access log) gets a filter instead of a demotion,
+because a level cannot express "failures only". At every level except
+`DEBUG` the filter keeps only records with status `>= 400` — a `401` from
+auth, a `404`, a `413`, a readiness `503` — and drops the `200`s that would
+otherwise duplicate the request-logging middleware's own lines. Its own
+level stays `NOTSET`, inheriting root, so raising `{PREFIX}_LOG_LEVEL` above
+`INFO` silences access lines entirely, kept or not: the filter decides
+*which* requests are worth a line, the level decides *whether* the operator
+wants request lines at all. At `DEBUG` the filter is removed and every
+request line — success or failure — passes through unredacted.
+
+Every record the filter keeps is also rewritten, because uvicorn logs the
+full `path?query`:
+
+- **The query string is stripped entirely.** No route in this family carries
+  diagnostic query parameters — the ones that do are the OAuth routes, where
+  it is an authorization code or PKCE material.
+- **The segment after `/transfer/` is masked** to `transfer/<redacted>`.
+  pvl-core's transfer token lives in the path, and an expired link produces
+  exactly the 4xx this filter keeps.
+
+Both redactions apply only to the requests the filter keeps, so at `DEBUG`
+— where the filter is absent — access lines carry the raw path and query
+string.
 
 One logger is capped in the other direction. `docket.worker` — pydocket's
 background-task worker, which every consumer inherits through the
@@ -275,9 +315,18 @@ other level it is untouched. An operator debugging the task queue itself
 restores the full stream after the call:
 
 ```python
-configure_logging_from_env(verbose=True)
+configure_logging_from_env("MY_APP", verbose=True)
 logging.getLogger("docket.worker").setLevel(logging.DEBUG)
 ```
+
+Handler ownership is exclusive over the console only: pvl-core removes any
+pre-existing root handler that writes to `stdout`/`stderr` (the
+double-render source when `opentelemetry-instrument` has installed one) but
+leaves every other handler at root untouched. An OTLP, file, or syslog
+handler an operator attached at root survives `configure_logging_from_env`
+— and, because `fastmcp.*` now propagates instead of rendering through its
+own handlers, it receives `fastmcp.*` records too, not just the domain's
+own.
 
 `build_auth` announces the resolved auth mode once per call — once per server
 in the normal case — on every resolution path, whether the mode came from
