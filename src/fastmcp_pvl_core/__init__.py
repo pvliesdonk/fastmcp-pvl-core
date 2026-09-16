@@ -76,6 +76,7 @@ from ._kv_store import build_kv_store
 from ._log_conformance import LogCallViolation, find_nonconforming_log_calls
 from ._logging import SecretMaskFilter, configure_logging_from_env
 from ._middleware import wire_middleware_stack
+from ._serve import run_http
 from ._server_info import (
     UpstreamProvider,
     UpstreamResult,
@@ -199,6 +200,7 @@ __all__ = [
     "register_tool_icons",
     "register_transfer_routes",
     "resolve_auth_mode",
+    "run_http",
     "server_config_env_suffixes",
     "server_config_surface",
     "utf16_code_units",

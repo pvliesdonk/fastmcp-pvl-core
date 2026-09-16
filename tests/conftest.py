@@ -81,3 +81,60 @@ def _reset_default_fallback_warning_flag(monkeypatch: pytest.MonkeyPatch) -> Non
     would otherwise silence it for whichever test happens to run second.
     """
     monkeypatch.setattr("fastmcp_pvl_core._kv_store._default_fallback_warned", False)
+
+
+MANAGED_LOGGERS = (
+    "fastmcp",
+    "uvicorn",
+    "uvicorn.access",
+    "uvicorn.error",
+    "mcp.server.lowlevel.server",
+    "httpx",
+    "httpcore",
+    "docket.worker",
+)
+"""Every logger ``configure_logging_from_env`` mutates.
+
+One list, in one place: two modules snapshot this topology, and a copy in
+each would drift the moment the policy gained a logger — which is how a
+test module last left ``httpx`` demoted for the rest of the suite.
+"""
+
+
+@pytest.fixture
+def restore_logging_topology() -> Iterator[None]:
+    """Snapshot the whole logging topology and put it back afterwards.
+
+    Root handlers included: tests that call ``configure_logging_from_env``
+    install and remove handlers at root, and without this the first one to
+    run leaves the rest of the suite — and pytest's own ``caplog`` — on a
+    tree it did not expect.
+
+    Not autouse: only the modules that reconfigure logging pay for it.
+    """
+    import fastmcp
+
+    root = logging.getLogger()
+    saved_root = (root.handlers[:], root.level)
+    saved = {
+        name: (
+            logging.getLogger(name).handlers[:],
+            logging.getLogger(name).level,
+            logging.getLogger(name).propagate,
+            logging.getLogger(name).filters[:],
+        )
+        for name in MANAGED_LOGGERS
+    }
+    saved_log_enabled = fastmcp.settings.log_enabled
+    try:
+        yield
+    finally:
+        root.handlers[:] = saved_root[0]
+        root.setLevel(saved_root[1])
+        for name, (handlers, level, propagate, filters) in saved.items():
+            logger = logging.getLogger(name)
+            logger.handlers[:] = handlers
+            logger.setLevel(level)
+            logger.propagate = propagate
+            logger.filters[:] = filters
+        fastmcp.settings.log_enabled = saved_log_enabled

@@ -261,15 +261,11 @@ tracebacks — on the **root** logger, and neutralises FastMCP's own logging
 through its own. Repeated calls leave exactly one chain at root, and nothing
 pvl-core installs writes to stdout.
 
-As of this release, that ownership is complete for stdio transport but not
-yet for HTTP: uvicorn still runs its own `dictConfig` at server start (the
-`run_http(log_config=None)` seam that retires it is a later PR), which
-reinstalls uvicorn's own handler on `uvicorn.access`/`uvicorn.error` — the
-access handler on **stdout**, at level `INFO`, regardless of
-`{PREFIX}_LOG_LEVEL`. What survives that reconfiguration is the
-`_AccessLogFilter` this module installs below: `dictConfig` replaces
-handlers, not filters, so redaction (and the drop-successes rule) still
-apply to whatever handler uvicorn ends up attaching.
+That ownership is complete under stdio and HTTP alike. A server started
+through [`run_http`](#serving-over-http-run_http) pins `log_config=None`,
+so uvicorn never runs its own `dictConfig` and never reinstalls a handler
+on `uvicorn.access`/`uvicorn.error` — those loggers stay on the root chain
+this module installed, exactly like every other logger in the process.
 
 The log level resolves in this order:
 
@@ -299,9 +295,7 @@ otherwise duplicate the request-logging middleware's own lines. Its own
 level stays `NOTSET`, inheriting root: raising `{PREFIX}_LOG_LEVEL` above
 `INFO` is meant to silence access lines entirely, kept or not — the filter
 decides *which* requests are worth a line, the level decides *whether* the
-operator wants request lines at all — but under HTTP transport that only
-holds once `uvicorn.access` is logging through *this* module's chain (see
-above); the redaction itself is unaffected either way. At `DEBUG` the filter
+operator wants request lines at all. At `DEBUG` the filter
 is always still installed and keeps every status, `200` included — the
 redaction is exactly as unconditional as at any other level, it is only
 *which* requests reach the log that verbosity changes.
@@ -418,6 +412,55 @@ even from an otherwise untraced server. In that case `span_id` is the
 caller's span, because the server created none of its own.
 
 See [Telemetry](#telemetry-opentelemetry-traces) for enabling export.
+
+### Serving over HTTP (`run_http`)
+
+`run_http(app, *, config, host=None, port=None)` replaces a direct
+`uvicorn.run(...)` call. The caller still builds the ASGI app itself —
+`run_http` only runs it:
+
+```python
+from fastmcp_pvl_core import ServerConfig, build_event_store, run_http
+
+config = ServerConfig.from_env("MY_APP")
+app = mcp.http_app(
+    path="/mcp",
+    event_store=build_event_store("MY_APP", config),
+)
+run_http(app, config=config)
+```
+
+Three settings are pvl-core's to pin, not the operator's or the caller's:
+
+- **`log_config=None`.** uvicorn's default `dictConfig` reinstalls its own
+  handler on `uvicorn.access`/`uvicorn.error` at server start, undoing the
+  root chain `configure_logging_from_env` installed. Pinning it to `None`
+  means uvicorn never runs that `dictConfig` and never reinstalls a
+  handler, so the [Logging](#logging) section's guarantees hold under
+  HTTP exactly as they do under stdio.
+- **`lifespan="on"`.** FastMCP's startup and shutdown hooks run through the
+  ASGI lifespan protocol; a server started with this off is broken, not
+  differently configured, so it is not a choice pvl-core leaves open.
+- **`access_log` is deliberately left alone.** It keeps uvicorn's own
+  default rather than being pinned to `True` or `False`, because whether an
+  access line is worth printing is "failures only", which a boolean cannot
+  express. That decision is made by the `_AccessLogFilter` installed on
+  `uvicorn.access` instead — see [Logging](#logging).
+
+`{PREFIX}_SHUTDOWN_GRACE_S` (default `3`, minimum `0`) sets
+`timeout_graceful_shutdown`: how long, in seconds, a SIGTERM may spend
+draining in-flight requests before the server exits. Set it no higher than
+the orchestrator's own termination grace period (Kubernetes'
+`terminationGracePeriodSeconds` or equivalent) — a value that exceeds it
+just means the orchestrator does the killing instead of uvicorn doing the
+draining.
+
+`host` and `port` come from `config` (itself `{PREFIX}_HOST` /
+`{PREFIX}_PORT`, defaulting to `127.0.0.1` / `8000`) unless the caller
+passes an explicit override — typically a `--host`/`--port` CLI flag that
+outranks the environment. `None` means "not given" and falls back to
+`config`; `0` is a real value, "bind any free port", and is never treated
+as unset.
 
 ### The log-call grammar
 

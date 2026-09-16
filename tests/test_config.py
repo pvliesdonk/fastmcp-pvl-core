@@ -332,6 +332,25 @@ class TestServerConfigFromEnv:
         monkeypatch.setenv("MYAPP_PORT", raw)
         assert ServerConfig.from_env("MYAPP").port == int(raw)
 
+    def test_shutdown_grace_defaults_to_three(self, monkeypatch):
+        monkeypatch.delenv("MYAPP_SHUTDOWN_GRACE_S", raising=False)
+        assert ServerConfig.from_env("MYAPP").shutdown_grace_s == 3
+
+    def test_shutdown_grace_read_from_env(self, monkeypatch):
+        monkeypatch.setenv("MYAPP_SHUTDOWN_GRACE_S", "30")
+        assert ServerConfig.from_env("MYAPP").shutdown_grace_s == 30
+
+    def test_shutdown_grace_zero_is_allowed(self, monkeypatch):
+        """0 means "do not drain" — a deliberate choice, not a misconfiguration."""
+        monkeypatch.setenv("MYAPP_SHUTDOWN_GRACE_S", "0")
+        assert ServerConfig.from_env("MYAPP").shutdown_grace_s == 0
+
+    @pytest.mark.parametrize("value", ["-1", "not-a-number", "3.5"])
+    def test_shutdown_grace_rejects_invalid(self, monkeypatch, value):
+        monkeypatch.setenv("MYAPP_SHUTDOWN_GRACE_S", value)
+        with pytest.raises(ConfigurationError, match="MYAPP_SHUTDOWN_GRACE_S"):
+            ServerConfig.from_env("MYAPP")
+
     def test_reads_bearer_token(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setenv("MYAPP_BEARER_TOKEN", "secret")
         config = ServerConfig.from_env("MYAPP")
@@ -511,31 +530,59 @@ class TestServerConfigFromEnv:
 
 
 def _suffixes_read_by_from_env() -> set[str]:
-    """The literal env suffixes ``ServerConfig.from_env`` actually reads.
+    """The literal env suffixes the ``ServerConfig`` surface actually reads.
 
     Statically extracts the second positional argument of each
-    ``env``/``env_int``/``env_float`` call in ``from_env``'s source **whose
-    suffix is a string literal** (calls with a variable, keyword, or
-    attribute-form suffix are skipped), so the test reflects the literal read
-    surface rather than a hand-copied list.
+    ``env``/``env_int``/``env_float`` call **whose suffix is a string
+    literal** (calls with a variable, keyword, or attribute-form suffix are
+    skipped), scanning ``ServerConfig.from_env`` itself *plus* every
+    module-level ``_read_*`` helper function defined in
+    ``fastmcp_pvl_core._config`` — e.g. ``_read_oidc``, ``_read_bearer``,
+    ``_read_tools_visibility``. The helpers are discovered by introspection
+    (any module-level function whose name starts with ``_read_``), not a
+    hard-coded list, so a newly-added helper is picked up automatically
+    without touching this test.
+
+    Deliberately scans only ``from_env`` plus the ``_read_*`` functions,
+    not the whole ``_config`` module: those are the functions that
+    *constitute* the ``ServerConfig`` read surface by convention, so a
+    stray env read added elsewhere in the file later (e.g. inside the
+    ``domain_env_suffixes``/``domain_env_surface`` machinery, or a future
+    helper that doesn't follow the ``_read_`` naming convention) cannot
+    silently join this set just by sharing a module with ``from_env``.
     """
     import ast
     import inspect
     import textwrap
+    from collections.abc import Callable
 
-    src = textwrap.dedent(inspect.getsource(ServerConfig.from_env))
+    from fastmcp_pvl_core import _config as _config_module
+
     read_funcs = {"env", "env_int", "env_float"}
-    found: set[str] = set()
-    for node in ast.walk(ast.parse(src)):
+
+    def _literal_suffixes(func: Callable[..., object]) -> set[str]:
+        src = textwrap.dedent(inspect.getsource(func))
+        literals: set[str] = set()
+        for node in ast.walk(ast.parse(src)):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id in read_funcs
+                and len(node.args) >= 2
+                and isinstance(node.args[1], ast.Constant)
+                and isinstance(node.args[1].value, str)
+            ):
+                literals.add(node.args[1].value)
+        return literals
+
+    found: set[str] = set(_literal_suffixes(ServerConfig.from_env))
+    for name, member in vars(_config_module).items():
         if (
-            isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Name)
-            and node.func.id in read_funcs
-            and len(node.args) >= 2
-            and isinstance(node.args[1], ast.Constant)
-            and isinstance(node.args[1].value, str)
+            name.startswith("_read_")
+            and inspect.isfunction(member)
+            and member.__module__ == _config_module.__name__
         ):
-            found.add(node.args[1].value)
+            found |= _literal_suffixes(member)
     return found
 
 
@@ -560,10 +607,10 @@ class TestServerConfigEnvSuffixes:
     def test_matches_what_from_env_actually_reads(self):
         """Anti-drift: the declared set must equal the literal suffixes from_env reads.
 
-        A literal-string read added/removed/renamed in ``from_env`` without
-        updating the declared set fails here. (A suffix built from a variable or
-        passed by keyword is invisible to the scan — see
-        ``_suffixes_read_by_from_env``.)
+        A literal-string read added/removed/renamed in ``from_env`` — or in a
+        ``_read_*`` helper it calls — without updating the declared set fails
+        here. (A suffix built from a variable or passed by keyword is
+        invisible to the scan — see ``_suffixes_read_by_from_env``.)
         """
         from fastmcp_pvl_core import server_config_env_suffixes
 
@@ -853,14 +900,14 @@ class TestServerConfigSurface:
             f.name for f in dataclasses.fields(ServerConfig)
         )
 
-    def test_returns_twenty_two_fields(self):
-        assert len(server_config_surface()) == 22
+    def test_returns_twenty_three_fields(self):
+        assert len(server_config_surface()) == 23
 
     def test_suffix_is_the_upper_cased_field_name(self):
         assert all(c.suffix == c.name.upper() for c in server_config_surface())
 
     def test_suffixes_match_the_env_suffix_set(self):
-        """The surface and the existing frozenset describe the same 21 vars."""
+        """The surface and the existing frozenset describe the same vars."""
         assert {
             c.suffix for c in server_config_surface()
         } == server_config_env_suffixes()
@@ -1006,11 +1053,12 @@ class TestServerConfigSurface:
         assert offenders == {}
 
     def test_every_declared_default_is_unchanged(self):
-        """Full 22-field guard; a spot check would miss a silent default change."""
+        """Full 23-field guard; a spot check would miss a silent default change."""
         expected = {
             "transport": "stdio",
             "host": "127.0.0.1",
             "port": 8000,
+            "shutdown_grace_s": 3,
             "base_url": None,
             "bearer_token": None,
             "oidc_config_url": None,
