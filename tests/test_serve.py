@@ -14,32 +14,36 @@ import pytest
 
 from fastmcp_pvl_core import ServerConfig, run_http
 from fastmcp_pvl_core._serve import _build_uvicorn_config, _run_server
+from tests.test_logging import _MANAGED_LOGGERS
 
 
 @pytest.fixture
 def configured_logging_capture(monkeypatch):
-    """Configure logging as a server does, and capture what reaches root."""
+    """Configure logging as a server does, and capture what reaches root.
+
+    Snapshots and restores every logger ``configure_logging_from_env``
+    touches — the same ``_MANAGED_LOGGERS`` list ``test_logging.py`` uses,
+    imported rather than copied so the two files can't drift out of sync.
+    Restoring only a subset (root, ``uvicorn.access``, ``fastmcp``) used to
+    leave ``httpx``/``httpcore``/``mcp.server.lowlevel.server`` demoted to
+    WARNING for the rest of the suite once this module had run.
+    """
     from fastmcp_pvl_core import configure_logging_from_env
 
     monkeypatch.delenv("TEST_MCP_LOG_LEVEL", raising=False)
     monkeypatch.delenv("FASTMCP_LOG_LEVEL", raising=False)
 
     root = logging.getLogger()
-    saved_handlers, saved_level = root.handlers[:], root.level
-    access = logging.getLogger("uvicorn.access")
-    saved_access = (
-        access.handlers[:],
-        access.level,
-        access.propagate,
-        access.filters[:],
-    )
-    fastmcp_logger = logging.getLogger("fastmcp")
-    saved_fastmcp = (
-        fastmcp_logger.handlers[:],
-        fastmcp_logger.level,
-        fastmcp_logger.propagate,
-        fastmcp_logger.filters[:],
-    )
+    saved_root = (root.handlers[:], root.level)
+    saved = {
+        name: (
+            logging.getLogger(name).handlers[:],
+            logging.getLogger(name).level,
+            logging.getLogger(name).propagate,
+            logging.getLogger(name).filters[:],
+        )
+        for name in _MANAGED_LOGGERS
+    }
     saved_log_enabled = fastmcp.settings.log_enabled
 
     messages: list[str] = []
@@ -53,17 +57,14 @@ def configured_logging_capture(monkeypatch):
     try:
         yield messages
     finally:
-        root.handlers[:] = saved_handlers
-        root.setLevel(saved_level)
-        access.handlers[:], access.level, access.propagate, access.filters[:] = (
-            saved_access
-        )
-        (
-            fastmcp_logger.handlers[:],
-            fastmcp_logger.level,
-            fastmcp_logger.propagate,
-            fastmcp_logger.filters[:],
-        ) = saved_fastmcp
+        root.handlers[:] = saved_root[0]
+        root.setLevel(saved_root[1])
+        for name, (handlers, level, propagate, filters) in saved.items():
+            logger = logging.getLogger(name)
+            logger.handlers[:] = handlers
+            logger.setLevel(level)
+            logger.propagate = propagate
+            logger.filters[:] = filters
         fastmcp.settings.log_enabled = saved_log_enabled
 
 
@@ -92,7 +93,8 @@ def _free_port() -> int:
 def _running_server():
     """Run a real ``uvicorn.Server`` for ``_app`` on a free port, in a thread.
 
-    Shared by the two e2e tests below: starts the server on a background
+    Used by the e2e test below that only needs a running server, not the
+    ``run_http`` composition itself: starts the server on a background
     thread, polls ``server.started`` against a 10s deadline before
     yielding ``(server, port)``, and guarantees shutdown — ``should_exit``
     then a 10s-timeout ``thread.join`` — in a ``finally``, so a test body
@@ -113,6 +115,58 @@ def _running_server():
         yield server, port
     finally:
         server.should_exit = True
+        thread.join(timeout=10)
+
+
+@contextlib.contextmanager
+def _running_server_via_run_http(monkeypatch):
+    """Same shape as ``_running_server``, but drives ``run_http`` itself.
+
+    ``_running_server`` calls ``_build_uvicorn_config`` +
+    ``uvicorn.Server(...).run()`` directly — the same composition
+    ``run_http`` performs internally, but not ``run_http`` itself, which is
+    exactly why a bug in ``run_http``'s own epilogue (see the
+    ``_run_server`` tests) had no e2e coverage. This drives ``run_http`` on
+    a background thread instead, capturing the ``uvicorn.Server`` instance
+    it builds internally — by patching the class it calls, not a copy of
+    it — so the test body can still poll ``.started`` and drive shutdown
+    via ``.should_exit`` the same way ``_running_server`` does.
+    """
+    import uvicorn
+
+    port = _free_port()
+    captured: dict[str, uvicorn.Server] = {}
+    real_server_cls = uvicorn.Server
+
+    def _capturing(config):
+        server = real_server_cls(config)
+        captured["server"] = server
+        return server
+
+    monkeypatch.setattr(uvicorn, "Server", _capturing)
+    thread = threading.Thread(
+        target=run_http,
+        kwargs={
+            "app": _app,
+            "config": ServerConfig(host="127.0.0.1", port=port, shutdown_grace_s=1),
+        },
+        daemon=True,
+    )
+    thread.start()
+    try:
+        deadline = time.monotonic() + 10
+        server = None
+        while time.monotonic() < deadline:
+            server = captured.get("server")
+            if server is not None and server.started:
+                break
+            time.sleep(0.05)
+        assert server is not None and server.started, "server did not start within 10s"
+        yield server, port
+    finally:
+        server = captured.get("server")
+        if server is not None:
+            server.should_exit = True
         thread.join(timeout=10)
 
 
@@ -162,9 +216,14 @@ def test_zero_port_is_an_override_not_a_fallback(monkeypatch):
     assert captured["built"].port == 0
 
 
-def test_end_to_end_access_log_policy(configured_logging_capture):
-    """A real server, real requests: successes silent, failures logged and redacted."""
-    with _running_server() as (_server, port):
+def test_end_to_end_access_log_policy(configured_logging_capture, monkeypatch):
+    """A real server, real requests: successes silent, failures logged and redacted.
+
+    Routed through ``run_http`` itself (via ``_running_server_via_run_http``)
+    rather than a copy of its composition, so this exercises the same code
+    path a caller actually uses — including ``_run_server``'s epilogue.
+    """
+    with _running_server_via_run_http(monkeypatch) as (_server, port):
         with httpx.Client(base_url=f"http://127.0.0.1:{port}") as client:
             client.get("/health")
             client.post("/mcp")
@@ -186,6 +245,12 @@ def test_uvicorn_never_installs_its_own_handlers(configured_logging_capture):
         access = logging.getLogger("uvicorn.access")
         assert access.handlers == []
         assert access.propagate is True
+        # Pins the cell the README's "raising {PREFIX}_LOG_LEVEL silences
+        # access lines" claim depends on: NOTSET only inherits root's level
+        # rather than being *set* to it. Were uvicorn.Config.log_level not
+        # None, Config.configure_logging() would setLevel(INFO) here even
+        # with log_config=None, and the README's claim would not hold.
+        assert access.level == logging.NOTSET
 
 
 class TestRunServerEpilogue:
