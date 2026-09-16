@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 
+import fastmcp
 import pytest
 
 from fastmcp_pvl_core import SecretMaskFilter, configure_logging_from_env
@@ -59,27 +60,49 @@ def test_unknown_level_falls_back_to_info(monkeypatch):
     assert logging.getLogger().getEffectiveLevel() == logging.INFO
 
 
-_NOISY_LOGGER_NAMES = (
+_MANAGED_LOGGERS = (
+    "fastmcp",
     "uvicorn.access",
-    "mcp.server.lowlevel.server",
     "uvicorn.error",
+    "mcp.server.lowlevel.server",
+    "httpx",
+    "httpcore",
     "docket.worker",
 )
 
 
 @pytest.fixture(autouse=True)
-def _restore_noisy_levels():
-    """Save and restore the levels of every logger the demotion logic touches.
+def _restore_logging_topology():
+    """Snapshot and restore every logger this module touches.
 
-    Applied module-wide via ``autouse`` because ``configure_logging_from_env``
-    mutates these process-global loggers as a side effect — every test that
-    calls it (not just the demotion tests) would otherwise leak logger state
-    into later test modules.
+    Root handlers included: these tests install and remove handlers at
+    root, and without this the first one to run would leave the rest of
+    the suite — and pytest's own ``caplog`` — on a tree it did not expect.
     """
-    saved = {name: logging.getLogger(name).level for name in _NOISY_LOGGER_NAMES}
-    yield
-    for name, level in saved.items():
-        logging.getLogger(name).setLevel(level)
+    root = logging.getLogger()
+    saved_root = (root.handlers[:], root.level)
+    saved = {
+        name: (
+            logging.getLogger(name).handlers[:],
+            logging.getLogger(name).level,
+            logging.getLogger(name).propagate,
+            logging.getLogger(name).filters[:],
+        )
+        for name in _MANAGED_LOGGERS
+    }
+    saved_log_enabled = fastmcp.settings.log_enabled
+    try:
+        yield
+    finally:
+        root.handlers[:] = saved_root[0]
+        root.setLevel(saved_root[1])
+        for name, (handlers, level, propagate, filters) in saved.items():
+            logger = logging.getLogger(name)
+            logger.handlers[:] = handlers
+            logger.setLevel(level)
+            logger.propagate = propagate
+            logger.filters[:] = filters
+        fastmcp.settings.log_enabled = saved_log_enabled
 
 
 def test_noisy_loggers_demoted_to_warning_at_info(monkeypatch):
@@ -337,3 +360,115 @@ class TestSecretMaskFilter:
         record = _record("only one placeholder %s", ("a", "b", "c"))
 
         assert SecretMaskFilter().filter(record) is True
+
+
+class _Capture(logging.Handler):
+    """A non-console handler, standing in for an OTLP or file handler."""
+
+    def __init__(self):
+        super().__init__()
+        self.messages: list[str] = []
+
+    def emit(self, record):
+        self.messages.append(record.getMessage())
+
+
+def test_installs_one_handler_pair_at_root():
+    configure_logging_from_env("TEST_MCP")
+    root = logging.getLogger()
+    owned = [h for h in root.handlers if getattr(h, "_pvl_core_owned", False)]
+    assert len(owned) == 2
+
+
+def test_repeated_calls_do_not_stack_handlers():
+    configure_logging_from_env("TEST_MCP")
+    first = len(logging.getLogger().handlers)
+    configure_logging_from_env("TEST_MCP")
+    configure_logging_from_env("TEST_MCP")
+    assert len(logging.getLogger().handlers) == first
+
+
+def test_fastmcp_logger_is_neutralised():
+    configure_logging_from_env("TEST_MCP")
+    fastmcp_logger = logging.getLogger("fastmcp")
+    assert fastmcp_logger.handlers == []
+    assert fastmcp_logger.propagate is True
+    assert fastmcp_logger.level == logging.NOTSET
+
+
+def test_temporary_log_level_cannot_revert_the_topology():
+    """The regression that parked #323: fastmcp re-running its own config."""
+    from fastmcp.utilities.logging import configure_logging, temporary_log_level
+
+    configure_logging_from_env("TEST_MCP")
+    fastmcp_logger = logging.getLogger("fastmcp")
+    with temporary_log_level("DEBUG"):
+        assert fastmcp_logger.handlers == []
+        assert fastmcp_logger.propagate is True
+    configure_logging("INFO")
+    assert fastmcp_logger.handlers == []
+    assert fastmcp_logger.propagate is True
+
+
+def test_fastmcp_debug_records_reach_root():
+    configure_logging_from_env("TEST_MCP", verbose=True)
+    capture = _Capture()
+    logging.getLogger().addHandler(capture)
+    logging.getLogger("fastmcp.middleware.requests").debug("probe")
+    assert "probe" in capture.messages
+
+
+def test_replaces_a_pre_existing_console_handler():
+    root = logging.getLogger()
+    console = logging.StreamHandler()  # defaults to sys.stderr
+    root.addHandler(console)
+    configure_logging_from_env("TEST_MCP")
+    assert console not in root.handlers
+
+
+def test_leaves_non_console_handlers_alone():
+    """The #323 fix: an operator's OTLP handler at root must survive."""
+    root = logging.getLogger()
+    capture = _Capture()
+    root.addHandler(capture)
+    configure_logging_from_env("TEST_MCP")
+    assert capture in root.handlers
+    logging.getLogger("fastmcp.middleware.requests").warning("exported")
+    logging.getLogger("some.domain.module").warning("also exported")
+    assert capture.messages == ["exported", "also exported"]
+
+
+def test_caplog_survives(caplog):
+    """pytest's handler is a StreamHandler over StringIO — type-based
+    console detection would detach it across the whole suite."""
+    configure_logging_from_env("TEST_MCP")
+    with caplog.at_level(logging.WARNING):
+        logging.getLogger("some.domain.module").warning("captured")
+    assert "captured" in caplog.text
+
+
+def test_writes_nothing_to_stdout(capsys):
+    configure_logging_from_env("TEST_MCP")
+    logging.getLogger("some.domain.module").warning("stderr only")
+    captured = capsys.readouterr()
+    assert captured.out == ""
+
+
+def test_exception_records_go_to_the_traceback_handler_only():
+    configure_logging_from_env("TEST_MCP")
+    root = logging.getLogger()
+    owned = [h for h in root.handlers if getattr(h, "_pvl_core_owned", False)]
+    plain = logging.LogRecord("x", logging.ERROR, "_", 0, "no traceback", None, None)
+    try:
+        raise ValueError("boom")
+    except ValueError:
+        import sys as _sys
+
+        with_exc = logging.LogRecord(
+            "x", logging.ERROR, "_", 0, "traceback", None, _sys.exc_info()
+        )
+    accepting_plain = [h for h in owned if h.filter(plain)]
+    accepting_exc = [h for h in owned if h.filter(with_exc)]
+    assert len(accepting_plain) == 1
+    assert len(accepting_exc) == 1
+    assert accepting_plain != accepting_exc

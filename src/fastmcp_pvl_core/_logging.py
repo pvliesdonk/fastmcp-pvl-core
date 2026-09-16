@@ -17,8 +17,11 @@ from __future__ import annotations
 import logging
 import os
 import re
+import sys
 
-from fastmcp.utilities.logging import configure_logging
+import fastmcp
+from rich.console import Console
+from rich.logging import RichHandler
 
 _VALID_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
 
@@ -39,7 +42,102 @@ _NOISY_THIRD_PARTY_LOGGERS = ("uvicorn.access", "mcp.server.lowlevel.server")
 _DEBUG_FLOOD_LOGGERS = ("docket.worker",)
 
 
-def configure_logging_from_env(*, verbose: bool = False) -> None:
+_OWNED_ATTR = "_pvl_core_owned"
+"""Marks the handlers this module installed.
+
+Idempotence needs it: a ``RichHandler`` is not a ``StreamHandler`` and
+exposes no ``.stream``, so the console rule below cannot recognise our own
+Rich pair on a second call. Marking is what makes repeated configuration —
+and a mode change in a later PR — leave exactly one chain at root.
+"""
+
+
+def _console_stream_ids() -> set[int]:
+    """Identity of every stream that means "the operator's console"."""
+    streams = (sys.stdout, sys.stderr, sys.__stdout__, sys.__stderr__)
+    return {id(stream) for stream in streams if stream is not None}
+
+
+def _is_console_handler(handler: logging.Handler) -> bool:
+    """Whether *handler* writes to the console.
+
+    Keys on stream identity, never on handler type. pytest's
+    ``LogCaptureHandler`` is a ``StreamHandler`` subclass over a
+    ``StringIO``; a type-based rule would detach ``caplog`` from every test
+    in the suite. ``RichHandler`` is the mirror case — not a
+    ``StreamHandler`` at all, with its stream at ``console.file``.
+    """
+    stream = getattr(handler, "stream", None)
+    if stream is None:
+        stream = getattr(getattr(handler, "console", None), "file", None)
+    return stream is not None and id(stream) in _console_stream_ids()
+
+
+def _neutralise_fastmcp() -> None:
+    """Stop FastMCP owning its own logger tree.
+
+    ``log_enabled = False`` makes its ``configure_logging`` return before it
+    touches handlers or ``propagate`` — including the call inside
+    ``temporary_log_level``, which is what silently reverted the first
+    attempt at this (issue #323). Turning the library off is durable where
+    fighting it was not.
+
+    The level reset is load-bearing rather than tidiness: FastMCP pins the
+    ``fastmcp`` logger to ``INFO`` at import time, and left in place that
+    blocks every ``fastmcp.*`` DEBUG record — the request middleware's
+    included — before it can reach root.
+    """
+    fastmcp.settings.log_enabled = False
+    logger = logging.getLogger("fastmcp")
+    for handler in logger.handlers[:]:
+        logger.removeHandler(handler)
+    logger.propagate = True
+    logger.setLevel(logging.NOTSET)
+
+
+def _install_root_handlers(level: int) -> None:
+    """Make pvl-core the sole owner of the root logger's console output.
+
+    Removes our own handlers and any pre-existing console handler — the
+    double-render source when ``opentelemetry-instrument`` has installed
+    one — and leaves every other handler untouched, so an operator's OTLP,
+    file or syslog handler survives. That tolerance is what closes #323:
+    with ``fastmcp.*`` propagating again, a handler attached at root now
+    receives every record in the process.
+
+    Two handlers, not one, reproducing the pair FastMCP installs: tracebacks
+    render compressed (no path or level column, framework frames suppressed,
+    three frames) so a stack trace does not drown the line that caused it.
+    """
+    root = logging.getLogger()
+    for handler in root.handlers[:]:
+        if getattr(handler, _OWNED_ATTR, False) or _is_console_handler(handler):
+            root.removeHandler(handler)
+
+    console = Console(stderr=True)
+    formatter = logging.Formatter("%(message)s")
+
+    main = RichHandler(console=console)
+    main.setFormatter(formatter)
+    main.addFilter(lambda record: record.exc_info is None)
+
+    tracebacks = RichHandler(
+        console=console,
+        show_path=False,
+        show_level=False,
+        rich_tracebacks=True,
+        tracebacks_max_frames=3,
+    )
+    tracebacks.setFormatter(formatter)
+    tracebacks.addFilter(lambda record: record.exc_info is not None)
+
+    for handler in (main, tracebacks):
+        setattr(handler, _OWNED_ATTR, True)
+        root.addHandler(handler)
+    root.setLevel(level)
+
+
+def configure_logging_from_env(env_prefix: str = "", *, verbose: bool = False) -> None:
     """Configure logging globally based on environment and verbose flag.
 
     Level resolution order:
@@ -51,9 +149,11 @@ def configure_logging_from_env(*, verbose: bool = False) -> None:
     2. Otherwise, use ``FASTMCP_LOG_LEVEL`` if set (case-insensitive).
     3. Otherwise, default to ``INFO``.
 
-    Unknown level names fall back to ``INFO``.  The root logger is set
-    to the resolved level and FastMCP's ``configure_logging`` is called
-    so its loggers produce matching output.
+    Unknown level names fall back to ``INFO``. pvl-core owns the root
+    logger outright: FastMCP's own ``configure_logging`` is neutralised
+    and a single Rich handler pair is installed at root instead, so every
+    namespace in the process — FastMCP's included — renders through one
+    handler chain.
 
     Two noisy third-party loggers — ``uvicorn.access`` (the HTTP access
     log) and ``mcp.server.lowlevel.server`` (the MCP SDK request line) —
@@ -73,6 +173,8 @@ def configure_logging_from_env(*, verbose: bool = False) -> None:
     ``logging.getLogger("docket.worker").setLevel(logging.DEBUG)``.
 
     Args:
+        env_prefix: Reserved for a later task's ``<PREFIX>_LOG_LEVEL``
+            contract; unused for now and defaults to ``""``.
         verbose: If ``True``, force ``DEBUG`` (overrides
             ``FASTMCP_LOG_LEVEL``).
     """
@@ -85,8 +187,8 @@ def configure_logging_from_env(*, verbose: bool = False) -> None:
             level_name = "INFO"
 
     level = getattr(logging, level_name, logging.INFO)
-    logging.getLogger().setLevel(level)
-    configure_logging(level)
+    _neutralise_fastmcp()
+    _install_root_handlers(level)
 
     noisy_level = logging.NOTSET if level == logging.DEBUG else logging.WARNING
     for name in _NOISY_THIRD_PARTY_LOGGERS:
