@@ -281,8 +281,8 @@ An unrecognised level name falls back to `INFO` rather than raising.
 
 #### Output format
 
-`{PREFIX}_LOG_FORMAT` picks how every record in the process renders, case-
-insensitively:
+`{PREFIX}_LOG_FORMAT` picks how every record in the process renders,
+case-insensitively:
 
 - **`rich`** — a `RichHandler` pair (one for normal records, one that
   renders only tracebacks), producing a human-readable `event key=value`
@@ -310,8 +310,10 @@ today, for most of pvl-core's own calls too — see [the log-call
 grammar](#the-log-call-grammar) for the current count and the tracking
 issue.
 
-One call, both modes, captured from an actual run of
-`configure_logging_from_env`:
+One call, both modes, captured from a run of `configure_logging_from_env`
+in each mode — the Rich line is shown without `RichHandler`'s own
+timestamp, level and source-location columns, so only the rendered
+message is compared line for line against the JSON below it:
 
 ```
 cache_write key="user profile" ttl=3600 hit=True
