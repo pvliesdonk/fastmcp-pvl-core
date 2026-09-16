@@ -1,0 +1,312 @@
+"""The renderer — §3/§3a of the root-logging-ownership spec.
+
+Covers binding a record to its typed fields (never by re-parsing rendered
+text), the two output shapes (Rich text, JSON), and the "a log call must
+never raise" guarantee.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+
+from fastmcp_pvl_core._log_render import (
+    JsonFormatter,
+    bind_record,
+    render_rich,
+    render_value,
+)
+
+_LOGGER_NAME = "test.log_render"
+
+
+def _record(
+    msg: object,
+    args: object = (),
+    *,
+    level: int = logging.INFO,
+    exc_info: object = None,
+    extra: dict[str, object] | None = None,
+) -> logging.LogRecord:
+    record = logging.LogRecord(
+        name=_LOGGER_NAME,
+        level=level,
+        pathname=__file__,
+        lineno=1,
+        msg=msg,
+        args=args,
+        exc_info=exc_info,
+    )
+    if extra:
+        for key, value in extra.items():
+            setattr(record, key, value)
+    return record
+
+
+# --- binding -----------------------------------------------------------------
+
+
+def test_conforming_template_binds_placeholder_and_literal_fields():
+    record = _record("cache_write ttl=%d hit=%s status=warm", (3600, True))
+    bound = bind_record(record)
+    assert bound is not None
+    event, fields = bound
+    assert event == "cache_write"
+    assert [(f.name, f.value) for f in fields] == [
+        ("ttl", 3600),
+        ("hit", True),
+        ("status", "warm"),
+    ]
+
+
+def test_bare_event_binds_with_no_fields():
+    record = _record("server_started", ())
+    bound = bind_record(record)
+    assert bound is not None
+    event, fields = bound
+    assert event == "server_started"
+    assert fields == ()
+
+
+def test_non_conforming_template_returns_none():
+    record = _record("Scanned %d style(s) from %s", (3, "/tmp"))
+    assert bind_record(record) is None
+
+
+def test_arg_count_mismatch_returns_none():
+    record = _record("cache_write ttl=%d hit=%s", (3600,))
+    assert bind_record(record) is None
+
+
+def test_non_str_msg_returns_none():
+    record = _record({"a": 1}, ())
+    assert bind_record(record) is None
+
+
+def test_mapping_args_returns_none():
+    # Mirrors real ``Logger.info(msg, {"k": "v"})`` usage: the caller passes
+    # one positional dict, which logging's own ``LogRecord.__init__``
+    # unwraps from the args tuple onto ``record.args`` directly (stdlib's
+    # ``%(key)s`` dict-style formatting).
+    record = _record("event key=%(k)s", ({"k": "v"},))
+    assert isinstance(record.args, dict)
+    assert bind_record(record) is None
+
+
+# --- rich ----------------------------------------------------------------
+
+
+def test_rich_renders_typed_values_bare():
+    record = _record("cache_write ttl=%d hit=%s", (3600, True))
+    assert render_rich(record) == "cache_write ttl=3600 hit=True"
+
+
+def test_rich_matches_the_documented_line_byte_for_byte():
+    record = _record(
+        "tool_call_failed tool=%s duration_ms=%s error=%s",
+        ("read", 109.84, "Section '1.3' not found"),
+    )
+    expected = (
+        "tool_call_failed tool=read duration_ms=109.84 "
+        "error=\"Section '1.3' not found\""
+    )
+    assert render_rich(record) == expected
+
+
+def test_rich_quotes_value_containing_whitespace():
+    record = _record("event name=%s", ("has space",))
+    assert render_rich(record) == 'event name="has space"'
+
+
+def test_rich_quotes_value_containing_double_quote():
+    record = _record("event name=%s", ('say"hi"',))
+    assert render_rich(record) == r'event name="say\"hi\""'
+
+
+def test_rich_falls_back_to_formatted_message_for_non_conforming_record():
+    record = _record("Scanned %d style(s) from %s", (3, "/tmp"))
+    assert render_rich(record) == "Scanned 3 style(s) from /tmp"
+
+
+def test_rich_tuple_value_renders_as_one_field_not_unpacked():
+    # A tuple argument for a single ``%s`` placeholder must not be treated
+    # as multiple positional args to the ``%`` operator (which would raise
+    # ``TypeError: not all arguments converted``).
+    record = _record("batch_done items=%s", ((1, 2),))
+    # "(1, 2)" contains a space, so render_value's quoting rule wraps it —
+    # the point of the test is that it renders at all, as one field, rather
+    # than raising or being unpacked into two.
+    assert render_rich(record) == 'batch_done items="(1, 2)"'
+
+
+def test_rich_never_raises_when_conversion_mismatches_value_type():
+    # Grammar-conforming shape, but a runtime type mismatch (%d given a
+    # string) that even ``record.getMessage()`` cannot format — must not
+    # raise. Same mismatch defeats the plain-message fallback too, so the
+    # exact fallback text is an implementation detail; only "does not
+    # raise" is asserted.
+    record = _record("event count=%d", ("not-a-number",))
+    render_rich(record)
+
+
+def test_render_value_bare_for_plain_token():
+    assert render_value(3600) == "3600"
+    assert render_value("plain") == "plain"
+
+
+def test_render_value_quotes_whitespace_and_quotes():
+    assert render_value("has space") == '"has space"'
+    assert render_value('say"hi"') == r'"say\"hi\""'
+
+
+# --- json ------------------------------------------------------------------
+
+
+def test_json_conforming_record_carries_event_and_typed_fields():
+    record = _record("cache_write ttl=%d hit=%s", (3600, True))
+    line = JsonFormatter().format(record)
+    payload = json.loads(line)
+    assert payload["event"] == "cache_write"
+    assert payload["ttl"] == 3600
+    assert isinstance(payload["ttl"], int)
+    assert payload["hit"] is True
+    assert "message" not in payload
+
+
+def test_json_envelope_has_ts_level_logger_first():
+    record = _record("server_started", ())
+    payload = json.loads(JsonFormatter().format(record))
+    assert list(payload.keys())[:3] == ["ts", "level", "logger"]
+    assert payload["level"] == "INFO"
+    assert payload["logger"] == _LOGGER_NAME
+
+
+def test_json_ts_is_iso8601_utc():
+    record = _record("server_started", ())
+    payload = json.loads(JsonFormatter().format(record))
+    # Basic shape check: date "T" time, offset to UTC.
+    assert "T" in payload["ts"]
+    assert payload["ts"].endswith("+00:00") or payload["ts"].endswith("Z")
+
+
+def test_json_non_conforming_record_carries_message():
+    record = _record("Scanned %d style(s) from %s", (3, "/tmp"))
+    payload = json.loads(JsonFormatter().format(record))
+    assert payload["message"] == "Scanned 3 style(s) from /tmp"
+    assert "event" not in payload
+
+
+def test_json_literal_field_is_a_string():
+    record = _record("epo_ops status=configured", ())
+    payload = json.loads(JsonFormatter().format(record))
+    assert payload["status"] == "configured"
+
+
+def test_json_non_serialisable_value_is_stringified():
+    from pathlib import Path
+
+    record = _record("event path=%s", (Path("/tmp/x"),))
+    payload = json.loads(JsonFormatter().format(record))
+    assert payload["path"] == str(Path("/tmp/x"))
+
+
+def test_json_exception_value_is_stringified_not_raised():
+    record = _record("event error=%s", (ValueError("boom"),))
+    payload = json.loads(JsonFormatter().format(record))
+    assert payload["error"] == "boom"
+
+
+def test_json_carries_exception_traceback_string():
+    try:
+        raise ValueError("boom")
+    except ValueError:
+        import sys
+
+        record = _record("event_failed", (), exc_info=sys.exc_info())
+    payload = json.loads(JsonFormatter().format(record))
+    assert "exception" in payload
+    assert "ValueError: boom" in payload["exception"]
+
+
+def test_json_carries_trace_and_span_ids_when_present_on_record():
+    record = _record(
+        "event",
+        (),
+        extra={"trace_id": "a" * 32, "span_id": "b" * 16},
+    )
+    payload = json.loads(JsonFormatter().format(record))
+    assert payload["trace_id"] == "a" * 32
+    assert payload["span_id"] == "b" * 16
+
+
+def test_json_omits_trace_and_span_ids_when_absent():
+    record = _record("event", ())
+    payload = json.loads(JsonFormatter().format(record))
+    assert "trace_id" not in payload
+    assert "span_id" not in payload
+
+
+def test_json_key_order_is_envelope_then_event_then_trace_then_exception():
+    try:
+        raise ValueError("boom")
+    except ValueError:
+        import sys
+
+        record = _record(
+            "event_failed reason=%s",
+            ("bad",),
+            exc_info=sys.exc_info(),
+            extra={"trace_id": "a" * 32, "span_id": "b" * 16},
+        )
+    payload = JsonFormatter().format(record)
+    keys = list(json.loads(payload).keys())
+    assert keys == [
+        "ts",
+        "level",
+        "logger",
+        "event",
+        "reason",
+        "trace_id",
+        "span_id",
+        "exception",
+    ]
+
+
+# --- never raises ------------------------------------------------------------
+
+
+class _RaisingStr:
+    def __str__(self) -> str:
+        raise RuntimeError("str exploded")
+
+
+def test_rich_never_raises_when_message_str_raises():
+    record = _record(_RaisingStr(), ())
+    # Must not raise; the exact fallback text is an implementation detail.
+    render_rich(record)
+
+
+def test_json_never_raises_when_message_str_raises():
+    record = _record(_RaisingStr(), ())
+    JsonFormatter().format(record)
+
+
+def test_json_tuple_value_renders_as_one_field_not_unpacked():
+    record = _record("batch_done items=%s", ((1, 2),))
+    payload = json.loads(JsonFormatter().format(record))
+    assert payload["items"] == "(1, 2)"
+
+
+def test_json_never_raises_when_conversion_mismatches_value_type():
+    record = _record("event count=%d", ("not-a-number",))
+    JsonFormatter().format(record)
+
+
+def test_json_never_raises_when_field_value_str_raises():
+    record = _record("event value=%s", (_RaisingStr(),))
+    JsonFormatter().format(record)
+
+
+def test_rich_never_raises_when_field_value_str_raises():
+    record = _record("event value=%s", (_RaisingStr(),))
+    render_rich(record)

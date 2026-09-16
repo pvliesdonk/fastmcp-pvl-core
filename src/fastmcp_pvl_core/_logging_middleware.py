@@ -24,6 +24,8 @@ from fastmcp.server.middleware.middleware import (
 )
 from opentelemetry import trace
 
+from ._log_render import render_value
+
 _DEFAULT_LOGGER_NAME = "fastmcp.middleware.requests"
 
 
@@ -67,31 +69,9 @@ def _duration_ms(start: float) -> float:
     return round((time.perf_counter() - start) * 1000, 2)
 
 
-def _render_value(value: object) -> str:
-    """Render a field value for the rich (text) output mode.
-
-    Strings containing whitespace or a double quote are wrapped in
-    double quotes — with embedded backslashes, double quotes, and
-    control characters (newline, carriage return, tab) escaped — so the
-    record stays on one unambiguous ``key=value`` line; everything else
-    renders bare.
-    """
-    text = str(value)
-    if any(char.isspace() for char in text) or '"' in text:
-        escaped = (
-            text.replace("\\", "\\\\")
-            .replace('"', '\\"')
-            .replace("\n", "\\n")
-            .replace("\r", "\\r")
-            .replace("\t", "\\t")
-        )
-        return '"' + escaped + '"'
-    return text
-
-
 def _render_fields(fields: dict[str, object]) -> str:
     """Join an ordered field mapping into ``key=value`` text."""
-    return " ".join(key + "=" + _render_value(value) for key, value in fields.items())
+    return " ".join(key + "=" + render_value(value) for key, value in fields.items())
 
 
 class RequestLoggingMiddleware(Middleware):
