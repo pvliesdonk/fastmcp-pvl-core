@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import json
 import logging
 import os
 
@@ -12,6 +13,7 @@ import uvicorn.config
 from rich.logging import RichHandler
 
 from fastmcp_pvl_core import SecretMaskFilter, configure_logging_from_env
+from fastmcp_pvl_core import _logging as _logging_mod
 
 
 def _record(msg: str, args: tuple[object, ...] | None = None) -> logging.LogRecord:
@@ -136,6 +138,172 @@ def test_verbose_no_longer_writes_the_fastmcp_env_var(monkeypatch):
 def test_env_prefix_is_required():
     with pytest.raises(TypeError):
         configure_logging_from_env()  # type: ignore[call-arg]
+
+
+def test_stderr_is_tty_false_when_stream_lacks_isatty(monkeypatch):
+    # Here monkeypatching sys.stderr itself is correct — unlike the
+    # format-selection tests below, this exercises the probe directly
+    # rather than routing through configure_logging_from_env, so there is
+    # no test harness stderr substitution to fight.
+    monkeypatch.setattr(_logging_mod.sys, "stderr", object())
+    assert _logging_mod._stderr_is_tty() is False
+
+
+def test_stderr_is_tty_false_when_isatty_raises(monkeypatch):
+    class _ClosedStream:
+        def isatty(self) -> bool:
+            raise ValueError("I/O operation on closed file")
+
+    monkeypatch.setattr(_logging_mod.sys, "stderr", _ClosedStream())
+    assert _logging_mod._stderr_is_tty() is False
+
+
+def test_stderr_is_tty_true_when_isatty_says_so(monkeypatch):
+    class _TtyStream:
+        def isatty(self) -> bool:
+            return True
+
+    monkeypatch.setattr(_logging_mod.sys, "stderr", _TtyStream())
+    assert _logging_mod._stderr_is_tty() is True
+
+
+def _owned_handlers() -> list[logging.Handler]:
+    return [
+        h for h in logging.getLogger().handlers if getattr(h, "_pvl_core_owned", False)
+    ]
+
+
+def test_format_json_installs_a_single_json_handler(monkeypatch, capsys):
+    monkeypatch.setenv("TEST_MCP_LOG_FORMAT", "json")
+    configure_logging_from_env("TEST_MCP")
+    owned = _owned_handlers()
+    assert len(owned) == 1
+    assert not isinstance(owned[0], RichHandler)
+
+    logging.getLogger("some.domain.module").info("probe key=%s", "value")
+    line = capsys.readouterr().err.strip()
+    payload = json.loads(line)  # every record on root is one parseable object
+    assert payload["event"] == "probe"
+    assert payload["key"] == "value"
+
+
+def test_format_rich_installs_the_pair_on_a_non_tty(monkeypatch):
+    # A CI runner's stderr is not a TTY; an operator setting LOG_FORMAT=rich
+    # explicitly must still get Rich there, since the whole point of the
+    # override is to skip auto-detection.
+    monkeypatch.setenv("TEST_MCP_LOG_FORMAT", "rich")
+    monkeypatch.setattr("fastmcp_pvl_core._logging._stderr_is_tty", lambda: False)
+    configure_logging_from_env("TEST_MCP")
+    owned = _owned_handlers()
+    assert len(owned) == 2
+    assert all(isinstance(h, RichHandler) for h in owned)
+
+
+def test_format_rich_renders_conforming_records_via_render_rich(monkeypatch, capsys):
+    # Rich mode's non-exc_info handler must render through render_rich, not
+    # a bare "%(message)s" substitution: a value containing a space is only
+    # quoted if render_rich's field-rendering rule was actually applied.
+    monkeypatch.setenv("TEST_MCP_LOG_FORMAT", "rich")
+    configure_logging_from_env("TEST_MCP")
+    logging.getLogger("some.domain.module").warning("probe key=%s", "has space")
+    err = capsys.readouterr().err
+    assert 'key="has space"' in err
+
+
+def test_format_rich_traceback_handler_renders_via_render_rich_too(monkeypatch, capsys):
+    # RichHandler's rich_tracebacks path bypasses Formatter.format() for an
+    # exc_info record and calls formatter.formatMessage() directly to build
+    # the message line beside its own traceback panel (see
+    # rich.logging.RichHandler.emit) — a second code path that the
+    # non-exc_info test above does not exercise, and the one _RichTextFormatter
+    # exists to cover by overriding formatMessage rather than format.
+    monkeypatch.setenv("TEST_MCP_LOG_FORMAT", "rich")
+    configure_logging_from_env("TEST_MCP")
+    try:
+        raise ValueError("boom")
+    except ValueError:
+        logging.getLogger("some.domain.module").exception("probe key=%s", "has space")
+    err = capsys.readouterr().err
+    assert 'key="has space"' in err
+
+
+def test_format_auto_picks_rich_on_a_tty(monkeypatch):
+    monkeypatch.delenv("TEST_MCP_LOG_FORMAT", raising=False)
+    # Monkeypatch the TTY probe itself, not sys.stderr: capsys/pytest already
+    # substitute their own stderr object for the duration of the test, so
+    # reassigning sys.stderr here would fight the test harness rather than
+    # exercise the code path under test.
+    monkeypatch.setattr("fastmcp_pvl_core._logging._stderr_is_tty", lambda: True)
+    configure_logging_from_env("TEST_MCP")
+    owned = _owned_handlers()
+    assert len(owned) == 2
+    assert all(isinstance(h, RichHandler) for h in owned)
+
+
+def test_format_auto_picks_json_on_a_non_tty(monkeypatch):
+    monkeypatch.delenv("TEST_MCP_LOG_FORMAT", raising=False)
+    monkeypatch.setattr("fastmcp_pvl_core._logging._stderr_is_tty", lambda: False)
+    configure_logging_from_env("TEST_MCP")
+    owned = _owned_handlers()
+    assert len(owned) == 1
+    assert not isinstance(owned[0], RichHandler)
+
+
+def test_format_unrecognised_value_falls_back_to_auto_silently(monkeypatch, caplog):
+    # Consistent with an unknown LOG_LEVEL falling back to INFO: a typo in
+    # the format name must not stop a server from starting, or warn either
+    # — LOG_LEVEL's own fallback is silent, so this one matches it.
+    monkeypatch.setenv("TEST_MCP_LOG_FORMAT", "bogus")
+    monkeypatch.delenv("TEST_MCP_LOG_LEVEL", raising=False)
+    monkeypatch.delenv("FASTMCP_LOG_LEVEL", raising=False)
+    monkeypatch.setattr("fastmcp_pvl_core._logging._stderr_is_tty", lambda: True)
+    with caplog.at_level(logging.WARNING):
+        configure_logging_from_env("TEST_MCP")
+    assert caplog.records == []
+    owned = _owned_handlers()
+    assert len(owned) == 2
+    assert all(isinstance(h, RichHandler) for h in owned)
+
+
+def test_format_is_case_insensitive(monkeypatch):
+    monkeypatch.setenv("TEST_MCP_LOG_FORMAT", "JSON")
+    configure_logging_from_env("TEST_MCP")
+    assert len(_owned_handlers()) == 1
+
+    monkeypatch.setenv("TEST_MCP_LOG_FORMAT", "Rich")
+    configure_logging_from_env("TEST_MCP")
+    assert len(_owned_handlers()) == 2
+
+
+def test_format_change_leaves_exactly_one_owned_chain(monkeypatch):
+    # This is the case _OWNED_ATTR exists for: pvl-core must recognise and
+    # remove its own handlers from a *previous* mode, not just a previous
+    # call in the same mode.
+    monkeypatch.setenv("TEST_MCP_LOG_FORMAT", "json")
+    configure_logging_from_env("TEST_MCP")
+    monkeypatch.setenv("TEST_MCP_LOG_FORMAT", "rich")
+    configure_logging_from_env("TEST_MCP")
+    monkeypatch.setenv("TEST_MCP_LOG_FORMAT", "json")
+    configure_logging_from_env("TEST_MCP")
+    owned = _owned_handlers()
+    assert len(owned) == 1
+    assert not isinstance(owned[0], RichHandler)
+
+
+def test_format_json_exception_record_has_one_handler_and_an_exception_field(
+    monkeypatch, capsys
+):
+    monkeypatch.setenv("TEST_MCP_LOG_FORMAT", "json")
+    configure_logging_from_env("TEST_MCP")
+    try:
+        raise ValueError("boom")
+    except ValueError:
+        logging.getLogger("some.domain.module").exception("failed")
+    lines = [line for line in capsys.readouterr().err.strip().splitlines() if line]
+    # No second handler double-printing the traceback: exactly one line.
+    assert len(lines) == 1
+    payload = json.loads(lines[0])
+    assert "ValueError: boom" in payload["exception"]
 
 
 @pytest.fixture(autouse=True)
@@ -398,7 +566,12 @@ class _Capture(logging.Handler):
         self.messages.append(record.getMessage())
 
 
-def test_installs_one_handler_pair_at_root():
+def test_installs_one_handler_pair_at_root(monkeypatch):
+    # Forces rich: this test is about the Rich-specific two-handler shape,
+    # which auto-detection would not guarantee under pytest's own stderr
+    # capture (not a TTY), so it would otherwise install the JSON handler
+    # instead and the assertion below would be testing the wrong mode.
+    monkeypatch.setenv("TEST_MCP_LOG_FORMAT", "rich")
     configure_logging_from_env("TEST_MCP")
     root = logging.getLogger()
     owned = [h for h in root.handlers if getattr(h, "_pvl_core_owned", False)]
@@ -495,7 +668,11 @@ def test_writes_nothing_to_stdout(capsys):
     assert "stderr only" in captured.err
 
 
-def test_exception_records_go_to_the_traceback_handler_only():
+def test_exception_records_go_to_the_traceback_handler_only(monkeypatch):
+    # Forces rich: this test is about the two-handler exc_info split, which
+    # only exists in rich mode — JSON mode has one handler and no such
+    # split (see the JSON exception-field test above).
+    monkeypatch.setenv("TEST_MCP_LOG_FORMAT", "rich")
     configure_logging_from_env("TEST_MCP")
     root = logging.getLogger()
     owned = [h for h in root.handlers if getattr(h, "_pvl_core_owned", False)]
