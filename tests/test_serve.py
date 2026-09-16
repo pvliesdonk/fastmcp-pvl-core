@@ -7,6 +7,7 @@ import socket
 import threading
 import time
 
+import fastmcp
 import httpx
 import pytest
 
@@ -31,6 +32,14 @@ def configured_logging_capture(monkeypatch):
         access.propagate,
         access.filters[:],
     )
+    fastmcp_logger = logging.getLogger("fastmcp")
+    saved_fastmcp = (
+        fastmcp_logger.handlers[:],
+        fastmcp_logger.level,
+        fastmcp_logger.propagate,
+        fastmcp_logger.filters[:],
+    )
+    saved_log_enabled = fastmcp.settings.log_enabled
 
     messages: list[str] = []
 
@@ -48,6 +57,13 @@ def configured_logging_capture(monkeypatch):
         access.handlers[:], access.level, access.propagate, access.filters[:] = (
             saved_access
         )
+        (
+            fastmcp_logger.handlers[:],
+            fastmcp_logger.level,
+            fastmcp_logger.propagate,
+            fastmcp_logger.filters[:],
+        ) = saved_fastmcp
+        fastmcp.settings.log_enabled = saved_log_enabled
 
 
 async def _app(scope, receive, send):

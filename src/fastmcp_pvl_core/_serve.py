@@ -11,7 +11,8 @@ So the invocation moves here. What pvl-core decides, it decides for every
 server; what depends on the deployment comes from :class:`.ServerConfig`.
 
 ``uvicorn`` is imported inside the functions rather than at module import:
-pvl-core supports stdio-only servers, which have no reason to pay for it.
+this keeps the module importable independently of what the dependency
+tree does next, and matches how the downstream CLIs call uvicorn.
 """
 
 from __future__ import annotations
