@@ -232,15 +232,25 @@ def test_json_carries_exception_traceback_string():
     assert "ValueError: boom" in payload["exception"]
 
 
+def _assert_correlated(record) -> None:
+    """The envelope carries the trace ids, whichever attribute names carried them in.
+
+    Two tests ask this: one for the ids the request middleware sets, one for
+    the ``otel*`` names ``opentelemetry-instrumentation-logging`` injects.
+    Same expected envelope either way — that is the point.
+    """
+    payload = json.loads(JsonFormatter().format(record))
+    assert payload["trace_id"] == "a" * 32
+    assert payload["span_id"] == "b" * 16
+
+
 def test_json_carries_trace_and_span_ids_when_present_on_record():
     record = _record(
         "event",
         (),
         extra={"trace_id": "a" * 32, "span_id": "b" * 16},
     )
-    payload = json.loads(JsonFormatter().format(record))
-    assert payload["trace_id"] == "a" * 32
-    assert payload["span_id"] == "b" * 16
+    _assert_correlated(record)
 
 
 def test_json_omits_trace_and_span_ids_when_absent():
@@ -411,9 +421,7 @@ def test_json_carries_otel_trace_and_span_ids_when_present_on_record():
     record = _record(
         "event", (), extra={"otelTraceID": "a" * 32, "otelSpanID": "b" * 16}
     )
-    payload = json.loads(JsonFormatter().format(record))
-    assert payload["trace_id"] == "a" * 32
-    assert payload["span_id"] == "b" * 16
+    _assert_correlated(record)
 
 
 def test_json_omits_otel_ids_that_are_the_no_span_sentinel():
