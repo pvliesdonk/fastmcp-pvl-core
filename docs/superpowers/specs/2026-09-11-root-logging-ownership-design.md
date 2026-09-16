@@ -292,7 +292,7 @@ All in `configure_logging_from_env`, on the unified tree:
 | Logger | Policy |
 |---|---|
 | `uvicorn.access` | Filter, always installed: redacts unconditionally; passes status ≥ 400 and drops the rest, except at DEBUG where every status passes |
-| `mcp.server.lowlevel.server`, `httpx`, `httpcore` | `WARNING` unless DEBUG, then `NOTSET` |
+| `mcp.server.lowlevel.server`, `httpx`, `httpcore` | `max(WARNING, level)` unless DEBUG, then `NOTSET` — the demotion never lowers a logger below the operator's chosen level |
 | `docket.worker` | `INFO` when root is DEBUG, else `NOTSET` (unchanged) |
 | `uvicorn.error` | never demoted — carries bind and startup failures |
 
@@ -388,7 +388,7 @@ and keeping identity a caller argument (`CLAUDE.md`, foldability).
 | `<PREFIX>_LOG_LEVEL` | `DEBUG` `INFO` `WARNING` `ERROR` `CRITICAL`, case-insensitive | `INFO` | `verbose=True` forces `DEBUG` |
 | `<PREFIX>_LOG_FORMAT` | `rich` `json`, case-insensitive | auto (§3) | — |
 | `<PREFIX>_SHUTDOWN_GRACE_S` | integer ≥ 0 | default `3`; invalid → `ConfigurationError` | on `ServerConfig` |
-| `FASTMCP_LOG_LEVEL` | as `<PREFIX>_LOG_LEVEL` | — | **migration bridge**: used only when `<PREFIX>_LOG_LEVEL` is unset, with one `WARNING` naming the prefixed variable; removed in the next major |
+| `FASTMCP_LOG_LEVEL` | as `<PREFIX>_LOG_LEVEL` | — | **migration bridge**: used only when `<PREFIX>_LOG_LEVEL` is unset, with one notice naming the prefixed variable, logged at `WARNING` or the resolved level itself if that is stricter (so an operator at `ERROR`/`CRITICAL` still sees it); removed in the next major |
 | `FASTMCP_ENABLE_RICH_LOGGING` | — | — | no longer read by pvl-core; see below |
 
 `FASTMCP_ENABLE_RICH_LOGGING` is not bridged. Its only use was selecting JSON
@@ -459,8 +459,9 @@ Named tests:
 - **Conformance check** — reports f-strings, non-literal first arguments and
   non-conforming literals with path and line; ignores calls on other
   receivers; imports nothing from the scanned tree.
-- **Bridge** — exactly one `WARNING`, naming the prefixed variable, only when
-  the fallback is used.
+- **Bridge** — exactly one notice, naming the prefixed variable, only when
+  the fallback is used, at `WARNING` or stricter so it survives an operator's
+  `ERROR`/`CRITICAL` level too.
 - **Noise policy** — per-logger levels at INFO and DEBUG, including httpx and
   httpcore.
 

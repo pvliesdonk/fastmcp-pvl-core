@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import io
 import logging
 import os
 
 import fastmcp
 import pytest
+import uvicorn
+import uvicorn.config
+from rich.logging import RichHandler
 
 from fastmcp_pvl_core import SecretMaskFilter, configure_logging_from_env
 
@@ -66,6 +70,33 @@ def test_bridges_fastmcp_log_level_with_one_warning(monkeypatch, caplog):
     assert "TEST_MCP_LOG_LEVEL" in warnings[0].getMessage()
 
 
+def test_bridges_fastmcp_log_level_at_error_severity(monkeypatch, caplog):
+    # Regression: a flat logger.warning(...) is silently dropped by an
+    # operator's own ERROR/CRITICAL level (WARNING < ERROR), so the
+    # deprecation notice never reaches them. It must be logged at whatever
+    # severity is at least as high as the level the operator chose.
+    monkeypatch.delenv("TEST_MCP_LOG_LEVEL", raising=False)
+    monkeypatch.setenv("FASTMCP_LOG_LEVEL", "ERROR")
+    with caplog.at_level(logging.ERROR):
+        configure_logging_from_env("TEST_MCP")
+        assert logging.getLogger().getEffectiveLevel() == logging.ERROR
+    warnings = [r for r in caplog.records if "FASTMCP_LOG_LEVEL" in r.getMessage()]
+    assert len(warnings) == 1
+    assert warnings[0].levelno == logging.ERROR
+
+
+def test_empty_legacy_log_level_is_not_bridged(monkeypatch, caplog):
+    # env() treats an empty prefixed value as unset; the legacy variable
+    # must be read the same way, or FASTMCP_LOG_LEVEL="" fires a spurious
+    # deprecation warning for a variable that carries no value.
+    monkeypatch.delenv("TEST_MCP_LOG_LEVEL", raising=False)
+    monkeypatch.setenv("FASTMCP_LOG_LEVEL", "")
+    with caplog.at_level(logging.WARNING):
+        configure_logging_from_env("TEST_MCP")
+        assert logging.getLogger().getEffectiveLevel() == logging.INFO
+    assert [r for r in caplog.records if "FASTMCP_LOG_LEVEL" in r.getMessage()] == []
+
+
 def test_prefixed_level_wins_and_is_silent(monkeypatch, caplog):
     # The effective-level assertion must live inside the `with` block:
     # caplog.at_level() restores the root logger's *pre-with* level on
@@ -102,6 +133,7 @@ def test_env_prefix_is_required():
 
 _MANAGED_LOGGERS = (
     "fastmcp",
+    "uvicorn",
     "uvicorn.access",
     "uvicorn.error",
     "mcp.server.lowlevel.server",
@@ -448,6 +480,18 @@ def test_replaces_a_pre_existing_console_handler():
     assert console not in root.handlers
 
 
+def test_replaces_a_pre_existing_foreign_rich_handler():
+    # Exercises the console.file fallback in _is_console_handler: a foreign
+    # RichHandler() (not one of ours, so unmarked by _OWNED_ATTR) still
+    # writes to a console stream via console.file, not .stream — the type
+    # check alone would miss it and leave two Rich chains at root.
+    root = logging.getLogger()
+    foreign = RichHandler()  # defaults to Console() over sys.stdout
+    root.addHandler(foreign)
+    configure_logging_from_env("TEST_MCP")
+    assert foreign not in root.handlers
+
+
 def test_leaves_non_console_handlers_alone():
     """The #323 fix: an operator's OTLP handler at root must survive."""
     root = logging.getLogger()
@@ -470,10 +514,14 @@ def test_caplog_survives(caplog):
 
 
 def test_writes_nothing_to_stdout(capsys):
+    # Must fail in both directions: stdout must stay empty, and the record
+    # must actually reach stderr — a handler pair that silently dropped
+    # every record would satisfy the stdout-only half of this check too.
     configure_logging_from_env("TEST_MCP")
     logging.getLogger("some.domain.module").warning("stderr only")
     captured = capsys.readouterr()
     assert captured.out == ""
+    assert "stderr only" in captured.err
 
 
 def test_exception_records_go_to_the_traceback_handler_only():
@@ -552,6 +600,18 @@ def test_access_filter_redacts_the_transfer_token(monkeypatch):
     record = _access_record("GET", "/transfer/tok_abc123", 404)
     assert log_filter.filter(record) is True
     assert "tok_abc123" not in record.getMessage()
+    assert "transfer/<redacted>" in record.getMessage()
+
+
+def test_access_filter_redacts_the_transfer_token_case_insensitively(monkeypatch):
+    # Starlette routes case-sensitively, so "/TRANSFER/..." 404s — a status
+    # this filter always keeps — and without a case-insensitive match the
+    # token would reach the log unredacted precisely because the request
+    # failed to route.
+    (log_filter,) = _access_filter(monkeypatch)
+    record = _access_record("GET", "/TRANSFER/tok_SECRET", 404)
+    assert log_filter.filter(record) is True
+    assert "tok_SECRET" not in record.getMessage()
     assert "transfer/<redacted>" in record.getMessage()
 
 
@@ -660,6 +720,17 @@ def test_noisy_loggers_restored_at_debug(name):
     assert logging.getLogger(name).level == logging.NOTSET
 
 
+@pytest.mark.parametrize("name", ["mcp.server.lowlevel.server", "httpx", "httpcore"])
+def test_noisy_loggers_never_louder_than_operator_level(name, monkeypatch):
+    # Regression: a flat WARNING demotion *raises* the effective level for
+    # these loggers above ERROR, so they print WARNING records an operator
+    # who chose ERROR explicitly asked not to see — louder than the
+    # server's own first-party code, which correctly stays silent.
+    monkeypatch.setenv("TEST_MCP_LOG_LEVEL", "ERROR")
+    configure_logging_from_env("TEST_MCP")
+    assert logging.getLogger(name).level == logging.ERROR
+
+
 def test_uvicorn_error_is_never_demoted():
     configure_logging_from_env("TEST_MCP")
     assert logging.getLogger("uvicorn.error").level == logging.NOTSET
@@ -707,3 +778,52 @@ def test_access_line_dropped_by_level_before_the_filter_sees_it(monkeypatch):
         assert len(received) == 1
     finally:
         logging.getLogger().removeHandler(handler)
+
+
+def test_uvicorn_dictconfig_still_runs_but_filter_and_redaction_survive():
+    """The PR-1 gap: closed by PR 2's ``run_http(log_config=None)`` seam.
+
+    uvicorn's own ``Config(...).configure_logging()`` still runs at HTTP
+    server start in this release. It reinstalls uvicorn's own handler on
+    ``uvicorn.access`` (a plain ``StreamHandler`` on **stdout**, level
+    ``INFO``, ``propagate=False``) regardless of ``{PREFIX}_LOG_LEVEL`` —
+    so "pvl-core owns the console" and "the level governs access lines" do
+    not hold yet under HTTP transport. What survives is proven here:
+    ``dictConfig`` replaces handlers, not filters, so ``_AccessLogFilter``
+    is still attached to ``uvicorn.access`` afterwards and still redacts
+    whatever uvicorn logs through its own reinstalled handler.
+    """
+    configure_logging_from_env("TEST_MCP")
+    uvicorn.Config(None, log_config=uvicorn.config.LOGGING_CONFIG).configure_logging()
+
+    access = logging.getLogger("uvicorn.access")
+
+    # The gap: uvicorn reinstalled its own chain, not pvl-core's.
+    assert access.propagate is False
+    assert access.level == logging.INFO
+    assert len(access.handlers) == 1
+    assert getattr(access.handlers[0], "_pvl_core_owned", False) is False
+
+    # What survives: our filter is still attached to the logger.
+    filters = [f for f in access.filters if type(f).__name__ == "_AccessLogFilter"]
+    assert len(filters) == 1
+
+    # And it still redacts whatever reaches uvicorn's own handler.
+    handler = access.handlers[0]
+    original_stream = handler.stream
+    buf = io.StringIO()
+    handler.stream = buf
+    try:
+        access.info(
+            '%s - "%s %s HTTP/%s" %d',
+            "1.2.3.4:5678",
+            "GET",
+            "/transfer/tok_SECRET123",
+            "1.1",
+            404,
+        )
+    finally:
+        handler.stream = original_stream
+    line = buf.getvalue()
+    assert "tok_SECRET123" not in line
+    assert "transfer/<redacted>" in line

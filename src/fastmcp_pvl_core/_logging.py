@@ -3,10 +3,20 @@
 ``configure_logging_from_env`` installs a single console handler pair at
 the **root** logger and neutralises FastMCP's own logging
 (``fastmcp.settings.log_enabled = False``), rather than delegating to
-FastMCP's ``configure_logging``. That handler pair is the process's only
-console output: every logger — ``fastmcp.*`` included — propagates into it
-instead of rendering through a chain of its own. Rendering is Rich only;
-a JSON alternative does not exist yet.
+FastMCP's ``configure_logging``. Every logger — ``fastmcp.*`` included —
+propagates into that pair instead of rendering through a chain of its own.
+Rendering is Rich only; a JSON alternative does not exist yet.
+
+Under HTTP transport, as of this release, uvicorn still runs its own
+``dictConfig`` at server start — the ``run_http(log_config=None)`` seam
+that retires it is a later PR — which reinstalls uvicorn's own handler on
+``uvicorn.access``/``uvicorn.error`` (the access handler on **stdout**, at
+``INFO``, regardless of the resolved level). What survives that
+reconfiguration is the ``_AccessLogFilter`` installed below: ``dictConfig``
+replaces handlers, not filters, so redaction and the drop-successes rule
+still hold on whatever handler uvicorn ends up attaching. Until that PR
+lands, this module is the sole console owner only when no HTTP server has
+started.
 
 The ``-v`` CLI flag forces ``DEBUG``; otherwise ``<PREFIX>_LOG_LEVEL``
 wins, with the legacy ``FASTMCP_LOG_LEVEL`` honoured as a deprecated
@@ -30,7 +40,6 @@ values in formatted log messages before they reach handlers.
 from __future__ import annotations
 
 import logging
-import os
 import re
 import sys
 
@@ -74,7 +83,7 @@ _DEBUG_FLOOD_LOGGERS = ("docket.worker",)
 _ACCESS_LOGGER = "uvicorn.access"
 
 _QUERY_RE = re.compile(r"[?#]")
-_TRANSFER_TOKEN_RE = re.compile(r"(^|/)transfer/[^/]+")
+_TRANSFER_TOKEN_RE = re.compile(r"(^|/)transfer/[^/]+", re.IGNORECASE)
 
 _ACCESS_ARG_COUNT = 5
 _ACCESS_STATUS_INDEX = 4
@@ -154,10 +163,16 @@ def _apply_access_policy(level: int) -> None:
 _OWNED_ATTR = "_pvl_core_owned"
 """Marks the handlers this module installed.
 
-Idempotence needs it: a ``RichHandler`` is not a ``StreamHandler`` and
-exposes no ``.stream``, so the console rule below cannot recognise our own
-Rich pair on a second call. Marking is what makes repeated configuration —
-and a mode change in a later PR — leave exactly one chain at root.
+Not needed to recognise our own Rich pair on an ordinary second call:
+``_is_console_handler`` falls back to ``RichHandler.console.file``, which
+resolves to ``sys.stderr`` exactly like a plain ``StreamHandler``'s
+``.stream``, so the console rule below already catches our own pair without
+this marker. It still matters in two cases the stream-identity rule cannot
+reach on its own: ``sys.stderr`` being ``None`` (Rich substitutes a NULL
+file that matches no console-stream identity), and a JSON-mode
+``StreamHandler`` in a later PR whose stream may have been reassigned after
+construction. Marking is what makes repeated configuration — and a mode
+change in a later PR — leave exactly one chain at root regardless.
 """
 
 
@@ -258,7 +273,11 @@ def _resolve_level(env_prefix: str, *, verbose: bool) -> tuple[int, bool]:
         return logging.DEBUG, False
 
     raw = env(env_prefix, "LOG_LEVEL")
-    legacy = os.environ.get("FASTMCP_LOG_LEVEL")
+    # ``env()`` treats an empty value as unset; read the legacy variable
+    # through it too (prefix "FASTMCP", name "LOG_LEVEL") so
+    # ``FASTMCP_LOG_LEVEL=""`` is unset the same way, instead of firing a
+    # deprecation warning for a variable that carries no value.
+    legacy = env("FASTMCP", "LOG_LEVEL")
     bridged = raw is None and legacy is not None
     name = (raw if raw is not None else legacy or "INFO").strip().upper()
     if name not in _VALID_LEVELS:
@@ -301,8 +320,10 @@ def configure_logging_from_env(env_prefix: str, *, verbose: bool = False) -> Non
 
     Three noisy third-party loggers — ``mcp.server.lowlevel.server`` (the MCP
     SDK request line), ``httpx``, and ``httpcore`` — are demoted to
-    ``WARNING`` whenever the resolved level is above ``DEBUG``, so their
-    per-request chatter stays out of the default ``INFO`` stream. At
+    ``WARNING`` (or the resolved level itself, if that is stricter than
+    ``WARNING``) whenever the resolved level is above ``DEBUG``, so their
+    per-request chatter stays out of the default ``INFO`` stream without
+    ever making them *louder* than the operator's own chosen level. At
     ``DEBUG`` they are reset to ``NOTSET`` and reappear. ``uvicorn.error``
     is never demoted.
 
@@ -345,7 +366,12 @@ def configure_logging_from_env(env_prefix: str, *, verbose: bool = False) -> Non
     _neutralise_fastmcp()
     _install_root_handlers(level)
 
-    noisy_level = logging.NOTSET if level == logging.DEBUG else logging.WARNING
+    # max(WARNING, level), not a flat WARNING: at ERROR/CRITICAL a flat
+    # WARNING would *raise* the effective level for these loggers above what
+    # the operator chose, making them louder than the server's own code.
+    noisy_level = (
+        logging.NOTSET if level == logging.DEBUG else max(logging.WARNING, level)
+    )
     for name in _NOISY_THIRD_PARTY_LOGGERS:
         logging.getLogger(name).setLevel(noisy_level)
 
@@ -362,7 +388,12 @@ def configure_logging_from_env(env_prefix: str, *, verbose: bool = False) -> Non
         # Emitted last, deliberately: the handlers that carry it are
         # installed above. A deprecation notice nobody can see is worse
         # than none, because it reads as if the migration were silent.
-        logger.warning(
+        # logged at max(WARNING, level) rather than a flat WARNING: an
+        # operator running at ERROR or CRITICAL has raised the bar above
+        # WARNING, and a flat WARNING would be silently dropped by their own
+        # chosen level — never seeing the notice at all.
+        logger.log(
+            max(logging.WARNING, level),
             "log_level_env_deprecated old=FASTMCP_LOG_LEVEL new=%s_LOG_LEVEL",
             env_prefix.rstrip("_"),
         )
