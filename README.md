@@ -288,10 +288,11 @@ otherwise duplicate the request-logging middleware's own lines. Its own
 level stays `NOTSET`, inheriting root, so raising `{PREFIX}_LOG_LEVEL` above
 `INFO` silences access lines entirely, kept or not: the filter decides
 *which* requests are worth a line, the level decides *whether* the operator
-wants request lines at all. At `DEBUG` the filter is removed and every
-request line — success or failure — passes through unredacted.
+wants request lines at all. At `DEBUG` the filter is always still installed
+and keeps every status, `200` included, so nothing about verbosity changes
+which requests reach the log.
 
-Every record the filter keeps is also rewritten, because uvicorn logs the
+Every record the filter sees is also rewritten, because uvicorn logs the
 full `path?query`:
 
 - **The query string is stripped entirely.** No route in this family carries
@@ -299,11 +300,14 @@ full `path?query`:
   it is an authorization code or PKCE material.
 - **The segment after `/transfer/` is masked** to `transfer/<redacted>`.
   pvl-core's transfer token lives in the path, and an expired link produces
-  exactly the 4xx this filter keeps.
+  exactly the 4xx this filter keeps by default; a *live* link produces a
+  `2xx`, which is visible only at `DEBUG` — so the redaction has to hold
+  there too.
 
-Both redactions apply only to the requests the filter keeps, so at `DEBUG`
-— where the filter is absent — access lines carry the raw path and query
-string.
+Both redactions apply unconditionally, including at `DEBUG`: whether a
+request line is worth logging is a preference the level and the
+status filter both express, but whether a credential may appear in that
+line is not a preference at all, so it is never tied to verbosity.
 
 One logger is capped in the other direction. `docket.worker` — pydocket's
 background-task worker, which every consumer inherits through the

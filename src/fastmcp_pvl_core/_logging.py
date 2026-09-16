@@ -16,9 +16,11 @@ fallback for one release when ``<PREFIX>_LOG_LEVEL`` is unset; otherwise
 Three mechanisms keep the operator stream readable at both ends:
 ``_NOISY_THIRD_PARTY_LOGGERS`` (loud at ``INFO``, demoted),
 ``_DEBUG_FLOOD_LOGGERS`` (loud at ``DEBUG``, capped), and
-``_AccessLogFilter`` (``uvicorn.access``, left at ``NOTSET`` and filtered
-down to failures only, since a level cannot express "failures only" but
-the level still governs whether access lines appear at all).
+``_AccessLogFilter`` (``uvicorn.access``, left at ``NOTSET`` so the level
+governs whether access lines appear at all, and always installed — at
+``DEBUG`` it keeps every status instead of failures only, but it never
+stops redacting, since whether a line is worth logging is a preference and
+whether a credential may appear in it is not).
 
 This module also exposes :class:`SecretMaskFilter`, a reusable
 ``logging.Filter`` that redacts ``Authorization: Bearer/Token/Basic``
@@ -80,29 +82,38 @@ _ACCESS_PATH_INDEX = 2
 
 
 class _AccessLogFilter(logging.Filter):
-    """Keep failing requests only, and never log a credential.
+    """Redact every request line, and drop successful ones unless asked not to.
 
     uvicorn emits every access record at ``INFO`` regardless of status, so
     at the default level the successful ones are pure duplication: the
     request-logging middleware already reports each MCP call with its method
     and duration. What the middleware cannot report is what never reached it
     — a 401 refused by auth, a 404, a 413 — so those stay, and a readiness
-    probe becomes visible exactly when it starts failing.
+    probe becomes visible exactly when it starts failing. Whether a
+    successful request deserves a line is a preference: *drop_successes*
+    expresses it, and ``_apply_access_policy`` ties it to the level so an
+    operator at ``DEBUG`` sees every status.
 
-    Both redactions are about credentials in the request line, which uvicorn
-    logs as ``path?query``:
+    Redaction is not a preference and is never conditional on
+    *drop_successes* — every record this filter is given gets rewritten,
+    kept or not, because uvicorn logs the request line as ``path?query``:
 
     * the query string goes entirely. No route in this family carries
       diagnostic query parameters; the ones that carry anything are the
       OAuth routes, where it is an authorization code or PKCE material.
     * the segment after ``/transfer/`` is masked, because the transfer token
-      is in the *path* — an expired link produces exactly the 4xx this
-      filter keeps.
+      is in the *path*. An expired link produces the 4xx this filter always
+      keeps; a live one produces a 2xx, visible only at ``DEBUG`` — which is
+      exactly why redaction cannot be tied to *drop_successes* either.
 
     A record of any other shape passes untouched: this filter judges
     uvicorn's access line, and anything else on that logger is not its
     business.
     """
+
+    def __init__(self, *, drop_successes: bool) -> None:
+        super().__init__()
+        self._drop_successes = drop_successes
 
     def filter(self, record: logging.LogRecord) -> bool:
         args = record.args
@@ -111,18 +122,23 @@ class _AccessLogFilter(logging.Filter):
         status = args[_ACCESS_STATUS_INDEX]
         if not isinstance(status, int):
             return True
-        if status < 400:
-            return False
         path = _QUERY_RE.split(str(args[_ACCESS_PATH_INDEX]), maxsplit=1)[0]
         path = _TRANSFER_TOKEN_RE.sub(r"\1transfer/<redacted>", path)
         record.args = (
             args[:_ACCESS_PATH_INDEX] + (path,) + args[_ACCESS_PATH_INDEX + 1 :]
         )
-        return True
+        return not (self._drop_successes and status < 400)
 
 
 def _apply_access_policy(level: int) -> None:
-    """Install or remove the access filter, leaving exactly one either way."""
+    """Install the access filter, leaving exactly one instance either way.
+
+    Always installed — redaction must never depend on verbosity — but the
+    survivor's ``drop_successes`` flag tracks the level passed on *this*
+    call: remove-then-add means an operator flipping between ``DEBUG`` and
+    anything else always ends up with the rule matching their latest call,
+    never a stale one from before the flip.
+    """
     access = logging.getLogger(_ACCESS_LOGGER)
     for existing in [f for f in access.filters if isinstance(f, _AccessLogFilter)]:
         access.removeFilter(existing)
@@ -132,8 +148,7 @@ def _apply_access_policy(level: int) -> None:
     # operator raising the level to WARNING or above silences every access
     # line — kept or not — before the filter ever sees it.
     access.setLevel(logging.NOTSET)
-    if level != logging.DEBUG:
-        access.addFilter(_AccessLogFilter())
+    access.addFilter(_AccessLogFilter(drop_successes=level != logging.DEBUG))
 
 
 _OWNED_ATTR = "_pvl_core_owned"
@@ -293,16 +308,18 @@ def configure_logging_from_env(env_prefix: str, *, verbose: bool = False) -> Non
 
     ``uvicorn.access`` (the HTTP access log) is handled differently: a
     level cannot express "failures only", so it is left at ``NOTSET`` —
-    inheriting the root level, like any other unconfigured logger — and,
-    whenever the resolved level is above ``DEBUG``, given a filter that
-    keeps failing requests only and redacts the query string and any
-    ``/transfer/<token>`` segment from the ones it keeps. The filter decides
-    *which* requests are worth a line; the level decides *whether* the
-    operator wants request lines at all — raising ``{env_prefix}_LOG_LEVEL``
-    to ``WARNING`` or above silences access lines entirely, kept or not, the
-    same way it silences every other logger without unique verbosity needs.
-    At ``DEBUG`` the filter is removed and every request line — success or
-    failure — passes through.
+    inheriting the root level, like any other unconfigured logger — and
+    always given a filter that redacts the query string and any
+    ``/transfer/<token>`` segment from every request line it sees. The
+    filter decides *which* requests are worth a line; the level decides
+    *whether* the operator wants request lines at all — raising
+    ``{env_prefix}_LOG_LEVEL`` to ``WARNING`` or above silences access lines
+    entirely, kept or not, the same way it silences every other logger
+    without unique verbosity needs. At every level except ``DEBUG`` the
+    filter also drops successful (``< 400``) requests; at ``DEBUG`` every
+    status passes, but the redaction never stops — whether a line is worth
+    logging is a preference the level and filter both express, whether a
+    credential may appear in it is not.
 
     One third-party logger is capped in the other direction:
     ``docket.worker`` is pinned to ``INFO`` when the resolved level is

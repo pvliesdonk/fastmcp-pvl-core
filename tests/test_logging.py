@@ -563,10 +563,75 @@ def test_access_filter_passes_records_of_another_shape(monkeypatch):
     assert log_filter.filter(other) is True
 
 
-def test_access_filter_is_absent_at_debug():
+def test_access_filter_present_and_keeps_success_at_debug():
+    # Redaction must never be a side effect of verbosity: the filter stays
+    # installed at DEBUG, it just stops dropping 2xx/3xx records.
     configure_logging_from_env("TEST_MCP", verbose=True)
     access = logging.getLogger("uvicorn.access")
-    assert [f for f in access.filters if type(f).__name__ == "_AccessLogFilter"] == []
+    (log_filter,) = [
+        f for f in access.filters if type(f).__name__ == "_AccessLogFilter"
+    ]
+    assert log_filter.filter(_access_record("GET", "/mcp", 200)) is True
+
+
+def test_access_lines_redacted_at_debug():
+    # Live handler attached at root, not the filter's return value: proves
+    # the secrets are actually gone from what a handler receives, for the
+    # two cases that only exist at DEBUG — a *live* transfer link (2xx,
+    # only visible once successes stop being dropped) and an OAuth
+    # authorize redirect.
+    configure_logging_from_env("TEST_MCP", verbose=True)
+    access = logging.getLogger("uvicorn.access")
+    handler = logging.Handler()
+    received: list[logging.LogRecord] = []
+    handler.emit = received.append  # type: ignore[method-assign]
+    logging.getLogger().addHandler(handler)
+    try:
+        access.info(
+            '%s - "%s %s HTTP/%s" %d',
+            "1.2.3.4:5678",
+            "GET",
+            "/transfer/tok_SECRET123",
+            "1.1",
+            200,
+        )
+        access.info(
+            '%s - "%s %s HTTP/%s" %d',
+            "1.2.3.4:5678",
+            "GET",
+            "/authorize?code=AUTHCODE&state=x",
+            "1.1",
+            302,
+        )
+        assert len(received) == 2
+        messages = [r.getMessage() for r in received]
+        assert not any("SECRET" in m or "AUTHCODE" in m for m in messages)
+        assert "transfer/<redacted>" in messages[0]
+        assert "/authorize" in messages[1] and "?" not in messages[1]
+    finally:
+        logging.getLogger().removeHandler(handler)
+
+
+def test_access_filter_rule_tracks_the_latest_call(monkeypatch):
+    # Idempotence must not go stale on a flip: the surviving instance after
+    # DEBUG must apply DEBUG's rule (keep 200s), and after flipping back to
+    # INFO it must apply INFO's rule (drop 200s) — never a rule left over
+    # from before the flip.
+    access = logging.getLogger("uvicorn.access")
+
+    monkeypatch.setenv("TEST_MCP_LOG_LEVEL", "INFO")
+    configure_logging_from_env("TEST_MCP")
+    monkeypatch.setenv("TEST_MCP_LOG_LEVEL", "DEBUG")
+    configure_logging_from_env("TEST_MCP")
+    filters = [f for f in access.filters if type(f).__name__ == "_AccessLogFilter"]
+    assert len(filters) == 1
+    assert filters[0].filter(_access_record("GET", "/mcp", 200)) is True
+
+    monkeypatch.setenv("TEST_MCP_LOG_LEVEL", "INFO")
+    configure_logging_from_env("TEST_MCP")
+    filters = [f for f in access.filters if type(f).__name__ == "_AccessLogFilter"]
+    assert len(filters) == 1
+    assert filters[0].filter(_access_record("GET", "/mcp", 200)) is False
 
 
 def test_repeated_calls_leave_one_access_filter(monkeypatch):
