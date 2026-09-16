@@ -11,7 +11,9 @@ import json
 import logging
 
 from fastmcp_pvl_core._log_render import (
+    _ACCESS_FIELDS_ATTR,
     JsonFormatter,
+    _AccessLogFields,
     bind_record,
     render_rich,
     render_value,
@@ -270,6 +272,66 @@ def test_json_key_order_is_envelope_then_event_then_trace_then_exception():
         "span_id",
         "exception",
     ]
+
+
+# --- uvicorn access ----------------------------------------------------------
+
+
+def _access_record(
+    client: str, method: str, path: str, status: int
+) -> logging.LogRecord:
+    # Same template/args shape uvicorn logs "uvicorn.access" with; the
+    # attribute under test is attached by _AccessLogFilter, not derived by
+    # JsonFormatter, so it is set explicitly here rather than parsed.
+    record = _record(
+        '%s - "%s %s HTTP/%s" %d',
+        (client, method, path, "1.1", status),
+    )
+    setattr(
+        record,
+        _ACCESS_FIELDS_ATTR,
+        _AccessLogFields(client=client, method=method, path=path, status=status),
+    )
+    return record
+
+
+def test_json_access_record_carries_client_method_path_status_as_fields():
+    record = _access_record("1.2.3.4:5678", "GET", "/mcp", 404)
+    payload = json.loads(JsonFormatter().format(record))
+    assert payload["client"] == "1.2.3.4:5678"
+    assert payload["method"] == "GET"
+    assert payload["path"] == "/mcp"
+    assert payload["status"] == 404
+    assert isinstance(payload["status"], int)
+    assert "message" not in payload
+
+
+def test_json_access_record_carries_the_already_redacted_path():
+    # The attribute is the single source: JsonFormatter must not re-derive
+    # the path, only read whatever value the filter already redacted.
+    record = _access_record("1.2.3.4:5678", "GET", "/transfer/<redacted>", 404)
+    payload = json.loads(JsonFormatter().format(record))
+    assert payload["path"] == "/transfer/<redacted>"
+
+
+def test_json_access_record_without_the_attribute_falls_back_to_message():
+    # A uvicorn.access record the filter did not understand (or that never
+    # passed through the filter) carries no attribute, and must render like
+    # any other non-conforming record.
+    record = _record(
+        '%s - "%s %s HTTP/%s" %d',
+        ("1.2.3.4:5678", "GET", "/mcp", "1.1", 404),
+    )
+    payload = json.loads(JsonFormatter().format(record))
+    assert "client" not in payload
+    assert "message" in payload
+    assert payload["message"] == '1.2.3.4:5678 - "GET /mcp HTTP/1.1" 404'
+
+
+def test_rich_ignores_the_access_fields_attribute():
+    # Rich mode is unchanged: the attribute is a JSON-only concern.
+    record = _access_record("1.2.3.4:5678", "GET", "/mcp", 404)
+    assert render_rich(record) == record.getMessage()
 
 
 # --- never raises ------------------------------------------------------------

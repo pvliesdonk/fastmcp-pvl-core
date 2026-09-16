@@ -21,6 +21,14 @@ may be any object, not a ``str``; ``record.args`` may be a ``Mapping``
 (stdlib's single-dict ``%(key)s`` form) rather than a tuple; a field value
 may not be JSON-serialisable. Each of those degrades to the formatted
 message rather than propagating.
+
+One record never conforms to the grammar because it is not ours to
+template: uvicorn's ``uvicorn.access`` line. ``_logging._AccessLogFilter``
+parses and redacts it anyway, since it is the one place that knows what
+uvicorn's fixed template means, and attaches the result to the record as
+:class:`_AccessLogFields`. :class:`JsonFormatter` reads that attribute
+straight through when present, instead of falling back to ``message`` —
+``render_rich`` does not, so Rich mode is unaffected.
 """
 
 from __future__ import annotations
@@ -100,6 +108,32 @@ def bind_record(
         for field in template.fields
     )
     return template.event, fields
+
+
+@dataclass(frozen=True)
+class _AccessLogFields:
+    """uvicorn access-record fields, parsed and already redacted.
+
+    Attached to a ``uvicorn.access`` record by ``_logging._AccessLogFilter``
+    (under :data:`_ACCESS_FIELDS_ATTR`) for every record whose shape it
+    understood and kept — uvicorn owns that record's template, so it never
+    conforms to the family's log-call grammar and :func:`bind_record` would
+    otherwise fall back to a formatted ``message``.
+
+    *path* is the same value the filter already wrote back into
+    ``record.args`` — redacted once, by the filter, never re-derived here —
+    so the JSON field below and the Rich line can never disagree about what
+    the path was. *status* stays an ``int``, never a formatted string.
+    """
+
+    client: str
+    method: str
+    path: str
+    status: int
+
+
+_ACCESS_FIELDS_ATTR = "_pvl_core_access"
+"""Record attribute name :class:`_AccessLogFields` is attached under."""
 
 
 def render_value(value: object) -> str:
@@ -191,10 +225,12 @@ class JsonFormatter(logging.Formatter):
     """One JSON object per record, for log aggregators.
 
     Envelope, in order: ``ts`` (ISO-8601 UTC), ``level``, ``logger``, then
-    either ``event`` plus one key per field (a conforming record) or
-    ``message`` (the formatted message, for everything else), then
-    ``trace_id``/``span_id`` when present on the record, then
-    ``exception`` when the record carries a traceback.
+    one of: ``client``/``method``/``path``/``status`` (a ``uvicorn.access``
+    record the access filter understood — see :class:`_AccessLogFields`),
+    ``event`` plus one key per field (a conforming record), or ``message``
+    (the formatted message, for everything else) — then ``trace_id``/
+    ``span_id`` when present on the record, then ``exception`` when the
+    record carries a traceback.
 
     Uses ``json.dumps(..., default=str)`` so a field value that is not
     JSON-native (a ``Path``, an exception instance, ...) stringifies
@@ -208,23 +244,33 @@ class JsonFormatter(logging.Formatter):
             "logger": record.name,
         }
 
-        bound = bind_record(record)
-        conforming: dict[str, object] | None = None
-        if bound is not None:
-            event, fields = bound
-            try:
-                conforming = {"event": event}
-                for field in fields:
-                    value = field.value
-                    conforming[field.name] = (
-                        value if isinstance(value, _JSON_NATIVE) else str(value)
-                    )
-            except Exception:  # noqa: BLE001 - a log call must never raise
-                conforming = None
-        if conforming is not None:
-            envelope.update(conforming)
+        access = getattr(record, _ACCESS_FIELDS_ATTR, None)
+        if isinstance(access, _AccessLogFields):
+            # The filter already parsed and redacted this record; read its
+            # values straight off the attribute rather than re-deriving them
+            # from record.args, so this can never disagree with the filter.
+            envelope["client"] = access.client
+            envelope["method"] = access.method
+            envelope["path"] = access.path
+            envelope["status"] = access.status
         else:
-            envelope["message"] = _safe_message(record)
+            bound = bind_record(record)
+            conforming: dict[str, object] | None = None
+            if bound is not None:
+                event, fields = bound
+                try:
+                    conforming = {"event": event}
+                    for field in fields:
+                        value = field.value
+                        conforming[field.name] = (
+                            value if isinstance(value, _JSON_NATIVE) else str(value)
+                        )
+                except Exception:  # noqa: BLE001 - a log call must never raise
+                    conforming = None
+            if conforming is not None:
+                envelope.update(conforming)
+            else:
+                envelope["message"] = _safe_message(record)
 
         trace_id = getattr(record, "trace_id", None)
         span_id = getattr(record, "span_id", None)

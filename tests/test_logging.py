@@ -771,6 +771,70 @@ def test_access_filter_passes_records_of_another_shape(monkeypatch):
     assert log_filter.filter(other) is True
 
 
+def test_access_filter_attaches_pvl_core_fields_when_it_keeps_a_record(monkeypatch):
+    from fastmcp_pvl_core._log_render import _ACCESS_FIELDS_ATTR
+
+    (log_filter,) = _access_filter(monkeypatch)
+    record = _access_record("GET", "/transfer/tok_abc123", 404)
+    assert log_filter.filter(record) is True
+    fields = getattr(record, _ACCESS_FIELDS_ATTR)
+    assert fields.client == "1.2.3.4:5678"
+    assert fields.method == "GET"
+    # The attached path is the already-redacted one — the same value the
+    # filter wrote back into record.args — never the raw token.
+    assert fields.path == "/transfer/<redacted>"
+    assert fields.status == 404
+    assert isinstance(fields.status, int)
+
+
+def test_access_filter_does_not_attach_fields_to_a_dropped_record(monkeypatch):
+    from fastmcp_pvl_core._log_render import _ACCESS_FIELDS_ATTR
+
+    (log_filter,) = _access_filter(monkeypatch)
+    record = _access_record("GET", "/mcp", 200)
+    assert log_filter.filter(record) is False
+    assert not hasattr(record, _ACCESS_FIELDS_ATTR)
+
+
+def test_access_filter_does_not_attach_fields_to_an_unrecognised_record(monkeypatch):
+    from fastmcp_pvl_core._log_render import _ACCESS_FIELDS_ATTR
+
+    (log_filter,) = _access_filter(monkeypatch)
+    other = logging.LogRecord(
+        "uvicorn.access", logging.INFO, "_", 0, "startup", None, None
+    )
+    assert log_filter.filter(other) is True
+    assert not hasattr(other, _ACCESS_FIELDS_ATTR)
+
+
+def test_end_to_end_json_access_line_carries_fields_not_message(monkeypatch, capsys):
+    # Integration check, not unit-level: a real access.info(...) call must
+    # pass through the installed filter and the installed JsonFormatter
+    # together and come out with real fields — the filter and formatter
+    # tests above each prove one half in isolation.
+    monkeypatch.delenv("FASTMCP_LOG_LEVEL", raising=False)
+    monkeypatch.setenv("TEST_MCP_LOG_FORMAT", "json")
+    configure_logging_from_env("TEST_MCP")
+    logging.getLogger("uvicorn.access").info(
+        '%s - "%s %s HTTP/%s" %d',
+        "1.2.3.4:5678",
+        "GET",
+        "/transfer/tok_abc123?code=SECRET",
+        "1.1",
+        404,
+    )
+    line = capsys.readouterr().err.strip()
+    payload = json.loads(line)
+    assert payload["client"] == "1.2.3.4:5678"
+    assert payload["method"] == "GET"
+    assert payload["path"] == "/transfer/<redacted>"
+    assert payload["status"] == 404
+    assert "message" not in payload
+    assert "event" not in payload
+    assert "tok_abc123" not in line
+    assert "SECRET" not in line
+
+
 def test_access_filter_present_and_keeps_success_at_debug():
     # Redaction must never be a side effect of verbosity: the filter stays
     # installed at DEBUG, it just stops dropping 2xx/3xx records.

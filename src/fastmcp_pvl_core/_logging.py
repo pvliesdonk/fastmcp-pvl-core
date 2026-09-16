@@ -45,7 +45,12 @@ from rich.console import Console
 from rich.logging import RichHandler
 
 from ._env import env
-from ._log_render import JsonFormatter, render_rich
+from ._log_render import (
+    _ACCESS_FIELDS_ATTR,
+    JsonFormatter,
+    _AccessLogFields,
+    render_rich,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -85,8 +90,10 @@ _QUERY_RE = re.compile(r"[?#]")
 _TRANSFER_TOKEN_RE = re.compile(r"(^|/)transfer/[^/]+", re.IGNORECASE)
 
 _ACCESS_ARG_COUNT = 5
-_ACCESS_STATUS_INDEX = 4
+_ACCESS_CLIENT_INDEX = 0
+_ACCESS_METHOD_INDEX = 1
 _ACCESS_PATH_INDEX = 2
+_ACCESS_STATUS_INDEX = 4
 
 
 class _AccessLogFilter(logging.Filter):
@@ -117,6 +124,17 @@ class _AccessLogFilter(logging.Filter):
     A record of any other shape passes untouched: this filter judges
     uvicorn's access line, and anything else on that logger is not its
     business.
+
+    A record this filter understands and keeps also gets the parsed
+    ``client``/``method``/``path``/``status`` attached as
+    :class:`~._log_render._AccessLogFields`, under
+    :data:`~._log_render._ACCESS_FIELDS_ATTR`. uvicorn owns this record's
+    template, so it never conforms to the family's log-call grammar and
+    :class:`~._log_render.JsonFormatter` would otherwise have nothing but a
+    formatted ``message`` to emit. *path* on that attribute is the same
+    value just written back into ``record.args`` above — redacted once,
+    here, never re-derived by a renderer — so the JSON field and the Rich
+    line can never disagree about what the path was.
     """
 
     def __init__(self, *, drop_successes: bool) -> None:
@@ -135,7 +153,19 @@ class _AccessLogFilter(logging.Filter):
         record.args = (
             args[:_ACCESS_PATH_INDEX] + (path,) + args[_ACCESS_PATH_INDEX + 1 :]
         )
-        return not (self._drop_successes and status < 400)
+        keep = not (self._drop_successes and status < 400)
+        if keep:
+            setattr(
+                record,
+                _ACCESS_FIELDS_ATTR,
+                _AccessLogFields(
+                    client=str(args[_ACCESS_CLIENT_INDEX]),
+                    method=str(args[_ACCESS_METHOD_INDEX]),
+                    path=path,
+                    status=status,
+                ),
+            )
+        return keep
 
 
 def _apply_access_policy(level: int) -> None:
