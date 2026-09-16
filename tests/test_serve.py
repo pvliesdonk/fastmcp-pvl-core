@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import socket
 import threading
@@ -87,6 +88,34 @@ def _free_port() -> int:
         return int(sock.getsockname()[1])
 
 
+@contextlib.contextmanager
+def _running_server():
+    """Run a real ``uvicorn.Server`` for ``_app`` on a free port, in a thread.
+
+    Shared by the two e2e tests below: starts the server on a background
+    thread, polls ``server.started`` against a 10s deadline before
+    yielding ``(server, port)``, and guarantees shutdown — ``should_exit``
+    then a 10s-timeout ``thread.join`` — in a ``finally``, so a test body
+    expresses only what it asserts, not the start/stop mechanics.
+    """
+    import uvicorn
+
+    port = _free_port()
+    built = _build_uvicorn_config(_app, host="127.0.0.1", port=port, shutdown_grace_s=1)
+    server = uvicorn.Server(built)
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    try:
+        deadline = time.monotonic() + 10
+        while not server.started and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert server.started, "server did not start within 10s"
+        yield server, port
+    finally:
+        server.should_exit = True
+        thread.join(timeout=10)
+
+
 def test_pins_the_settings_pvl_core_owns():
     built = _build_uvicorn_config(_app, host="127.0.0.1", port=8000, shutdown_grace_s=3)
     assert built.log_config is None
@@ -135,28 +164,13 @@ def test_zero_port_is_an_override_not_a_fallback(monkeypatch):
 
 def test_end_to_end_access_log_policy(configured_logging_capture):
     """A real server, real requests: successes silent, failures logged and redacted."""
-    port = _free_port()
-    import uvicorn
-
-    built = _build_uvicorn_config(_app, host="127.0.0.1", port=port, shutdown_grace_s=1)
-    server = uvicorn.Server(built)
-    thread = threading.Thread(target=server.run, daemon=True)
-    thread.start()
-    try:
-        deadline = time.monotonic() + 10
-        while not server.started and time.monotonic() < deadline:
-            time.sleep(0.05)
-        assert server.started, "server did not start within 10s"
-
+    with _running_server() as (_server, port):
         with httpx.Client(base_url=f"http://127.0.0.1:{port}") as client:
             client.get("/health")
             client.post("/mcp")
             client.get("/nope")
             client.get("/transfer/tok_SECRET123")
         time.sleep(0.3)
-    finally:
-        server.should_exit = True
-        thread.join(timeout=10)
 
     access = [m for m in configured_logging_capture if ' - "' in m]
     assert not any("/health" in m for m in access)
@@ -168,21 +182,7 @@ def test_end_to_end_access_log_policy(configured_logging_capture):
 
 def test_uvicorn_never_installs_its_own_handlers(configured_logging_capture):
     """log_config=None is what makes PR 1's topology hold at runtime."""
-    port = _free_port()
-    import uvicorn
-
-    built = _build_uvicorn_config(_app, host="127.0.0.1", port=port, shutdown_grace_s=1)
-    server = uvicorn.Server(built)
-    thread = threading.Thread(target=server.run, daemon=True)
-    thread.start()
-    try:
-        deadline = time.monotonic() + 10
-        while not server.started and time.monotonic() < deadline:
-            time.sleep(0.05)
-        assert server.started
+    with _running_server():
         access = logging.getLogger("uvicorn.access")
         assert access.handlers == []
         assert access.propagate is True
-    finally:
-        server.should_exit = True
-        thread.join(timeout=10)
