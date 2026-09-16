@@ -267,20 +267,18 @@ class _RichTextFormatter(logging.Formatter):
 
     Delegating to :func:`render_rich` here — instead of leaving the
     default ``%(message)s`` style substitution — has two effects. For a
-    conforming first-party record (most of pvl-core's own log calls
-    already are, e.g. ``"job_failed job_id=%s error=%s"``), a field value
-    containing whitespace or a quote now renders quoted in Rich mode,
-    matching the quoting rule the request middleware already applies to
-    its own pre-formatted line and JSON mode already applies per field —
-    one rule, one place, instead of the same field going out unquoted
-    here and quoted there. That is a real behaviour change landing with
-    this commit, not deferred. For a non-conforming record —
-    including the current (pre-#327-child-3) request middleware, whose
-    template is the literal string ``"%s %s"`` and so does not parse as
-    conforming — :func:`render_rich` falls back to
-    ``record.getMessage()``, identical to what the plain formatter this
-    replaces already produced; the middleware's own line is therefore
-    unaffected until it logs through the grammar directly.
+    conforming first-party record (a minority today — 19 of 55 pvl-core
+    log calls, 35%, per the measurement in README.md's "The log-call
+    grammar" section and tracked in
+    `#328 <https://github.com/pvliesdonk/fastmcp-pvl-core/issues/328>`_),
+    a field value containing whitespace or a quote now renders quoted in
+    Rich mode, matching the quoting rule the request middleware already
+    applies to its own line and JSON mode already applies per field — one
+    rule, one place, instead of the same field going out unquoted here
+    and quoted there. That is a real behaviour change landing with this
+    commit, not deferred. For a non-conforming record — the majority,
+    still — :func:`render_rich` falls back to ``record.getMessage()``,
+    identical to what the plain formatter this replaces already produced.
     """
 
     def formatMessage(self, record: logging.LogRecord) -> str:  # noqa: N802 - stdlib override
