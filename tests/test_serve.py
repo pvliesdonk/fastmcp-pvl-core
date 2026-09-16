@@ -8,43 +8,24 @@ import socket
 import threading
 import time
 
-import fastmcp
 import httpx
 import pytest
 
 from fastmcp_pvl_core import ServerConfig, run_http
 from fastmcp_pvl_core._serve import _build_uvicorn_config, _run_server
-from tests.test_logging import _MANAGED_LOGGERS
 
 
 @pytest.fixture
-def configured_logging_capture(monkeypatch):
+def configured_logging_capture(monkeypatch, restore_logging_topology):
     """Configure logging as a server does, and capture what reaches root.
 
-    Snapshots and restores every logger ``configure_logging_from_env``
-    touches — the same ``_MANAGED_LOGGERS`` list ``test_logging.py`` uses,
-    imported rather than copied so the two files can't drift out of sync.
-    Restoring only a subset (root, ``uvicorn.access``, ``fastmcp``) used to
-    leave ``httpx``/``httpcore``/``mcp.server.lowlevel.server`` demoted to
-    WARNING for the rest of the suite once this module had run.
+    ``restore_logging_topology`` (conftest) puts the whole tree back
+    afterwards, so this fixture only has to add its capture handler.
     """
     from fastmcp_pvl_core import configure_logging_from_env
 
     monkeypatch.delenv("TEST_MCP_LOG_LEVEL", raising=False)
     monkeypatch.delenv("FASTMCP_LOG_LEVEL", raising=False)
-
-    root = logging.getLogger()
-    saved_root = (root.handlers[:], root.level)
-    saved = {
-        name: (
-            logging.getLogger(name).handlers[:],
-            logging.getLogger(name).level,
-            logging.getLogger(name).propagate,
-            logging.getLogger(name).filters[:],
-        )
-        for name in _MANAGED_LOGGERS
-    }
-    saved_log_enabled = fastmcp.settings.log_enabled
 
     messages: list[str] = []
 
@@ -53,19 +34,8 @@ def configured_logging_capture(monkeypatch):
             messages.append(record.getMessage())
 
     configure_logging_from_env("TEST_MCP")
-    root.addHandler(_Capture())
-    try:
-        yield messages
-    finally:
-        root.handlers[:] = saved_root[0]
-        root.setLevel(saved_root[1])
-        for name, (handlers, level, propagate, filters) in saved.items():
-            logger = logging.getLogger(name)
-            logger.handlers[:] = handlers
-            logger.setLevel(level)
-            logger.propagate = propagate
-            logger.filters[:] = filters
-        fastmcp.settings.log_enabled = saved_log_enabled
+    logging.getLogger().addHandler(_Capture())
+    yield messages
 
 
 async def _app(scope, receive, send):

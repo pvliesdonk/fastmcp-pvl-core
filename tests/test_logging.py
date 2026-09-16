@@ -6,7 +6,6 @@ import io
 import logging
 import os
 
-import fastmcp
 import pytest
 import uvicorn
 import uvicorn.config
@@ -139,50 +138,14 @@ def test_env_prefix_is_required():
         configure_logging_from_env()  # type: ignore[call-arg]
 
 
-_MANAGED_LOGGERS = (
-    "fastmcp",
-    "uvicorn",
-    "uvicorn.access",
-    "uvicorn.error",
-    "mcp.server.lowlevel.server",
-    "httpx",
-    "httpcore",
-    "docket.worker",
-)
-
-
 @pytest.fixture(autouse=True)
-def _restore_logging_topology():
-    """Snapshot and restore every logger this module touches.
+def _restore_logging_topology(restore_logging_topology):
+    """Every test in this module reconfigures logging; put the tree back.
 
-    Root handlers included: these tests install and remove handlers at
-    root, and without this the first one to run would leave the rest of
-    the suite — and pytest's own ``caplog`` — on a tree it did not expect.
+    The snapshot/restore itself lives in ``conftest.py`` so this module and
+    ``test_serve.py`` share one list of managed loggers.
     """
-    root = logging.getLogger()
-    saved_root = (root.handlers[:], root.level)
-    saved = {
-        name: (
-            logging.getLogger(name).handlers[:],
-            logging.getLogger(name).level,
-            logging.getLogger(name).propagate,
-            logging.getLogger(name).filters[:],
-        )
-        for name in _MANAGED_LOGGERS
-    }
-    saved_log_enabled = fastmcp.settings.log_enabled
-    try:
-        yield
-    finally:
-        root.handlers[:] = saved_root[0]
-        root.setLevel(saved_root[1])
-        for name, (handlers, level, propagate, filters) in saved.items():
-            logger = logging.getLogger(name)
-            logger.handlers[:] = handlers
-            logger.setLevel(level)
-            logger.propagate = propagate
-            logger.filters[:] = filters
-        fastmcp.settings.log_enabled = saved_log_enabled
+    yield
 
 
 def test_uvicorn_error_logger_untouched(monkeypatch):
