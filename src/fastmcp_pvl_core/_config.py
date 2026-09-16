@@ -14,7 +14,7 @@ import typing
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, NamedTuple
 
 from ._env import _resolve_key, env, env_int, parse_bool, parse_list, parse_scopes
 from ._errors import ConfigurationError
@@ -28,6 +28,134 @@ Transport = Literal["stdio", "http", "sse"]
 # the env-loading fallback, and the ``__post_init__`` non-blank guard
 # below — three call sites, one source of truth.
 DEFAULT_BEARER_SUBJECT = "bearer-anon"
+
+
+class _OIDCFields(NamedTuple):
+    """Parsed OIDC field group, assembled by :func:`_read_oidc`.
+
+    Purely an internal handoff between :meth:`ServerConfig.from_env` and
+    the ``ServerConfig(...)`` constructor call; not part of the public
+    surface.
+    """
+
+    config_url: str | None
+    client_id: str | None
+    client_secret: str | None
+    audience: str | None
+    required_scopes: tuple[str, ...]
+    advertised_scopes: tuple[str, ...]
+    jwt_signing_key: str | None
+    verify_access_token: bool
+
+
+class _BearerFields(NamedTuple):
+    """Parsed bearer-auth field group, assembled by :func:`_read_bearer`."""
+
+    token: str | None
+    tokens_file: Path | None
+    default_subject: str
+
+
+def _read_transport(transport_raw: str) -> Transport:
+    """Resolve the ``TRANSPORT`` ladder.
+
+    Unknown values silently fall back to ``"stdio"`` — string fields
+    prefer permissive defaults over raising.
+    """
+    if transport_raw == "http":
+        return "http"
+    if transport_raw == "sse":
+        return "sse"
+    return "stdio"
+
+
+def _read_oidc(
+    config_url: str | None,
+    client_id: str | None,
+    client_secret: str | None,
+    audience: str | None,
+    scopes_raw: str | None,
+    advertised_raw: str | None,
+    jwt_signing_key: str | None,
+    verify_access_raw: str | None,
+) -> _OIDCFields:
+    """Assemble the OIDC field group from its already-read raw values.
+
+    Only the two scope lists and the verify-access-token bool need
+    parsing; the rest pass through unchanged. Grouped here so the OIDC
+    block reads as one cohesive unit in :meth:`ServerConfig.from_env`,
+    which calls this with each raw value already read via a literal
+    ``env(...)`` call passed in as an argument (see the comment above
+    ``_SERVER_CONFIG_ENV_SUFFIXES``).
+    """
+    required_scopes = tuple(parse_scopes(scopes_raw) or ())
+    advertised_scopes = tuple(parse_scopes(advertised_raw) or ())
+    verify_access_token = (
+        parse_bool(verify_access_raw) if verify_access_raw is not None else False
+    )
+    return _OIDCFields(
+        config_url=config_url,
+        client_id=client_id,
+        client_secret=client_secret,
+        audience=audience,
+        required_scopes=required_scopes,
+        advertised_scopes=advertised_scopes,
+        jwt_signing_key=jwt_signing_key,
+        verify_access_token=verify_access_token,
+    )
+
+
+def _read_bearer(
+    token: str | None, tokens_file_raw: str | None, default_subject: str
+) -> _BearerFields:
+    """Assemble the bearer-auth field group from its already-read raw values.
+
+    ``Path(...)`` keeps a leading ``~`` literal here. Expansion is
+    performed once, in :func:`fastmcp_pvl_core._auth._load_bearer_tokens`,
+    so both this env-driven path and a directly-constructed
+    ``ServerConfig(bearer_tokens_file=Path("~/tokens.toml"))`` resolve
+    the tilde at the same call site.
+    """
+    tokens_file = Path(tokens_file_raw) if tokens_file_raw else None
+    return _BearerFields(
+        token=token, tokens_file=tokens_file, default_subject=default_subject
+    )
+
+
+def _read_tools_visibility(
+    env_prefix: str, tools_allow_raw: str | None, tools_deny_raw: str | None
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Parse and validate the ``TOOLS_ALLOW`` / ``TOOLS_DENY`` pair.
+
+    "Set but parses to zero names" (e.g. a lone ``,``) is rejected rather
+    than treated as unset: for ``TOOLS_ALLOW`` the silent reading would
+    expose every tool — the exact opposite of the lockdown the operator
+    was expressing. ``TOOLS_DENY`` gets the same guard for symmetry.
+
+    Raises:
+        ConfigurationError: If either var is set but parses to zero tool
+            names, or if both vars are set.
+    """
+    tools_allow = tuple(parse_list(tools_allow_raw)) if tools_allow_raw else ()
+    if tools_allow_raw and not tools_allow:
+        raise ConfigurationError(
+            f"{_resolve_key(env_prefix, 'TOOLS_ALLOW')} is set but "
+            "contains no tool names; unset it to expose all tools."
+        )
+    tools_deny = tuple(parse_list(tools_deny_raw)) if tools_deny_raw else ()
+    if tools_deny_raw and not tools_deny:
+        raise ConfigurationError(
+            f"{_resolve_key(env_prefix, 'TOOLS_DENY')} is set but "
+            "contains no tool names; unset it to hide no tools."
+        )
+    if tools_allow and tools_deny:
+        raise ConfigurationError(
+            f"{_resolve_key(env_prefix, 'TOOLS_ALLOW')} and "
+            f"{_resolve_key(env_prefix, 'TOOLS_DENY')} are both set; "
+            "set at most one — an allowlist already expresses every "
+            "exclusion."
+        )
+    return tools_allow, tools_deny
 
 
 @dataclass(frozen=True)
@@ -368,68 +496,36 @@ class ServerConfig:
                 ``{env_prefix}_TOOLS_DENY`` are both set; or if either is set
                 but parses to zero tool names (e.g. a lone ``,``).
         """
-        transport_raw = env(env_prefix, "TRANSPORT", "stdio")
-        transport: Transport
-        if transport_raw == "http":
-            transport = "http"
-        elif transport_raw == "sse":
-            transport = "sse"
-        else:
-            transport = "stdio"
-
+        transport = _read_transport(env(env_prefix, "TRANSPORT", "stdio"))
         host = env(env_prefix, "HOST", "127.0.0.1")
-
         shutdown_grace_s = env_int(
             env_prefix, "SHUTDOWN_GRACE_S", 3, strict=True, minimum=0
         )
 
-        scopes_raw = env(env_prefix, "OIDC_REQUIRED_SCOPES")
-        scopes = tuple(parse_scopes(scopes_raw) or ())
-
-        advertised_raw = env(env_prefix, "OIDC_ADVERTISED_SCOPES")
-        advertised_scopes = tuple(parse_scopes(advertised_raw) or ())
-
-        verify_access_raw = env(env_prefix, "OIDC_VERIFY_ACCESS_TOKEN")
-        verify_access_token = (
-            parse_bool(verify_access_raw) if verify_access_raw is not None else False
+        # Reads below stay literal `env(...)` calls in this method's own
+        # source (see the comment above `_SERVER_CONFIG_ENV_SUFFIXES`).
+        oidc = _read_oidc(
+            env(env_prefix, "OIDC_CONFIG_URL"),
+            env(env_prefix, "OIDC_CLIENT_ID"),
+            env(env_prefix, "OIDC_CLIENT_SECRET"),
+            env(env_prefix, "OIDC_AUDIENCE"),
+            env(env_prefix, "OIDC_REQUIRED_SCOPES"),
+            env(env_prefix, "OIDC_ADVERTISED_SCOPES"),
+            env(env_prefix, "OIDC_JWT_SIGNING_KEY"),
+            env(env_prefix, "OIDC_VERIFY_ACCESS_TOKEN"),
         )
 
-        tokens_file_raw = env(env_prefix, "BEARER_TOKENS_FILE")
-        # ``Path(...)`` keeps a leading ``~`` literal here.  Expansion is
-        # performed once, in :func:`fastmcp_pvl_core._auth._load_bearer_tokens`,
-        # so both this env-driven path and a directly-constructed
-        # ``ServerConfig(bearer_tokens_file=Path("~/tokens.toml"))`` resolve
-        # the tilde at the same call site.
-        bearer_tokens_file = Path(tokens_file_raw) if tokens_file_raw else None
-        bearer_default_subject = env(
-            env_prefix, "BEARER_DEFAULT_SUBJECT", DEFAULT_BEARER_SUBJECT
+        bearer = _read_bearer(
+            env(env_prefix, "BEARER_TOKEN"),
+            env(env_prefix, "BEARER_TOKENS_FILE"),
+            env(env_prefix, "BEARER_DEFAULT_SUBJECT", DEFAULT_BEARER_SUBJECT),
         )
 
-        # "Set but parses to zero names" (e.g. a lone ",") is rejected rather
-        # than treated as unset: for TOOLS_ALLOW the silent reading would
-        # expose every tool — the exact opposite of the lockdown the operator
-        # was expressing. TOOLS_DENY gets the same guard for symmetry.
-        tools_allow_raw = env(env_prefix, "TOOLS_ALLOW")
-        tools_allow = tuple(parse_list(tools_allow_raw)) if tools_allow_raw else ()
-        if tools_allow_raw and not tools_allow:
-            raise ConfigurationError(
-                f"{_resolve_key(env_prefix, 'TOOLS_ALLOW')} is set but "
-                "contains no tool names; unset it to expose all tools."
-            )
-        tools_deny_raw = env(env_prefix, "TOOLS_DENY")
-        tools_deny = tuple(parse_list(tools_deny_raw)) if tools_deny_raw else ()
-        if tools_deny_raw and not tools_deny:
-            raise ConfigurationError(
-                f"{_resolve_key(env_prefix, 'TOOLS_DENY')} is set but "
-                "contains no tool names; unset it to hide no tools."
-            )
-        if tools_allow and tools_deny:
-            raise ConfigurationError(
-                f"{_resolve_key(env_prefix, 'TOOLS_ALLOW')} and "
-                f"{_resolve_key(env_prefix, 'TOOLS_DENY')} are both set; "
-                "set at most one — an allowlist already expresses every "
-                "exclusion."
-            )
+        tools_allow, tools_deny = _read_tools_visibility(
+            env_prefix,
+            env(env_prefix, "TOOLS_ALLOW"),
+            env(env_prefix, "TOOLS_DENY"),
+        )
 
         return cls(
             transport=transport,
@@ -439,15 +535,15 @@ class ServerConfig:
             ),
             shutdown_grace_s=shutdown_grace_s,
             base_url=env(env_prefix, "BASE_URL"),
-            bearer_token=env(env_prefix, "BEARER_TOKEN"),
-            oidc_config_url=env(env_prefix, "OIDC_CONFIG_URL"),
-            oidc_client_id=env(env_prefix, "OIDC_CLIENT_ID"),
-            oidc_client_secret=env(env_prefix, "OIDC_CLIENT_SECRET"),
-            oidc_audience=env(env_prefix, "OIDC_AUDIENCE"),
-            oidc_required_scopes=scopes,
-            oidc_advertised_scopes=advertised_scopes,
-            oidc_jwt_signing_key=env(env_prefix, "OIDC_JWT_SIGNING_KEY"),
-            oidc_verify_access_token=verify_access_token,
+            bearer_token=bearer.token,
+            oidc_config_url=oidc.config_url,
+            oidc_client_id=oidc.client_id,
+            oidc_client_secret=oidc.client_secret,
+            oidc_audience=oidc.audience,
+            oidc_required_scopes=oidc.required_scopes,
+            oidc_advertised_scopes=oidc.advertised_scopes,
+            oidc_jwt_signing_key=oidc.jwt_signing_key,
+            oidc_verify_access_token=oidc.verify_access_token,
             kv_store_url=env(env_prefix, "KV_STORE_URL"),
             event_store_url=env(env_prefix, "EVENT_STORE_URL"),
             tasks_url=env(env_prefix, "TASKS_URL"),
@@ -455,8 +551,8 @@ class ServerConfig:
             tools_allow=tools_allow,
             tools_deny=tools_deny,
             auth_mode=env(env_prefix, "AUTH_MODE"),
-            bearer_tokens_file=bearer_tokens_file,
-            bearer_default_subject=bearer_default_subject,
+            bearer_tokens_file=bearer.tokens_file,
+            bearer_default_subject=bearer.default_subject,
         )
 
 
@@ -467,6 +563,11 @@ class ServerConfig:
 # and fails if such a read is added/removed/renamed without updating this set.
 # Keep every ``from_env`` read in the ``env(prefix, "LITERAL")`` form: a suffix
 # built from a variable or passed by keyword would not be seen by the scan.
+# This includes reads that feed a ``_read_*`` helper (``_read_oidc`` and
+# friends, below ``ServerConfig``): the ``env(...)`` call stays written in
+# ``from_env``'s own body as a call argument passed *into* the helper — it
+# must not move so that the read happens *inside* the helper's source,
+# or it drops out of the scan.
 _SERVER_CONFIG_ENV_SUFFIXES: frozenset[str] = frozenset(
     {
         "TRANSPORT",
