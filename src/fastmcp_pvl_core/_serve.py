@@ -40,8 +40,9 @@ def _build_uvicorn_config(
 
     Three settings are pvl-core's to decide and are not overridable:
 
-    * ``log_config=None`` — uvicorn touches logging not at all, leaving the
-      root chain from :mod:`._logging` in charge of its records too.
+    * ``log_config=None`` — uvicorn runs no ``dictConfig`` and installs no
+      handler of its own, leaving the root chain from :mod:`._logging` in
+      charge of its records too.
     * ``lifespan="on"`` — FastMCP's startup and shutdown hooks run through
       the ASGI lifespan protocol; a server with this off is broken rather
       than configured.
@@ -82,13 +83,17 @@ def run_http(
     pvl-core owns the invocation.
 
     Args:
-        app: The ASGI application to serve.
+        app: Domain hook — the ASGI application to serve. pvl-core cannot
+            know its shape; the caller builds it.
         config: Operator configuration. ``host``, ``port`` and
-            ``shutdown_grace_s`` are read from it.
-        host: Optional override, for a CLI flag that beats the environment.
-            ``None`` means "not given", so ``config.host`` is used.
-        port: Optional override, same precedence. ``0`` is a real value —
-            bind any free port — and is *not* treated as unset.
+            ``shutdown_grace_s`` are read from it. The uvicorn settings
+            pvl-core pins on top of these are documented on
+            :func:`_build_uvicorn_config`, not overridable here.
+        host: Operator configuration override, for a CLI flag that beats the
+            environment. ``None`` means "not given", so ``config.host`` is
+            used.
+        port: Operator configuration override, same precedence. ``0`` is a
+            real value — bind any free port — and is *not* treated as unset.
     """
     _run_server(
         _build_uvicorn_config(
