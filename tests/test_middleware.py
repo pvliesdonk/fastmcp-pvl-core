@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 
+import pytest
 from fastmcp import Client, FastMCP
 
 from fastmcp_pvl_core import wire_middleware_stack
@@ -25,25 +26,22 @@ def test_installs_single_request_logging_middleware():
     assert len(_request_logging_mws(mcp)) == 1
 
 
-def test_rich_mode_when_rich_unset(monkeypatch):
-    monkeypatch.delenv("FASTMCP_ENABLE_RICH_LOGGING", raising=False)
+@pytest.mark.parametrize("rich_raw", [None, "true", "false"])
+def test_rich_logging_env_var_no_longer_read(monkeypatch, rich_raw):
+    """``wire_middleware_stack`` no longer selects an output mode itself —
+    the request middleware always logs through the shared grammar, and the
+    root handler's formatter (installed elsewhere) picks Rich vs. JSON. So
+    ``FASTMCP_ENABLE_RICH_LOGGING`` is inert: every value installs the same
+    middleware, unconditionally."""
+    if rich_raw is None:
+        monkeypatch.delenv("FASTMCP_ENABLE_RICH_LOGGING", raising=False)
+    else:
+        monkeypatch.setenv("FASTMCP_ENABLE_RICH_LOGGING", rich_raw)
     mcp = FastMCP(name="t")
     wire_middleware_stack(mcp)
-    assert _request_logging_mws(mcp)[0].structured is False
-
-
-def test_rich_mode_when_rich_explicitly_enabled(monkeypatch):
-    monkeypatch.setenv("FASTMCP_ENABLE_RICH_LOGGING", "true")
-    mcp = FastMCP(name="t")
-    wire_middleware_stack(mcp)
-    assert _request_logging_mws(mcp)[0].structured is False
-
-
-def test_structured_mode_when_rich_disabled(monkeypatch):
-    monkeypatch.setenv("FASTMCP_ENABLE_RICH_LOGGING", "false")
-    mcp = FastMCP(name="t")
-    wire_middleware_stack(mcp)
-    assert _request_logging_mws(mcp)[0].structured is True
+    mws = _request_logging_mws(mcp)
+    assert len(mws) == 1
+    assert not hasattr(mws[0], "structured")
 
 
 def test_include_traceback_inferred_from_debug_log_level(caplog):
@@ -62,8 +60,7 @@ def test_include_traceback_inferred_off_when_root_above_debug(caplog):
     assert _request_logging_mws(mcp)[0].include_traceback is False
 
 
-async def test_real_tool_dispatch_logs_conforming_tool_pair(caplog, monkeypatch):
-    monkeypatch.delenv("FASTMCP_ENABLE_RICH_LOGGING", raising=False)
+async def test_real_tool_dispatch_logs_conforming_tool_pair(caplog):
     mcp = FastMCP(name="t")
 
     @mcp.tool
@@ -100,15 +97,12 @@ async def _era_messages(mcp: FastMCP, caplog, mode: str | None) -> list[str]:
     ]
 
 
-async def test_legacy_era_negotiation_traffic_logs_conforming_pairs(
-    caplog, monkeypatch
-):
+async def test_legacy_era_negotiation_traffic_logs_conforming_pairs(caplog):
     """FastMCP 4 middleware sees *all* inbound traffic — on the legacy era
     that includes the ``notifications/initialized`` notification, which
     did not reach middleware on FastMCP 3 (the ``initialize`` request
     already did). Both must come out as ordinary conforming
     started/completed pairs under the generic vocabulary."""
-    monkeypatch.delenv("FASTMCP_ENABLE_RICH_LOGGING", raising=False)
     mcp = FastMCP(name="t")
     wire_middleware_stack(mcp)
 
@@ -130,11 +124,10 @@ async def test_legacy_era_negotiation_traffic_logs_conforming_pairs(
     )
 
 
-async def test_auto_negotiation_reaches_sessionless_discover_pair(caplog, monkeypatch):
+async def test_auto_negotiation_reaches_sessionless_discover_pair(caplog):
     """Auto negotiation against a v4 server reaches the sessionless era,
     which replaces the ``initialize`` handshake with ``server/discover`` —
     logged as an ordinary request pair, with no ``initialize`` traffic."""
-    monkeypatch.delenv("FASTMCP_ENABLE_RICH_LOGGING", raising=False)
     mcp = FastMCP(name="t")
     wire_middleware_stack(mcp)
 
