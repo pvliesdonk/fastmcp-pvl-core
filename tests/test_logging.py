@@ -59,15 +59,24 @@ def test_unknown_level_falls_back_to_info(monkeypatch):
     assert logging.getLogger().getEffectiveLevel() == logging.INFO
 
 
+def _bridge_warnings(caplog) -> list[logging.LogRecord]:
+    """The deprecation records naming the legacy variable.
+
+    Shared because five tests ask the same question of ``caplog`` — how many
+    times, and at what severity, an operator was told the old variable is
+    going away.
+    """
+    return [r for r in caplog.records if "FASTMCP_LOG_LEVEL" in r.getMessage()]
+
+
 def test_bridges_fastmcp_log_level_with_one_warning(monkeypatch, caplog):
     monkeypatch.delenv("TEST_MCP_LOG_LEVEL", raising=False)
     monkeypatch.setenv("FASTMCP_LOG_LEVEL", "WARNING")
     with caplog.at_level(logging.WARNING):
         configure_logging_from_env("TEST_MCP")
         assert logging.getLogger().getEffectiveLevel() == logging.WARNING
-    warnings = [r for r in caplog.records if "FASTMCP_LOG_LEVEL" in r.getMessage()]
-    assert len(warnings) == 1
-    assert "TEST_MCP_LOG_LEVEL" in warnings[0].getMessage()
+    (warning,) = _bridge_warnings(caplog)
+    assert "TEST_MCP_LOG_LEVEL" in warning.getMessage()
 
 
 def test_bridges_fastmcp_log_level_at_error_severity(monkeypatch, caplog):
@@ -80,9 +89,8 @@ def test_bridges_fastmcp_log_level_at_error_severity(monkeypatch, caplog):
     with caplog.at_level(logging.ERROR):
         configure_logging_from_env("TEST_MCP")
         assert logging.getLogger().getEffectiveLevel() == logging.ERROR
-    warnings = [r for r in caplog.records if "FASTMCP_LOG_LEVEL" in r.getMessage()]
-    assert len(warnings) == 1
-    assert warnings[0].levelno == logging.ERROR
+    (warning,) = _bridge_warnings(caplog)
+    assert warning.levelno == logging.ERROR
 
 
 def test_empty_legacy_log_level_is_not_bridged(monkeypatch, caplog):
@@ -94,7 +102,7 @@ def test_empty_legacy_log_level_is_not_bridged(monkeypatch, caplog):
     with caplog.at_level(logging.WARNING):
         configure_logging_from_env("TEST_MCP")
         assert logging.getLogger().getEffectiveLevel() == logging.INFO
-    assert [r for r in caplog.records if "FASTMCP_LOG_LEVEL" in r.getMessage()] == []
+    assert _bridge_warnings(caplog) == []
 
 
 def test_prefixed_level_wins_and_is_silent(monkeypatch, caplog):
@@ -108,7 +116,7 @@ def test_prefixed_level_wins_and_is_silent(monkeypatch, caplog):
     with caplog.at_level(logging.WARNING):
         configure_logging_from_env("TEST_MCP")
         assert logging.getLogger().getEffectiveLevel() == logging.ERROR
-    assert [r for r in caplog.records if "FASTMCP_LOG_LEVEL" in r.getMessage()] == []
+    assert _bridge_warnings(caplog) == []
 
 
 def test_verbose_overrides_both_and_is_silent(monkeypatch, caplog):
@@ -117,7 +125,7 @@ def test_verbose_overrides_both_and_is_silent(monkeypatch, caplog):
     with caplog.at_level(logging.WARNING):
         configure_logging_from_env("TEST_MCP", verbose=True)
         assert logging.getLogger().getEffectiveLevel() == logging.DEBUG
-    assert [r for r in caplog.records if "FASTMCP_LOG_LEVEL" in r.getMessage()] == []
+    assert _bridge_warnings(caplog) == []
 
 
 def test_verbose_no_longer_writes_the_fastmcp_env_var(monkeypatch):
