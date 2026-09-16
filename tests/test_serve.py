@@ -275,28 +275,31 @@ class TestRunServerEpilogue:
 
         monkeypatch.setattr(uvicorn, "Server", lambda config: fake)
 
-    def test_exits_with_startup_failure_when_server_never_started(self, monkeypatch):
-        fake = self._FakeServer(started=False)
-        self._patch_server(monkeypatch, fake)
-        built = _build_uvicorn_config(
+    def _built(self):
+        """The config these tests run; its contents are asserted elsewhere."""
+        return _build_uvicorn_config(
             _app, host="127.0.0.1", port=8000, shutdown_grace_s=1
         )
 
+    def _expect_startup_failure(self, fake):
+        """Assert `_run_server` exits 3 — uvicorn's STARTUP_FAILURE — after running."""
         with pytest.raises(SystemExit) as exc_info:
-            _run_server(built)
-
+            _run_server(self._built())
         assert fake.run_called
         assert exc_info.value.code == 3
+
+    def test_exits_with_startup_failure_when_server_never_started(self, monkeypatch):
+        fake = self._FakeServer(started=False)
+        self._patch_server(monkeypatch, fake)
+
+        self._expect_startup_failure(fake)
 
     def test_keyboard_interrupt_after_startup_exits_silently(self, monkeypatch):
         """Ctrl-C after the server is up: swallowed, no SystemExit, no traceback."""
         fake = self._FakeServer(started=True, raise_keyboard_interrupt=True)
         self._patch_server(monkeypatch, fake)
-        built = _build_uvicorn_config(
-            _app, host="127.0.0.1", port=8000, shutdown_grace_s=1
-        )
 
-        _run_server(built)  # must not raise
+        _run_server(self._built())  # must not raise
 
         assert fake.run_called
 
@@ -304,11 +307,5 @@ class TestRunServerEpilogue:
         """Ctrl-C before the server ever started: still a startup failure."""
         fake = self._FakeServer(started=False, raise_keyboard_interrupt=True)
         self._patch_server(monkeypatch, fake)
-        built = _build_uvicorn_config(
-            _app, host="127.0.0.1", port=8000, shutdown_grace_s=1
-        )
 
-        with pytest.raises(SystemExit) as exc_info:
-            _run_server(built)
-
-        assert exc_info.value.code == 3
+        self._expect_startup_failure(fake)

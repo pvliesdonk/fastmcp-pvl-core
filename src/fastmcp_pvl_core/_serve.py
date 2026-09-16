@@ -17,6 +17,7 @@ tree does next, and matches how the downstream CLIs call uvicorn.
 
 from __future__ import annotations
 
+import contextlib
 import sys
 from typing import TYPE_CHECKING, Any
 
@@ -77,10 +78,11 @@ def _run_server(built: uvicorn.Config) -> None:
     from uvicorn.main import STARTUP_FAILURE
 
     server = uvicorn.Server(built)
-    try:
+    # Ctrl-C is how an operator stops a foreground server, so it is a normal
+    # exit rather than a crash — ``uvicorn.run()`` suppresses it for the same
+    # reason, and a traceback here would be noise at the end of every session.
+    with contextlib.suppress(KeyboardInterrupt):
         server.run()
-    except KeyboardInterrupt:
-        pass
     if not server.started:
         sys.exit(STARTUP_FAILURE)
 
