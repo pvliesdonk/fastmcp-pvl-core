@@ -4,9 +4,11 @@ The ``-v`` CLI flag forces ``DEBUG``; otherwise ``<PREFIX>_LOG_LEVEL``
 wins, with the legacy ``FASTMCP_LOG_LEVEL`` honoured as a deprecated
 fallback for one release; otherwise ``INFO``.
 
-Two module constants keep the operator stream readable at both ends:
-``_NOISY_THIRD_PARTY_LOGGERS`` (loud at ``INFO``, demoted) and
-``_DEBUG_FLOOD_LOGGERS`` (loud at ``DEBUG``, capped).
+Three mechanisms keep the operator stream readable at both ends:
+``_NOISY_THIRD_PARTY_LOGGERS`` (loud at ``INFO``, demoted),
+``_DEBUG_FLOOD_LOGGERS`` (loud at ``DEBUG``, capped), and
+``_AccessLogFilter`` (``uvicorn.access``, pinned at ``INFO`` and filtered
+down to failures only, since a level cannot express "failures only").
 
 This module also exposes :class:`SecretMaskFilter`, a reusable
 ``logging.Filter`` that redacts ``Authorization: Bearer/Token/Basic``
@@ -30,11 +32,22 @@ logger = logging.getLogger(__name__)
 
 _VALID_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
 
-# Third-party transport / SDK loggers that emit non-conforming INFO-level
-# chatter — one or two lines per request. Demoted to WARNING unless the
-# operator opts into DEBUG. ``uvicorn.error`` is deliberately excluded: it
-# carries genuine bind / startup failures.
-_NOISY_THIRD_PARTY_LOGGERS = ("uvicorn.access", "mcp.server.lowlevel.server")
+_NOISY_THIRD_PARTY_LOGGERS = (
+    "mcp.server.lowlevel.server",
+    "httpx",
+    "httpcore",
+)
+"""Loggers that are loud at ``INFO`` and quiet at ``WARNING``.
+
+``httpx``/``httpcore`` are here because pvl-core pulls them for the whole
+family through fastmcp, exactly like ``docket.worker`` below — the same
+position, so the same owner. Three downstream servers had each quieted them
+locally, two of them by contradictory rules that fought inside one process.
+
+``uvicorn.access`` is deliberately absent: a level cannot express "failures
+only", so it gets a filter instead. ``uvicorn.error`` is also absent: it
+carries genuine bind / startup failures and is never demoted.
+"""
 
 # Third-party loggers with the opposite shape: near-silent at INFO, but a
 # per-iteration firehose at DEBUG driven by a poll loop that runs whether or
@@ -45,6 +58,70 @@ _NOISY_THIRD_PARTY_LOGGERS = ("uvicorn.access", "mcp.server.lowlevel.server")
 # at INFO when the root level is DEBUG, so the worker's own lifecycle records
 # still come through while the poll trace does not.
 _DEBUG_FLOOD_LOGGERS = ("docket.worker",)
+
+_ACCESS_LOGGER = "uvicorn.access"
+
+_QUERY_RE = re.compile(r"[?#]")
+_TRANSFER_TOKEN_RE = re.compile(r"(^|/)transfer/[^/]+")
+
+_ACCESS_ARG_COUNT = 5
+_ACCESS_STATUS_INDEX = 4
+_ACCESS_PATH_INDEX = 2
+
+
+class _AccessLogFilter(logging.Filter):
+    """Keep failing requests only, and never log a credential.
+
+    uvicorn emits every access record at ``INFO`` regardless of status, so
+    at the default level the successful ones are pure duplication: the
+    request-logging middleware already reports each MCP call with its method
+    and duration. What the middleware cannot report is what never reached it
+    — a 401 refused by auth, a 404, a 413 — so those stay, and a readiness
+    probe becomes visible exactly when it starts failing.
+
+    Both redactions are about credentials in the request line, which uvicorn
+    logs as ``path?query``:
+
+    * the query string goes entirely. No route in this family carries
+      diagnostic query parameters; the ones that carry anything are the
+      OAuth routes, where it is an authorization code or PKCE material.
+    * the segment after ``/transfer/`` is masked, because the transfer token
+      is in the *path* — an expired link produces exactly the 4xx this
+      filter keeps.
+
+    A record of any other shape passes untouched: this filter judges
+    uvicorn's access line, and anything else on that logger is not its
+    business.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        args = record.args
+        if not isinstance(args, tuple) or len(args) != _ACCESS_ARG_COUNT:
+            return True
+        status = args[_ACCESS_STATUS_INDEX]
+        if not isinstance(status, int):
+            return True
+        if status < 400:
+            return False
+        path = _QUERY_RE.split(str(args[_ACCESS_PATH_INDEX]), maxsplit=1)[0]
+        path = _TRANSFER_TOKEN_RE.sub(r"\1transfer/<redacted>", path)
+        record.args = (
+            args[:_ACCESS_PATH_INDEX] + (path,) + args[_ACCESS_PATH_INDEX + 1 :]
+        )
+        return True
+
+
+def _apply_access_policy(level: int) -> None:
+    """Install or remove the access filter, leaving exactly one either way."""
+    access = logging.getLogger(_ACCESS_LOGGER)
+    for existing in [f for f in access.filters if isinstance(f, _AccessLogFilter)]:
+        access.removeFilter(existing)
+    # Pinned, not demoted: uvicorn's own dictConfig sets this logger to INFO
+    # at server start, so anything else here would mean the policy depended
+    # on whether that had run yet.
+    access.setLevel(logging.INFO)
+    if level != logging.DEBUG:
+        access.addFilter(_AccessLogFilter())
 
 
 _OWNED_ATTR = "_pvl_core_owned"
@@ -179,12 +256,20 @@ def configure_logging_from_env(env_prefix: str, *, verbose: bool = False) -> Non
     namespace in the process — FastMCP's included — renders through one
     handler chain.
 
-    Two noisy third-party loggers — ``uvicorn.access`` (the HTTP access
-    log) and ``mcp.server.lowlevel.server`` (the MCP SDK request line) —
-    are demoted to ``WARNING`` whenever the resolved level is above
-    ``DEBUG``, so their per-request chatter stays out of the default
-    ``INFO`` stream. At ``DEBUG`` they are reset to ``NOTSET`` and
-    reappear. ``uvicorn.error`` is never demoted.
+    Three noisy third-party loggers — ``mcp.server.lowlevel.server`` (the MCP
+    SDK request line), ``httpx``, and ``httpcore`` — are demoted to
+    ``WARNING`` whenever the resolved level is above ``DEBUG``, so their
+    per-request chatter stays out of the default ``INFO`` stream. At
+    ``DEBUG`` they are reset to ``NOTSET`` and reappear. ``uvicorn.error``
+    is never demoted.
+
+    ``uvicorn.access`` (the HTTP access log) is handled differently: a
+    level cannot express "failures only", so instead it is pinned to
+    ``INFO`` and, whenever the resolved level is above ``DEBUG``, given a
+    filter that keeps failing requests only and redacts the query string
+    and any ``/transfer/<token>`` segment from the ones it keeps. At
+    ``DEBUG`` the filter is removed and every request line — success or
+    failure — passes through.
 
     One third-party logger is capped in the other direction:
     ``docket.worker`` is pinned to ``INFO`` when the resolved level is
@@ -216,6 +301,8 @@ def configure_logging_from_env(env_prefix: str, *, verbose: bool = False) -> Non
     flood_level = logging.INFO if level == logging.DEBUG else logging.NOTSET
     for name in _DEBUG_FLOOD_LOGGERS:
         logging.getLogger(name).setLevel(flood_level)
+
+    _apply_access_policy(level)
 
     if bridged:
         # Emitted last, deliberately: the handlers that carry it are

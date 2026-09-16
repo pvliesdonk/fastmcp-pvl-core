@@ -145,27 +145,6 @@ def _restore_logging_topology():
         fastmcp.settings.log_enabled = saved_log_enabled
 
 
-def test_noisy_loggers_demoted_to_warning_at_info(monkeypatch):
-    monkeypatch.setenv("TEST_MCP_LOG_LEVEL", "INFO")
-    configure_logging_from_env("TEST_MCP")
-    assert logging.getLogger("uvicorn.access").level == logging.WARNING
-    assert logging.getLogger("mcp.server.lowlevel.server").level == logging.WARNING
-
-
-def test_noisy_loggers_notset_at_debug(monkeypatch):
-    monkeypatch.setenv("TEST_MCP_LOG_LEVEL", "DEBUG")
-    configure_logging_from_env("TEST_MCP")
-    assert logging.getLogger("uvicorn.access").level == logging.NOTSET
-    assert logging.getLogger("mcp.server.lowlevel.server").level == logging.NOTSET
-
-
-def test_noisy_loggers_notset_at_debug_via_verbose(monkeypatch):
-    monkeypatch.delenv("TEST_MCP_LOG_LEVEL", raising=False)
-    configure_logging_from_env("TEST_MCP", verbose=True)
-    assert logging.getLogger("uvicorn.access").level == logging.NOTSET
-    assert logging.getLogger("mcp.server.lowlevel.server").level == logging.NOTSET
-
-
 def test_uvicorn_error_logger_untouched(monkeypatch):
     monkeypatch.setenv("TEST_MCP_LOG_LEVEL", "INFO")
     logging.getLogger("uvicorn.error").setLevel(logging.INFO)
@@ -174,19 +153,22 @@ def test_uvicorn_error_logger_untouched(monkeypatch):
 
 
 def test_demotion_idempotent_across_level_flips(monkeypatch):
-    access = logging.getLogger("uvicorn.access")
+    # uvicorn.access is pinned at INFO and no longer demoted (it gets the
+    # failures-only filter instead — see test_access_filter_* below), so
+    # this idempotency check exercises a logger that is still demoted.
+    demoted = logging.getLogger("mcp.server.lowlevel.server")
 
     monkeypatch.setenv("TEST_MCP_LOG_LEVEL", "DEBUG")
     configure_logging_from_env("TEST_MCP")
-    assert access.level == logging.NOTSET
+    assert demoted.level == logging.NOTSET
 
     monkeypatch.setenv("TEST_MCP_LOG_LEVEL", "INFO")
     configure_logging_from_env("TEST_MCP")
-    assert access.level == logging.WARNING
+    assert demoted.level == logging.WARNING
 
     monkeypatch.setenv("TEST_MCP_LOG_LEVEL", "DEBUG")
     configure_logging_from_env("TEST_MCP")
-    assert access.level == logging.NOTSET
+    assert demoted.level == logging.NOTSET
 
 
 def test_debug_flood_logger_capped_at_info_at_debug(monkeypatch):
@@ -512,3 +494,113 @@ def test_exception_records_go_to_the_traceback_handler_only():
     assert len(accepting_plain) == 1
     assert len(accepting_exc) == 1
     assert accepting_plain != accepting_exc
+
+
+def _access_record(method: str, path: str, status: int) -> logging.LogRecord:
+    return logging.LogRecord(
+        name="uvicorn.access",
+        level=logging.INFO,
+        pathname="_",
+        lineno=0,
+        msg='%s - "%s %s HTTP/%s" %d',
+        args=("1.2.3.4:5678", method, path, "1.1", status),
+        exc_info=None,
+    )
+
+
+def _access_filter():
+    configure_logging_from_env("TEST_MCP")
+    access = logging.getLogger("uvicorn.access")
+    return [f for f in access.filters if type(f).__name__ == "_AccessLogFilter"]
+
+
+@pytest.mark.parametrize(
+    ("status", "kept"),
+    [
+        (200, False),
+        (204, False),
+        (302, False),
+        (400, True),
+        (401, True),
+        (404, True),
+        (413, True),
+        (500, True),
+        (503, True),
+    ],
+)
+def test_access_filter_keeps_only_failures(status, kept):
+    (log_filter,) = _access_filter()
+    assert log_filter.filter(_access_record("GET", "/mcp", status)) is kept
+
+
+def test_access_filter_strips_the_query_string():
+    (log_filter,) = _access_filter()
+    record = _access_record("GET", "/authorize?code=SECRET&state=xyz", 401)
+    assert log_filter.filter(record) is True
+    assert "SECRET" not in record.getMessage()
+    assert "/authorize" in record.getMessage()
+
+
+def test_access_filter_redacts_the_transfer_token():
+    (log_filter,) = _access_filter()
+    record = _access_record("GET", "/transfer/tok_abc123", 404)
+    assert log_filter.filter(record) is True
+    assert "tok_abc123" not in record.getMessage()
+    assert "transfer/<redacted>" in record.getMessage()
+
+
+def test_access_filter_passes_records_of_another_shape():
+    (log_filter,) = _access_filter()
+    other = logging.LogRecord(
+        "uvicorn.access", logging.INFO, "_", 0, "startup", None, None
+    )
+    assert log_filter.filter(other) is True
+
+
+def test_access_filter_is_absent_at_debug():
+    configure_logging_from_env("TEST_MCP", verbose=True)
+    access = logging.getLogger("uvicorn.access")
+    assert [f for f in access.filters if type(f).__name__ == "_AccessLogFilter"] == []
+
+
+def test_repeated_calls_leave_one_access_filter():
+    configure_logging_from_env("TEST_MCP")
+    configure_logging_from_env("TEST_MCP")
+    assert len(_access_filter()) == 1
+
+
+def test_debug_then_info_leaves_no_residue():
+    configure_logging_from_env("TEST_MCP", verbose=True)
+    configure_logging_from_env("TEST_MCP")
+    assert len(_access_filter()) == 1
+
+
+@pytest.mark.parametrize("name", ["mcp.server.lowlevel.server", "httpx", "httpcore"])
+def test_noisy_loggers_demoted_at_info(name, monkeypatch):
+    monkeypatch.delenv("TEST_MCP_LOG_LEVEL", raising=False)
+    monkeypatch.delenv("FASTMCP_LOG_LEVEL", raising=False)
+    configure_logging_from_env("TEST_MCP")
+    assert logging.getLogger(name).level == logging.WARNING
+
+
+@pytest.mark.parametrize("name", ["mcp.server.lowlevel.server", "httpx", "httpcore"])
+def test_noisy_loggers_restored_at_debug(name):
+    configure_logging_from_env("TEST_MCP", verbose=True)
+    assert logging.getLogger(name).level == logging.NOTSET
+
+
+def test_uvicorn_error_is_never_demoted():
+    configure_logging_from_env("TEST_MCP")
+    assert logging.getLogger("uvicorn.error").level == logging.NOTSET
+
+
+def test_access_logger_level_is_pinned_to_info():
+    """Pinned rather than demoted, so the outcome is the same whether or
+    not uvicorn's own dictConfig has run."""
+    configure_logging_from_env("TEST_MCP")
+    assert logging.getLogger("uvicorn.access").level == logging.INFO
+
+
+def test_docket_worker_capped_at_debug():
+    configure_logging_from_env("TEST_MCP", verbose=True)
+    assert logging.getLogger("docket.worker").level == logging.INFO
