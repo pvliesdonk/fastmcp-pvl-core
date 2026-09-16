@@ -463,3 +463,19 @@ def test_json_suffix_value_str_raise_does_not_break_line_orientation():
     assert "\n" not in line
     payload = json.loads(line)
     assert "message" in payload
+
+
+def test_json_reserved_rename_does_not_clobber_an_existing_field_name():
+    """The rename must not lose a value it collides with in turn.
+
+    A call carrying both ``level=`` and ``field_level=`` used to map both
+    onto ``field_level``; whichever came second won and the other vanished
+    from the envelope with no error.
+    """
+    record = _record("event level=%s field_level=%s", ("severity", "already-taken"))
+    payload = json.loads(JsonFormatter().format(record))
+    assert payload["level"] == "INFO"
+    assert sorted(v for k, v in payload.items() if k.startswith("field_")) == [
+        "already-taken",
+        "severity",
+    ]
