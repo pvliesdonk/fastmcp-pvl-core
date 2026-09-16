@@ -252,14 +252,24 @@ apply_tool_visibility(mcp, config)   # config: ServerConfig.from_env("MY_APP")
 
 ### Logging
 
-`configure_logging_from_env(env_prefix, *, verbose=False)` is the sole owner
-of the process's console logging. It installs one handler pair — a
+`configure_logging_from_env(env_prefix, *, verbose=False)` is pvl-core's
+console logging owner. It installs one handler pair — a
 `RichHandler` for normal records and a second one that renders only
 tracebacks — on the **root** logger, and neutralises FastMCP's own logging
 (`fastmcp.settings.log_enabled = False`) so every logger in the process,
 `fastmcp.*` included, propagates into that one chain instead of rendering
 through its own. Repeated calls leave exactly one chain at root, and nothing
 pvl-core installs writes to stdout.
+
+As of this release, that ownership is complete for stdio transport but not
+yet for HTTP: uvicorn still runs its own `dictConfig` at server start (the
+`run_http(log_config=None)` seam that retires it is a later PR), which
+reinstalls uvicorn's own handler on `uvicorn.access`/`uvicorn.error` — the
+access handler on **stdout**, at level `INFO`, regardless of
+`{PREFIX}_LOG_LEVEL`. What survives that reconfiguration is the
+`_AccessLogFilter` this module installs below: `dictConfig` replaces
+handlers, not filters, so redaction (and the drop-successes rule) still
+apply to whatever handler uvicorn ends up attaching.
 
 The log level resolves in this order:
 
@@ -274,23 +284,27 @@ The log level resolves in this order:
 
 An unrecognised level name falls back to `INFO` rather than raising.
 
-At `INFO` and above, three noisy third-party loggers are demoted to
-`WARNING` so they do not flood the operator log stream: `httpx`, `httpcore`,
-and `mcp.server.lowlevel.server` — the MCP SDK's `Processing request of
-type ...` line. All three reappear (`NOTSET`) at `DEBUG`. `uvicorn.error` is
-never touched, at any level — it carries genuine bind / startup failures.
+At `INFO` and above, three noisy third-party loggers are demoted — never
+below the operator's own chosen level — so they do not flood the operator
+log stream: `httpx`, `httpcore`, and `mcp.server.lowlevel.server` — the MCP
+SDK's `Processing request of type ...` line. All three reappear (`NOTSET`)
+at `DEBUG`. `uvicorn.error` is never touched, at any level — it carries
+genuine bind / startup failures.
 
 `uvicorn.access` (the HTTP access log) gets a filter instead of a demotion,
 because a level cannot express "failures only". At every level except
 `DEBUG` the filter keeps only records with status `>= 400` — a `401` from
 auth, a `404`, a `413`, a readiness `503` — and drops the `200`s that would
 otherwise duplicate the request-logging middleware's own lines. Its own
-level stays `NOTSET`, inheriting root, so raising `{PREFIX}_LOG_LEVEL` above
-`INFO` silences access lines entirely, kept or not: the filter decides
-*which* requests are worth a line, the level decides *whether* the operator
-wants request lines at all. At `DEBUG` the filter is always still installed
-and keeps every status, `200` included, so nothing about verbosity changes
-which requests reach the log.
+level stays `NOTSET`, inheriting root: raising `{PREFIX}_LOG_LEVEL` above
+`INFO` is meant to silence access lines entirely, kept or not — the filter
+decides *which* requests are worth a line, the level decides *whether* the
+operator wants request lines at all — but under HTTP transport that only
+holds once `uvicorn.access` is logging through *this* module's chain (see
+above); the redaction itself is unaffected either way. At `DEBUG` the filter
+is always still installed and keeps every status, `200` included — the
+redaction is exactly as unconditional as at any other level, it is only
+*which* requests reach the log that verbosity changes.
 
 Every record the filter sees is also rewritten, because uvicorn logs the
 full `path?query`:
