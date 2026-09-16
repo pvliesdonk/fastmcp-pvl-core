@@ -934,7 +934,7 @@ the same per-app prefix the server uses for the rest of its config:
 from fastmcp_pvl_core import configure_logging_from_env, maybe_start_debugpy
 
 def main() -> None:
-    configure_logging_from_env()
+    configure_logging_from_env("MY_APP")
     maybe_start_debugpy("MY_APP")  # no-op unless MY_APP_DEBUG_PORT is set
     ...
 ```
