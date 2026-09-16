@@ -174,5 +174,23 @@ class RequestLoggingMiddleware(Middleware):
         # span_id), never from caller-controlled data, so none of them can
         # ever contain a "%" or a space — either of which would break the
         # template below.
+        #
+        # Built dynamically, deliberately: `find_nonconforming_log_calls`
+        # only recognises a literal template on a level-method call
+        # (`logger.info("event key=%s", ...)`), so a template assembled at
+        # runtime like this one is invisible to it either way, conforming
+        # or not — the static checker cannot see this line either
+        # attesting or objecting. Runtime construction was still the right
+        # call: the event/field-name vocabulary above is genuinely
+        # data-driven (tool vs. request/notification, trace fields present
+        # or not), and hand-writing every combination as a literal to buy
+        # checker visibility would just move the risk of drift into
+        # keeping N literals in sync with this dict instead. What actually
+        # backs the conformance claim is the record `bind_record` recovers
+        # at runtime matching the grammar — proved by
+        # `tests/test_logging_middleware.py::test_emitted_record_is_conforming`
+        # and `::test_field_order_is_tool_then_duration_then_trace_ids_last`,
+        # not by anything `find_nonconforming_log_calls` can confirm ahead
+        # of time.
         template = f"{event} " + " ".join(f"{name}=%s" for name in fields)
         self.logger.log(level, template, *fields.values(), exc_info=effective_exc_info)
