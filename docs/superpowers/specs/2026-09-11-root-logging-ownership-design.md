@@ -291,7 +291,7 @@ All in `configure_logging_from_env`, on the unified tree:
 
 | Logger | Policy |
 |---|---|
-| `uvicorn.access` | Filter: pass records with status ≥ 400, drop the rest; no filter at DEBUG |
+| `uvicorn.access` | Filter, always installed: redacts unconditionally; passes status ≥ 400 and drops the rest, except at DEBUG where every status passes |
 | `mcp.server.lowlevel.server`, `httpx`, `httpcore` | `WARNING` unless DEBUG, then `NOTSET` |
 | `docket.worker` | `INFO` when root is DEBUG, else `NOTSET` (unchanged) |
 | `uvicorn.error` | never demoted — carries bind and startup failures |
