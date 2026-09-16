@@ -907,7 +907,7 @@ class TestServerConfigSurface:
         assert all(c.suffix == c.name.upper() for c in server_config_surface())
 
     def test_suffixes_match_the_env_suffix_set(self):
-        """The surface and the existing frozenset describe the same 21 vars."""
+        """The surface and the existing frozenset describe the same vars."""
         assert {
             c.suffix for c in server_config_surface()
         } == server_config_env_suffixes()
