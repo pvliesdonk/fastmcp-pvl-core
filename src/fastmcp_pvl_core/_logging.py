@@ -234,14 +234,21 @@ class _RichTextFormatter(logging.Formatter):
     exc_info one would not.
 
     Delegating to :func:`render_rich` here — instead of leaving the
-    default ``%(message)s`` style substitution — is what makes this
-    handler pair, once the request middleware logs through the grammar
-    instead of pre-formatting its own text, byte-identical to today's
-    line: both apply the same quoting rule through the same function.
-    Today, nothing yet emits a conforming record here, so the practical
-    effect is nil: :func:`render_rich` falls back to
-    ``record.getMessage()`` for every non-conforming record, which is
-    exactly what the plain formatter it replaces already produced.
+    default ``%(message)s`` style substitution — has two effects. For a
+    conforming first-party record (most of pvl-core's own log calls
+    already are, e.g. ``"job_failed job_id=%s error=%s"``), a field value
+    containing whitespace or a quote now renders quoted in Rich mode,
+    matching the quoting rule the request middleware already applies to
+    its own pre-formatted line and JSON mode already applies per field —
+    one rule, one place, instead of the same field going out unquoted
+    here and quoted there. That is a real behaviour change landing with
+    this commit, not deferred. For a non-conforming record —
+    including the current (pre-#327-child-3) request middleware, whose
+    template is the literal string ``"%s %s"`` and so does not parse as
+    conforming — :func:`render_rich` falls back to
+    ``record.getMessage()``, identical to what the plain formatter this
+    replaces already produced; the middleware's own line is therefore
+    unaffected until it logs through the grammar directly.
     """
 
     def formatMessage(self, record: logging.LogRecord) -> str:  # noqa: N802 - stdlib override
