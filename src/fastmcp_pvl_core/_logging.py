@@ -1,7 +1,8 @@
 """Logging setup — delegates to FastMCP's ``configure_logging``.
 
-The ``-v`` CLI flag forces ``DEBUG``; otherwise ``FASTMCP_LOG_LEVEL``
-wins; otherwise ``INFO``.
+The ``-v`` CLI flag forces ``DEBUG``; otherwise ``<PREFIX>_LOG_LEVEL``
+wins, with the legacy ``FASTMCP_LOG_LEVEL`` honoured as a deprecated
+fallback for one release; otherwise ``INFO``.
 
 Two module constants keep the operator stream readable at both ends:
 ``_NOISY_THIRD_PARTY_LOGGERS`` (loud at ``INFO``, demoted) and
@@ -22,6 +23,10 @@ import sys
 import fastmcp
 from rich.console import Console
 from rich.logging import RichHandler
+
+from ._env import env
+
+logger = logging.getLogger(__name__)
 
 _VALID_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
 
@@ -88,11 +93,11 @@ def _neutralise_fastmcp() -> None:
     included — before it can reach root.
     """
     fastmcp.settings.log_enabled = False
-    logger = logging.getLogger("fastmcp")
-    for handler in logger.handlers[:]:
-        logger.removeHandler(handler)
-    logger.propagate = True
-    logger.setLevel(logging.NOTSET)
+    fastmcp_logger = logging.getLogger("fastmcp")
+    for handler in fastmcp_logger.handlers[:]:
+        fastmcp_logger.removeHandler(handler)
+    fastmcp_logger.propagate = True
+    fastmcp_logger.setLevel(logging.NOTSET)
 
 
 def _install_root_handlers(level: int) -> None:
@@ -137,17 +142,36 @@ def _install_root_handlers(level: int) -> None:
     root.setLevel(level)
 
 
-def configure_logging_from_env(env_prefix: str = "", *, verbose: bool = False) -> None:
+def _resolve_level(env_prefix: str, *, verbose: bool) -> tuple[int, bool]:
+    """Resolve the level, and say whether the legacy variable supplied it.
+
+    Order: ``verbose`` wins, then ``{PREFIX}_LOG_LEVEL``, then the legacy
+    ``FASTMCP_LOG_LEVEL``, then ``INFO``. An unrecognised name falls back to
+    ``INFO`` rather than raising — a typo in a log level should not stop a
+    server from starting.
+    """
+    if verbose:
+        return logging.DEBUG, False
+
+    raw = env(env_prefix, "LOG_LEVEL")
+    legacy = os.environ.get("FASTMCP_LOG_LEVEL")
+    bridged = raw is None and legacy is not None
+    name = (raw if raw is not None else legacy or "INFO").strip().upper()
+    if name not in _VALID_LEVELS:
+        name = "INFO"
+    return getattr(logging, name, logging.INFO), bridged
+
+
+def configure_logging_from_env(env_prefix: str, *, verbose: bool = False) -> None:
     """Configure logging globally based on environment and verbose flag.
 
     Level resolution order:
 
-    1. If *verbose* is ``True``: force ``DEBUG`` and also set
-       ``FASTMCP_LOG_LEVEL=DEBUG`` in the environment so FastMCP's own
-       loggers (which read the env var at import time) pick up the same
-       level.
-    2. Otherwise, use ``FASTMCP_LOG_LEVEL`` if set (case-insensitive).
-    3. Otherwise, default to ``INFO``.
+    1. If *verbose* is ``True``: force ``DEBUG``.
+    2. Otherwise, use ``{env_prefix}_LOG_LEVEL`` if set (case-insensitive).
+    3. Otherwise, fall back to the legacy ``FASTMCP_LOG_LEVEL`` if set —
+       deprecated for one release; a single warning names the replacement.
+    4. Otherwise, default to ``INFO``.
 
     Unknown level names fall back to ``INFO``. pvl-core owns the root
     logger outright: FastMCP's own ``configure_logging`` is neutralised
@@ -173,20 +197,12 @@ def configure_logging_from_env(env_prefix: str = "", *, verbose: bool = False) -
     ``logging.getLogger("docket.worker").setLevel(logging.DEBUG)``.
 
     Args:
-        env_prefix: Reserved for a later task's ``<PREFIX>_LOG_LEVEL``
-            contract; unused for now and defaults to ``""``.
-        verbose: If ``True``, force ``DEBUG`` (overrides
-            ``FASTMCP_LOG_LEVEL``).
+        env_prefix: The server's own env var prefix (e.g. ``"MY_APP"``);
+            used to read ``{env_prefix}_LOG_LEVEL``. Required.
+        verbose: If ``True``, force ``DEBUG`` (overrides both
+            ``{env_prefix}_LOG_LEVEL`` and ``FASTMCP_LOG_LEVEL``).
     """
-    if verbose:
-        os.environ["FASTMCP_LOG_LEVEL"] = "DEBUG"
-        level_name = "DEBUG"
-    else:
-        level_name = os.environ.get("FASTMCP_LOG_LEVEL", "INFO").strip().upper()
-        if level_name not in _VALID_LEVELS:
-            level_name = "INFO"
-
-    level = getattr(logging, level_name, logging.INFO)
+    level, bridged = _resolve_level(env_prefix, verbose=verbose)
     _neutralise_fastmcp()
     _install_root_handlers(level)
 
@@ -200,6 +216,15 @@ def configure_logging_from_env(env_prefix: str = "", *, verbose: bool = False) -
     flood_level = logging.INFO if level == logging.DEBUG else logging.NOTSET
     for name in _DEBUG_FLOOD_LOGGERS:
         logging.getLogger(name).setLevel(flood_level)
+
+    if bridged:
+        # Emitted last, deliberately: the handlers that carry it are
+        # installed above. A deprecation notice nobody can see is worse
+        # than none, because it reads as if the migration were silent.
+        logger.warning(
+            "log_level_env_deprecated old=FASTMCP_LOG_LEVEL new=%s_LOG_LEVEL",
+            env_prefix.rstrip("_"),
+        )
 
 
 class SecretMaskFilter(logging.Filter):
