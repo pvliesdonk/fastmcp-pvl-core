@@ -253,13 +253,12 @@ apply_tool_visibility(mcp, config)   # config: ServerConfig.from_env("MY_APP")
 ### Logging
 
 `configure_logging_from_env(env_prefix, *, verbose=False)` is pvl-core's
-console logging owner. It installs one handler pair — a
-`RichHandler` for normal records and a second one that renders only
-tracebacks — on the **root** logger, and neutralises FastMCP's own logging
-(`fastmcp.settings.log_enabled = False`) so every logger in the process,
-`fastmcp.*` included, propagates into that one chain instead of rendering
-through its own. Repeated calls leave exactly one chain at root, and nothing
-pvl-core installs writes to stdout.
+console logging owner. It installs one handler chain — its shape depends on
+the resolved output format, below — on the **root** logger, and neutralises
+FastMCP's own logging (`fastmcp.settings.log_enabled = False`) so every
+logger in the process, `fastmcp.*` included, propagates into that one chain
+instead of rendering through its own. Repeated calls leave exactly one
+chain at root, and nothing pvl-core installs writes to stdout.
 
 That ownership is complete under stdio and HTTP alike. A server started
 through [`run_http`](#serving-over-http-run_http) pins `log_config=None`,
@@ -279,6 +278,53 @@ The log level resolves in this order:
 4. Otherwise `INFO`.
 
 An unrecognised level name falls back to `INFO` rather than raising.
+
+#### Output format
+
+`{PREFIX}_LOG_FORMAT` picks how every record in the process renders, case-
+insensitively:
+
+- **`rich`** — a `RichHandler` pair (one for normal records, one that
+  renders only tracebacks), producing a human-readable `event key=value`
+  line per record.
+- **`json`** — a single handler emitting one JSON object per record, for a
+  log aggregator such as the ELK stack or Splunk.
+- **Unset or unrecognised** — auto: `rich` when stderr is a terminal,
+  `json` otherwise. The case that matters in practice is a container: its
+  stderr is a pipe, not a terminal, so it gets JSON with no configuration
+  at all. pytest and CI runners are non-terminals too — a downstream test
+  suite that asserts Rich-shaped stderr needs `{PREFIX}_LOG_FORMAT=rich`
+  set explicitly (`tests/test_logging.py` in this repo does exactly that).
+
+Both renderers recover a record's fields the same way: by parsing the
+template the developer wrote (`record.msg`) against [the log-call
+grammar](#the-log-call-grammar) and pairing each placeholder with its
+value from `record.args`, never by re-reading a value out of rendered
+text — so a value containing whitespace or a quote cannot corrupt the
+result, and a type like `int` or `bool` survives into JSON instead of
+becoming a string. A record whose call does not follow the grammar falls
+back to its plain formatted message — `message` in JSON, the formatted
+text in Rich — the same way for both modes. That fallback is the common
+case for third-party records (uvicorn, the MCP SDK, FastMCP itself) and,
+today, for most of pvl-core's own calls too — see [the log-call
+grammar](#the-log-call-grammar) for the current count and the tracking
+issue.
+
+One call, both modes, captured from an actual run of
+`configure_logging_from_env`:
+
+```
+cache_write key="user profile" ttl=3600 hit=True
+```
+
+```json
+{"ts": "2026-09-16T18:34:26.055997+00:00", "level": "INFO", "logger": "demo.cache", "event": "cache_write", "key": "user profile", "ttl": 3600, "hit": true}
+```
+
+The quoting around `"user profile"` is the same rule the request-logging
+middleware and JSON mode already applied — a value containing whitespace
+or a `"` renders quoted so the line stays one unambiguous `key=value`
+record.
 
 At `INFO` and above, three noisy third-party loggers are demoted — never
 below the operator's own chosen level — so they do not flood the operator
@@ -316,6 +362,18 @@ Both redactions apply unconditionally, including at `DEBUG`: whether a
 request line is worth logging is a preference the level and the
 status filter both express, but whether a credential may appear in that
 line is not a preference at all, so it is never tied to verbosity.
+
+In JSON mode, a kept `uvicorn.access` record renders as fields rather than
+a `message` string — `client`, `method`, `path` (already redacted by the
+filter above) and `status` (an `int`, not a formatted code) — since the
+filter parses and attaches them itself: uvicorn owns that record's
+template, so it can never conform to [the log-call
+grammar](#the-log-call-grammar) the way a first-party call can. Captured
+from an actual filtered record:
+
+```json
+{"ts": "2026-09-16T18:30:55.624266+00:00", "level": "INFO", "logger": "uvicorn.access", "client": "127.0.0.1:54321", "method": "GET", "path": "/transfer/<redacted>", "status": 404}
+```
 
 One logger is capped in the other direction. `docket.worker` — pydocket's
 background-task worker, which every consumer inherits through the
@@ -389,9 +447,8 @@ tool_call_failed    tool=read duration_ms=109.84 error_type=ValueError error="Se
 ```
 
 Non-tool messages use a generic `request_*` / `notification_*` vocabulary
-keyed by `method=`. Set `FASTMCP_ENABLE_RICH_LOGGING=false` to emit one JSON
-object per record instead of `key=value` text — for log aggregators such as
-the ELK stack or Splunk.
+keyed by `method=`. Rendering is process-wide — see [Output
+format](#output-format) above.
 
 When an OpenTelemetry span is in scope, every line also carries the ids
 needed to join it to that trace:
@@ -595,7 +652,7 @@ Three failure modes are worth recognising before you enable this:
 - **Correlation reformats the log stream.** The stderr handler it
   installs uses OpenTelemetry's text format, which mixes with the
   one-JSON-object-per-record output described above under
-  `FASTMCP_ENABLE_RICH_LOGGING=false`.
+  `{PREFIX}_LOG_FORMAT=json`.
 
 `OTEL_PYTHON_LOG_CORRELATION` reaches your own loggers but **not**
 anything under the `fastmcp.*` namespace, because FastMCP attaches a bare

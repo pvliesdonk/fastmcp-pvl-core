@@ -193,7 +193,7 @@ surfaces:
 - **Environment-variable contract** — the `{PREFIX}_*` names and value
   semantics pvl-core reads on behalf of every downstream, and the native
   `FASTMCP_*` variables it reads or ranks (`FASTMCP_LOG_LEVEL`,
-  `FASTMCP_ENABLE_RICH_LOGGING`, `FASTMCP_DOCKET_URL` / `_NAME`).
+  `FASTMCP_DOCKET_URL` / `_NAME`).
   Renaming one breaks every operator of every server in the family.
 - **Wire format** — anything a `docs/specs/` spec pins.
 
