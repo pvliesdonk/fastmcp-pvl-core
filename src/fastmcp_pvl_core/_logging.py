@@ -49,6 +49,7 @@ from ._log_render import (
     _ACCESS_FIELDS_ATTR,
     JsonFormatter,
     _AccessLogFields,
+    _or_fallback,
     render_rich,
 )
 
@@ -566,11 +567,12 @@ class SecretMaskFilter(logging.Filter):
     )
 
     def filter(self, record: logging.LogRecord) -> bool:
-        try:
-            original = record.getMessage()
-        except Exception:
-            # A broken format string upstream must not silence the whole
-            # log stream; let the producer's TypeError surface elsewhere.
+        # A broken format string upstream must not silence the whole log
+        # stream; let the producer's TypeError surface elsewhere. Funnelled
+        # through _or_fallback (see its docstring for why the catch is
+        # broad) rather than a local try/except.
+        original = _or_fallback(record.getMessage, lambda: None)
+        if original is None:
             return True
         masked = self._PATTERN.sub(r"\1\2 ***", original)
         if masked != original:

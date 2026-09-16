@@ -35,11 +35,14 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import TypeVar
 
 from ._log_grammar import parse_log_template
+
+_T = TypeVar("_T")
 
 # JSON-native types: passed through as-is in JSON mode so an ``int``/
 # ``float``/``bool``/``None`` keeps its type instead of becoming a string.
@@ -183,6 +186,24 @@ def _render_fields(fields: tuple[_BoundField, ...]) -> str:
     return " ".join(parts)
 
 
+def _or_fallback(render: Callable[[], _T], fallback: Callable[[], _T]) -> _T:
+    """Try *render*; on any failure, use *fallback* instead.
+
+    A log call must never raise because of how it was phrased: ``record.msg``
+    may be any object, not a ``str``; ``record.args`` may pair a placeholder
+    with a value its conversion cannot format; a caller's ``__str__`` (or a
+    ``%r``/``%s`` conversion of one of its arguments) may itself raise. None
+    of that is foreseeable from here, so the catch is intentionally broad —
+    this is the one place in the module that says so, instead of every call
+    site repeating the justification. *fallback* itself is assumed not to
+    raise.
+    """
+    try:
+        return render()
+    except Exception:  # noqa: BLE001 - rendering must never raise; see docstring
+        return fallback()
+
+
 def _safe_message(record: logging.LogRecord) -> str:
     """``record.getMessage()``, guarded against a ``msg``/arg that raises.
 
@@ -193,10 +214,10 @@ def _safe_message(record: logging.LogRecord) -> str:
     this is the last line of defence: a formatted message when possible, a
     fixed placeholder when not.
     """
-    try:
-        return record.getMessage()
-    except Exception:  # noqa: BLE001 - last-resort fallback, must not raise
-        return f"<unrenderable log record: {record.name}>"
+    return _or_fallback(
+        record.getMessage,
+        lambda: f"<unrenderable log record: {record.name}>",
+    )
 
 
 def render_rich(record: logging.LogRecord) -> str:
@@ -210,15 +231,17 @@ def render_rich(record: logging.LogRecord) -> str:
     :func:`_safe_message` exactly like a non-conforming one.
     """
     bound = bind_record(record)
-    if bound is not None:
-        event, fields = bound
-        try:
-            rendered = _render_fields(fields)
-        except Exception:  # noqa: BLE001 - a log call must never raise
-            pass
-        else:
-            return f"{event} {rendered}" if rendered else event
-    return _safe_message(record)
+    if bound is None:
+        return _safe_message(record)
+
+    event, fields = bound
+
+    def _rendered_line() -> str | None:
+        rendered = _render_fields(fields)
+        return f"{event} {rendered}" if rendered else event
+
+    line = _or_fallback(_rendered_line, lambda: None)
+    return line if line is not None else _safe_message(record)
 
 
 class JsonFormatter(logging.Formatter):
@@ -238,48 +261,69 @@ class JsonFormatter(logging.Formatter):
     """
 
     def format(self, record: logging.LogRecord) -> str:
-        envelope: dict[str, object] = {
+        """Assemble the envelope from three steps, in emission order."""
+        envelope = self._prefix(record)
+        envelope.update(self._body(record))
+        envelope.update(self._suffix(record))
+        return json.dumps(envelope, default=str)
+
+    def _prefix(self, record: logging.LogRecord) -> dict[str, object]:
+        """``ts``/``level``/``logger`` — always present, always first."""
+        return {
             "ts": datetime.fromtimestamp(record.created, tz=timezone.utc).isoformat(),
             "level": record.levelname,
             "logger": record.name,
         }
 
+    def _body(self, record: logging.LogRecord) -> dict[str, object]:
+        """The record's payload: access fields, bound event+fields, or ``message``.
+
+        Exactly one of the three shapes applies, checked in that order: a
+        ``uvicorn.access`` record the access filter already understood (see
+        :class:`_AccessLogFields`), a conforming record's typed event and
+        fields, or — for everything else, including a conforming record
+        whose fields turn out not to be renderable — the formatted message.
+        """
         access = getattr(record, _ACCESS_FIELDS_ATTR, None)
         if isinstance(access, _AccessLogFields):
             # The filter already parsed and redacted this record; read its
             # values straight off the attribute rather than re-deriving them
             # from record.args, so this can never disagree with the filter.
-            envelope["client"] = access.client
-            envelope["method"] = access.method
-            envelope["path"] = access.path
-            envelope["status"] = access.status
-        else:
-            bound = bind_record(record)
-            conforming: dict[str, object] | None = None
-            if bound is not None:
-                event, fields = bound
-                try:
-                    conforming = {"event": event}
-                    for field in fields:
-                        value = field.value
-                        conforming[field.name] = (
-                            value if isinstance(value, _JSON_NATIVE) else str(value)
-                        )
-                except Exception:  # noqa: BLE001 - a log call must never raise
-                    conforming = None
-            if conforming is not None:
-                envelope.update(conforming)
-            else:
-                envelope["message"] = _safe_message(record)
+            return {
+                "client": access.client,
+                "method": access.method,
+                "path": access.path,
+                "status": access.status,
+            }
 
+        bound = bind_record(record)
+        if bound is not None:
+            event, fields = bound
+
+            def _conforming() -> dict[str, object]:
+                conforming: dict[str, object] = {"event": event}
+                for field in fields:
+                    value = field.value
+                    conforming[field.name] = (
+                        value if isinstance(value, _JSON_NATIVE) else str(value)
+                    )
+                return conforming
+
+            conforming = _or_fallback(_conforming, lambda: None)
+            if conforming is not None:
+                return conforming
+
+        return {"message": _safe_message(record)}
+
+    def _suffix(self, record: logging.LogRecord) -> dict[str, object]:
+        """``trace_id``/``span_id`` when present, then ``exception`` when traced."""
+        suffix: dict[str, object] = {}
         trace_id = getattr(record, "trace_id", None)
         span_id = getattr(record, "span_id", None)
         if trace_id is not None:
-            envelope["trace_id"] = trace_id
+            suffix["trace_id"] = trace_id
         if span_id is not None:
-            envelope["span_id"] = span_id
-
+            suffix["span_id"] = span_id
         if record.exc_info:
-            envelope["exception"] = self.formatException(record.exc_info)
-
-        return json.dumps(envelope, default=str)
+            suffix["exception"] = self.formatException(record.exc_info)
+        return suffix

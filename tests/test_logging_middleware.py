@@ -218,6 +218,21 @@ async def test_field_order_is_tool_then_duration_then_trace_ids_last(caplog):
     assert [f.name for f in fields] == ["tool", "duration_ms", "trace_id", "span_id"]
 
 
+async def _rich_started_line_for_whitespace_tool(caplog) -> str:
+    """Run a ``read section`` tool call and return its rendered started line.
+
+    Shared by ``test_whitespace_value_renders_quoted_via_render_rich`` and
+    ``test_tool_name_with_whitespace_is_quoted`` — both assert the exact
+    same quoting behaviour, probed the exact same way; only the
+    docstring/comment explaining why differed.
+    """
+    mw = RequestLoggingMiddleware()
+    ctx = _context(method="tools/call", message=_ToolParams("read section"))
+    with caplog.at_level(logging.INFO, logger=_LOGGER_NAME):
+        await mw.on_message(ctx, _ok_call_next)
+    return render_rich(caplog.records[0])
+
+
 async def test_whitespace_value_renders_quoted_via_render_rich(caplog):
     """The sibling of ``test_tool_name_with_whitespace_is_quoted`` below,
     probed at the point where quoting now actually happens:
@@ -226,22 +241,14 @@ async def test_whitespace_value_renders_quoted_via_render_rich(caplog):
     since the middleware stopped pre-rendering its own text. Same expected
     bytes as the old assertion; only the probe moved downstream with the
     responsibility."""
-    mw = RequestLoggingMiddleware()
-    ctx = _context(method="tools/call", message=_ToolParams("read section"))
-    with caplog.at_level(logging.INFO, logger=_LOGGER_NAME):
-        await mw.on_message(ctx, _ok_call_next)
-    assert 'tool="read section"' in render_rich(caplog.records[0])
+    assert 'tool="read section"' in await _rich_started_line_for_whitespace_tool(caplog)
 
 
 async def test_tool_name_with_whitespace_is_quoted(caplog):
     # See the comment on test_tool_call_failed_line: the middleware emits a
     # record, render_rich renders it, and that rendered form — not
     # record.getMessage() — is the line an operator actually sees.
-    mw = RequestLoggingMiddleware()
-    ctx = _context(method="tools/call", message=_ToolParams("read section"))
-    with caplog.at_level(logging.INFO, logger=_LOGGER_NAME):
-        await mw.on_message(ctx, _ok_call_next)
-    assert 'tool="read section"' in render_rich(caplog.records[0])
+    assert 'tool="read section"' in await _rich_started_line_for_whitespace_tool(caplog)
 
 
 async def test_render_value_escapes_embedded_quotes(caplog):

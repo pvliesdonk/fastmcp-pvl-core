@@ -26,13 +26,15 @@ def _record(
     msg: object,
     args: object = (),
     *,
-    level: int = logging.INFO,
     exc_info: object = None,
     extra: dict[str, object] | None = None,
 ) -> logging.LogRecord:
+    """A ``logging.LogRecord`` for renderer tests. Always level ``INFO`` —
+    no test here exercises level-dependent behaviour, so it is not a knob.
+    """
     record = logging.LogRecord(
         name=_LOGGER_NAME,
-        level=level,
+        level=logging.INFO,
         pathname=__file__,
         lineno=1,
         msg=msg,
