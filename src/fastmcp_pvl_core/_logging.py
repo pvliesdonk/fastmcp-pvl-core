@@ -7,8 +7,9 @@ fallback for one release; otherwise ``INFO``.
 Three mechanisms keep the operator stream readable at both ends:
 ``_NOISY_THIRD_PARTY_LOGGERS`` (loud at ``INFO``, demoted),
 ``_DEBUG_FLOOD_LOGGERS`` (loud at ``DEBUG``, capped), and
-``_AccessLogFilter`` (``uvicorn.access``, pinned at ``INFO`` and filtered
-down to failures only, since a level cannot express "failures only").
+``_AccessLogFilter`` (``uvicorn.access``, left at ``NOTSET`` and filtered
+down to failures only, since a level cannot express "failures only" but
+the level still governs whether access lines appear at all).
 
 This module also exposes :class:`SecretMaskFilter`, a reusable
 ``logging.Filter`` that redacts ``Authorization: Bearer/Token/Basic``
@@ -116,10 +117,12 @@ def _apply_access_policy(level: int) -> None:
     access = logging.getLogger(_ACCESS_LOGGER)
     for existing in [f for f in access.filters if isinstance(f, _AccessLogFilter)]:
         access.removeFilter(existing)
-    # Pinned, not demoted: uvicorn's own dictConfig sets this logger to INFO
-    # at server start, so anything else here would mean the policy depended
-    # on whether that had run yet.
-    access.setLevel(logging.INFO)
+    # NOTSET, not pinned: the filter decides *which* requests are worth a
+    # line; the level decides *whether* the operator wants request lines at
+    # all. Left on NOTSET, uvicorn.access inherits the root level, so an
+    # operator raising the level to WARNING or above silences every access
+    # line — kept or not — before the filter ever sees it.
+    access.setLevel(logging.NOTSET)
     if level != logging.DEBUG:
         access.addFilter(_AccessLogFilter())
 
@@ -264,11 +267,16 @@ def configure_logging_from_env(env_prefix: str, *, verbose: bool = False) -> Non
     is never demoted.
 
     ``uvicorn.access`` (the HTTP access log) is handled differently: a
-    level cannot express "failures only", so instead it is pinned to
-    ``INFO`` and, whenever the resolved level is above ``DEBUG``, given a
-    filter that keeps failing requests only and redacts the query string
-    and any ``/transfer/<token>`` segment from the ones it keeps. At
-    ``DEBUG`` the filter is removed and every request line — success or
+    level cannot express "failures only", so it is left at ``NOTSET`` —
+    inheriting the root level, like any other unconfigured logger — and,
+    whenever the resolved level is above ``DEBUG``, given a filter that
+    keeps failing requests only and redacts the query string and any
+    ``/transfer/<token>`` segment from the ones it keeps. The filter decides
+    *which* requests are worth a line; the level decides *whether* the
+    operator wants request lines at all — raising ``{env_prefix}_LOG_LEVEL``
+    to ``WARNING`` or above silences access lines entirely, kept or not, the
+    same way it silences every other logger without unique verbosity needs.
+    At ``DEBUG`` the filter is removed and every request line — success or
     failure — passes through.
 
     One third-party logger is capped in the other direction:

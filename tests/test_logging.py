@@ -153,7 +153,7 @@ def test_uvicorn_error_logger_untouched(monkeypatch):
 
 
 def test_demotion_idempotent_across_level_flips(monkeypatch):
-    # uvicorn.access is pinned at INFO and no longer demoted (it gets the
+    # uvicorn.access is left at NOTSET and no longer demoted (it gets the
     # failures-only filter instead — see test_access_filter_* below), so
     # this idempotency check exercises a logger that is still demoted.
     demoted = logging.getLogger("mcp.server.lowlevel.server")
@@ -508,7 +508,13 @@ def _access_record(method: str, path: str, status: int) -> logging.LogRecord:
     )
 
 
-def _access_filter():
+def _access_filter(monkeypatch):
+    # Mirrors the delenv sibling tests do: without it, a developer with
+    # TEST_MCP_LOG_LEVEL=DEBUG exported gets no filter installed and every
+    # `(log_filter,) = _access_filter(...)` unpack fails with a confusing
+    # ValueError instead of a clear assertion.
+    monkeypatch.delenv("TEST_MCP_LOG_LEVEL", raising=False)
+    monkeypatch.delenv("FASTMCP_LOG_LEVEL", raising=False)
     configure_logging_from_env("TEST_MCP")
     access = logging.getLogger("uvicorn.access")
     return [f for f in access.filters if type(f).__name__ == "_AccessLogFilter"]
@@ -528,29 +534,29 @@ def _access_filter():
         (503, True),
     ],
 )
-def test_access_filter_keeps_only_failures(status, kept):
-    (log_filter,) = _access_filter()
+def test_access_filter_keeps_only_failures(status, kept, monkeypatch):
+    (log_filter,) = _access_filter(monkeypatch)
     assert log_filter.filter(_access_record("GET", "/mcp", status)) is kept
 
 
-def test_access_filter_strips_the_query_string():
-    (log_filter,) = _access_filter()
+def test_access_filter_strips_the_query_string(monkeypatch):
+    (log_filter,) = _access_filter(monkeypatch)
     record = _access_record("GET", "/authorize?code=SECRET&state=xyz", 401)
     assert log_filter.filter(record) is True
     assert "SECRET" not in record.getMessage()
     assert "/authorize" in record.getMessage()
 
 
-def test_access_filter_redacts_the_transfer_token():
-    (log_filter,) = _access_filter()
+def test_access_filter_redacts_the_transfer_token(monkeypatch):
+    (log_filter,) = _access_filter(monkeypatch)
     record = _access_record("GET", "/transfer/tok_abc123", 404)
     assert log_filter.filter(record) is True
     assert "tok_abc123" not in record.getMessage()
     assert "transfer/<redacted>" in record.getMessage()
 
 
-def test_access_filter_passes_records_of_another_shape():
-    (log_filter,) = _access_filter()
+def test_access_filter_passes_records_of_another_shape(monkeypatch):
+    (log_filter,) = _access_filter(monkeypatch)
     other = logging.LogRecord(
         "uvicorn.access", logging.INFO, "_", 0, "startup", None, None
     )
@@ -563,16 +569,16 @@ def test_access_filter_is_absent_at_debug():
     assert [f for f in access.filters if type(f).__name__ == "_AccessLogFilter"] == []
 
 
-def test_repeated_calls_leave_one_access_filter():
+def test_repeated_calls_leave_one_access_filter(monkeypatch):
     configure_logging_from_env("TEST_MCP")
     configure_logging_from_env("TEST_MCP")
-    assert len(_access_filter()) == 1
+    assert len(_access_filter(monkeypatch)) == 1
 
 
-def test_debug_then_info_leaves_no_residue():
+def test_debug_then_info_leaves_no_residue(monkeypatch):
     configure_logging_from_env("TEST_MCP", verbose=True)
     configure_logging_from_env("TEST_MCP")
-    assert len(_access_filter()) == 1
+    assert len(_access_filter(monkeypatch)) == 1
 
 
 @pytest.mark.parametrize("name", ["mcp.server.lowlevel.server", "httpx", "httpcore"])
@@ -594,13 +600,45 @@ def test_uvicorn_error_is_never_demoted():
     assert logging.getLogger("uvicorn.error").level == logging.NOTSET
 
 
-def test_access_logger_level_is_pinned_to_info():
-    """Pinned rather than demoted, so the outcome is the same whether or
-    not uvicorn's own dictConfig has run."""
+def test_access_logger_level_is_notset():
+    """Left at NOTSET rather than pinned: the filter decides which requests
+    are worth a line, the level decides whether the operator wants request
+    lines at all, and the level answers its own question by inheritance."""
     configure_logging_from_env("TEST_MCP")
-    assert logging.getLogger("uvicorn.access").level == logging.INFO
+    assert logging.getLogger("uvicorn.access").level == logging.NOTSET
 
 
 def test_docket_worker_capped_at_debug():
     configure_logging_from_env("TEST_MCP", verbose=True)
     assert logging.getLogger("docket.worker").level == logging.INFO
+
+
+def test_access_line_dropped_by_level_before_the_filter_sees_it(monkeypatch):
+    # End-to-end check with a real handler attached at root, not caplog, and
+    # a real logging call (access.info(...)) rather than a hand-built record
+    # pushed through .handle() — .handle() skips the isEnabledFor() level
+    # check entirely, which is exactly the mechanism under test. uvicorn.access
+    # is left at NOTSET so it inherits the root level: at WARNING that check
+    # must drop even a kept-shape 404 before the failures-only filter ever
+    # runs. The mirror at INFO confirms the same call does reach the handler.
+    monkeypatch.setenv("TEST_MCP_LOG_LEVEL", "WARNING")
+    configure_logging_from_env("TEST_MCP")
+    access = logging.getLogger("uvicorn.access")
+    handler = logging.Handler()
+    received: list[logging.LogRecord] = []
+    handler.emit = received.append  # type: ignore[method-assign]
+    logging.getLogger().addHandler(handler)
+    try:
+        access.info(
+            '%s - "%s %s HTTP/%s" %d', "1.2.3.4:5678", "GET", "/mcp", "1.1", 404
+        )
+        assert received == []
+
+        monkeypatch.setenv("TEST_MCP_LOG_LEVEL", "INFO")
+        configure_logging_from_env("TEST_MCP")
+        access.info(
+            '%s - "%s %s HTTP/%s" %d', "1.2.3.4:5678", "GET", "/mcp", "1.1", 404
+        )
+        assert len(received) == 1
+    finally:
+        logging.getLogger().removeHandler(handler)
