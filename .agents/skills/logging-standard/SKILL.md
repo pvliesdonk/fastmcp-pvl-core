@@ -23,13 +23,16 @@ pvl-core already emits them conforming; here, those lines are *ours*:
   line. A change to it changes every server's log stream at once; treat
   its line shape, and its logger name, as shared shape.
 - **The logging bootstrap** (`configure_logging_from_env` in
-  `_logging.py`) owns level resolution and third-party level adjustment
-  for every downstream.
+  `_logging.py`) owns the **root logger** for every downstream: the
+  process's console handlers, level resolution, and third-party level and
+  filter policy. A downstream attaches nothing of its own.
 
 Third-party lines (`uvicorn.*`, `mcp.*`, `docket.*`, and FastMCP's own
-records) are out of scope for formatting. pvl-core only adjusts their
-*levels*, through the constants in `_logging.py`, and never reformats
-them.
+records) are out of scope for formatting: pvl-core adjusts their *levels*
+through the constants in `_logging.py` and never rewrites their wording.
+The one exception is `uvicorn.access`, where a filter drops successful
+requests and redacts credentials out of the request line — that is not
+reformatting, it is refusing to log a secret.
 
 ## Framework
 
@@ -37,17 +40,19 @@ them.
   `logger = logging.getLogger(__name__)`. No `print()` for operational
   output, no third-party logging libraries.
 - The one exception: the request middleware logs on
-  `fastmcp.middleware.requests`. Being under `fastmcp`, its records go to
-  the handler FastMCP's `configure_logging` attaches there (with
-  `propagate = False`), not to the root logger; ADR 0003 and the tests
-  depend on that. The name is shared shape; do not "fix" it to
-  `__name__`.
+  `fastmcp.middleware.requests`. FastMCP attaches handlers there at import
+  time with `propagate = False`; `configure_logging_from_env` undoes that
+  (it disables FastMCP's own logging config and resets the logger), so the
+  records reach pvl-core's handlers at the root logger like everything
+  else. The name is shared shape; do not "fix" it to `__name__`.
 - A library does not configure logging at import. No handlers, no
   `basicConfig`, no level changes at module import. Root and third-party
   levels change only inside `configure_logging_from_env()`, which a
   downstream calls at startup.
-- `FASTMCP_LOG_LEVEL` is the single level control; the `-v` CLI flag
-  forces `DEBUG`. Do not add a second level variable.
+- `{PREFIX}_LOG_LEVEL` is the single level control, where `{PREFIX}` is
+  the env prefix the downstream passes in; the `-v` CLI flag forces
+  `DEBUG`. `FASTMCP_LOG_LEVEL` is read only as a one-release deprecation
+  bridge and warns when it is used. Do not add a second level variable.
 
 ## Log levels
 
@@ -108,7 +113,8 @@ carries it.
 `caplog` captures at the root logger. `caplog.at_level(level,
 logger="x")` only sets that logger's level; records from sibling loggers
 are still captured, so assert on the record's `name` when the test is
-about one logger. FastMCP sets `propagate=False` on `fastmcp`, so records
-under `fastmcp.*` (the request middleware's included) reach `caplog` only
-through the autouse `_fastmcp_logger_propagates` fixture in
-`tests/conftest.py`.
+about one logger. FastMCP sets `propagate=False` on `fastmcp` at import,
+so records under `fastmcp.*` (the request middleware's included) reach
+`caplog` only through the autouse `_fastmcp_logger_propagates` fixture in
+`tests/conftest.py` — or after a call to `configure_logging_from_env`,
+which restores propagation for the whole process.

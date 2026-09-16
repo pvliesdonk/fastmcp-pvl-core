@@ -1,11 +1,36 @@
-"""Logging setup — delegates to FastMCP's ``configure_logging``.
+"""Logging setup — pvl-core owns the root logger; FastMCP is turned off.
 
-The ``-v`` CLI flag forces ``DEBUG``; otherwise ``FASTMCP_LOG_LEVEL``
-wins; otherwise ``INFO``.
+``configure_logging_from_env`` installs a single console handler pair at
+the **root** logger and neutralises FastMCP's own logging
+(``fastmcp.settings.log_enabled = False``), rather than delegating to
+FastMCP's ``configure_logging``. Every logger — ``fastmcp.*`` included —
+propagates into that pair instead of rendering through a chain of its own.
+Rendering is Rich only; a JSON alternative does not exist yet.
 
-Two module constants keep the operator stream readable at both ends:
-``_NOISY_THIRD_PARTY_LOGGERS`` (loud at ``INFO``, demoted) and
-``_DEBUG_FLOOD_LOGGERS`` (loud at ``DEBUG``, capped).
+Under HTTP transport, as of this release, uvicorn still runs its own
+``dictConfig`` at server start — the ``run_http(log_config=None)`` seam
+that retires it is a later PR — which reinstalls uvicorn's own handler on
+``uvicorn.access``/``uvicorn.error`` (the access handler on **stdout**, at
+``INFO``, regardless of the resolved level). What survives that
+reconfiguration is the ``_AccessLogFilter`` installed below: ``dictConfig``
+replaces handlers, not filters, so redaction and the drop-successes rule
+still hold on whatever handler uvicorn ends up attaching. Until that PR
+lands, this module is the sole console owner only when no HTTP server has
+started.
+
+The ``-v`` CLI flag forces ``DEBUG``; otherwise ``<PREFIX>_LOG_LEVEL``
+wins, with the legacy ``FASTMCP_LOG_LEVEL`` honoured as a deprecated
+fallback for one release when ``<PREFIX>_LOG_LEVEL`` is unset; otherwise
+``INFO``.
+
+Three mechanisms keep the operator stream readable at both ends:
+``_NOISY_THIRD_PARTY_LOGGERS`` (loud at ``INFO``, demoted),
+``_DEBUG_FLOOD_LOGGERS`` (loud at ``DEBUG``, capped), and
+``_AccessLogFilter`` (``uvicorn.access``, left at ``NOTSET`` so the level
+governs whether access lines appear at all, and always installed — at
+``DEBUG`` it keeps every status instead of failures only, but it never
+stops redacting, since whether a line is worth logging is a preference and
+whether a credential may appear in it is not).
 
 This module also exposes :class:`SecretMaskFilter`, a reusable
 ``logging.Filter`` that redacts ``Authorization: Bearer/Token/Basic``
@@ -15,18 +40,35 @@ values in formatted log messages before they reach handlers.
 from __future__ import annotations
 
 import logging
-import os
 import re
+import sys
 
-from fastmcp.utilities.logging import configure_logging
+import fastmcp
+from rich.console import Console
+from rich.logging import RichHandler
+
+from ._env import env
+
+logger = logging.getLogger(__name__)
 
 _VALID_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
 
-# Third-party transport / SDK loggers that emit non-conforming INFO-level
-# chatter — one or two lines per request. Demoted to WARNING unless the
-# operator opts into DEBUG. ``uvicorn.error`` is deliberately excluded: it
-# carries genuine bind / startup failures.
-_NOISY_THIRD_PARTY_LOGGERS = ("uvicorn.access", "mcp.server.lowlevel.server")
+_NOISY_THIRD_PARTY_LOGGERS = (
+    "mcp.server.lowlevel.server",
+    "httpx",
+    "httpcore",
+)
+"""Loggers that are loud at ``INFO`` and quiet at ``WARNING``.
+
+``httpx``/``httpcore`` are here because pvl-core pulls them for the whole
+family through fastmcp, exactly like ``docket.worker`` below — the same
+position, so the same owner. Three downstream servers had each quieted them
+locally, two of them by contradictory rules that fought inside one process.
+
+``uvicorn.access`` is deliberately absent: a level cannot express "failures
+only", so it gets a filter instead. ``uvicorn.error`` is also absent: it
+carries genuine bind / startup failures and is never demoted.
+"""
 
 # Third-party loggers with the opposite shape: near-silent at INFO, but a
 # per-iteration firehose at DEBUG driven by a poll loop that runs whether or
@@ -38,29 +80,267 @@ _NOISY_THIRD_PARTY_LOGGERS = ("uvicorn.access", "mcp.server.lowlevel.server")
 # still come through while the poll trace does not.
 _DEBUG_FLOOD_LOGGERS = ("docket.worker",)
 
+_ACCESS_LOGGER = "uvicorn.access"
 
-def configure_logging_from_env(*, verbose: bool = False) -> None:
+_QUERY_RE = re.compile(r"[?#]")
+_TRANSFER_TOKEN_RE = re.compile(r"(^|/)transfer/[^/]+", re.IGNORECASE)
+
+_ACCESS_ARG_COUNT = 5
+_ACCESS_STATUS_INDEX = 4
+_ACCESS_PATH_INDEX = 2
+
+
+class _AccessLogFilter(logging.Filter):
+    """Redact every request line, and drop successful ones unless asked not to.
+
+    uvicorn emits every access record at ``INFO`` regardless of status, so
+    at the default level the successful ones are pure duplication: the
+    request-logging middleware already reports each MCP call with its method
+    and duration. What the middleware cannot report is what never reached it
+    — a 401 refused by auth, a 404, a 413 — so those stay, and a readiness
+    probe becomes visible exactly when it starts failing. Whether a
+    successful request deserves a line is a preference: *drop_successes*
+    expresses it, and ``_apply_access_policy`` ties it to the level so an
+    operator at ``DEBUG`` sees every status.
+
+    Redaction is not a preference and is never conditional on
+    *drop_successes* — every record this filter is given gets rewritten,
+    kept or not, because uvicorn logs the request line as ``path?query``:
+
+    * the query string goes entirely. No route in this family carries
+      diagnostic query parameters; the ones that carry anything are the
+      OAuth routes, where it is an authorization code or PKCE material.
+    * the segment after ``/transfer/`` is masked, because the transfer token
+      is in the *path*. An expired link produces the 4xx this filter always
+      keeps; a live one produces a 2xx, visible only at ``DEBUG`` — which is
+      exactly why redaction cannot be tied to *drop_successes* either.
+
+    A record of any other shape passes untouched: this filter judges
+    uvicorn's access line, and anything else on that logger is not its
+    business.
+    """
+
+    def __init__(self, *, drop_successes: bool) -> None:
+        super().__init__()
+        self._drop_successes = drop_successes
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        args = record.args
+        if not isinstance(args, tuple) or len(args) != _ACCESS_ARG_COUNT:
+            return True
+        status = args[_ACCESS_STATUS_INDEX]
+        if not isinstance(status, int):
+            return True
+        path = _QUERY_RE.split(str(args[_ACCESS_PATH_INDEX]), maxsplit=1)[0]
+        path = _TRANSFER_TOKEN_RE.sub(r"\1transfer/<redacted>", path)
+        record.args = (
+            args[:_ACCESS_PATH_INDEX] + (path,) + args[_ACCESS_PATH_INDEX + 1 :]
+        )
+        return not (self._drop_successes and status < 400)
+
+
+def _apply_access_policy(level: int) -> None:
+    """Install the access filter, leaving exactly one instance either way.
+
+    Always installed — redaction must never depend on verbosity — but the
+    survivor's ``drop_successes`` flag tracks the level passed on *this*
+    call: remove-then-add means an operator flipping between ``DEBUG`` and
+    anything else always ends up with the rule matching their latest call,
+    never a stale one from before the flip.
+    """
+    access = logging.getLogger(_ACCESS_LOGGER)
+    for existing in [f for f in access.filters if isinstance(f, _AccessLogFilter)]:
+        access.removeFilter(existing)
+    # NOTSET, not pinned: the filter decides *which* requests are worth a
+    # line; the level decides *whether* the operator wants request lines at
+    # all. Left on NOTSET, uvicorn.access inherits the root level, so an
+    # operator raising the level to WARNING or above silences every access
+    # line — kept or not — before the filter ever sees it.
+    access.setLevel(logging.NOTSET)
+    access.addFilter(_AccessLogFilter(drop_successes=level != logging.DEBUG))
+
+
+_OWNED_ATTR = "_pvl_core_owned"
+"""Marks the handlers this module installed.
+
+Not needed to recognise our own Rich pair on an ordinary second call:
+``_is_console_handler`` falls back to ``RichHandler.console.file``, which
+resolves to ``sys.stderr`` exactly like a plain ``StreamHandler``'s
+``.stream``, so the console rule below already catches our own pair without
+this marker. It still matters in two cases the stream-identity rule cannot
+reach on its own: ``sys.stderr`` being ``None`` (Rich substitutes a NULL
+file that matches no console-stream identity), and a JSON-mode
+``StreamHandler`` in a later PR whose stream may have been reassigned after
+construction. Marking is what makes repeated configuration — and a mode
+change in a later PR — leave exactly one chain at root regardless.
+"""
+
+
+def _console_stream_ids() -> set[int]:
+    """Identity of every stream that means "the operator's console"."""
+    streams = (sys.stdout, sys.stderr, sys.__stdout__, sys.__stderr__)
+    return {id(stream) for stream in streams if stream is not None}
+
+
+def _is_console_handler(handler: logging.Handler) -> bool:
+    """Whether *handler* writes to the console.
+
+    Keys on stream identity, never on handler type. pytest's
+    ``LogCaptureHandler`` is a ``StreamHandler`` subclass over a
+    ``StringIO``; a type-based rule would detach ``caplog`` from every test
+    in the suite. ``RichHandler`` is the mirror case — not a
+    ``StreamHandler`` at all, with its stream at ``console.file``.
+    """
+    stream = getattr(handler, "stream", None)
+    if stream is None:
+        stream = getattr(getattr(handler, "console", None), "file", None)
+    return stream is not None and id(stream) in _console_stream_ids()
+
+
+def _neutralise_fastmcp() -> None:
+    """Stop FastMCP owning its own logger tree.
+
+    ``log_enabled = False`` makes its ``configure_logging`` return before it
+    touches handlers or ``propagate`` — including the call inside
+    ``temporary_log_level``, which is what silently reverted the first
+    attempt at this (issue #323). Turning the library off is durable where
+    fighting it was not.
+
+    The level reset is load-bearing rather than tidiness: FastMCP pins the
+    ``fastmcp`` logger to ``INFO`` at import time, and left in place that
+    blocks every ``fastmcp.*`` DEBUG record — the request middleware's
+    included — before it can reach root.
+    """
+    fastmcp.settings.log_enabled = False
+    fastmcp_logger = logging.getLogger("fastmcp")
+    for handler in fastmcp_logger.handlers[:]:
+        fastmcp_logger.removeHandler(handler)
+    fastmcp_logger.propagate = True
+    fastmcp_logger.setLevel(logging.NOTSET)
+
+
+def _install_root_handlers(level: int) -> None:
+    """Make pvl-core the sole owner of the root logger's console output.
+
+    Removes our own handlers and any pre-existing console handler — the
+    double-render source when ``opentelemetry-instrument`` has installed
+    one — and leaves every other handler untouched, so an operator's OTLP,
+    file or syslog handler survives. That tolerance is what closes #323:
+    with ``fastmcp.*`` propagating again, a handler attached at root now
+    receives every record in the process.
+
+    Two handlers, not one, reproducing the pair FastMCP installs: tracebacks
+    render compressed (no path or level column, framework frames suppressed,
+    three frames) so a stack trace does not drown the line that caused it.
+    """
+    root = logging.getLogger()
+    for handler in root.handlers[:]:
+        if getattr(handler, _OWNED_ATTR, False) or _is_console_handler(handler):
+            root.removeHandler(handler)
+
+    console = Console(stderr=True)
+    formatter = logging.Formatter("%(message)s")
+
+    main = RichHandler(console=console)
+    main.setFormatter(formatter)
+    main.addFilter(lambda record: record.exc_info is None)
+
+    tracebacks = RichHandler(
+        console=console,
+        show_path=False,
+        show_level=False,
+        rich_tracebacks=True,
+        tracebacks_max_frames=3,
+    )
+    tracebacks.setFormatter(formatter)
+    tracebacks.addFilter(lambda record: record.exc_info is not None)
+
+    for handler in (main, tracebacks):
+        setattr(handler, _OWNED_ATTR, True)
+        root.addHandler(handler)
+    root.setLevel(level)
+
+
+def _resolve_level(env_prefix: str, *, verbose: bool) -> tuple[int, bool]:
+    """Resolve the level, and say whether the legacy variable supplied it.
+
+    Order: ``verbose`` wins, then ``{PREFIX}_LOG_LEVEL``, then the legacy
+    ``FASTMCP_LOG_LEVEL``, then ``INFO``. An unrecognised name falls back to
+    ``INFO`` rather than raising — a typo in a log level should not stop a
+    server from starting.
+    """
+    if verbose:
+        return logging.DEBUG, False
+
+    raw = env(env_prefix, "LOG_LEVEL")
+    # ``env()`` treats an empty value as unset; read the legacy variable
+    # through it too (prefix "FASTMCP", name "LOG_LEVEL") so
+    # ``FASTMCP_LOG_LEVEL=""`` is unset the same way, instead of firing a
+    # deprecation warning for a variable that carries no value.
+    legacy = env("FASTMCP", "LOG_LEVEL")
+    bridged = raw is None and legacy is not None
+    name = (raw if raw is not None else legacy or "INFO").strip().upper()
+    if name not in _VALID_LEVELS:
+        name = "INFO"
+    return getattr(logging, name, logging.INFO), bridged
+
+
+def configure_logging_from_env(env_prefix: str, *, verbose: bool = False) -> None:
     """Configure logging globally based on environment and verbose flag.
 
     Level resolution order:
 
-    1. If *verbose* is ``True``: force ``DEBUG`` and also set
-       ``FASTMCP_LOG_LEVEL=DEBUG`` in the environment so FastMCP's own
-       loggers (which read the env var at import time) pick up the same
-       level.
-    2. Otherwise, use ``FASTMCP_LOG_LEVEL`` if set (case-insensitive).
-    3. Otherwise, default to ``INFO``.
+    1. If *verbose* is ``True``: force ``DEBUG``.
+    2. Otherwise, use ``{env_prefix}_LOG_LEVEL`` if set (case-insensitive).
+    3. Otherwise, fall back to the legacy ``FASTMCP_LOG_LEVEL`` if set —
+       deprecated for one release; a single warning names the replacement.
+    4. Otherwise, default to ``INFO``.
 
-    Unknown level names fall back to ``INFO``.  The root logger is set
-    to the resolved level and FastMCP's ``configure_logging`` is called
-    so its loggers produce matching output.
+    Unknown level names fall back to ``INFO``. pvl-core owns the root
+    logger outright: FastMCP's own ``configure_logging`` is neutralised
+    and a single Rich handler pair is installed at root instead, so every
+    namespace in the process — FastMCP's included — renders through one
+    handler chain.
 
-    Two noisy third-party loggers — ``uvicorn.access`` (the HTTP access
-    log) and ``mcp.server.lowlevel.server`` (the MCP SDK request line) —
-    are demoted to ``WARNING`` whenever the resolved level is above
-    ``DEBUG``, so their per-request chatter stays out of the default
-    ``INFO`` stream. At ``DEBUG`` they are reset to ``NOTSET`` and
-    reappear. ``uvicorn.error`` is never demoted.
+    Handler installation at root holds three invariants:
+
+    1. **stderr only.** Nothing this function installs writes to stdout,
+       which is the protocol channel under stdio transport.
+    2. **Idempotent.** Handlers this function installed are marked and
+       removed before reinstalling on every call, so repeated calls leave
+       exactly one chain at root.
+    3. **Exclusive over the console, tolerant of everything else.** Any
+       pre-existing root handler that writes to the console is replaced
+       (the double-render source when ``opentelemetry-instrument`` has
+       installed one); every other handler — an OTLP ``LoggingHandler``, a
+       file handler, a syslog handler — is left untouched. Because
+       ``fastmcp.*`` now propagates instead of rendering through its own
+       handlers, a handler an operator attached at root also starts
+       receiving ``fastmcp.*`` records.
+
+    Three noisy third-party loggers — ``mcp.server.lowlevel.server`` (the MCP
+    SDK request line), ``httpx``, and ``httpcore`` — are demoted to
+    ``WARNING`` (or the resolved level itself, if that is stricter than
+    ``WARNING``) whenever the resolved level is above ``DEBUG``, so their
+    per-request chatter stays out of the default ``INFO`` stream without
+    ever making them *louder* than the operator's own chosen level. At
+    ``DEBUG`` they are reset to ``NOTSET`` and reappear. ``uvicorn.error``
+    is never demoted.
+
+    ``uvicorn.access`` (the HTTP access log) is handled differently: a
+    level cannot express "failures only", so it is left at ``NOTSET`` —
+    inheriting the root level, like any other unconfigured logger — and
+    always given a filter that redacts the query string and any
+    ``/transfer/<token>`` segment from every request line it sees. The
+    filter decides *which* requests are worth a line; the level decides
+    *whether* the operator wants request lines at all — raising
+    ``{env_prefix}_LOG_LEVEL`` to ``WARNING`` or above silences access lines
+    entirely, kept or not, the same way it silences every other logger
+    without unique verbosity needs. At every level except ``DEBUG`` the
+    filter also drops successful (``< 400``) requests; at ``DEBUG`` every
+    status passes, but the redaction never stops — whether a line is worth
+    logging is a preference the level and filter both express, whether a
+    credential may appear in it is not.
 
     One third-party logger is capped in the other direction:
     ``docket.worker`` is pinned to ``INFO`` when the resolved level is
@@ -73,22 +353,25 @@ def configure_logging_from_env(*, verbose: bool = False) -> None:
     ``logging.getLogger("docket.worker").setLevel(logging.DEBUG)``.
 
     Args:
-        verbose: If ``True``, force ``DEBUG`` (overrides
+        env_prefix: Caller-supplied identity, not a pvl-core default — the
+            server's own env var prefix (e.g. ``"MY_APP"``), matching
+            ``ServerConfig.from_env(env_prefix)``. Used to read
+            ``{env_prefix}_LOG_LEVEL``. Required, positional.
+        verbose: CLI flag, not an env var — the caller's ``-v``/``--verbose``
+            switch, passed through as a keyword. If ``True``, forces
+            ``DEBUG`` (overrides both ``{env_prefix}_LOG_LEVEL`` and
             ``FASTMCP_LOG_LEVEL``).
     """
-    if verbose:
-        os.environ["FASTMCP_LOG_LEVEL"] = "DEBUG"
-        level_name = "DEBUG"
-    else:
-        level_name = os.environ.get("FASTMCP_LOG_LEVEL", "INFO").strip().upper()
-        if level_name not in _VALID_LEVELS:
-            level_name = "INFO"
+    level, bridged = _resolve_level(env_prefix, verbose=verbose)
+    _neutralise_fastmcp()
+    _install_root_handlers(level)
 
-    level = getattr(logging, level_name, logging.INFO)
-    logging.getLogger().setLevel(level)
-    configure_logging(level)
-
-    noisy_level = logging.NOTSET if level == logging.DEBUG else logging.WARNING
+    # max(WARNING, level), not a flat WARNING: at ERROR/CRITICAL a flat
+    # WARNING would *raise* the effective level for these loggers above what
+    # the operator chose, making them louder than the server's own code.
+    noisy_level = (
+        logging.NOTSET if level == logging.DEBUG else max(logging.WARNING, level)
+    )
     for name in _NOISY_THIRD_PARTY_LOGGERS:
         logging.getLogger(name).setLevel(noisy_level)
 
@@ -98,6 +381,22 @@ def configure_logging_from_env(*, verbose: bool = False) -> None:
     flood_level = logging.INFO if level == logging.DEBUG else logging.NOTSET
     for name in _DEBUG_FLOOD_LOGGERS:
         logging.getLogger(name).setLevel(flood_level)
+
+    _apply_access_policy(level)
+
+    if bridged:
+        # Emitted last, deliberately: the handlers that carry it are
+        # installed above. A deprecation notice nobody can see is worse
+        # than none, because it reads as if the migration were silent.
+        # logged at max(WARNING, level) rather than a flat WARNING: an
+        # operator running at ERROR or CRITICAL has raised the bar above
+        # WARNING, and a flat WARNING would be silently dropped by their own
+        # chosen level — never seeing the notice at all.
+        logger.log(
+            max(logging.WARNING, level),
+            "log_level_env_deprecated old=FASTMCP_LOG_LEVEL new=%s_LOG_LEVEL",
+            env_prefix.rstrip("_"),
+        )
 
 
 class SecretMaskFilter(logging.Filter):

@@ -61,7 +61,7 @@ def make_serve_parser(*, prog: str, description: str = "") -> argparse.ArgumentP
         "-v",
         "--verbose",
         action="store_true",
-        help="Enable DEBUG logging (sets FASTMCP_LOG_LEVEL=DEBUG)",
+        help="Enable DEBUG logging (overrides <PREFIX>_LOG_LEVEL)",
     )
     parser.add_argument(
         "--transport",

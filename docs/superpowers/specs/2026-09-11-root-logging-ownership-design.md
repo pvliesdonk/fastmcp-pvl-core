@@ -291,8 +291,8 @@ All in `configure_logging_from_env`, on the unified tree:
 
 | Logger | Policy |
 |---|---|
-| `uvicorn.access` | Filter: pass records with status ≥ 400, drop the rest; no filter at DEBUG |
-| `mcp.server.lowlevel.server`, `httpx`, `httpcore` | `WARNING` unless DEBUG, then `NOTSET` |
+| `uvicorn.access` | Filter, always installed: redacts unconditionally; passes status ≥ 400 and drops the rest, except at DEBUG where every status passes |
+| `mcp.server.lowlevel.server`, `httpx`, `httpcore` | `max(WARNING, level)` unless DEBUG, then `NOTSET` — the demotion never lowers a logger below the operator's chosen level |
 | `docket.worker` | `INFO` when root is DEBUG, else `NOTSET` (unchanged) |
 | `uvicorn.error` | never demoted — carries bind and startup failures |
 
@@ -304,8 +304,16 @@ args, `int` at index 4) is judged by status; a non-matching record passes
 unchanged. Net effect at INFO: `/health` and `/mcp` 200s disappear; a `401`
 from auth, a `404`, a `413`, and a readiness `503` remain — none of which
 reach the MCP middleware. The filter is installed on the `uvicorn.access`
-logger; repeated calls leave exactly one instance, and a DEBUG call removes
-it.
+logger; repeated calls leave exactly one instance.
+
+**The filter is always installed; only its status rule is conditional.** At
+DEBUG it keeps every record, including the 2xx ones, but it still redacts.
+An earlier revision of this section removed the filter entirely at DEBUG,
+which made redaction a side-effect of verbosity: running a server with `-v`
+wrote transfer tokens and OAuth authorization codes into the operator's log
+(verified). Those are two different questions. Whether a successful request
+deserves a line is a preference the level expresses; whether a credential may
+appear in a log line is not a preference at all.
 
 **Secrets in the access line.** uvicorn logs
 `get_path_with_query_string(scope)`, so the kept lines carry both. pvl-core
@@ -319,7 +327,8 @@ rewrites the path on every record it passes, in Rich and JSON alike:
   (`(^|/)transfer/[^/]+` → `transfer/<redacted>`). The transfer token is in
   the path, not the query (`_transfer/register.py:106`,
   `_ROUTE_PATH = "/transfer/{token}"`), and an expired link produces exactly
-  the 4xx this policy keeps.
+  the 4xx this policy keeps — and a *live* link produces a 2xx, which is
+  visible at DEBUG, so the redaction has to hold there too.
 
 This follows the same rule as `_health.py::_redact_reason` and
 `_transfer.fetch`: a credential never reaches a log line, and every emit path
@@ -379,7 +388,7 @@ and keeping identity a caller argument (`CLAUDE.md`, foldability).
 | `<PREFIX>_LOG_LEVEL` | `DEBUG` `INFO` `WARNING` `ERROR` `CRITICAL`, case-insensitive | `INFO` | `verbose=True` forces `DEBUG` |
 | `<PREFIX>_LOG_FORMAT` | `rich` `json`, case-insensitive | auto (§3) | — |
 | `<PREFIX>_SHUTDOWN_GRACE_S` | integer ≥ 0 | default `3`; invalid → `ConfigurationError` | on `ServerConfig` |
-| `FASTMCP_LOG_LEVEL` | as `<PREFIX>_LOG_LEVEL` | — | **migration bridge**: used only when `<PREFIX>_LOG_LEVEL` is unset, with one `WARNING` naming the prefixed variable; removed in the next major |
+| `FASTMCP_LOG_LEVEL` | as `<PREFIX>_LOG_LEVEL` | — | **migration bridge**: used only when `<PREFIX>_LOG_LEVEL` is unset, with one notice naming the prefixed variable, logged at `WARNING` or the resolved level itself if that is stricter (so an operator at `ERROR`/`CRITICAL` still sees it); removed in the next major |
 | `FASTMCP_ENABLE_RICH_LOGGING` | — | — | no longer read by pvl-core; see below |
 
 `FASTMCP_ENABLE_RICH_LOGGING` is not bridged. Its only use was selecting JSON
@@ -433,7 +442,8 @@ Named tests:
 - **End to end** — `run_http` on an ephemeral port; request `/health` and a
   missing path; assert the 200 is absent and the 404 present at the handler.
 - **Access policy** — 200 dropped; 401 and `/health` 503 kept; all kept at
-  DEBUG; none at WARNING; non-conforming record passes.
+  DEBUG **and still redacted there**; none at WARNING; non-conforming record
+  passes.
 - **Access-line redaction** — a kept line for `/authorize?code=…&state=…`
   carries no query string, and one for `/transfer/<token>` carries
   `transfer/<redacted>`, in both Rich and JSON. Asserted on the handler's
@@ -449,8 +459,9 @@ Named tests:
 - **Conformance check** — reports f-strings, non-literal first arguments and
   non-conforming literals with path and line; ignores calls on other
   receivers; imports nothing from the scanned tree.
-- **Bridge** — exactly one `WARNING`, naming the prefixed variable, only when
-  the fallback is used.
+- **Bridge** — exactly one notice, naming the prefixed variable, only when
+  the fallback is used, at `WARNING` or stricter so it survives an operator's
+  `ERROR`/`CRITICAL` level too.
 - **Noise policy** — per-logger levels at INFO and DEBUG, including httpx and
   httpcore.
 

@@ -252,18 +252,76 @@ apply_tool_visibility(mcp, config)   # config: ServerConfig.from_env("MY_APP")
 
 ### Logging
 
-`configure_logging_from_env` resolves the log level from the `-v` CLI flag
-(forces `DEBUG`), then `FASTMCP_LOG_LEVEL`, then defaults to `INFO`.
+`configure_logging_from_env(env_prefix, *, verbose=False)` is pvl-core's
+console logging owner. It installs one handler pair — a
+`RichHandler` for normal records and a second one that renders only
+tracebacks — on the **root** logger, and neutralises FastMCP's own logging
+(`fastmcp.settings.log_enabled = False`) so every logger in the process,
+`fastmcp.*` included, propagates into that one chain instead of rendering
+through its own. Repeated calls leave exactly one chain at root, and nothing
+pvl-core installs writes to stdout.
 
-At `INFO` and above, two noisy third-party loggers are demoted to `WARNING`
-so they do not flood the operator log stream:
+As of this release, that ownership is complete for stdio transport but not
+yet for HTTP: uvicorn still runs its own `dictConfig` at server start (the
+`run_http(log_config=None)` seam that retires it is a later PR), which
+reinstalls uvicorn's own handler on `uvicorn.access`/`uvicorn.error` — the
+access handler on **stdout**, at level `INFO`, regardless of
+`{PREFIX}_LOG_LEVEL`. What survives that reconfiguration is the
+`_AccessLogFilter` this module installs below: `dictConfig` replaces
+handlers, not filters, so redaction (and the drop-successes rule) still
+apply to whatever handler uvicorn ends up attaching.
 
-- `uvicorn.access` — the `INFO: <ip> - "POST /mcp ..."` HTTP access log.
-- `mcp.server.lowlevel.server` — the MCP SDK's `Processing request of
-  type ...` line.
+The log level resolves in this order:
 
-Both reappear at `DEBUG` (`-v` or `FASTMCP_LOG_LEVEL=DEBUG`). `uvicorn.error`
-is never demoted — it carries genuine bind / startup failures.
+1. `verbose=True` (the `-v` CLI flag) forces `DEBUG`.
+2. Otherwise `{PREFIX}_LOG_LEVEL`, case-insensitive.
+3. Otherwise the legacy `FASTMCP_LOG_LEVEL` — a migration bridge, honoured
+   only when `{PREFIX}_LOG_LEVEL` is unset, and kept for one major release.
+   Using it logs a single `log_level_env_deprecated` warning naming the
+   prefixed replacement; when both variables are set, `{PREFIX}_LOG_LEVEL`
+   wins silently.
+4. Otherwise `INFO`.
+
+An unrecognised level name falls back to `INFO` rather than raising.
+
+At `INFO` and above, three noisy third-party loggers are demoted — never
+below the operator's own chosen level — so they do not flood the operator
+log stream: `httpx`, `httpcore`, and `mcp.server.lowlevel.server` — the MCP
+SDK's `Processing request of type ...` line. All three reappear (`NOTSET`)
+at `DEBUG`. `uvicorn.error` is never touched, at any level — it carries
+genuine bind / startup failures.
+
+`uvicorn.access` (the HTTP access log) gets a filter instead of a demotion,
+because a level cannot express "failures only". At every level except
+`DEBUG` the filter keeps only records with status `>= 400` — a `401` from
+auth, a `404`, a `413`, a readiness `503` — and drops the `200`s that would
+otherwise duplicate the request-logging middleware's own lines. Its own
+level stays `NOTSET`, inheriting root: raising `{PREFIX}_LOG_LEVEL` above
+`INFO` is meant to silence access lines entirely, kept or not — the filter
+decides *which* requests are worth a line, the level decides *whether* the
+operator wants request lines at all — but under HTTP transport that only
+holds once `uvicorn.access` is logging through *this* module's chain (see
+above); the redaction itself is unaffected either way. At `DEBUG` the filter
+is always still installed and keeps every status, `200` included — the
+redaction is exactly as unconditional as at any other level, it is only
+*which* requests reach the log that verbosity changes.
+
+Every record the filter sees is also rewritten, because uvicorn logs the
+full `path?query`:
+
+- **The query string is stripped entirely.** No route in this family carries
+  diagnostic query parameters — the ones that do are the OAuth routes, where
+  it is an authorization code or PKCE material.
+- **The segment after `/transfer/` is masked** to `transfer/<redacted>`.
+  pvl-core's transfer token lives in the path, and an expired link produces
+  exactly the 4xx this filter keeps by default; a *live* link produces a
+  `2xx`, which is visible only at `DEBUG` — so the redaction has to hold
+  there too.
+
+Both redactions apply unconditionally, including at `DEBUG`: whether a
+request line is worth logging is a preference the level and the
+status filter both express, but whether a credential may appear in that
+line is not a preference at all, so it is never tied to verbosity.
 
 One logger is capped in the other direction. `docket.worker` — pydocket's
 background-task worker, which every consumer inherits through the
@@ -275,9 +333,18 @@ other level it is untouched. An operator debugging the task queue itself
 restores the full stream after the call:
 
 ```python
-configure_logging_from_env(verbose=True)
+configure_logging_from_env("MY_APP", verbose=True)
 logging.getLogger("docket.worker").setLevel(logging.DEBUG)
 ```
+
+Handler ownership is exclusive over the console only: pvl-core removes any
+pre-existing root handler that writes to `stdout`/`stderr` (the
+double-render source when `opentelemetry-instrument` has installed one) but
+leaves every other handler at root untouched. An OTLP, file, or syslog
+handler an operator attached at root survives `configure_logging_from_env`
+— and, because `fastmcp.*` now propagates instead of rendering through its
+own handlers, it receives `fastmcp.*` records too, not just the domain's
+own.
 
 `build_auth` announces the resolved auth mode once per call — once per server
 in the normal case — on every resolution path, whether the mode came from
@@ -867,7 +934,7 @@ the same per-app prefix the server uses for the rest of its config:
 from fastmcp_pvl_core import configure_logging_from_env, maybe_start_debugpy
 
 def main() -> None:
-    configure_logging_from_env()
+    configure_logging_from_env("MY_APP")
     maybe_start_debugpy("MY_APP")  # no-op unless MY_APP_DEBUG_PORT is set
     ...
 ```
