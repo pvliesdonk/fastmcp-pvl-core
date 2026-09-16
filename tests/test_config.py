@@ -530,31 +530,59 @@ class TestServerConfigFromEnv:
 
 
 def _suffixes_read_by_from_env() -> set[str]:
-    """The literal env suffixes ``ServerConfig.from_env`` actually reads.
+    """The literal env suffixes the ``ServerConfig`` surface actually reads.
 
     Statically extracts the second positional argument of each
-    ``env``/``env_int``/``env_float`` call in ``from_env``'s source **whose
-    suffix is a string literal** (calls with a variable, keyword, or
-    attribute-form suffix are skipped), so the test reflects the literal read
-    surface rather than a hand-copied list.
+    ``env``/``env_int``/``env_float`` call **whose suffix is a string
+    literal** (calls with a variable, keyword, or attribute-form suffix are
+    skipped), scanning ``ServerConfig.from_env`` itself *plus* every
+    module-level ``_read_*`` helper function defined in
+    ``fastmcp_pvl_core._config`` — e.g. ``_read_oidc``, ``_read_bearer``,
+    ``_read_tools_visibility``. The helpers are discovered by introspection
+    (any module-level function whose name starts with ``_read_``), not a
+    hard-coded list, so a newly-added helper is picked up automatically
+    without touching this test.
+
+    Deliberately scans only ``from_env`` plus the ``_read_*`` functions,
+    not the whole ``_config`` module: those are the functions that
+    *constitute* the ``ServerConfig`` read surface by convention, so a
+    stray env read added elsewhere in the file later (e.g. inside the
+    ``domain_env_suffixes``/``domain_env_surface`` machinery, or a future
+    helper that doesn't follow the ``_read_`` naming convention) cannot
+    silently join this set just by sharing a module with ``from_env``.
     """
     import ast
     import inspect
     import textwrap
+    from collections.abc import Callable
 
-    src = textwrap.dedent(inspect.getsource(ServerConfig.from_env))
+    from fastmcp_pvl_core import _config as _config_module
+
     read_funcs = {"env", "env_int", "env_float"}
-    found: set[str] = set()
-    for node in ast.walk(ast.parse(src)):
+
+    def _literal_suffixes(func: Callable[..., object]) -> set[str]:
+        src = textwrap.dedent(inspect.getsource(func))
+        literals: set[str] = set()
+        for node in ast.walk(ast.parse(src)):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id in read_funcs
+                and len(node.args) >= 2
+                and isinstance(node.args[1], ast.Constant)
+                and isinstance(node.args[1].value, str)
+            ):
+                literals.add(node.args[1].value)
+        return literals
+
+    found: set[str] = set(_literal_suffixes(ServerConfig.from_env))
+    for name, member in vars(_config_module).items():
         if (
-            isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Name)
-            and node.func.id in read_funcs
-            and len(node.args) >= 2
-            and isinstance(node.args[1], ast.Constant)
-            and isinstance(node.args[1].value, str)
+            name.startswith("_read_")
+            and inspect.isfunction(member)
+            and member.__module__ == _config_module.__name__
         ):
-            found.add(node.args[1].value)
+            found |= _literal_suffixes(member)
     return found
 
 
@@ -579,10 +607,10 @@ class TestServerConfigEnvSuffixes:
     def test_matches_what_from_env_actually_reads(self):
         """Anti-drift: the declared set must equal the literal suffixes from_env reads.
 
-        A literal-string read added/removed/renamed in ``from_env`` without
-        updating the declared set fails here. (A suffix built from a variable or
-        passed by keyword is invisible to the scan — see
-        ``_suffixes_read_by_from_env``.)
+        A literal-string read added/removed/renamed in ``from_env`` — or in a
+        ``_read_*`` helper it calls — without updating the declared set fails
+        here. (A suffix built from a variable or passed by keyword is
+        invisible to the scan — see ``_suffixes_read_by_from_env``.)
         """
         from fastmcp_pvl_core import server_config_env_suffixes
 
