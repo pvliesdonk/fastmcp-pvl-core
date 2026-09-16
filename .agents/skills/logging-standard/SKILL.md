@@ -57,6 +57,13 @@ conform to the grammar below — see `_AccessLogFields` in
   the env prefix the downstream passes in; the `-v` CLI flag forces
   `DEBUG`. `FASTMCP_LOG_LEVEL` is read only as a one-release deprecation
   bridge and warns when it is used. Do not add a second level variable.
+- `{PREFIX}_LOG_FORMAT` picks the render mode: `rich` (human-readable
+  `event key=value` text) or `json` (one object per record), case
+  insensitive. Unset or unrecognised auto-detects — `rich` when stderr is
+  a TTY, `json` otherwise — so a container gets JSON with no
+  configuration and a test suite (stderr is not a TTY under pytest) gets
+  JSON too unless a test sets this explicitly. See "Testing log output"
+  below.
 
 ## Log levels
 
@@ -103,8 +110,12 @@ already covers, and anything a loop emits on every iteration, goes to
 - A call that does not follow this grammar renders as a formatted
   message rather than fields — `message` in JSON mode, the formatted text
   in Rich mode — in both cases losing the field structure a conforming
-  call gets for free. `find_nonconforming_log_calls` reports every call
-  that breaks the grammar; pvl-core's own code does not fully conform yet
+  call gets for free. `find_nonconforming_log_calls` reports calls that
+  break it — only within its receiver scope, a module-level `logger =
+  logging.getLogger(...)` name used with a level method; `self.logger`,
+  an imported logger, and `logger.log(...)` are outside what it can see
+  — so a clean report is not a proof every call conforms. pvl-core's own
+  code does not fully conform yet
   ([#328](https://github.com/pvliesdonk/fastmcp-pvl-core/issues/328)).
 - Some existing lines predate this format. A diff that changes one of
   them converts it; do not sweep untouched lines in an unrelated PR.
