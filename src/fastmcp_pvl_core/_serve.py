@@ -17,6 +17,7 @@ tree does next, and matches how the downstream CLIs call uvicorn.
 
 from __future__ import annotations
 
+import sys
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -63,10 +64,25 @@ def _build_uvicorn_config(
 
 
 def _run_server(built: uvicorn.Config) -> None:
-    """Run a server to completion. Seam for tests that must not bind."""
-    import uvicorn
+    """Run a server to completion. Seam for tests that must not bind.
 
-    uvicorn.Server(built).run()
+    Reproduces the epilogue ``uvicorn.run(...)`` wraps ``server.run()`` in,
+    rather than delegating to ``uvicorn.run`` itself, because pvl-core builds
+    the ``Config`` here so tests can assert it (see :func:`_build_uvicorn_config`)
+    without binding a socket. Without this epilogue a failed startup —
+    including FastMCP's own lifespan hooks, which ``lifespan="on"`` pins
+    specifically to make fatal — would exit 0 instead of signalling failure.
+    """
+    import uvicorn
+    from uvicorn.main import STARTUP_FAILURE
+
+    server = uvicorn.Server(built)
+    try:
+        server.run()
+    except KeyboardInterrupt:
+        pass
+    if not server.started:
+        sys.exit(STARTUP_FAILURE)
 
 
 def run_http(
@@ -94,6 +110,11 @@ def run_http(
             used.
         port: Operator configuration override, same precedence. ``0`` is a
             real value — bind any free port — and is *not* treated as unset.
+
+    Raises:
+        SystemExit: With uvicorn's own startup-failure code, if the server
+            never reaches ``started`` — including a lifespan startup hook
+            (OIDC discovery, event-store connect) raising.
     """
     _run_server(
         _build_uvicorn_config(

@@ -13,7 +13,7 @@ import httpx
 import pytest
 
 from fastmcp_pvl_core import ServerConfig, run_http
-from fastmcp_pvl_core._serve import _build_uvicorn_config
+from fastmcp_pvl_core._serve import _build_uvicorn_config, _run_server
 
 
 @pytest.fixture
@@ -186,3 +186,64 @@ def test_uvicorn_never_installs_its_own_handlers(configured_logging_capture):
         access = logging.getLogger("uvicorn.access")
         assert access.handlers == []
         assert access.propagate is True
+
+
+class TestRunServerEpilogue:
+    """``_run_server`` mirrors the epilogue ``uvicorn.run(...)`` wraps
+    ``server.run()`` in — without it, a failed startup exits 0 instead of
+    uvicorn's own ``STARTUP_FAILURE``, and a mid-run Ctrl-C propagates as an
+    uncaught ``KeyboardInterrupt`` instead of exiting silently."""
+
+    class _FakeServer:
+        def __init__(self, *, started: bool, raise_keyboard_interrupt: bool = False):
+            self.started = started
+            self._raise_keyboard_interrupt = raise_keyboard_interrupt
+            self.run_called = False
+
+        def run(self):
+            self.run_called = True
+            if self._raise_keyboard_interrupt:
+                raise KeyboardInterrupt
+
+    def _patch_server(self, monkeypatch, fake):
+        import uvicorn
+
+        monkeypatch.setattr(uvicorn, "Server", lambda config: fake)
+
+    def test_exits_with_startup_failure_when_server_never_started(self, monkeypatch):
+        fake = self._FakeServer(started=False)
+        self._patch_server(monkeypatch, fake)
+        built = _build_uvicorn_config(
+            _app, host="127.0.0.1", port=8000, shutdown_grace_s=1
+        )
+
+        with pytest.raises(SystemExit) as exc_info:
+            _run_server(built)
+
+        assert fake.run_called
+        assert exc_info.value.code == 3
+
+    def test_keyboard_interrupt_after_startup_exits_silently(self, monkeypatch):
+        """Ctrl-C after the server is up: swallowed, no SystemExit, no traceback."""
+        fake = self._FakeServer(started=True, raise_keyboard_interrupt=True)
+        self._patch_server(monkeypatch, fake)
+        built = _build_uvicorn_config(
+            _app, host="127.0.0.1", port=8000, shutdown_grace_s=1
+        )
+
+        _run_server(built)  # must not raise
+
+        assert fake.run_called
+
+    def test_keyboard_interrupt_before_startup_still_signals_failure(self, monkeypatch):
+        """Ctrl-C before the server ever started: still a startup failure."""
+        fake = self._FakeServer(started=False, raise_keyboard_interrupt=True)
+        self._patch_server(monkeypatch, fake)
+        built = _build_uvicorn_config(
+            _app, host="127.0.0.1", port=8000, shutdown_grace_s=1
+        )
+
+        with pytest.raises(SystemExit) as exc_info:
+            _run_server(built)
+
+        assert exc_info.value.code == 3
