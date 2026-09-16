@@ -7,16 +7,11 @@ FastMCP's ``configure_logging``. Every logger — ``fastmcp.*`` included —
 propagates into that pair instead of rendering through a chain of its own.
 Rendering is Rich only; a JSON alternative does not exist yet.
 
-Under HTTP transport, as of this release, uvicorn still runs its own
-``dictConfig`` at server start — the ``run_http(log_config=None)`` seam
-that retires it is a later PR — which reinstalls uvicorn's own handler on
-``uvicorn.access``/``uvicorn.error`` (the access handler on **stdout**, at
-``INFO``, regardless of the resolved level). What survives that
-reconfiguration is the ``_AccessLogFilter`` installed below: ``dictConfig``
-replaces handlers, not filters, so redaction and the drop-successes rule
-still hold on whatever handler uvicorn ends up attaching. Until that PR
-lands, this module is the sole console owner only when no HTTP server has
-started.
+Under HTTP transport, a server started through :func:`._serve.run_http`
+pins ``log_config=None``, so uvicorn never runs its own ``dictConfig`` and
+never reinstalls a handler on ``uvicorn.access``/``uvicorn.error``. Those
+loggers stay on the root chain this module installs, so this module is the
+sole console owner regardless of transport.
 
 The ``-v`` CLI flag forces ``DEBUG``; otherwise ``<PREFIX>_LOG_LEVEL``
 wins, with the legacy ``FASTMCP_LOG_LEVEL`` honoured as a deprecated

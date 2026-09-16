@@ -788,25 +788,28 @@ def test_access_line_dropped_by_level_before_the_filter_sees_it(monkeypatch):
         logging.getLogger().removeHandler(handler)
 
 
-def test_uvicorn_dictconfig_still_runs_but_filter_and_redaction_survive():
-    """The PR-1 gap: closed by PR 2's ``run_http(log_config=None)`` seam.
+def test_filter_and_redaction_survive_a_direct_uvicorn_dictconfig():
+    """Defence in depth for a downstream that calls uvicorn directly.
 
-    uvicorn's own ``Config(...).configure_logging()`` still runs at HTTP
-    server start in this release. It reinstalls uvicorn's own handler on
-    ``uvicorn.access`` (a plain ``StreamHandler`` on **stdout**, level
-    ``INFO``, ``propagate=False``) regardless of ``{PREFIX}_LOG_LEVEL`` —
-    so "pvl-core owns the console" and "the level governs access lines" do
-    not hold yet under HTTP transport. What survives is proven here:
-    ``dictConfig`` replaces handlers, not filters, so ``_AccessLogFilter``
-    is still attached to ``uvicorn.access`` afterwards and still redacts
-    whatever uvicorn logs through its own reinstalled handler.
+    ``run_http`` pins ``log_config=None``, so pvl-core's own path never
+    triggers this. But nothing stops a downstream from bypassing
+    ``run_http`` and calling ``uvicorn.Config(...).configure_logging()``
+    itself — the way ``uvicorn.run(...)`` does by default — which
+    reinstalls uvicorn's own handler on ``uvicorn.access`` (a plain
+    ``StreamHandler`` on **stdout**, level ``INFO``, ``propagate=False``)
+    regardless of ``{PREFIX}_LOG_LEVEL``. What survives even then is
+    proven here: ``dictConfig`` replaces handlers, not filters, so
+    ``_AccessLogFilter`` is still attached to ``uvicorn.access`` afterwards
+    and still redacts whatever uvicorn logs through its own reinstalled
+    handler.
     """
     configure_logging_from_env("TEST_MCP")
     uvicorn.Config(None, log_config=uvicorn.config.LOGGING_CONFIG).configure_logging()
 
     access = logging.getLogger("uvicorn.access")
 
-    # The gap: uvicorn reinstalled its own chain, not pvl-core's.
+    # The direct uvicorn.run(...) behaviour this simulates: uvicorn
+    # reinstalled its own chain, not pvl-core's.
     assert access.propagate is False
     assert access.level == logging.INFO
     assert len(access.handlers) == 1
