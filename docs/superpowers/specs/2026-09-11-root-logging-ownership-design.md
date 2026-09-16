@@ -304,8 +304,16 @@ args, `int` at index 4) is judged by status; a non-matching record passes
 unchanged. Net effect at INFO: `/health` and `/mcp` 200s disappear; a `401`
 from auth, a `404`, a `413`, and a readiness `503` remain — none of which
 reach the MCP middleware. The filter is installed on the `uvicorn.access`
-logger; repeated calls leave exactly one instance, and a DEBUG call removes
-it.
+logger; repeated calls leave exactly one instance.
+
+**The filter is always installed; only its status rule is conditional.** At
+DEBUG it keeps every record, including the 2xx ones, but it still redacts.
+An earlier revision of this section removed the filter entirely at DEBUG,
+which made redaction a side-effect of verbosity: running a server with `-v`
+wrote transfer tokens and OAuth authorization codes into the operator's log
+(verified). Those are two different questions. Whether a successful request
+deserves a line is a preference the level expresses; whether a credential may
+appear in a log line is not a preference at all.
 
 **Secrets in the access line.** uvicorn logs
 `get_path_with_query_string(scope)`, so the kept lines carry both. pvl-core
@@ -319,7 +327,8 @@ rewrites the path on every record it passes, in Rich and JSON alike:
   (`(^|/)transfer/[^/]+` → `transfer/<redacted>`). The transfer token is in
   the path, not the query (`_transfer/register.py:106`,
   `_ROUTE_PATH = "/transfer/{token}"`), and an expired link produces exactly
-  the 4xx this policy keeps.
+  the 4xx this policy keeps — and a *live* link produces a 2xx, which is
+  visible at DEBUG, so the redaction has to hold there too.
 
 This follows the same rule as `_health.py::_redact_reason` and
 `_transfer.fetch`: a credential never reaches a log line, and every emit path
@@ -433,7 +442,8 @@ Named tests:
 - **End to end** — `run_http` on an ephemeral port; request `/health` and a
   missing path; assert the 200 is absent and the 404 present at the handler.
 - **Access policy** — 200 dropped; 401 and `/health` 503 kept; all kept at
-  DEBUG; none at WARNING; non-conforming record passes.
+  DEBUG **and still redacted there**; none at WARNING; non-conforming record
+  passes.
 - **Access-line redaction** — a kept line for `/authorize?code=…&state=…`
   carries no query string, and one for `/transfer/<token>` carries
   `transfer/<redacted>`, in both Rich and JSON. Asserted on the handler's
