@@ -65,6 +65,19 @@ class ServerConfig:
             "wizard": {"group": "Server", "when": "server"},
         },
     )
+    shutdown_grace_s: int = field(
+        default=3,
+        metadata={
+            "help": (
+                "Seconds SIGTERM may spend draining in-flight requests "
+                "before the HTTP server exits. Set it no higher than the "
+                "orchestrator's own termination grace period. ``0`` drops "
+                "in-flight requests immediately."
+            ),
+            "tags": ("server",),
+            "wizard": {"group": "Server", "when": "server"},
+        },
+    )
     base_url: str | None = field(
         default=None,
         metadata={
@@ -349,11 +362,11 @@ class ServerConfig:
             A populated :class:`ServerConfig` instance.
 
         Raises:
-            ConfigurationError: If ``{env_prefix}_PORT`` is set to a
-                non-integer or out-of-``1..65535`` value; if
-                ``{env_prefix}_TOOLS_ALLOW`` and ``{env_prefix}_TOOLS_DENY``
-                are both set; or if either is set but parses to zero tool
-                names (e.g. a lone ``,``).
+            ConfigurationError: If ``{env_prefix}_PORT`` or
+                ``{env_prefix}_SHUTDOWN_GRACE_S`` is set to a non-integer or
+                out-of-range value; if ``{env_prefix}_TOOLS_ALLOW`` and
+                ``{env_prefix}_TOOLS_DENY`` are both set; or if either is set
+                but parses to zero tool names (e.g. a lone ``,``).
         """
         transport_raw = env(env_prefix, "TRANSPORT", "stdio")
         transport: Transport
@@ -365,6 +378,10 @@ class ServerConfig:
             transport = "stdio"
 
         host = env(env_prefix, "HOST", "127.0.0.1")
+
+        shutdown_grace_s = env_int(
+            env_prefix, "SHUTDOWN_GRACE_S", 3, strict=True, minimum=0
+        )
 
         scopes_raw = env(env_prefix, "OIDC_REQUIRED_SCOPES")
         scopes = tuple(parse_scopes(scopes_raw) or ())
@@ -420,6 +437,7 @@ class ServerConfig:
             port=env_int(
                 env_prefix, "PORT", 8000, strict=True, minimum=1, maximum=65535
             ),
+            shutdown_grace_s=shutdown_grace_s,
             base_url=env(env_prefix, "BASE_URL"),
             bearer_token=env(env_prefix, "BEARER_TOKEN"),
             oidc_config_url=env(env_prefix, "OIDC_CONFIG_URL"),
@@ -454,6 +472,7 @@ _SERVER_CONFIG_ENV_SUFFIXES: frozenset[str] = frozenset(
         "TRANSPORT",
         "HOST",
         "PORT",
+        "SHUTDOWN_GRACE_S",
         "BASE_URL",
         "BEARER_TOKEN",
         "BEARER_TOKENS_FILE",

@@ -332,6 +332,25 @@ class TestServerConfigFromEnv:
         monkeypatch.setenv("MYAPP_PORT", raw)
         assert ServerConfig.from_env("MYAPP").port == int(raw)
 
+    def test_shutdown_grace_defaults_to_three(self, monkeypatch):
+        monkeypatch.delenv("MYAPP_SHUTDOWN_GRACE_S", raising=False)
+        assert ServerConfig.from_env("MYAPP").shutdown_grace_s == 3
+
+    def test_shutdown_grace_read_from_env(self, monkeypatch):
+        monkeypatch.setenv("MYAPP_SHUTDOWN_GRACE_S", "30")
+        assert ServerConfig.from_env("MYAPP").shutdown_grace_s == 30
+
+    def test_shutdown_grace_zero_is_allowed(self, monkeypatch):
+        """0 means "do not drain" — a deliberate choice, not a misconfiguration."""
+        monkeypatch.setenv("MYAPP_SHUTDOWN_GRACE_S", "0")
+        assert ServerConfig.from_env("MYAPP").shutdown_grace_s == 0
+
+    @pytest.mark.parametrize("value", ["-1", "not-a-number", "3.5"])
+    def test_shutdown_grace_rejects_invalid(self, monkeypatch, value):
+        monkeypatch.setenv("MYAPP_SHUTDOWN_GRACE_S", value)
+        with pytest.raises(ConfigurationError, match="MYAPP_SHUTDOWN_GRACE_S"):
+            ServerConfig.from_env("MYAPP")
+
     def test_reads_bearer_token(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setenv("MYAPP_BEARER_TOKEN", "secret")
         config = ServerConfig.from_env("MYAPP")
@@ -853,8 +872,8 @@ class TestServerConfigSurface:
             f.name for f in dataclasses.fields(ServerConfig)
         )
 
-    def test_returns_twenty_two_fields(self):
-        assert len(server_config_surface()) == 22
+    def test_returns_twenty_three_fields(self):
+        assert len(server_config_surface()) == 23
 
     def test_suffix_is_the_upper_cased_field_name(self):
         assert all(c.suffix == c.name.upper() for c in server_config_surface())
@@ -1006,11 +1025,12 @@ class TestServerConfigSurface:
         assert offenders == {}
 
     def test_every_declared_default_is_unchanged(self):
-        """Full 22-field guard; a spot check would miss a silent default change."""
+        """Full 23-field guard; a spot check would miss a silent default change."""
         expected = {
             "transport": "stdio",
             "host": "127.0.0.1",
             "port": 8000,
+            "shutdown_grace_s": 3,
             "base_url": None,
             "bearer_token": None,
             "oidc_config_url": None,
