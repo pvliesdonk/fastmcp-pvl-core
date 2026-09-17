@@ -32,7 +32,11 @@ records) are out of scope for formatting: pvl-core adjusts their *levels*
 through the constants in `_logging.py` and never rewrites their wording.
 The one exception is `uvicorn.access`, where a filter drops successful
 requests and redacts credentials out of the request line — that is not
-reformatting, it is refusing to log a secret.
+reformatting, it is refusing to log a secret. (In JSON mode the same
+filter's parsed `client`/`method`/`path`/`status` are also emitted as
+fields, since uvicorn owns that record's template and it can never
+conform to the grammar below — see `_AccessLogFields` in
+`_log_render.py`.)
 
 ## Framework
 
@@ -53,6 +57,13 @@ reformatting, it is refusing to log a secret.
   the env prefix the downstream passes in; the `-v` CLI flag forces
   `DEBUG`. `FASTMCP_LOG_LEVEL` is read only as a one-release deprecation
   bridge and warns when it is used. Do not add a second level variable.
+- `{PREFIX}_LOG_FORMAT` picks the render mode: `rich` (human-readable
+  `event key=value` text) or `json` (one object per record), case
+  insensitive. Unset or unrecognised auto-detects — `rich` when stderr is
+  a TTY, `json` otherwise — so a container gets JSON with no
+  configuration and a test suite (stderr is not a TTY under pytest) gets
+  JSON too unless a test sets this explicitly. See "Testing log output"
+  below.
 
 ## Log levels
 
@@ -87,7 +98,25 @@ already covers, and anything a loop emits on every iteration, goes to
 - Pseudo-structured: `logger.info("event_name key=%s", value)`. The event
   name is the first token (snake_case), followed by `key=value` pairs
   through `%s` formatting.
-- Never use f-strings in log calls; they defeat lazy formatting.
+- Never use f-strings in log calls; they defeat lazy formatting, and they
+  quietly degrade rendering too: an f-string has already substituted its
+  values into `record.msg` before `bind_record` (`_log_render.py`) ever
+  sees it, so even a field that happens to still look like `key=3600` is
+  recovered as the *literal string* `"3600"`, not the `int` the caller
+  actually had — the type information a `%`-placeholder would have
+  preserved is gone by the time the grammar can parse it. A substituted
+  value containing a space, `%`, or `=` breaks the shape outright and the
+  whole record falls back to its plain formatted message instead.
+- A call that does not follow this grammar renders as a formatted
+  message rather than fields — `message` in JSON mode, the formatted text
+  in Rich mode — in both cases losing the field structure a conforming
+  call gets for free. `find_nonconforming_log_calls` reports calls that
+  break it — only within its receiver scope, a module-level `logger =
+  logging.getLogger(...)` name used with a level method; `self.logger`,
+  an imported logger, and `logger.log(...)` are outside what it can see
+  — so a clean report is not a proof every call conforms. pvl-core's own
+  code does not fully conform yet
+  ([#328](https://github.com/pvliesdonk/fastmcp-pvl-core/issues/328)).
 - Some existing lines predate this format. A diff that changes one of
   them converts it; do not sweep untouched lines in an unrelated PR.
 
@@ -118,3 +147,8 @@ so records under `fastmcp.*` (the request middleware's included) reach
 `caplog` only through the autouse `_fastmcp_logger_propagates` fixture in
 `tests/conftest.py` — or after a call to `configure_logging_from_env`,
 which restores propagation for the whole process.
+
+pytest's own stderr capture is not a terminal, so a test that calls
+`configure_logging_from_env` without setting `{PREFIX}_LOG_FORMAT` gets
+JSON output under auto-detection, not Rich — set the env var explicitly
+(`monkeypatch.setenv`) when a test needs to assert on Rich-shaped output.

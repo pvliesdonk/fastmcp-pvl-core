@@ -1,11 +1,13 @@
 """Logging setup — pvl-core owns the root logger; FastMCP is turned off.
 
-``configure_logging_from_env`` installs a single console handler pair at
+``configure_logging_from_env`` installs a single console handler chain at
 the **root** logger and neutralises FastMCP's own logging
 (``fastmcp.settings.log_enabled = False``), rather than delegating to
 FastMCP's ``configure_logging``. Every logger — ``fastmcp.*`` included —
-propagates into that pair instead of rendering through a chain of its own.
-Rendering is Rich only; a JSON alternative does not exist yet.
+propagates into that chain instead of rendering through one of its own.
+Rendering is chosen once, process-wide, via ``{PREFIX}_LOG_FORMAT``: the
+Rich ``event key=value`` pair of handlers, or a single JSON handler with
+no separate traceback path (see :func:`_resolve_format`).
 
 Under HTTP transport, a server started through :func:`._serve.run_http`
 pins ``log_config=None``, so uvicorn never runs its own ``dictConfig`` and
@@ -43,10 +45,19 @@ from rich.console import Console
 from rich.logging import RichHandler
 
 from ._env import env
+from ._log_render import (
+    _ACCESS_FIELDS_ATTR,
+    JsonFormatter,
+    _AccessLogFields,
+    _NeverRaiseFilter,
+    _or_fallback,
+    render_rich,
+)
 
 logger = logging.getLogger(__name__)
 
 _VALID_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
+_VALID_FORMATS = {"RICH", "JSON"}
 
 _NOISY_THIRD_PARTY_LOGGERS = (
     "mcp.server.lowlevel.server",
@@ -81,8 +92,10 @@ _QUERY_RE = re.compile(r"[?#]")
 _TRANSFER_TOKEN_RE = re.compile(r"(^|/)transfer/[^/]+", re.IGNORECASE)
 
 _ACCESS_ARG_COUNT = 5
-_ACCESS_STATUS_INDEX = 4
+_ACCESS_CLIENT_INDEX = 0
+_ACCESS_METHOD_INDEX = 1
 _ACCESS_PATH_INDEX = 2
+_ACCESS_STATUS_INDEX = 4
 
 
 class _AccessLogFilter(logging.Filter):
@@ -113,6 +126,17 @@ class _AccessLogFilter(logging.Filter):
     A record of any other shape passes untouched: this filter judges
     uvicorn's access line, and anything else on that logger is not its
     business.
+
+    A record this filter understands and keeps also gets the parsed
+    ``client``/``method``/``path``/``status`` attached as
+    :class:`~._log_render._AccessLogFields`, under
+    :data:`~._log_render._ACCESS_FIELDS_ATTR`. uvicorn owns this record's
+    template, so it never conforms to the family's log-call grammar and
+    :class:`~._log_render.JsonFormatter` would otherwise have nothing but a
+    formatted ``message`` to emit. *path* on that attribute is the same
+    value just written back into ``record.args`` above — redacted once,
+    here, never re-derived by a renderer — so the JSON field and the Rich
+    line can never disagree about what the path was.
     """
 
     def __init__(self, *, drop_successes: bool) -> None:
@@ -131,7 +155,19 @@ class _AccessLogFilter(logging.Filter):
         record.args = (
             args[:_ACCESS_PATH_INDEX] + (path,) + args[_ACCESS_PATH_INDEX + 1 :]
         )
-        return not (self._drop_successes and status < 400)
+        keep = not (self._drop_successes and status < 400)
+        if keep:
+            setattr(
+                record,
+                _ACCESS_FIELDS_ATTR,
+                _AccessLogFields(
+                    client=str(args[_ACCESS_CLIENT_INDEX]),
+                    method=str(args[_ACCESS_METHOD_INDEX]),
+                    path=path,
+                    status=status,
+                ),
+            )
+        return keep
 
 
 def _apply_access_policy(level: int) -> None:
@@ -164,10 +200,10 @@ resolves to ``sys.stderr`` exactly like a plain ``StreamHandler``'s
 ``.stream``, so the console rule below already catches our own pair without
 this marker. It still matters in two cases the stream-identity rule cannot
 reach on its own: ``sys.stderr`` being ``None`` (Rich substitutes a NULL
-file that matches no console-stream identity), and a JSON-mode
-``StreamHandler`` in a later PR whose stream may have been reassigned after
+file that matches no console-stream identity), and the JSON-mode
+``StreamHandler`` whose stream may have been reassigned after
 construction. Marking is what makes repeated configuration — and a mode
-change in a later PR — leave exactly one chain at root regardless.
+change between calls — leave exactly one chain at root regardless.
 """
 
 
@@ -214,7 +250,42 @@ def _neutralise_fastmcp() -> None:
     fastmcp_logger.setLevel(logging.NOTSET)
 
 
-def _install_root_handlers(level: int) -> None:
+class _RichTextFormatter(logging.Formatter):
+    """Renders a record's message through the family's log-call grammar.
+
+    Overrides ``formatMessage`` rather than ``format``: ``RichHandler``
+    always calls ``self.format(record)`` first, but for a record carrying
+    ``exc_info`` with ``rich_tracebacks=True`` (the traceback-companion
+    handler's whole purpose) it then *discards* that result and calls
+    ``formatter.formatMessage(record)`` directly instead, to build the
+    message line that accompanies its own Rich-rendered traceback panel
+    (see ``rich.logging.RichHandler.emit``). Overriding only ``format``
+    would leave that second, actually-rendered path on the default
+    ``%(message)s`` substitution instead of :func:`render_rich` — the
+    non-exc_info handler would quote a value containing a space, the
+    exc_info one would not.
+
+    Delegating to :func:`render_rich` here — instead of leaving the
+    default ``%(message)s`` style substitution — has two effects. For a
+    conforming first-party record (a minority today — 19 of 55 pvl-core
+    log calls, 35%, per the measurement in README.md's "The log-call
+    grammar" section and tracked in
+    `#328 <https://github.com/pvliesdonk/fastmcp-pvl-core/issues/328>`_),
+    a field value containing whitespace or a quote now renders quoted in
+    Rich mode, matching the quoting rule the request middleware already
+    applies to its own line and JSON mode already applies per field — one
+    rule, one place, instead of the same field going out unquoted here
+    and quoted there. That is a real behaviour change landing with this
+    commit, not deferred. For a non-conforming record — the majority,
+    still — :func:`render_rich` falls back to ``record.getMessage()``,
+    identical to what the plain formatter this replaces already produced.
+    """
+
+    def formatMessage(self, record: logging.LogRecord) -> str:  # noqa: N802 - stdlib override
+        return render_rich(record)
+
+
+def _install_root_handlers(level: int, fmt: str) -> None:
     """Make pvl-core the sole owner of the root logger's console output.
 
     Removes our own handlers and any pre-existing console handler — the
@@ -222,22 +293,51 @@ def _install_root_handlers(level: int) -> None:
     one — and leaves every other handler untouched, so an operator's OTLP,
     file or syslog handler survives. That tolerance is what closes #323:
     with ``fastmcp.*`` propagating again, a handler attached at root now
-    receives every record in the process.
+    receives every record in the process. The removal runs unconditionally
+    of *fmt*, so a mode change (``json`` -> ``rich`` -> ``json``) tears down
+    the previous mode's chain the same way a same-mode call does — that is
+    what ``_OWNED_ATTR`` is for.
 
-    Two handlers, not one, reproducing the pair FastMCP installs: tracebacks
-    render compressed (no path or level column, framework frames suppressed,
-    three frames) so a stack trace does not drown the line that caused it.
+    *fmt* ``"rich"`` installs two handlers, reproducing the pair FastMCP
+    installs: tracebacks render compressed (no path or level column,
+    framework frames suppressed, three frames) so a stack trace does not
+    drown the line that caused it. *fmt* ``"json"`` installs a single
+    ``StreamHandler`` with :class:`~._log_render.JsonFormatter` instead —
+    no separate traceback handler, because in JSON a traceback is the
+    ``exception`` field on the same record, and a second handler would
+    print it twice.
+
+    Every handler installed here also gets
+    :class:`~._log_render._NeverRaiseFilter`, added before any other
+    filter on that handler. It is what makes a log call never raise
+    regardless of render mode: ``logging.Formatter.format`` calls
+    ``record.getMessage()`` before ``formatMessage`` runs, and
+    ``RichHandler.emit`` calls it again on its ``exc_info`` branch — both
+    bypass :func:`~._log_render.render_rich` and
+    :class:`~._log_render.JsonFormatter` entirely, so only a filter on the
+    handler itself, which runs before either path, can rewrite an
+    unrenderable record in time.
     """
     root = logging.getLogger()
     for handler in root.handlers[:]:
         if getattr(handler, _OWNED_ATTR, False) or _is_console_handler(handler):
             root.removeHandler(handler)
 
+    if fmt == "json":
+        json_handler = logging.StreamHandler(sys.stderr)
+        json_handler.setFormatter(JsonFormatter())
+        json_handler.addFilter(_NeverRaiseFilter())
+        setattr(json_handler, _OWNED_ATTR, True)
+        root.addHandler(json_handler)
+        root.setLevel(level)
+        return
+
     console = Console(stderr=True)
-    formatter = logging.Formatter("%(message)s")
+    formatter = _RichTextFormatter()
 
     main = RichHandler(console=console)
     main.setFormatter(formatter)
+    main.addFilter(_NeverRaiseFilter())
     main.addFilter(lambda record: record.exc_info is None)
 
     tracebacks = RichHandler(
@@ -248,6 +348,7 @@ def _install_root_handlers(level: int) -> None:
         tracebacks_max_frames=3,
     )
     tracebacks.setFormatter(formatter)
+    tracebacks.addFilter(_NeverRaiseFilter())
     tracebacks.addFilter(lambda record: record.exc_info is not None)
 
     for handler in (main, tracebacks):
@@ -280,6 +381,44 @@ def _resolve_level(env_prefix: str, *, verbose: bool) -> tuple[int, bool]:
     return getattr(logging, name, logging.INFO), bridged
 
 
+def _stderr_is_tty() -> bool:
+    """Whether ``sys.stderr`` is a terminal, defensively.
+
+    A stream may not have ``isatty`` at all (some wrappers omit it), and a
+    closed stream raises when asked. Either failure is treated as "not a
+    TTY" — the safe default, because the case that matters is a container,
+    where stderr is a pipe and JSON is what a log collector expects.
+
+    A free function rather than an inline ``sys.stderr.isatty()`` call so a
+    test can monkeypatch the probe itself: reassigning ``sys.stderr``
+    directly would fight pytest's own capture, which already substitutes
+    its own stderr object for the duration of a test.
+    """
+    try:
+        return sys.stderr.isatty()
+    except Exception:  # noqa: BLE001 - any failure means "not a TTY"
+        return False
+
+
+def _resolve_format(env_prefix: str) -> str:
+    """Resolve the render mode: ``rich`` or ``json``.
+
+    ``{env_prefix}_LOG_FORMAT`` picks the mode outright when it is one of
+    ``rich``/``json`` (case-insensitive) — even on a non-TTY stream, which
+    is what lets an operator force human-readable output in a container for
+    local debugging, or force JSON at a real terminal for a dry run.
+    Unset or unrecognised falls back to auto, the same way an unknown
+    ``LOG_LEVEL`` falls back to ``INFO``: a typo in a format name must not
+    stop a server from starting. Auto picks ``rich`` when stderr is a TTY,
+    ``json`` otherwise.
+    """
+    raw = env(env_prefix, "LOG_FORMAT")
+    name = (raw or "").strip().upper()
+    if name in _VALID_FORMATS:
+        return name.lower()
+    return "rich" if _stderr_is_tty() else "json"
+
+
 def configure_logging_from_env(env_prefix: str, *, verbose: bool = False) -> None:
     """Configure logging globally based on environment and verbose flag.
 
@@ -293,9 +432,22 @@ def configure_logging_from_env(env_prefix: str, *, verbose: bool = False) -> Non
 
     Unknown level names fall back to ``INFO``. pvl-core owns the root
     logger outright: FastMCP's own ``configure_logging`` is neutralised
-    and a single Rich handler pair is installed at root instead, so every
+    and a single handler chain is installed at root instead, so every
     namespace in the process — FastMCP's included — renders through one
-    handler chain.
+    chain.
+
+    Render mode: ``{env_prefix}_LOG_FORMAT``, case-insensitive.
+
+    - ``"rich"``: the human-readable ``event key=value`` pair of handlers,
+      installed even when stderr is not a TTY (e.g. forced for local
+      debugging of a containerised process).
+    - ``"json"``: a single handler emitting one JSON object per record,
+      for a log aggregator. No separate traceback handler — a traceback is
+      the ``exception`` field on the same record.
+    - Unset or unrecognised: auto — ``rich`` when stderr is a TTY,
+      ``json`` otherwise (the case that matters is a container). An
+      unrecognised value falls back silently, the same way an unknown
+      ``LOG_LEVEL`` falls back to ``INFO``.
 
     Handler installation at root holds three invariants:
 
@@ -358,8 +510,9 @@ def configure_logging_from_env(env_prefix: str, *, verbose: bool = False) -> Non
             ``FASTMCP_LOG_LEVEL``).
     """
     level, bridged = _resolve_level(env_prefix, verbose=verbose)
+    fmt = _resolve_format(env_prefix)
     _neutralise_fastmcp()
-    _install_root_handlers(level)
+    _install_root_handlers(level, fmt)
 
     # max(WARNING, level), not a flat WARNING: at ERROR/CRITICAL a flat
     # WARNING would *raise* the effective level for these loggers above what
@@ -427,11 +580,12 @@ class SecretMaskFilter(logging.Filter):
     )
 
     def filter(self, record: logging.LogRecord) -> bool:
-        try:
-            original = record.getMessage()
-        except Exception:
-            # A broken format string upstream must not silence the whole
-            # log stream; let the producer's TypeError surface elsewhere.
+        # A broken format string upstream must not silence the whole log
+        # stream; let the producer's TypeError surface elsewhere. Funnelled
+        # through _or_fallback (see its docstring for why the catch is
+        # broad) rather than a local try/except.
+        original = _or_fallback(record.getMessage, lambda: None)
+        if original is None:
             return True
         masked = self._PATTERN.sub(r"\1\2 ***", original)
         if masked != original:

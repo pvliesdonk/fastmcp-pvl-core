@@ -11,7 +11,6 @@ duration is carried inline on the terminal (``*_completed`` /
 
 from __future__ import annotations
 
-import json
 import logging
 import sys
 import time
@@ -67,33 +66,6 @@ def _duration_ms(start: float) -> float:
     return round((time.perf_counter() - start) * 1000, 2)
 
 
-def _render_value(value: object) -> str:
-    """Render a field value for the rich (text) output mode.
-
-    Strings containing whitespace or a double quote are wrapped in
-    double quotes — with embedded backslashes, double quotes, and
-    control characters (newline, carriage return, tab) escaped — so the
-    record stays on one unambiguous ``key=value`` line; everything else
-    renders bare.
-    """
-    text = str(value)
-    if any(char.isspace() for char in text) or '"' in text:
-        escaped = (
-            text.replace("\\", "\\\\")
-            .replace('"', '\\"')
-            .replace("\n", "\\n")
-            .replace("\r", "\\r")
-            .replace("\t", "\\t")
-        )
-        return '"' + escaped + '"'
-    return text
-
-
-def _render_fields(fields: dict[str, object]) -> str:
-    """Join an ordered field mapping into ``key=value`` text."""
-    return " ".join(key + "=" + _render_value(value) for key, value in fields.items())
-
-
 class RequestLoggingMiddleware(Middleware):
     """Logs every MCP message as a conforming, tool-aware event pair.
 
@@ -106,10 +78,14 @@ class RequestLoggingMiddleware(Middleware):
     and carry ``tool=<name>``; every other message uses ``request_*`` or
     ``notification_*`` keyed by ``method=``.
 
+    Every record is logged through the shared log-call grammar — one
+    template built from the event name and field names, with the field
+    values passed as ``args`` — rather than rendered here. The root
+    handler's formatter (:mod:`._log_render`) decides whether that
+    renders as Rich text or JSON; this middleware no longer picks an
+    output shape.
+
     Args:
-        structured: When ``True``, emit one JSON object per record (for
-            log aggregators). When ``False`` (default), emit
-            bare-event-name-first ``key=value`` text.
         include_traceback: When ``True``, ``*_failed`` records carry
             ``exc_info`` so the log handler renders a traceback.
         logger: Logger to emit through. Defaults to a logger named
@@ -119,11 +95,9 @@ class RequestLoggingMiddleware(Middleware):
     def __init__(
         self,
         *,
-        structured: bool = False,
         include_traceback: bool = False,
         logger: logging.Logger | None = None,
     ) -> None:
-        self.structured = structured
         self.include_traceback = include_traceback
         self.logger = logger or logging.getLogger(_DEFAULT_LOGGER_NAME)
 
@@ -177,7 +151,12 @@ class RequestLoggingMiddleware(Middleware):
         *,
         exc_info: bool = False,
     ) -> None:
-        """Emit one conforming record in the configured output mode.
+        """Emit one conforming record through the shared log-call grammar.
+
+        Builds a template from the event name and field names and passes
+        the field values as ``args``, so the record is rendered by
+        whichever formatter is installed on the root handler (Rich text
+        or JSON), not by this middleware.
 
         ``exc_info=True`` attaches the current exception triple; ``False``
         (default) passes ``None`` to logging so the record's ``exc_info``
@@ -190,17 +169,28 @@ class RequestLoggingMiddleware(Middleware):
         # Appended last so the leading shape of every existing line is
         # unchanged for servers that do have tracing configured.
         fields = {**fields, **_trace_fields()}
-        if self.structured:
-            payload: dict[str, object] = {"event": event}
-            payload.update(fields)
-            self.logger.log(
-                level, "%s", json.dumps(payload), exc_info=effective_exc_info
-            )
-        else:
-            self.logger.log(
-                level,
-                "%s %s",
-                event,
-                _render_fields(fields),
-                exc_info=effective_exc_info,
-            )
+        # Field names come from this middleware's own fixed vocabulary
+        # (tool, method, source, duration_ms, error_type, error, trace_id,
+        # span_id), never from caller-controlled data, so none of them can
+        # ever contain a "%" or a space — either of which would break the
+        # template below.
+        #
+        # Built dynamically, deliberately: `find_nonconforming_log_calls`
+        # only recognises a literal template on a level-method call
+        # (`logger.info("event key=%s", ...)`), so a template assembled at
+        # runtime like this one is invisible to it either way, conforming
+        # or not — the static checker cannot see this line either
+        # attesting or objecting. Runtime construction was still the right
+        # call: the event/field-name vocabulary above is genuinely
+        # data-driven (tool vs. request/notification, trace fields present
+        # or not), and hand-writing every combination as a literal to buy
+        # checker visibility would just move the risk of drift into
+        # keeping N literals in sync with this dict instead. What actually
+        # backs the conformance claim is the record `bind_record` recovers
+        # at runtime matching the grammar — proved by
+        # `tests/test_logging_middleware.py::test_emitted_record_is_conforming`
+        # and `::test_field_order_is_tool_then_duration_then_trace_ids_last`,
+        # not by anything `find_nonconforming_log_calls` can confirm ahead
+        # of time.
+        template = f"{event} " + " ".join(f"{name}=%s" for name in fields)
+        self.logger.log(level, template, *fields.values(), exc_info=effective_exc_info)

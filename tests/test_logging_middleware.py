@@ -9,6 +9,7 @@ import re
 import pytest
 from fastmcp.server.middleware.middleware import MiddlewareContext
 
+from fastmcp_pvl_core._log_render import JsonFormatter, bind_record, render_rich
 from fastmcp_pvl_core._logging_middleware import RequestLoggingMiddleware
 
 _LOGGER_NAME = "fastmcp.middleware.requests"
@@ -78,13 +79,16 @@ async def test_notification_uses_notification_vocabulary(caplog):
 
 
 async def test_tool_call_failed_line(caplog):
+    # The middleware emits a record; render_rich (the root formatter, Tasks
+    # 1-2) renders it — that rendered form, not record.getMessage(), is what
+    # an operator actually sees, and it is the only place quoting happens.
     mw = RequestLoggingMiddleware()
     ctx = _context(method="tools/call", message=_ToolParams("read"))
     with caplog.at_level(logging.INFO, logger=_LOGGER_NAME):
         with pytest.raises(ValueError):
             await mw.on_message(ctx, _failing_call_next(ValueError("bad section here")))
     failed = caplog.records[-1]
-    msg = failed.getMessage()
+    msg = render_rich(failed)
     assert msg.startswith("tool_call_failed ")
     assert "tool=read" in msg
     assert "duration_ms=" in msg
@@ -128,29 +132,33 @@ async def test_unknown_tool_name_falls_back(caplog):
     assert "tool=unknown" in caplog.records[0].getMessage()
 
 
-async def test_structured_mode_emits_json(caplog):
-    mw = RequestLoggingMiddleware(structured=True)
+async def test_json_formatter_renders_tool_call_pair(caplog):
+    """The middleware no longer builds JSON itself — ``JsonFormatter`` from
+    ``_log_render`` (Tasks 1-2) renders its conforming record, same as any
+    other conforming record in the process."""
+    mw = RequestLoggingMiddleware()
     ctx = _context(method="tools/call", message=_ToolParams("read"))
     with caplog.at_level(logging.INFO, logger=_LOGGER_NAME):
         await mw.on_message(ctx, _ok_call_next)
-    started = json.loads(caplog.records[0].getMessage())
+    formatter = JsonFormatter()
+    started = json.loads(formatter.format(caplog.records[0]))
     assert started["event"] == "tool_call_started"
     assert started["tool"] == "read"
     assert started["method"] == "tools/call"
     assert started["source"] == "client"
-    completed = json.loads(caplog.records[1].getMessage())
+    completed = json.loads(formatter.format(caplog.records[1]))
     assert completed["event"] == "tool_call_completed"
     assert completed["tool"] == "read"
     assert "duration_ms" in completed
 
 
-async def test_structured_mode_failed_json(caplog):
-    mw = RequestLoggingMiddleware(structured=True)
+async def test_json_formatter_renders_failed_record(caplog):
+    mw = RequestLoggingMiddleware()
     ctx = _context(method="tools/call", message=_ToolParams("read"))
     with caplog.at_level(logging.INFO, logger=_LOGGER_NAME):
         with pytest.raises(ValueError):
             await mw.on_message(ctx, _failing_call_next(ValueError("bad section here")))
-    failed = json.loads(caplog.records[-1].getMessage())
+    failed = json.loads(JsonFormatter().format(caplog.records[-1]))
     assert failed["event"] == "tool_call_failed"
     assert failed["error_type"] == "ValueError"
     assert failed["error"] == "bad section here"
@@ -175,21 +183,83 @@ async def test_custom_logger_is_used(caplog):
     assert all(record.name == "test.custom.requests" for record in caplog.records)
 
 
-async def test_tool_name_with_whitespace_is_quoted(caplog):
+# --- logs through the grammar, not its own renderer (Task 3) -----------------
+
+
+async def test_emitted_record_is_conforming(caplog):
+    """``bind_record`` recovers the same event and fields the old
+    ``structured`` payload carried, straight from the template/args pair —
+    proof the middleware now speaks the shared grammar instead of building
+    its own JSON."""
+    mw = RequestLoggingMiddleware()
+    ctx = _context(method="tools/call", message=_ToolParams("read"))
+    with caplog.at_level(logging.INFO, logger=_LOGGER_NAME):
+        await mw.on_message(ctx, _ok_call_next)
+    bound = bind_record(caplog.records[0])
+    assert bound is not None
+    event, fields = bound
+    assert event == "tool_call_started"
+    assert [f.name for f in fields] == ["tool", "method", "source"]
+    assert [f.value for f in fields] == ["read", "tools/call", "client"]
+
+
+async def test_field_order_is_tool_then_duration_then_trace_ids_last(caplog):
+    """README documents ``tool=`` before ``duration_ms=``, with trace ids
+    trailing when present — the field order the grammar recovers must match."""
+    mw = RequestLoggingMiddleware()
+    ctx = _context(method="tools/call", message=_ToolParams("read"))
+    with caplog.at_level(logging.INFO, logger=_LOGGER_NAME):
+        with _tracer().start_as_current_span("outer"):
+            await mw.on_message(ctx, _ok_call_next)
+    completed = _records(caplog)[1]
+    bound = bind_record(completed)
+    assert bound is not None
+    _, fields = bound
+    assert [f.name for f in fields] == ["tool", "duration_ms", "trace_id", "span_id"]
+
+
+async def _rich_started_line_for_whitespace_tool(caplog) -> str:
+    """Run a ``read section`` tool call and return its rendered started line.
+
+    Shared by ``test_whitespace_value_renders_quoted_via_render_rich`` and
+    ``test_tool_name_with_whitespace_is_quoted`` — both assert the exact
+    same quoting behaviour, probed the exact same way; only the
+    docstring/comment explaining why differed.
+    """
     mw = RequestLoggingMiddleware()
     ctx = _context(method="tools/call", message=_ToolParams("read section"))
     with caplog.at_level(logging.INFO, logger=_LOGGER_NAME):
         await mw.on_message(ctx, _ok_call_next)
-    assert 'tool="read section"' in caplog.records[0].getMessage()
+    return render_rich(caplog.records[0])
+
+
+async def test_whitespace_value_renders_quoted_via_render_rich(caplog):
+    """The sibling of ``test_tool_name_with_whitespace_is_quoted`` below,
+    probed at the point where quoting now actually happens:
+    ``render_rich(record)`` — the root formatter (Tasks 1-2) — rather than
+    ``record.getMessage()``, which is now plain unquoted ``%s`` substitution
+    since the middleware stopped pre-rendering its own text. Same expected
+    bytes as the old assertion; only the probe moved downstream with the
+    responsibility."""
+    assert 'tool="read section"' in await _rich_started_line_for_whitespace_tool(caplog)
+
+
+async def test_tool_name_with_whitespace_is_quoted(caplog):
+    # See the comment on test_tool_call_failed_line: the middleware emits a
+    # record, render_rich renders it, and that rendered form — not
+    # record.getMessage() — is the line an operator actually sees.
+    assert 'tool="read section"' in await _rich_started_line_for_whitespace_tool(caplog)
 
 
 async def test_render_value_escapes_embedded_quotes(caplog):
+    # See the comment on test_tool_call_failed_line: render_rich, not
+    # record.getMessage(), is where quoting/escaping happens.
     mw = RequestLoggingMiddleware()
     ctx = _context(method="tools/call", message=_ToolParams("read"))
     with caplog.at_level(logging.INFO, logger=_LOGGER_NAME):
         with pytest.raises(ValueError):
             await mw.on_message(ctx, _failing_call_next(ValueError('say"hi"')))
-    assert r'error="say\"hi\""' in caplog.records[-1].getMessage()
+    assert r'error="say\"hi\""' in render_rich(caplog.records[-1])
 
 
 @pytest.mark.parametrize(
@@ -197,13 +267,15 @@ async def test_render_value_escapes_embedded_quotes(caplog):
     [("\n", "\\n"), ("\r", "\\r"), ("\t", "\\t")],
 )
 async def test_render_value_escapes_control_chars_to_one_line(caplog, raw, escaped):
+    # See the comment on test_tool_call_failed_line: render_rich, not
+    # record.getMessage(), is where quoting/escaping happens.
     mw = RequestLoggingMiddleware()
     ctx = _context(method="tools/call", message=_ToolParams("read"))
     err = ValueError("line one" + raw + "line two")
     with caplog.at_level(logging.INFO, logger=_LOGGER_NAME):
         with pytest.raises(ValueError):
             await mw.on_message(ctx, _failing_call_next(err))
-    msg = caplog.records[-1].getMessage()
+    msg = render_rich(caplog.records[-1])
     assert raw not in msg
     assert 'error="line one' + escaped + 'line two"' in msg
 
@@ -261,14 +333,14 @@ async def test_started_and_completed_share_the_same_trace(caplog):
     assert ids[0] == ids[1]
 
 
-async def test_structured_mode_carries_trace_ids_as_json_keys(caplog):
-    mw = RequestLoggingMiddleware(structured=True)
+async def test_json_formatter_carries_trace_ids_as_json_keys(caplog):
+    mw = RequestLoggingMiddleware()
     ctx = _context(method="tools/call", message=_ToolParams("read"))
     with caplog.at_level(logging.INFO, logger=_LOGGER_NAME):
         with _tracer().start_as_current_span("outer"):
             await mw.on_message(ctx, _ok_call_next)
 
-    payload = json.loads(_records(caplog)[0].getMessage())
+    payload = json.loads(JsonFormatter().format(_records(caplog)[0]))
     assert re.fullmatch(r"[0-9a-f]{32}", payload["trace_id"])
     assert re.fullmatch(r"[0-9a-f]{16}", payload["span_id"])
 
@@ -298,13 +370,13 @@ async def test_no_trace_fields_when_no_span_is_active(caplog):
         assert "span_id=" not in record.getMessage()
 
 
-async def test_no_trace_fields_in_structured_mode_without_span(caplog):
-    mw = RequestLoggingMiddleware(structured=True)
+async def test_no_trace_fields_in_json_output_without_span(caplog):
+    mw = RequestLoggingMiddleware()
     ctx = _context(method="tools/call", message=_ToolParams("read"))
     with caplog.at_level(logging.INFO, logger=_LOGGER_NAME):
         await mw.on_message(ctx, _ok_call_next)
 
-    payload = json.loads(_records(caplog)[0].getMessage())
+    payload = json.loads(JsonFormatter().format(_records(caplog)[0]))
     assert "trace_id" not in payload
     assert "span_id" not in payload
 
