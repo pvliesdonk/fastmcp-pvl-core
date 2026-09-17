@@ -598,10 +598,10 @@ and gain a new branch for every library the family adds — duplicating
 `OTEL_TRACES_EXPORTER`, `OTEL_METRICS_EXPORTER` *and* `OTEL_LOGS_EXPORTER`
 to `otlp`, and the protocol to `grpc`.
 
-This section describes **traces first**, not traces forever — metrics and
-logs are intended too, sequenced behind traces rather than excluded. Start
-by pinning the other two off, so a first rollout has one signal to reason
-about, and turn them on deliberately:
+This section describes **traces first**, not traces forever — metrics
+remain future work, sequenced behind. Logs now have a recipe of their
+own, below. Start by pinning both off, so a first rollout has one signal
+to reason about, and turn them on deliberately:
 
 ```
 OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
@@ -612,17 +612,13 @@ OTEL_LOGS_EXPORTER=none
 OTEL_PYTHON_LOG_CORRELATION=true
 ```
 
-Leaving `OTEL_LOGS_EXPORTER` at its default ships **your application's
-log records to the collector**, because the logs pipeline attaches an
-OTLP handler to the root logger. That may well be what you want, but it
-is easy to enable by accident before you have decided.
-
-It is also, today, **incomplete**: because the handler sits on the *root*
-logger and FastMCP sets `propagate = False` on the `fastmcp` logger,
-enabling log export silently drops the whole `fastmcp.*` namespace —
-including the request log shown under [Logging](#logging). Application
-records are exported; the server's own structured request stream is not.
-Tracked as [#323](https://github.com/pvliesdonk/fastmcp-pvl-core/issues/323).
+Leaving `OTEL_LOGS_EXPORTER` at its default ships **every log record in
+the process to the collector** — `fastmcp.*` and `uvicorn.*` included,
+not just your own code — because the logs pipeline attaches an OTLP
+handler to the root logger, and pvl-core makes every logger in the
+process propagate there (see [Logging](#logging)). That may well be what
+you want, but it is easy to enable by accident before you have decided;
+see [Exporting logs](#exporting-logs) below for the recipe.
 
 | Variable | Effect |
 | --- | --- |
@@ -631,40 +627,128 @@ Tracked as [#323](https://github.com/pvliesdonk/fastmcp-pvl-core/issues/323).
 | `OTEL_TRACES_EXPORTER` | Already `otlp` under the distro. Set `none` to disable traces (does not affect logs/metrics). |
 | `OTEL_METRICS_EXPORTER` / `OTEL_LOGS_EXPORTER` | Set `none` for a traces-only posture (see above). |
 | `OTEL_SERVICE_NAME` | Populates `service.name`. `OTEL_RESOURCE_ATTRIBUTES=service.name=…` sets it too. |
-| `OTEL_PYTHON_LOG_CORRELATION` | `true` injects `otelTraceID` / `otelSpanID` (plus `otelServiceName` / `otelTraceSampled`) into log records — and calls `logging.basicConfig`, adding a stderr handler with OpenTelemetry's own text format. |
+| `OTEL_PYTHON_LOG_CORRELATION` | `true` injects `otelTraceID` / `otelSpanID` (plus `otelServiceName` / `otelTraceSampled`) into every log record's raw attributes, and calls `logging.basicConfig`. That call is a no-op if `configure_logging_from_env` already installed root's handler; if correlation runs first, `configure_logging_from_env` removes any pre-existing *console* handler at root — including the `StreamHandler` `basicConfig` just installed — before installing its own (`configure_logging_from_env`'s documented invariant: exclusive over the console, tolerant of everything else — an OTLP, file, or syslog handler is left in place). Either ordering leaves one console chain. |
 | `OTEL_SDK_DISABLED` | `true` disables the SDK wholesale. |
 | `FASTMCP_TELEMETRY_MODE` | `native` (default), `propagation_only`, or `off`. Read at import — set it in the container environment, not in code. |
 
-Three failure modes are worth recognising before you enable this:
+Two failure modes are worth recognising before you enable this; a third
+that applied before pvl-core owned the root logger no longer does:
 
 - **`OTEL_TRACES_EXPORTER=otlp` means gRPC by default.** Paired with the
   HTTP-only exporter package it raises at startup, prints a traceback,
   and the server then runs on **with no traces at all**. Setting
   `OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf` is what prevents this.
-- **An unreachable collector may say nothing.** The exporter logs a
-  `Transient error … Connection refused … retrying in Ns` warning per
-  attempt plus an error per dropped batch — but whether those reach
-  stderr depends on `OTEL_PYTHON_LOG_CORRELATION`, which is what
-  installs a stderr handler on the root logger. With correlation on
-  they are loud (and multiply across `/v1/traces` and `/v1/logs` if the
-  logs pipeline is left enabled). With it off, the root logger's only
-  handler is the SDK's own OTLP one, and a server exporting nothing
-  looks perfectly healthy. Verify your first deployment against the
-  collector rather than trusting the logs.
-- **Correlation reformats the log stream.** The stderr handler it
-  installs uses OpenTelemetry's text format, which mixes with the
-  one-JSON-object-per-record output described above under
-  `{PREFIX}_LOG_FORMAT=json`.
+  Unaffected by the logging topology below — the exporter picks its
+  protocol before pvl-core's own code runs.
+- **An unreachable collector may still go unnoticed if you are not
+  watching stderr.** The exporter logs a `Transient error … Connection
+  refused … retrying in Ns` warning per attempt plus an error per
+  dropped batch. Previously, whether those reached stderr at all
+  depended on `OTEL_PYTHON_LOG_CORRELATION` installing the only
+  console handler root had. That specific dependency is gone:
+  `configure_logging_from_env` now installs pvl-core's console chain at
+  root unconditionally (the same invariant as the table row above), and
+  the exporter's own warnings are ordinary records that propagate there
+  like everything else, with or without correlation. This follows from
+  that ownership invariant rather than a fresh probe against a live SDK
+  and an unreachable collector — verify your first deployment against
+  the collector regardless of what stderr shows.
+- ~~Correlation reformats the log stream.~~ Closed by the same
+  invariant: probed in both orderings — correlation configured before
+  `configure_logging_from_env` (root's handler set went from a single
+  `StreamHandler` to pvl-core's own chain) and after (pvl-core's chain
+  either way, because `basicConfig` is a no-op once root already has a
+  handler). Either ordering leaves one rendered stream, in pvl-core's
+  chosen format — see the `OTEL_PYTHON_LOG_CORRELATION` table row above.
 
-`OTEL_PYTHON_LOG_CORRELATION` reaches your own loggers but **not**
-anything under the `fastmcp.*` namespace, because FastMCP attaches a bare
-`%(message)s` handler to that logger and stops propagation.
+`fastmcp.*` no longer sits behind its own handler: pvl-core neutralises
+it and every logger in the process propagates to root (see
+[Logging](#logging)), so an OTLP log handler attached there — or a
+correlation `LoggingInstrumentor` attached ahead of it, the normal
+`opentelemetry-instrument` ordering — sees `fastmcp.*` records too. Its
+own request log is a working example: exporting a `tools/list` call
+produced `exported: request_completed method=tools/list
+(fastmcp.middleware.requests)` — see [Exporting
+logs](#exporting-logs) below for the full probe.
 
-pvl-core's request log is the exception, and it needs no variable at all:
+In **JSON mode**, `{PREFIX}_LOG_FORMAT=json`'s formatter also picks up
+what `OTEL_PYTHON_LOG_CORRELATION` attaches: for a record carrying
+`otelTraceID`/`otelSpanID` (and not the placeholder `"0"` the
+instrumentor uses for "no span in scope"), the JSON envelope gets
+`trace_id`/`span_id` fields from them, unless the record already carries
+its own (the request log's `_trace_fields` values take priority). In
+**Rich mode** they do not — that fallback is JSON-only. So a
+`fastmcp.*` line rendered as text still carries no trace fields, the
+same as before; the same line rendered as JSON does.
+
+pvl-core's request log needs no `OTEL_PYTHON_LOG_CORRELATION` at all:
 `wire_middleware_stack`'s `tool_call_*` / `request_*` / `notification_*`
 lines stamp `trace_id` and `span_id` themselves whenever a valid span is
-in scope, in both text and JSON modes. FastMCP's *own* records remain
-uncorrelated.
+in scope, in both text and JSON modes — that stamping is what
+[#319](https://github.com/pvliesdonk/fastmcp-pvl-core/issues/319)'s
+follow-up added, independent of correlation.
+
+#### Exporting logs
+
+A complete recipe — traces and logs together, since the zero-code
+wrapper turns both on once installed:
+
+```
+OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+OTEL_EXPORTER_OTLP_ENDPOINT=http://collector:4318
+OTEL_SERVICE_NAME=my-mcp
+OTEL_METRICS_EXPORTER=none
+OTEL_PYTHON_LOG_CORRELATION=true
+MY_APP_LOG_FORMAT=json
+```
+
+Unlike the traces-only block above, this one does **not** pin
+`OTEL_LOGS_EXPORTER=none` — the whole point here is to leave it enabled,
+and the distro's default is already `otlp`, so it needs no setting at
+all. `{PREFIX}_LOG_FORMAT` (`MY_APP_LOG_FORMAT` here, matching the
+`env_prefix` used everywhere else in this README) selects JSON, so the
+fields described below line up with what ships to the collector; see
+the `OTEL_PYTHON_LOG_CORRELATION` table row above for what changes
+between JSON and Rich mode. What an operator sees:
+
+- **stderr** carries pvl-core's own console chain only: one JSON object
+  per record with `{PREFIX}_LOG_FORMAT=json` set (Rich-rendered text
+  otherwise), covering `fastmcp.*`, `uvicorn.*`, and application loggers
+  alike — see [Output format](#output-format).
+- **the collector** receives the same records independently. The OTLP
+  handler pvl-core leaves untouched (the same console-only rule) reads
+  the raw `LogRecord` objects directly, not the rendered stderr text.
+- With `{PREFIX}_LOG_FORMAT=json`, the stderr stream and the exported
+  records come from the same record: same logger, level, and `event
+  key=value` message, rendered once as a JSON object on stderr and once
+  as the exported record's body. The OTLP handler does not parse
+  pvl-core's `key=value` grammar into separate structured attributes —
+  that parsing is pvl-core's own renderers' job — it bypasses them and
+  reads the record directly.
+
+Probed against a real `opentelemetry.sdk._logs.LoggingHandler` attached
+at root before `configure_logging_from_env` ran:
+
+```
+exported: request_completed method=tools/list      (fastmcp.middleware.requests)
+exported: uvicorn_line detail=bind                 (uvicorn.error)
+exported: domain_line key=v                        (a domain logger)
+otlp handler still attached: True
+```
+
+All three namespaces exported. The handler survives because pvl-core
+removes only **console** handlers from root (the same rule as above) —
+an OTLP handler is not one.
+
+None of this adds anything to pvl-core's own surface. pvl-core still
+ships no OpenTelemetry SDK, exporter setup, or handler of its own — the
+`LoggingHandler` above comes from the SDK's own zero-code wrapper, the
+same one this section describes for traces. What changed is topology:
+pvl-core now neutralises FastMCP's own `propagate=False` handler instead
+of leaving it in place, so `fastmcp.*` reaches root like everything
+else. [ADR 0003](docs/adr/0003-opentelemetry-classification.md)'s
+classification is unchanged; see its "Resolved by" note against
+[#323](https://github.com/pvliesdonk/fastmcp-pvl-core/issues/323).
 
 ### Health and readiness routes
 

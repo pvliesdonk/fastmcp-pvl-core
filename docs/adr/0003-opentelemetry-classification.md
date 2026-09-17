@@ -325,8 +325,21 @@ in the issue:
    which costs the request-logging middleware's own `tool_call_*` stream
    its trace and span ids. A logging-seam defect, independent of whether
    telemetry is ever adopted.
+3. ~~**pvl-core**~~ — **resolved by [#327]'s topology change, not by
+   this ADR.** [#323] (§8's log-export blocker): an OTLP log handler at
+   root used to receive nothing from `fastmcp.*`, because FastMCP
+   attached its own handler to the `fastmcp` logger with
+   `propagate=False`. [#327] made
+   pvl-core the root logger's sole console owner and neutralises that
+   FastMCP handler as part of the same cutover, so every logger in the
+   process — `fastmcp.*` included — now propagates to whatever an
+   operator attaches at root. No OpenTelemetry code was added to reach
+   this; §3's classification stands unchanged. See `README.md`'s
+   [Telemetry](../../README.md#telemetry-opentelemetry-traces) section,
+   "Exporting logs", for the recipe and the probe that confirmed it.
 
 [#319]: https://github.com/pvliesdonk/fastmcp-pvl-core/issues/319
+[#327]: https://github.com/pvliesdonk/fastmcp-pvl-core/issues/327
 [#323]: https://github.com/pvliesdonk/fastmcp-pvl-core/issues/323
 [fastmcp-server-template#606]: https://github.com/pvliesdonk/fastmcp-server-template/issues/606
 
@@ -347,7 +360,8 @@ Stated so a later reader does not over-read the evidence:
   [#323] — the export handler attaches to the *root* logger while FastMCP
   sets `propagate = False` on the `fastmcp` logger, so enabling log
   export silently drops that whole namespace, pvl-core's request log
-  included.
+  included. **Resolved by [#327]'s topology change** (§7 item 3) — not
+  by anything in this ADR.
 - Zero-code instrumentation normally activates via a process wrapper, so
   a **stdio** server launched by an MCP client (`uvx scholar-mcp`) needs
   the wrapper in the client's own command configuration. It is not the
