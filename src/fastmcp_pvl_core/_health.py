@@ -135,7 +135,7 @@ def _resolve_detail(env_prefix: str) -> str:
     if value in _DETAIL_LEVELS:
         return value
     logger.warning(
-        "health_detail_unknown value=%r — ignoring, using %r",
+        "health_detail_unknown value=%r default=%r",
         value,
         _DEFAULT_DETAIL,
     )

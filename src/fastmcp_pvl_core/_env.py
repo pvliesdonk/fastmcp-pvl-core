@@ -66,10 +66,15 @@ def _reject(
     into the raised error (``raise ... from cause``) so the low-level reason
     stays attached, and is ``None`` on the bounds / non-finite paths.
     """
-    message = f"{key} must {requirement}; got {got!r}"
     if strict:
-        raise ConfigurationError(message) from cause
-    logger.warning("%s — using default %r", message, default)
+        raise ConfigurationError(f"{key} must {requirement}; got {got!r}") from cause
+    logger.warning(
+        "env_value_rejected key=%s requirement=%s got=%r default=%r",
+        key,
+        requirement,
+        got,
+        default,
+    )
     return default
 
 

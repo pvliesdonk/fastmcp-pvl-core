@@ -90,10 +90,7 @@ def _resolve_explicit_override(
         return None
     if _is_valid_override(explicit):
         return explicit
-    logger.warning(
-        "auth_mode_unknown value=%r — ignoring, falling back to auto-detection",
-        explicit,
-    )
+    logger.warning("auth_mode_unknown value=%r", explicit)
     return None
 
 
@@ -151,17 +148,17 @@ def _announce_auth_mode(
     source = "explicit" if _has_explicit_override(config.auth_mode) else "auto-detected"
     if failed:
         logger.warning(
-            "auth_mode_resolved mode=%s source=%s "
-            "— auth provider construction failed; server will not start",
+            "auth_mode_resolved mode=%s source=%s consequence=%s",
             mode,
             source,
+            "auth provider construction failed; server will not start",
         )
     elif provider is None:
         logger.warning(
-            "auth_mode_resolved mode=%s source=%s "
-            "— server accepts unauthenticated connections",
+            "auth_mode_resolved mode=%s source=%s consequence=%s",
             mode,
             source,
+            "server accepts unauthenticated connections",
         )
     else:
         logger.info("auth_mode_resolved mode=%s source=%s", mode, source)
@@ -344,8 +341,7 @@ def build_bearer_auth(config: ServerConfig) -> StaticTokenVerifier | None:
         if config.bearer_token:
             logger.warning(
                 "bearer_tokens_file_takes_precedence "
-                "bearer_tokens_file=%s bearer_token=<redacted> — "
-                "single-token value is ignored",
+                "bearer_tokens_file=%s bearer_token=<redacted>",
                 tokens_file,
             )
         mapping = _load_bearer_tokens(tokens_file)
@@ -446,12 +442,12 @@ def _resolve_advertised_scopes(
                 dropped = [scope for scope in base if scope not in supported]
                 if dropped:
                     logger.warning(
-                        "oidc_advertised_scope_dropped scopes=%s — the "
-                        "authorization server does not list them in its "
-                        "discovery document; clients will not request them "
-                        "(no 'offline_access' means no refresh token, so "
-                        "sessions end at access-token expiry)",
+                        "oidc_advertised_scope_dropped scopes=%s consequence=%s",
                         ",".join(dropped),
+                        "authorization server discovery does not list them; "
+                        "clients will not request them (no offline_access "
+                        "means no refresh token, so sessions end at "
+                        "access-token expiry)",
                     )
                 base = [scope for scope in base if scope in supported]
 
@@ -469,10 +465,10 @@ def _warn_oidc_caveats(*, required_scopes: list[str], verify_id_token: bool) -> 
     if verify_id_token and "openid" not in required_scopes:
         logger.warning(
             "oidc_proxy_auth_scope_warning "
-            "verify_id_token=True missing_scope=openid — "
-            "the id_token may be absent from the token response; "
-            "add 'openid' to required_scopes or set "
-            "oidc_verify_access_token=True"
+            "verify_id_token=True missing_scope=openid "
+            "consequence=%s remedy=%s",
+            "the id_token may be absent from the token response",
+            "add 'openid' to required_scopes or set oidc_verify_access_token=True",
         )
 
 

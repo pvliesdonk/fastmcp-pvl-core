@@ -191,10 +191,10 @@ def _warn_legacy_client_budget(prefix: str, text: str) -> None:
     logger.warning(
         "instructions_client_budget_exceeded phase=final client=claude-code "
         "units=%s limit=%s crossing_role=legacy_override "
-        "role_units=legacy_override:%s separator_units=0 env_prefix=%s",
+        "role_units=%s separator_units=0 env_prefix=%s",
         units,
         CLAUDE_CODE_INSTRUCTIONS_LIMIT_UTF16,
-        units,
+        f"legacy_override:{units}",
         prefix,
     )
 
