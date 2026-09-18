@@ -136,10 +136,10 @@ def build_kv_store(
             # mongodb://user:pass@host/db). The rest of the dispatch
             # paths log only parsed.hostname for the same reason.
             logger.warning(
-                "kv_store_url=<unset>; falling back to legacy "
-                "event_store_url (scheme=%r). Set <PREFIX>_KV_STORE_URL "
-                "to migrate.",
+                "kv_store_legacy_fallback kv_store_url=<unset> "
+                "event_store_url_scheme=%r action=%s",
                 urlparse(url).scheme,
+                "Set <PREFIX>_KV_STORE_URL to migrate.",
             )
             _legacy_url_warned = True
     if not url:
@@ -188,11 +188,11 @@ def _default_url() -> str:
     global _default_fallback_warned
     if not _default_fallback_warned:
         logger.warning(
-            "kv_store_url=<unset> and the default directory is unusable "
-            "(%s); falling back to memory:// — state is in-process and "
-            "lost on restart. Set <PREFIX>_KV_STORE_URL to choose a "
-            "backend explicitly.",
+            "kv_store_default_fallback kv_store_url=<unset> fallback=memory:// "
+            "reason=%s consequence=%s action=%s",
             reason,
+            "state is in-process and lost on restart",
+            "Set <PREFIX>_KV_STORE_URL to choose a backend explicitly.",
         )
         _default_fallback_warned = True
     return "memory://"

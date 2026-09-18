@@ -128,7 +128,7 @@ async def _release_quietly(store: TransferStore, claim: TransferToken) -> None:
         # Log the error class only — never a traceback / message, which for some
         # KV backends embeds the token-derived key (the token is a secret).
         logger.warning(
-            "transfer link release failed after a handler error: %s",
+            "transfer_release_failed error_class=%s",
             type(exc).__name__,
         )
 
@@ -141,7 +141,9 @@ async def _download(store: TransferStore, sink: TransferSink, token: str) -> Res
     try:
         claim = await store.claim(token, "download")
     except TransferTokenError as exc:
-        logger.info("transfer download claim rejected: %s", type(exc).__name__)
+        logger.info(
+            "transfer_download_claim_rejected error_class=%s", type(exc).__name__
+        )
         return Response(status_code=_claim_error_status(exc))
     try:
         body, media_type, filename = await sink.read(cast(str, claim.sink_handle))
@@ -152,7 +154,7 @@ async def _download(store: TransferStore, sink: TransferSink, token: str) -> Res
         # path or other domain data (the sink never sees the token).
         await _release_quietly(store, claim)
         logger.info(
-            "transfer download sink signalled %d: %s",
+            "transfer_download_sink_signalled status=%d error_class=%s",
             exc.status_code,
             type(exc).__name__,
         )
@@ -181,7 +183,7 @@ async def _upload(
     try:
         claim = await store.claim(token, "upload")
     except TransferTokenError as exc:
-        logger.info("transfer upload claim rejected: %s", type(exc).__name__)
+        logger.info("transfer_upload_claim_rejected error_class=%s", type(exc).__name__)
         # No claim held, and the request body is unread → close the connection.
         return Response(status_code=_claim_error_status(exc), headers=_CLOSE_CONN)
     try:
@@ -189,7 +191,8 @@ async def _upload(
     except _BodyTooLargeError:
         await _release_quietly(store, claim)
         logger.info(
-            "transfer upload rejected: body exceeds the %d-byte cap", max_upload_bytes
+            "transfer_upload_rejected reason=body_too_large max_bytes=%d",
+            max_upload_bytes,
         )
         # Body read aborted early → the rest is undrained → close the connection.
         return Response(status_code=413, headers=_CLOSE_CONN)
@@ -203,7 +206,7 @@ async def _upload(
         # left undrained → no Connection: close needed (unlike the 413 path).
         await _release_quietly(store, claim)
         logger.info(
-            "transfer upload sink signalled %d: %s",
+            "transfer_upload_sink_signalled status=%d error_class=%s",
             exc.status_code,
             type(exc).__name__,
         )

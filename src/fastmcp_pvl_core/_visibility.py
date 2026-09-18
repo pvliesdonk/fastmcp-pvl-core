@@ -93,11 +93,11 @@ def apply_tool_visibility(mcp: FastMCP, config: ServerConfig) -> None:
     if allow:
         mcp.disable(components={"tool"})
         mcp.enable(names=set(allow), components={"tool"})
-        logger.info("Tool allowlist active: exposing only %s", ", ".join(sorted(allow)))
+        logger.info("tool_allowlist_active names=%s", ", ".join(sorted(allow)))
         _warn_if_no_tools_exposed(mcp, allow)
     elif deny:
         mcp.disable(names=set(deny), components={"tool"})
-        logger.info("Tool denylist active: hiding %s", ", ".join(sorted(deny)))
+        logger.info("tool_denylist_active names=%s", ", ".join(sorted(deny)))
 
 
 def _warn_if_no_tools_exposed(mcp: FastMCP, allow: tuple[str, ...]) -> None:
@@ -124,14 +124,14 @@ def _warn_if_no_tools_exposed(mcp: FastMCP, allow: tuple[str, ...]) -> None:
     try:
         visible = asyncio.run(mcp.list_tools())
     except Exception:
-        logger.debug("Tool allowlist zero-match check skipped", exc_info=True)
+        logger.debug("tool_allowlist_zero_match_check_skipped", exc_info=True)
         return
     if not visible:
         logger.warning(
-            "Tool allowlist matched no registered tool — this instance "
-            "exposes ZERO tools. Check the configured names (%s) for typos "
-            "or names gone stale after an upgrade.",
+            "tool_allowlist_zero_match names=%s consequence=%s action=%s",
             ", ".join(sorted(allow)),
+            "this instance exposes ZERO tools",
+            "check the configured names for typos or names gone stale after an upgrade",
         )
 
 
