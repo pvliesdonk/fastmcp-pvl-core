@@ -786,6 +786,47 @@ def _missing_for_mode(config: ServerConfig, mode: AuthMode) -> list[str]:
     return [name for name, value in required.items() if not value]
 
 
+def _reject_unprovisioned_mode(
+    config: ServerConfig, mode: AuthMode, provider: object
+) -> None:
+    """Refuse a resolved mode that asked for auth and got no provider.
+
+    A builder returns ``None`` as a precondition signal meaning "this
+    flavor is not configured, try the next one". *mode* is already
+    settled by the time this runs, so there is no next one: the signal
+    arriving here means the operator configured auth and would otherwise
+    get a server that accepts anyone (#316).
+
+    Called from :func:`_build_provider` rather than from
+    :func:`build_auth` after the dispatch returns, so that the raise
+    leaves ``build_auth``'s provider sentinel untouched and the
+    announcement reports "server will not start" instead of the
+    contradictory "accepts unauthenticated connections".
+
+    Args:
+        config: Populated server configuration.
+        mode: The mode :func:`resolve_auth_mode` settled on.
+        provider: What the mode's builder returned.
+
+    Raises:
+        ConfigurationError: *mode* is not ``none`` and *provider* is
+            ``None``, naming the variables that are unset.
+    """
+    if mode == "none" or provider is not None:
+        return
+    missing = _missing_for_mode(config, mode)
+    detail = (
+        "; unset: " + ", ".join(f"{{PREFIX}}_{name}" for name in missing)
+        if missing
+        else ""
+    )
+    raise ConfigurationError(
+        f"auth mode {mode} is configured but no auth provider could be "
+        f"built{detail}; refusing to start a server that would accept "
+        "unauthenticated connections"
+    )
+
+
 def _build_provider(config: ServerConfig, mode: AuthMode) -> Any:
     """Construct the provider for an already-resolved *mode*.
 
@@ -812,26 +853,7 @@ def _build_provider(config: ServerConfig, mode: AuthMode) -> Any:
         case _:
             assert_never(mode)
 
-    # A builder returns ``None`` as a precondition signal meaning "this
-    # flavor is not configured, try the next one". *mode* is already
-    # settled, so there is no next one: the signal reaching here means
-    # the operator configured auth and would otherwise get a server that
-    # accepts anyone (#316). Raising here rather than in ``build_auth``
-    # after the call leaves ``provider`` at ``_UNBUILT``, so the
-    # announcement reports "server will not start" instead of the
-    # contradictory "accepts unauthenticated connections".
-    if mode != "none" and provider is None:
-        missing = _missing_for_mode(config, mode)
-        detail = (
-            "; unset: " + ", ".join(f"{{PREFIX}}_{name}" for name in missing)
-            if missing
-            else ""
-        )
-        raise ConfigurationError(
-            f"auth mode {mode} is configured but no auth provider could be "
-            f"built{detail}; refusing to start a server that would accept "
-            "unauthenticated connections"
-        )
+    _reject_unprovisioned_mode(config, mode, provider)
     return provider
 
 
