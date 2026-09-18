@@ -559,8 +559,11 @@ It parses source with `ast` and imports nothing from the tree it scans. Each
 violation carries `path`, `line`, `reason` and — except for an f-string or
 other non-literal message, where it is `None` — the offending `template`.
 
-pvl-core's own log calls do not yet follow this grammar — 36 of them predate
-it — and migrating the codebase is tracked as [#328](https://github.com/pvliesdonk/fastmcp-pvl-core/issues/328).
+pvl-core follows this grammar itself, and a test enforces it
+(`tests/test_log_conformance.py::test_pvl_core_follows_its_own_grammar`) so it
+stays that way. The library does not ask a downstream for something it has not
+done: the 36 calls that predated the grammar were converted in
+[#328](https://github.com/pvliesdonk/fastmcp-pvl-core/issues/328).
 
 ### Telemetry (OpenTelemetry traces)
 

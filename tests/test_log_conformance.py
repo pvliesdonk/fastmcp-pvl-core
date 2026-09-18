@@ -208,3 +208,22 @@ def test_public_export():
     assert "find_nonconforming_log_calls" in fastmcp_pvl_core.__all__
     assert "LogCallViolation" in fastmcp_pvl_core.__all__
     assert fastmcp_pvl_core.find_nonconforming_log_calls is find_nonconforming_log_calls
+
+
+def test_pvl_core_follows_its_own_grammar():
+    """The library must pass the check it ships for everyone else.
+
+    This is the gate #328 exists to install. Before it, pvl-core enforced a
+    grammar on every downstream while 36 of its own 55 log calls ignored it —
+    so JSON mode rendered most of the library's own records as an opaque
+    ``message`` string.
+
+    A failure here names the offending file, line and template. Fix the call
+    rather than adding an exemption: the checker's whole value is that it has
+    no allowlist.
+    """
+    package = Path(__file__).parents[1] / "src" / "fastmcp_pvl_core"
+    violations = find_nonconforming_log_calls(package)
+    assert violations == [], "\n".join(
+        f"{v.path.name}:{v.line} [{v.reason}] {v.template}" for v in violations
+    )

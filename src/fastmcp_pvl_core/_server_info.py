@@ -132,7 +132,7 @@ def register_server_info_tool(
                 result = await result
         except Exception as exc:  # noqa: BLE001 — surface as structured error
             logger.warning(
-                "get_server_info upstream lookup failed: %s", exc, exc_info=True
+                "server_info_upstream_lookup_failed error=%s", exc, exc_info=True
             )
             payload[upstream_label] = {"error": str(exc)}
             return payload

@@ -108,10 +108,10 @@ def _resolve_url_override(
         # unset" and "env agrees".)
         if native_url not in (None, explicit_url):
             logger.warning(
-                "%s and FASTMCP_DOCKET_URL are both set and disagree; "
-                "using %s (the pvl-core surface). Unset one of them.",
+                "tasks_url_env_conflict pvl_core_var=%s "
+                "native_var=FASTMCP_DOCKET_URL winner=pvl_core_var action=%s",
                 _resolve_key(env_prefix, "TASKS_URL"),
-                _resolve_key(env_prefix, "TASKS_URL"),
+                "unset one of them",
             )
         return explicit_url
     if native_url is not None:
@@ -233,17 +233,17 @@ def configure_task_backend(
     if not _tasks_available():
         if url is not None:
             logger.warning(
-                "%s is set but the tasks machinery is unavailable "
-                "(fastmcp-tasks or a compatible pydocket is not "
-                "installed); no tasks extension registered. Both ship "
-                "with fastmcp-pvl-core's base dependencies — this "
-                "environment is missing them or pins an incompatible "
-                "version.",
+                "tasks_url_dropped var=%s reason=%s hint=%s consequence=%s",
                 _resolve_key(env_prefix, "TASKS_URL"),
+                "fastmcp-tasks or a compatible pydocket is not installed",
+                "both ship with fastmcp-pvl-core's base dependencies; this "
+                "environment is missing them or pins an incompatible version",
+                "no tasks extension registered",
             )
         else:
             logger.debug(
-                "tasks extension not registered: fastmcp-tasks/pydocket not installed"
+                "tasks_extension_not_registered reason=%s",
+                "fastmcp-tasks/pydocket not installed",
             )
         return None
 
@@ -261,10 +261,9 @@ def configure_task_backend(
     effective_scheme = urlparse(effective.url).scheme
     if effective_scheme == "memory" and config.transport in ("http", "sse"):
         logger.info(
-            "task backend=memory process_local=true lost_on_restart=true "
-            "(set %s or a redis kv_store_url for a durable, multi-process "
-            "queue)",
-            _resolve_key(env_prefix, "TASKS_URL"),
+            "task backend=memory process_local=true lost_on_restart=true action=%s",
+            f"set {_resolve_key(env_prefix, 'TASKS_URL')} or a redis kv_store_url "
+            "for a durable, multi-process queue",
         )
     else:
         logger.info(

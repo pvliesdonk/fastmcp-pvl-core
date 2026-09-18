@@ -397,7 +397,7 @@ async def fetch_url(
 
     body = b"".join(chunks)
     logger.info(
-        "fetch_url: downloaded %d bytes from %s (content-type=%s)",
+        "fetch_url_completed bytes=%d url=%s content_type=%s",
         downloaded,
         _redact_url(url),
         content_type,

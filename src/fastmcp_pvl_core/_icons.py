@@ -283,4 +283,4 @@ def register_tool_icons(
         # mutation by one tool/version doesn't leak into the others.
         for tool in targets:
             tool.icons = list(icons)
-        logger.info("icons registered tool=%s files=%s", tool_name, ",".join(filenames))
+        logger.info("icons_registered tool=%s files=%s", tool_name, ",".join(filenames))

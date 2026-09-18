@@ -117,11 +117,10 @@ def maybe_start_debugpy(env_prefix: str) -> None:
         import debugpy  # type: ignore[import-not-found, unused-ignore]
     except ImportError:
         logger.warning(
-            "%s=%d set but debugpy is not installed. "
-            "Install with `pip install 'fastmcp-pvl-core[debug]'` "
-            "or `uv add debugpy`.",
+            "debugpy_not_installed env_var=%s port=%d action=%s",
             port_var,
             port,
+            "pip install 'fastmcp-pvl-core[debug]' or uv add debugpy",
         )
         return
 
@@ -129,18 +128,19 @@ def maybe_start_debugpy(env_prefix: str) -> None:
         debugpy.listen(("0.0.0.0", port))
     except Exception as exc:  # noqa: BLE001 — listener bring-up must not crash startup
         logger.warning(
-            "debugpy.listen on port %d failed: %s; continuing without remote debugger.",
+            "debugpy_listen_failed port=%d error=%s consequence=%s",
             port,
             exc,
+            "continuing without remote debugger",
         )
         return
 
     _started = True
-    logger.info("debugpy listening on 0.0.0.0:%d", port)
+    logger.info("debugpy_listening address=0.0.0.0 port=%d", port)
 
     if parse_bool(env(env_prefix, "DEBUG_WAIT", "")):
         wait_var = f"{env_prefix.rstrip('_')}_DEBUG_WAIT"
-        logger.info("%s=true — blocking until debugger attaches...", wait_var)
+        logger.info("debugpy_wait_enabled env_var=%s blocking=true", wait_var)
         try:
             debugpy.wait_for_client()
         except KeyboardInterrupt:
@@ -151,11 +151,10 @@ def maybe_start_debugpy(env_prefix: str) -> None:
             raise
         except Exception as exc:  # noqa: BLE001 — debugger bring-up must not crash startup
             logger.warning(
-                "debugpy.wait_for_client failed: %s; continuing startup. "
-                "The listener on 0.0.0.0:%d is still up; "
-                "the IDE can still attach manually.",
-                exc,
+                "debugpy_wait_for_client_failed port=%d error=%s consequence=%s",
                 port,
+                exc,
+                "listener still up on 0.0.0.0; IDE can attach manually",
             )
             return
-        logger.info("debugger attached; continuing startup.")
+        logger.info("debugpy_attached")

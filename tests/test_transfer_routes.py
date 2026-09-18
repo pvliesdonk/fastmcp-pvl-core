@@ -249,7 +249,7 @@ async def test_release_failure_does_not_mask_the_original_error(
         with caplog.at_level("WARNING"):
             resp = await client.get(f"/transfer/{token}")
         assert resp.status_code == 500  # the sink error propagated, not masked
-        assert any("release failed" in r.getMessage() for r in caplog.records)
+        assert any("transfer_release_failed" in r.getMessage() for r in caplog.records)
 
 
 # --------------------------------------------------------------------------- #
