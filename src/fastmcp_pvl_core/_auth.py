@@ -44,9 +44,9 @@ AuthMode = Literal[
 
 # The override only accepts the two OIDC modes that can apply to the same
 # underlying configuration.  Bearer / multi / none are unambiguous from
-# field presence, so allowing them as overrides only introduces silent
-# failure modes (e.g. ``AUTH_MODE=bearer-single`` with no ``BEARER_TOKEN``
-# would start the server unauthenticated).
+# field presence, so an override for them can only restate what
+# auto-detection already works out.  The silent-failure rationale this
+# comment used to give no longer applies since #316.
 _VALID_MODES: frozenset[Literal["remote", "oidc-proxy"]] = frozenset(
     {"remote", "oidc-proxy"}
 )
@@ -141,8 +141,10 @@ def _announce_auth_mode(
         provider: The provider :func:`build_auth` is about to return.
             ``None`` means the server will accept unauthenticated
             connections. Ignored when *failed* is ``True``.
-        failed: ``True`` when the builder raised and the exception is
-            about to propagate, so no server starts at all — a different
+        failed: ``True`` when no provider was built and an exception is
+            about to propagate — either a builder raised, or the mode
+            yielded no provider and :func:`_reject_unprovisioned_mode`
+            refused it. No server starts at all, which is a different
             outcome from an unauthenticated one.
     """
     source = "explicit" if _has_explicit_override(config.auth_mode) else "auto-detected"
@@ -504,9 +506,8 @@ def build_oidc_proxy_auth(config: ServerConfig) -> OIDCProxy | None:
             failed (unreachable, non-2xx, malformed, or missing required
             endpoints). Same contract as :func:`build_remote_auth`.
     """
-    # Shared with the invariant in ``_build_provider`` so the required
-    # variables have one definition: what a skip reports here and what a
-    # refusal names there cannot drift apart.
+    # Shared with the invariant in ``_build_provider`` so that what a skip
+    # reports here and what a refusal names there cannot drift apart.
     missing = _missing_for_mode(config, "oidc-proxy")
     if missing:
         logger.debug("oidc_proxy_auth_skipped missing=%s", ",".join(missing))
@@ -590,9 +591,12 @@ def build_remote_auth(config: ServerConfig) -> RemoteAuthProvider | None:
     be accepted here.
 
     Requires ``base_url`` and ``oidc_config_url`` on *config*.  Returns
-    ``None`` only as a precondition signal when either is missing
-    (caller should already have routed away from ``remote`` mode in
-    that case).  Other failure modes — ``httpx`` not installed, the
+    ``None`` only as a precondition signal when either is missing.  An
+    explicit ``AUTH_MODE=remote`` does reach this path with them unset,
+    and since #316 :func:`build_auth` turns that ``None`` into a
+    :class:`ConfigurationError` rather than starting an unauthenticated
+    server; the signal itself stays for direct callers composing
+    flavours.  Other failure modes — ``httpx`` not installed, the
     discovery request failing (network error or malformed JSON), the
     discovery document missing ``jwks_uri`` / ``issuer`` — raise
     :class:`ConfigurationError` rather than returning ``None``: a
@@ -613,6 +617,10 @@ def build_remote_auth(config: ServerConfig) -> RemoteAuthProvider | None:
             (network error or malformed JSON), or the discovery
             document is incomplete.
     """
+    # Kept as an inline test rather than a ``_missing_for_mode`` call:
+    # the helper is opaque to mypy, and narrowing both fields here is
+    # worth more than sharing the predicate.
+    # ``tests/test_auth_builders.py`` pins the two against each other.
     if not config.base_url or not config.oidc_config_url:
         logger.debug("remote_auth_skipped reason=missing_base_url_or_config_url")
         return None
@@ -746,7 +754,15 @@ def _missing_for_mode(config: ServerConfig, mode: AuthMode) -> list[str]:
     Returned unprefixed (``OIDC_CLIENT_ID``, not
     ``MYSERVER_OIDC_CLIENT_ID``): :class:`ServerConfig` does not carry the
     env prefix, which :meth:`ServerConfig.from_env` takes as an argument
-    and does not retain. Callers render the ``{PREFIX}_`` part themselves.
+    and does not retain. The real prefix is therefore not recoverable
+    here, and the caller emits a literal ``{PREFIX}_`` placeholder rather
+    than substituting it.
+
+    Each entry must mirror the precondition its builder actually
+    applies: ``build_oidc_proxy_auth`` calls this function, but
+    ``build_remote_auth`` and ``build_bearer_auth`` test their fields
+    inline for the type narrowing, so those two can drift.
+    ``tests/test_auth_builders.py`` pins them against each other.
 
     Only the modes whose builder can return ``None`` are listed.
     ``bearer-mapped`` reaches its builder with ``bearer_tokens_file``

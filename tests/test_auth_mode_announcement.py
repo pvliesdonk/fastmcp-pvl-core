@@ -19,6 +19,7 @@ from fastmcp_pvl_core import (
     get_current_auth_mode,
     resolve_auth_mode,
 )
+from fastmcp_pvl_core._auth import _announce_auth_mode
 
 _AUTH_LOGGER = "fastmcp_pvl_core._auth"
 
@@ -175,6 +176,27 @@ class TestUnauthenticatedServersWarn:
 
         _assert_sole_announcement(
             caplog, level=logging.WARNING, contains=("mode=none", "unauthenticated")
+        )
+
+    def test_level_follows_the_provider_not_the_mode(self, caplog):
+        """The predicate PR #317 chose, pinned directly on the announcer.
+
+        Every configuration that used to reach ``build_auth`` with a
+        non-``none`` mode and no provider now raises instead (#316), so
+        this is the only remaining detector for the provider-vs-mode
+        mutation that #317 rejected: keying the level off
+        ``mode == "none"`` passes every other test in the suite while
+        leaving a providerless ``oidc-proxy`` announced at ``INFO``.
+        Calling the announcer directly is what makes the guard
+        expressible now that the dispatcher refuses that state.
+        """
+        caplog.set_level(logging.DEBUG)
+        _announce_auth_mode("oidc-proxy", ServerConfig(), None)
+
+        _assert_sole_announcement(
+            caplog,
+            level=logging.WARNING,
+            contains=("mode=oidc-proxy", "unauthenticated"),
         )
 
     def test_provider_backed_mode_does_not_warn(self, caplog):
