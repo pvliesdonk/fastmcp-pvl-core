@@ -410,20 +410,24 @@ auth_mode_resolved mode=remote source=explicit
 ```
 
 The level is chosen by the provider `build_auth` ends up with, not by the
-mode. Any server that ends up with no provider accepts unauthenticated
+mode. A server that ends up with no provider accepts unauthenticated
 connections, and that announces at `WARNING` rather than `INFO` so an
 operator sees it without raising the log level:
 
 ```
 auth_mode_resolved mode=none source=auto-detected — server accepts unauthenticated connections
-auth_mode_resolved mode=oidc-proxy source=explicit — server accepts unauthenticated connections
 ```
 
-The second line is the case a mode-derived level would miss: `AUTH_MODE`
-selected `oidc-proxy`, the client credentials were absent, and the builder
-returned no provider — so the server starts unauthenticated while its
-resolved mode says otherwise. That fall-through is tracked as #316; the
-announcement makes it visible but does not change whether the server starts.
+Only `none` mode reaches that line. A resolved mode that asked for auth and
+got no provider — `AUTH_MODE=oidc-proxy` with the client credentials absent,
+say — raises `ConfigurationError` naming the unset variables rather than
+starting a server that accepts anyone (#316):
+
+```
+ConfigurationError: auth mode oidc-proxy is configured but no auth provider
+could be built; unset: {PREFIX}_OIDC_CLIENT_ID, {PREFIX}_OIDC_CLIENT_SECRET;
+refusing to start a server that would accept unauthenticated connections
+```
 
 A builder that raises announces too, before the exception propagates, so a
 server that fails to start still says which mode it was building:
@@ -1030,11 +1034,11 @@ mode = get_current_auth_mode()   # e.g. "oidc-proxy"
 ```
 
 It reports the mode that was **resolved**, which is not the same question as
-whether the server is authenticated — `auth_mode_resolved mode=oidc-proxy …
-server accepts unauthenticated connections` is a reachable startup line
-(#316). Do not test it against `"none"` to decide that; check whether
-`build_auth` returned a provider, which is the same predicate pvl-core's own
-warning uses.
+whether the server is authenticated. Since #316 a server that starts with no
+provider is always in `none` mode — any other mode raises rather than
+starting — so the two answers now agree. Prefer checking whether `build_auth`
+returned a provider anyway: that is the same predicate pvl-core's own warning
+uses, and it does not depend on the invariant holding.
 
 `"none"` is a resolved mode and is distinct from `None`, which means
 `build_auth` has not run in this context. The mode is stored in a

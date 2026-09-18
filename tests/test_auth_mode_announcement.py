@@ -19,6 +19,7 @@ from fastmcp_pvl_core import (
     get_current_auth_mode,
     resolve_auth_mode,
 )
+from fastmcp_pvl_core._auth import _announce_auth_mode
 
 _AUTH_LOGGER = "fastmcp_pvl_core._auth"
 
@@ -177,16 +178,20 @@ class TestUnauthenticatedServersWarn:
             caplog, level=logging.WARNING, contains=("mode=none", "unauthenticated")
         )
 
-    def test_configured_mode_that_yields_no_provider_still_warns(self, caplog):
-        """The case a mode-derived level would miss.
+    def test_level_follows_the_provider_not_the_mode(self, caplog):
+        """The predicate PR #317 chose, pinned directly on the announcer.
 
-        ``AUTH_MODE=oidc-proxy`` without client credentials resolves to
-        ``oidc-proxy``, then the builder returns ``None`` — the server
-        starts unauthenticated while its resolved mode says otherwise.
+        Every configuration that used to reach ``build_auth`` with a
+        non-``none`` mode and no provider now raises instead (#316), so
+        this is the only remaining detector for the provider-vs-mode
+        mutation that #317 rejected: keying the level off
+        ``mode == "none"`` passes every other test in the suite while
+        leaving a providerless ``oidc-proxy`` announced at ``INFO``.
+        Calling the announcer directly is what makes the guard
+        expressible now that the dispatcher refuses that state.
         """
         caplog.set_level(logging.DEBUG)
-        cfg = _remote_config(auth_mode="oidc-proxy")
-        assert build_auth(cfg) is None
+        _announce_auth_mode("oidc-proxy", ServerConfig(), None)
 
         _assert_sole_announcement(
             caplog,
@@ -220,6 +225,28 @@ class TestFailedBuildStillAnnounces:
 
         _assert_sole_announcement(
             caplog, level=logging.WARNING, contains=("mode=remote", "source=explicit")
+        )
+
+    def test_configured_mode_without_a_provider_is_a_refusal_not_a_warning(
+        self, caplog
+    ):
+        """#316: this configuration used to start a server that accepted anyone.
+
+        ``AUTH_MODE=oidc-proxy`` without client credentials resolves to
+        ``oidc-proxy`` and the builder returns ``None``. The invariant in
+        ``_build_provider`` now turns that into a refusal, so the
+        announcement must take the failed path — announcing it as
+        unauthenticated would describe a server that no longer starts.
+        """
+        caplog.set_level(logging.DEBUG)
+        with pytest.raises(ConfigurationError, match="OIDC_CLIENT_ID"):
+            build_auth(_remote_config(auth_mode="oidc-proxy"))
+
+        _assert_sole_announcement(
+            caplog,
+            level=logging.WARNING,
+            contains=("mode=oidc-proxy", "source=explicit", "will not start"),
+            absent=("unauthenticated",),
         )
 
     def test_failed_build_is_not_reported_as_unauthenticated(self, caplog):

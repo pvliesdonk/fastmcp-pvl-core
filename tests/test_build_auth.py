@@ -232,3 +232,51 @@ class TestBuildAuthMultiWithMapped:
         )
         with pytest.raises(ConfigurationError, match="discovery"):
             build_auth(cfg)
+
+
+class TestConfiguredModeWithoutProvider:
+    """A resolved non-``none`` mode must yield a provider or refuse to start.
+
+    The individual builders return ``None`` as a *precondition signal*
+    meaning "this flavor is not configured, try the next one".  Once
+    :func:`resolve_auth_mode` has settled on a mode there is no next one,
+    so that signal reaching :func:`build_auth` means the operator asked
+    for auth and would have got a server accepting anyone (#316).
+    """
+
+    def test_oidc_proxy_override_without_client_credentials_refuses_to_start(self):
+        cfg = _remote_only_config(auth_mode="oidc-proxy")
+
+        with pytest.raises(ConfigurationError) as excinfo:
+            build_auth(cfg)
+
+        message = str(excinfo.value)
+        assert "oidc-proxy" in message
+        assert "OIDC_CLIENT_ID" in message
+        assert "OIDC_CLIENT_SECRET" in message
+
+    def test_remote_override_without_base_url_refuses_to_start(self):
+        cfg = ServerConfig(
+            auth_mode="remote",
+            oidc_config_url="https://idp.example/.well-known/openid-configuration",
+        )
+
+        with pytest.raises(ConfigurationError) as excinfo:
+            build_auth(cfg)
+
+        message = str(excinfo.value)
+        assert "remote" in message
+        assert "BASE_URL" in message
+
+    def test_whitespace_only_bearer_token_refuses_to_start(self):
+        """Reachable by direct construction only — ``env()`` strips first."""
+        with pytest.raises(ConfigurationError) as excinfo:
+            build_auth(ServerConfig(bearer_token="   "))
+
+        message = str(excinfo.value)
+        assert "bearer-single" in message
+        assert "BEARER_TOKEN" in message
+
+    def test_none_mode_is_not_caught_by_the_invariant(self):
+        """A server with nothing configured still starts unauthenticated."""
+        assert build_auth(ServerConfig()) is None

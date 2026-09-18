@@ -14,6 +14,7 @@ from fastmcp_pvl_core import (
     build_oidc_proxy_auth,
     build_remote_auth,
 )
+from fastmcp_pvl_core._auth import _missing_for_mode
 
 
 def _oidc_config(**overrides: object) -> ServerConfig:
@@ -315,3 +316,52 @@ class TestBuildRemoteAuth:
                     ),
                 )
             )
+
+
+_BUILDER_FOR_MODE = {
+    "remote": build_remote_auth,
+    "bearer-single": build_bearer_auth,
+    "oidc-proxy": build_oidc_proxy_auth,
+}
+
+
+class TestMissingForModeTracksTheBuilders:
+    """`_missing_for_mode` must agree with the precondition each builder applies.
+
+    ``build_oidc_proxy_auth`` calls the helper, so it cannot drift.
+    ``build_remote_auth`` and ``build_bearer_auth`` test their fields
+    inline for the type narrowing, so they can — and a helper that
+    disagreed would make ``build_auth`` refuse a mode while naming no
+    variable, leaving the operator with nothing to fix (#316).
+    """
+
+    @pytest.mark.parametrize(
+        ("mode", "config", "expected"),
+        [
+            (
+                "remote",
+                ServerConfig(auth_mode="remote"),
+                ["BASE_URL", "OIDC_CONFIG_URL"],
+            ),
+            (
+                "remote",
+                ServerConfig(auth_mode="remote", base_url="https://x.example"),
+                ["OIDC_CONFIG_URL"],
+            ),
+            (
+                "bearer-single",
+                ServerConfig(bearer_token="   "),
+                ["BEARER_TOKEN"],
+            ),
+            (
+                "oidc-proxy",
+                ServerConfig(base_url="https://x.example"),
+                ["OIDC_CONFIG_URL", "OIDC_CLIENT_ID", "OIDC_CLIENT_SECRET"],
+            ),
+        ],
+    )
+    def test_builder_returning_none_is_explained_by_the_helper(
+        self, mode, config, expected
+    ):
+        assert _BUILDER_FOR_MODE[mode](config) is None
+        assert _missing_for_mode(config, mode) == expected
