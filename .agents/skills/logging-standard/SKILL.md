@@ -114,11 +114,14 @@ already covers, and anything a loop emits on every iteration, goes to
   break it — only within its receiver scope, a module-level `logger =
   logging.getLogger(...)` name used with a level method; `self.logger`,
   an imported logger, and `logger.log(...)` are outside what it can see
-  — so a clean report is not a proof every call conforms. pvl-core's own
-  code does not fully conform yet
-  ([#328](https://github.com/pvliesdonk/fastmcp-pvl-core/issues/328)).
-- Some existing lines predate this format. A diff that changes one of
-  them converts it; do not sweep untouched lines in an unrelated PR.
+  — so a clean report is not a proof every call conforms. Within that
+  scope pvl-core's own code does conform, and
+  `tests/test_log_conformance.py` fails the build if a new call breaks
+  the grammar ([#328](https://github.com/pvliesdonk/fastmcp-pvl-core/issues/328)).
+- No first-party line predates this format any more. If you add one that
+  breaks it, the conformance test fails and names the file, line and
+  template — fix the call rather than adding an exemption; the checker
+  has no allowlist, which is where its value comes from.
 
 ## Secrets and redaction
 
