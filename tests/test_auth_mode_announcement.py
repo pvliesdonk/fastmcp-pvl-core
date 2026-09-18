@@ -177,23 +177,6 @@ class TestUnauthenticatedServersWarn:
             caplog, level=logging.WARNING, contains=("mode=none", "unauthenticated")
         )
 
-    def test_configured_mode_that_yields_no_provider_still_warns(self, caplog):
-        """The case a mode-derived level would miss.
-
-        ``AUTH_MODE=oidc-proxy`` without client credentials resolves to
-        ``oidc-proxy``, then the builder returns ``None`` — the server
-        starts unauthenticated while its resolved mode says otherwise.
-        """
-        caplog.set_level(logging.DEBUG)
-        cfg = _remote_config(auth_mode="oidc-proxy")
-        assert build_auth(cfg) is None
-
-        _assert_sole_announcement(
-            caplog,
-            level=logging.WARNING,
-            contains=("mode=oidc-proxy", "unauthenticated"),
-        )
-
     def test_provider_backed_mode_does_not_warn(self, caplog):
         caplog.set_level(logging.DEBUG)
         assert build_auth(ServerConfig(bearer_token="x")) is not None
@@ -220,6 +203,28 @@ class TestFailedBuildStillAnnounces:
 
         _assert_sole_announcement(
             caplog, level=logging.WARNING, contains=("mode=remote", "source=explicit")
+        )
+
+    def test_configured_mode_without_a_provider_is_a_refusal_not_a_warning(
+        self, caplog
+    ):
+        """#316: this configuration used to start a server that accepted anyone.
+
+        ``AUTH_MODE=oidc-proxy`` without client credentials resolves to
+        ``oidc-proxy`` and the builder returns ``None``. The invariant in
+        ``_build_provider`` now turns that into a refusal, so the
+        announcement must take the failed path — announcing it as
+        unauthenticated would describe a server that no longer starts.
+        """
+        caplog.set_level(logging.DEBUG)
+        with pytest.raises(ConfigurationError, match="OIDC_CLIENT_ID"):
+            build_auth(_remote_config(auth_mode="oidc-proxy"))
+
+        _assert_sole_announcement(
+            caplog,
+            level=logging.WARNING,
+            contains=("mode=oidc-proxy", "source=explicit", "will not start"),
+            absent=("unauthenticated",),
         )
 
     def test_failed_build_is_not_reported_as_unauthenticated(self, caplog):

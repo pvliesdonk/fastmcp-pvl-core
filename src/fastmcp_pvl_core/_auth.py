@@ -126,12 +126,12 @@ def _announce_auth_mode(
     for an ``AUTH_MODE`` value it does not recognise.
 
     On a successful build the level is chosen by *provider*, not by
-    *mode*. A server whose builder returned no provider accepts
-    unauthenticated connections whatever mode was resolved, and that is
-    a security posture an operator should see without raising the log
-    level. Deriving the level from ``mode == "none"`` instead would stay
-    silent on a misconfigured ``oidc-proxy`` that fell through to no
-    provider at all (#316).
+    *mode*. Since #316 the two agree — a non-``none`` mode that yields no
+    provider now raises in :func:`_build_provider` and arrives here as
+    *failed* instead — so this is deliberately the weaker test of the
+    two: it reports the posture the server actually has rather than the
+    one the invariant says it should have, and keeps warning if that
+    invariant is ever weakened.
 
     Args:
         mode: The mode :func:`resolve_auth_mode` returned.
@@ -504,18 +504,11 @@ def build_oidc_proxy_auth(config: ServerConfig) -> OIDCProxy | None:
             failed (unreachable, non-2xx, malformed, or missing required
             endpoints). Same contract as :func:`build_remote_auth`.
     """
-    # Keep the secret out of the "missing" list so it never enters logs
-    # (static-analysis taint tools flag this otherwise).
-    required_public = {
-        "BASE_URL": config.base_url,
-        "OIDC_CONFIG_URL": config.oidc_config_url,
-        "OIDC_CLIENT_ID": config.oidc_client_id,
-    }
-    has_secret = bool(config.oidc_client_secret)
-    if not all(required_public.values()) or not has_secret:
-        missing = [k for k, v in required_public.items() if not v]
-        if not has_secret:
-            missing.append("OIDC_CLIENT_SECRET")
+    # Shared with the invariant in ``_build_provider`` so the required
+    # variables have one definition: what a skip reports here and what a
+    # refusal names there cannot drift apart.
+    missing = _missing_for_mode(config, "oidc-proxy")
+    if missing:
         logger.debug("oidc_proxy_auth_skipped missing=%s", ",".join(missing))
         return None
 
@@ -747,6 +740,52 @@ def _build_multi_auth(config: ServerConfig) -> Any:
     )
 
 
+def _missing_for_mode(config: ServerConfig, mode: AuthMode) -> list[str]:
+    """Names of the operator variables *mode* requires and *config* lacks.
+
+    Returned unprefixed (``OIDC_CLIENT_ID``, not
+    ``MYSERVER_OIDC_CLIENT_ID``): :class:`ServerConfig` does not carry the
+    env prefix, which :meth:`ServerConfig.from_env` takes as an argument
+    and does not retain. Callers render the ``{PREFIX}_`` part themselves.
+
+    Only the modes whose builder can return ``None`` are listed.
+    ``bearer-mapped`` reaches its builder with ``bearer_tokens_file``
+    already set, and ``multi`` raises on its own, so both yield an empty
+    list — as does ``none``, which requires nothing.
+
+    Args:
+        config: Populated server configuration.
+        mode: The mode :func:`resolve_auth_mode` settled on.
+
+    Returns:
+        Unset variable names in declaration order; empty when the mode
+        requires nothing or everything it requires is set.
+    """
+    required: dict[str, object]
+    if mode == "oidc-proxy":
+        required = {
+            "BASE_URL": config.base_url,
+            "OIDC_CONFIG_URL": config.oidc_config_url,
+            "OIDC_CLIENT_ID": config.oidc_client_id,
+            # Reduced to a bool so the secret itself never enters the
+            # dict's value side (static-analysis taint tools flag it
+            # otherwise, and this feeds an operator-visible message).
+            "OIDC_CLIENT_SECRET": bool(config.oidc_client_secret),
+        }
+    elif mode == "remote":
+        required = {
+            "BASE_URL": config.base_url,
+            "OIDC_CONFIG_URL": config.oidc_config_url,
+        }
+    elif mode == "bearer-single":
+        # ``.strip()`` mirrors the builder: a whitespace-only token is
+        # what the builder rejects, so it is what counts as unset here.
+        required = {"BEARER_TOKEN": (config.bearer_token or "").strip()}
+    else:
+        return []
+    return [name for name, value in required.items() if not value]
+
+
 def _build_provider(config: ServerConfig, mode: AuthMode) -> Any:
     """Construct the provider for an already-resolved *mode*.
 
@@ -772,6 +811,27 @@ def _build_provider(config: ServerConfig, mode: AuthMode) -> Any:
             provider = _build_multi_auth(config)
         case _:
             assert_never(mode)
+
+    # A builder returns ``None`` as a precondition signal meaning "this
+    # flavor is not configured, try the next one". *mode* is already
+    # settled, so there is no next one: the signal reaching here means
+    # the operator configured auth and would otherwise get a server that
+    # accepts anyone (#316). Raising here rather than in ``build_auth``
+    # after the call leaves ``provider`` at ``_UNBUILT``, so the
+    # announcement reports "server will not start" instead of the
+    # contradictory "accepts unauthenticated connections".
+    if mode != "none" and provider is None:
+        missing = _missing_for_mode(config, mode)
+        detail = (
+            "; unset: " + ", ".join(f"{{PREFIX}}_{name}" for name in missing)
+            if missing
+            else ""
+        )
+        raise ConfigurationError(
+            f"auth mode {mode} is configured but no auth provider could be "
+            f"built{detail}; refusing to start a server that would accept "
+            "unauthenticated connections"
+        )
     return provider
 
 
@@ -808,6 +868,17 @@ def build_auth(config: ServerConfig) -> Any:
         - A :class:`~fastmcp.server.auth.MultiAuth` in ``multi`` mode,
           always constructed with ``required_scopes=[]`` (load-bearing —
           see implementation comment).
+
+        ``None`` is returned only in ``none`` mode. Any other resolved
+        mode either yields a provider or raises (#316).
+
+    Raises:
+        ConfigurationError: the resolved mode is not ``none`` and no
+            provider could be built for it — an ``AUTH_MODE`` override
+            the rest of the configuration cannot satisfy, or a
+            whitespace-only ``bearer_token``. Also propagated from the
+            individual builders (OIDC discovery failure, a missing
+            extra, an unreadable bearer tokens file).
     """
     mode = resolve_auth_mode(config)
     # Record the resolved mode for ``get_subject`` and
