@@ -216,9 +216,9 @@ class ServerConfig:
         metadata={
             "help": (
                 "Seconds SIGTERM may spend draining in-flight requests "
-                "before the HTTP server exits. Set it no higher than the "
-                "orchestrator's own termination grace period. ``0`` drops "
-                "in-flight requests immediately."
+                "before the HTTP server exits. Keep it at or below the "
+                "termination grace period the orchestrator allows. ``0`` "
+                "drops in-flight requests immediately."
             ),
             "tags": ("server",),
             "wizard": {"group": "Server", "when": "server"},
