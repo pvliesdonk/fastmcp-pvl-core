@@ -10,13 +10,27 @@ Path 1 (``register_long_running_tool`` / ``register_job_tools``) is built
 on the same object, so both paths share one store and one polling
 contract and cannot drift.
 
-The dual-mode decision lives in **one verb**,
-:meth:`Jobs.run_with_deadline`, which is correct in every execution mode:
-running as a native Docket task → just run (the protocol owns lifecycle);
-foreground within the soft deadline → inline result; foreground past the
-deadline → promote and return a :class:`~.records.JobHandle`. Path-2
-authors never branch on execution mode themselves — mode introspection
-stays inside the verb.
+This store is a **fallback**. It exists because most clients do not
+negotiate the SEP-2663 tasks extension yet; where one does, the native
+task already is the background mechanism and every verb here yields to
+it rather than starting a second one (#324). Mode introspection stays
+inside the verbs — path-2 authors never branch on execution mode
+themselves:
+
+- :meth:`Jobs.run_with_deadline` — native task → just run; foreground
+  within the soft deadline → inline result; foreground past it → promote
+  and return a :class:`~.records.JobHandle`.
+- :meth:`Jobs.start` — native task → run inline; otherwise background
+  immediately with a handle.
+- :meth:`Jobs.defer` — the same, and on the native path the deferral
+  *reason* is delivered as the running task's status message, because a
+  model that knows "queued, up to 20 minutes" stops polling blindly.
+
+What a native task can and cannot tell its client — the status message
+can carry the reason, the poll interval is fixed at submission and
+cannot carry a per-call retry hint — is recorded with its evidence in
+``docs/reference/fastmcp-native-task-signals.md``. Read that before
+changing what these verbs report.
 
 Intra-package imports stay relative so a fold-in is a directory rename.
 """
@@ -44,7 +58,7 @@ from .records import (
 from .store import JobStore
 
 if TYPE_CHECKING:
-    from collections.abc import Coroutine
+    from collections.abc import Coroutine, Iterator
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +94,108 @@ def _as_result_mapping(value: Any) -> dict[str, Any]:
     return {"value": value}
 
 
+def _native_task_active() -> bool:
+    """Whether this call is running inside a native SEP-2663 task.
+
+    The job store is a *fallback*: it exists because most clients do not
+    negotiate the tasks extension yet. When a native task is running, it
+    already is the background mechanism, and every verb here gets out of
+    its way rather than starting a second one (#324).
+
+    ``fastmcp_tasks`` ships with pvl-core's base dependencies; the guard
+    survives for stripped forks, where the native path cannot be active
+    and the fallback must still work. Deliberately ``ModuleNotFoundError``
+    and not ``ImportError``: a *present* ``fastmcp_tasks`` missing the
+    symbol is version skew that must stay loud, not be silently routed to
+    the fallback.
+    """
+    try:
+        from fastmcp_tasks.context import get_task_context
+    except ModuleNotFoundError:
+        return False
+    return get_task_context() is not None
+
+
+@contextlib.contextmanager
+def _closing_on_failure(coro: Coroutine[Any, Any, Any]) -> Iterator[None]:
+    """Close *coro* if the guarded block does not hand it off.
+
+    The caller of :meth:`Jobs.start` / :meth:`Jobs.defer` constructs the
+    coroutine and hands it over, so every path that declines to run it owes
+    it a ``close()``. Otherwise the work is dropped with nothing to show for
+    it but a "coroutine was never awaited" warning at collection time — a
+    silent loss, and the same commitment the ``retry_after_s`` rejection in
+    :meth:`Jobs.defer` has always made.
+
+    Catches ``BaseException`` and re-raises: cancellation is the case that
+    matters most (the announce below suspends on a Redis round trip, so a
+    ``tasks/cancel`` can land inside it), and cancellation is not an
+    ``Exception``. Nothing is swallowed — the exception always propagates.
+    """
+    try:
+        yield
+    except BaseException:
+        coro.close()
+        raise
+
+
+def _resolve_mode(coro: Coroutine[Any, Any, Any]) -> bool:
+    """Whether a native task is active, closing *coro* if the check itself fails.
+
+    :func:`_native_task_active` deliberately lets a non-``ModuleNotFoundError``
+    ``ImportError`` propagate — version skew must stay loud. At that point the
+    caller's coroutine has been constructed but not yet awaited, so it is
+    closed rather than left to surface as "coroutine was never awaited" noise
+    stacked on top of the real error. Same commitment the ``retry_after_s``
+    rejection in :meth:`Jobs.defer` already makes.
+    """
+    with _closing_on_failure(coro):
+        return _native_task_active()
+
+
+async def _announce_wait(message: str) -> None:
+    """Tell a polling client why its native task is still working.
+
+    This is the part of a deferral that survives on the native path. A
+    handle cannot be returned — the task is the handle — but the *reason*
+    is what the model acts on: "queued, up to 20 minutes" is the
+    difference between waiting and polling blindly.
+
+    ``tasks/get`` reports a running task's ``statusMessage`` from the live
+    Docket execution's progress message and from nothing else, so that is
+    the channel. Reaching it through ``current_execution`` couples this to
+    Docket's execution object — the same coupling FastMCP's own
+    ``Context.report_progress`` has in its background branch, but through
+    an internal rather than a public wrapper. ``Context`` itself is not
+    usable here: it exists only when the domain tool declared a ``ctx``
+    parameter, and pvl-core will not make that a condition of being told
+    why you are waiting. See
+    ``docs/reference/fastmcp-native-task-signals.md``.
+
+    Never raises: losing the message costs the client an expectation,
+    while raising would cost it the work.
+
+    Note that this message and the task's own ``pollIntervalMs`` can
+    disagree — the latter is fixed at submission from static tool config,
+    so a per-call retry hint reaches the client only as prose here.
+    """
+    try:
+        from docket.dependencies import current_execution
+
+        await current_execution.get().progress.set_message(message)
+    except Exception:  # noqa: BLE001 — a lost expectation must not lose the work
+        # Broad deliberately: this must not raise, and the failure modes are
+        # open-ended (Docket's execution API, its Redis client, a stripped
+        # install). Narrowing risks the one outcome the guard exists to
+        # prevent — losing the work to a diagnostic. WARNING because the
+        # client is now polling without the expectation it should have had.
+        logger.warning(
+            "deferral_announce_failed consequence=%s",
+            "client polls without an expectation",
+            exc_info=True,
+        )
+
+
 class Jobs:
     """Dual-mode execution and job-handle mechanics for one server.
 
@@ -100,12 +216,13 @@ class Jobs:
             \"\"\"Rebuild the index. Always long-running.\"\"\"
             async def work() -> dict[str, Any]:
                 ...  # minutes of work
-            return dict(await jobs.start(work(), tool="rebuild_index"))
+            return await jobs.start(work(), tool="rebuild_index")
 
     Path-2 rules: import from ``fastmcp_pvl_core.jobs`` (or the package
-    root) only — ``fastmcp_pvl_core._jobs`` is internal; return the
-    handle unmodified rather than restyling it (the payload shape is
-    pvl-core's even when the tool is yours); still call
+    root) only — ``fastmcp_pvl_core._jobs`` is internal; return what the
+    verb gives you unmodified rather than restyling it (the payload shape
+    is pvl-core's even when the tool is yours — and under a native task
+    what comes back is the work's own result, not a handle); still call
     ``register_job_tools`` once, because these handles resolve through
     the same generic polling tool; and catch the public error types
     (:class:`~.records.JobNotFoundError`,
@@ -152,20 +269,7 @@ class Jobs:
                 decided, in which case its result is returned inline and
                 no error is raised).
         """
-        # ``fastmcp_tasks`` ships with pvl-core's base dependencies; the
-        # guard survives for stripped forks, where the native SEP-2663
-        # path cannot be active and the fallback below must still work.
-        # Deliberately ModuleNotFoundError, not ImportError: a *present*
-        # fastmcp_tasks missing the symbol is version skew that must
-        # stay loud, not be silently routed to the fallback.
-        try:
-            from fastmcp_tasks.context import get_task_context
-        except ModuleNotFoundError:
-            task_context = None
-        else:
-            task_context = get_task_context()
-
-        if task_context is not None:
+        if _native_task_active():
             # Native SEP-2663 execution: Docket owns the lifecycle,
             # results, and TTL — nothing for the fallback to do.
             return await coro
@@ -210,20 +314,49 @@ class Jobs:
         )
         return self._handle(record.job_id, tool=tool)
 
-    async def start(self, coro: Coroutine[Any, Any, Any], *, tool: str) -> JobHandle:
-        """Run *coro* as a background job unconditionally (no inline try).
+    async def start(self, coro: Coroutine[Any, Any, Any], *, tool: str) -> Any:
+        """Run *coro* in the background, or inline under a native task.
 
         For downstream tools whose work is *always* long-running and
         should return a handle immediately.
 
+        Inside a native SEP-2663 task there is nothing to start: the task
+        already is the background mechanism, and returning a job handle
+        would hand a client that is following one lifecycle a second one
+        to follow (#324). There *coro* is awaited and its own result
+        returned, the same way :meth:`run_with_deadline` yields to the
+        native path.
+
         Returns:
-            The :class:`~.records.JobHandle` payload for the new job.
+            The :class:`~.records.JobHandle` payload for the new job, or
+            the coroutine's own result when a native task is running.
+            Polymorphic for the same reason :meth:`run_with_deadline` is:
+            the caller returns this straight to the client, and what the
+            client should receive differs by mode.
 
         Raises:
             JobLimitExceededError: If the caller is at its live-job cap.
+                Cannot arise on the native path, which creates no record.
+        """
+        if _resolve_mode(coro):
+            return await coro
+        return await self._start_fallback(coro, tool=tool)
+
+    async def _start_fallback(
+        self, coro: Coroutine[Any, Any, Any], *, tool: str
+    ) -> JobHandle:
+        """Background *coro* in pvl-core's own store and return its handle.
+
+        The fallback half of :meth:`start`, split out so its concrete
+        :class:`~.records.JobHandle` type survives the polymorphic public
+        signature, and so :meth:`defer` can reach it without re-running the
+        native-task check its own branch already answered.
         """
         scope = _current_scope()
-        record = await self._store.create(scope)
+        # The cap (or a store failure) rejects before ``ensure_future``
+        # takes ownership, so nothing else would ever await *coro*.
+        with _closing_on_failure(coro):
+            record = await self._store.create(scope)
         task: asyncio.Task[Any] = asyncio.ensure_future(coro)
         self._background.add(task)
         task.add_done_callback(self._background.discard)
@@ -240,12 +373,15 @@ class Jobs:
         tool: str,
         reason: str,
         retry_after_s: float = JOB_RETRY_AFTER_S,
-    ) -> DeferredJobHandle:
+    ) -> Any:
         """Start background work deferred by a domain-specific condition.
 
         Use when a domain tool knows why foreground work cannot proceed yet,
-        such as an upstream rate limit. This is additive to :meth:`start`:
-        existing callers keep its established handle shape.
+        such as an upstream rate limit. This is additive to :meth:`start`
+        on the fallback path: the handle is ``start``'s shape plus
+        ``reason``, and ``start``'s own handle is unchanged. Neither verb
+        returns a handle under a native task, where the task itself carries
+        the deferral (#324).
 
         Args:
             coro: The domain work to continue in the background.
@@ -258,10 +394,15 @@ class Jobs:
                 otherwise pvl-core's standard polling interval applies.
 
         Returns:
-            The shared job handle plus the supplied ``reason``.
+            The shared job handle plus the supplied ``reason``, or the
+            coroutine's own result when a native task is running — there
+            the task carries the deferral and *reason* is delivered as its
+            status message instead. Polymorphic for the same reason
+            :meth:`run_with_deadline` is.
 
         Raises:
             JobLimitExceededError: If the caller is at its live-job cap.
+                Cannot arise on the native path, which creates no record.
             ValueError: If ``retry_after_s`` is not a finite positive number.
         """
         if not math.isfinite(retry_after_s) or retry_after_s <= 0:
@@ -270,7 +411,27 @@ class Jobs:
             # not leave an unawaited coroutine behind.
             coro.close()
             raise ValueError("retry_after_s must be a finite positive number")
-        handle = await self.start(coro, tool=tool)
+
+        if _resolve_mode(coro):
+            # The task is the deferral, so there is no handle to hand back
+            # — but the reason still reaches the client, as the running
+            # task's status message. ``retry_after_s`` goes into that text
+            # rather than the protocol: SEP-2663 fixes ``pollIntervalMs``
+            # at submission from static tool config, so a per-call
+            # interval has no native channel (see the reference page).
+            logger.info(
+                "job_deferred_natively tool=%s retry_after_s=%s",
+                tool,
+                retry_after_s,
+            )
+            # ``_announce_wait`` swallows ``Exception`` itself; the guard
+            # here is for what it deliberately does not catch — cancellation
+            # landing mid-round-trip.
+            with _closing_on_failure(coro):
+                await _announce_wait(f"{reason} (retry in {retry_after_s:g}s)")
+            return await coro
+
+        handle = await self._start_fallback(coro, tool=tool)
         return DeferredJobHandle(
             status=handle["status"],
             job_id=handle["job_id"],

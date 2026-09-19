@@ -187,7 +187,7 @@ async def rebuild_index(scope: str) -> dict:
     """Rebuild the index for *scope*.  Always long-running."""
     async def work() -> dict:
         ...  # minutes of work
-    return dict(await jobs.start(work(), tool="rebuild_index"))
+    return await jobs.start(work(), tool="rebuild_index")
 ```
 
 The `Jobs` verbs:
@@ -196,18 +196,33 @@ The `Jobs` verbs:
   wrapper uses: native → run; inline within deadline → result; expiry →
   promote + handle. Correct in every execution mode, so your code never
   checks which mode it is in.
-- `start(coro, *, tool)` — background unconditionally, handle
-  immediately.
-- `defer(coro, *, tool, reason, retry_after_s=5.0)` — background
-  unconditionally with a required domain reason in the initial handle.
+- `start(coro, *, tool)` — background immediately with a handle, or, under
+  a native task, run inline and return the result (see below).
+- `defer(coro, *, tool, reason, retry_after_s=5.0)` — the same, with a
+  required domain reason in the initial handle.
   Use it for runtime conditions pvl-core cannot know, such as an upstream
   rate limit. Pass the upstream retry interval when it provides one;
   otherwise the standard poll interval applies. An explicit interval must
-  be finite and positive. This is additive:
-  `start` and deadline-promoted handles retain their established shape.
+  be finite and positive. This is additive on the fallback path: `start`
+  and deadline-promoted handles retain their established shape.
 - `get(job_id)` / `poll(job_id)` — the calling subject's record / the
   exact polling payload the generic tool returns. Use `poll` if a domain
   tool of yours reports job state, so the payload shape stays identical.
+
+All three yield to a native task when one is running: it already is the
+background mechanism, so returning a job handle would hand a client that
+is following one lifecycle a second one to follow. There they await the
+work and return its own result, and `defer` delivers its `reason` as the
+task's `statusMessage` — visible on every `tasks/get` while the status
+stays `working`. `retry_after_s` goes into that text rather than the
+protocol: SEP-2663 fixes `pollIntervalMs` at submission from static tool
+config, so a per-call interval has no native channel. The evidence for
+both is in
+[`docs/reference/fastmcp-native-task-signals.md`](reference/fastmcp-native-task-signals.md).
+
+A tool that returns a deferral therefore returns it unchanged —
+`return await jobs.defer(...)`, not `return dict(await jobs.defer(...))`,
+since on the native path what comes back is the work's own result.
 
 Path-2 rules:
 
@@ -216,8 +231,9 @@ Path-2 rules:
   private-import mistake the transfer feature already had to correct
   (#247/#249) — the seam above exists so you never need to.
 - Your tool's *identity* is yours; the handle and poll payload *shapes*
-  are pvl-core's. Return the handle unmodified (`dict(handle)`) rather
-  than restyling it.
+  are pvl-core's. Return what the verb gives you unmodified rather than
+  restyling it — a handle on the fallback path, the work's own result
+  under a native task.
 - Still call `register_job_tools` once: path-2 jobs resolve through the
   same generic `get_job_result` as path-1 jobs — one polling contract
   per server.
@@ -240,8 +256,10 @@ If your server carries a bespoke job store and its own polling tool
    (`in_progress` → `working`).
 4. Delete per-tool TTL/eviction knobs in favour of the `JOBS_*` surface.
 5. Where a tool currently returns a bespoke queued payload after a runtime
-   deferral, use `jobs.defer(...)` and return its handle unchanged. Supply
-   the client-visible reason and an upstream retry interval when available.
+   deferral, use `jobs.defer(...)` and return what it gives you, unchanged
+   — a handle on the fallback path, the work's own result under a native
+   task. Supply the client-visible reason and an upstream retry interval
+   when available.
 
 ## Testing your integration
 

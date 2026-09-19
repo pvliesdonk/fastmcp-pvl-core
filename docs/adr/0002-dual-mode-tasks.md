@@ -291,6 +291,18 @@ builds its server — and therefore its own domain tools — separately:
   promote + handle), so path-2 authors never branch on execution mode.
   `Jobs.start` (unconditional background), `Jobs.get` (record read),
   `Jobs.poll` (the polling payload shape, shared with the generic tool).
+
+  *(Revised for #324, 2026-09-19: "unconditional" described `start` only
+  against `run_with_deadline`'s soft-deadline inline attempt, not against
+  the native path. `Jobs.start` and `Jobs.defer` now yield to a native
+  task the same way `run_with_deadline` always has — the job store is a
+  fallback, so where a native task is running it owns the lifecycle and
+  a second handle would give the client a second one to follow. Every
+  background verb is now mode-agnostic, which is this section's own
+  principle applied consistently rather than a departure from it. On that
+  path `defer` delivers its reason as the task's status message; see
+  `docs/reference/fastmcp-native-task-signals.md` for what a running task
+  can and cannot report.)*
 - **Wire-shape types public**: `JobRecord`, `JobStatus`, `JobHandle`,
   `JOB_POLL_TOOL_NAME`, `JOB_RETRY_AFTER_S`; errors `JobNotFoundError`,
   `JobLimitExceededError`. Tool identity on path 2 is downstream's; the

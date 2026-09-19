@@ -56,6 +56,10 @@ class DeferredJobHandle(JobHandle):
     upstream provider's rate-limit response. It is present only on handles
     returned by :meth:`Jobs.defer`; existing ``start`` and deadline-promotion
     handles keep their established shape.
+
+    A handle at all only on the fallback path: under a native SEP-2663 task
+    the task itself carries the deferral, and ``reason`` travels as its
+    status message instead (#324).
     """
 
     reason: str
