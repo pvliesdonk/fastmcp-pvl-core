@@ -22,3 +22,8 @@ major bump makes every FastMCP reference stale regardless of its date.
 - [What a FastMCP native task can tell its client while it runs](fastmcp-native-task-signals.md)
   — which SEP-2663 task fields a running tool can influence, and which are
   fixed at submission. Read by `_jobs/manager.py`. Valid for FastMCP 4.x.
+- [Who decides whether a tool call runs as a task](mcp-task-routing-is-requestor-driven.md)
+  — the MCP tasks utility is requestor-driven and FastMCP applies that before
+  the tool body runs; nothing promotes a foreground call to a task later. Read
+  by `_jobs/manager.py` and by the jobs fallback's retirement criterion. Valid
+  for MCP 2025-11-25 / FastMCP 4.x.

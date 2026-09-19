@@ -169,6 +169,50 @@ All reads are strict: a malformed value fails at startup, naming the
 variable. The surface is drift-gated (`domain_env_suffixes(JobsConfig)`),
 so config generators pick it up automatically.
 
+## When the fallback can go
+
+The job store exists for clients that do not negotiate SEP-2663 tasks. Its
+end is therefore not a pvl-core version or a date: the task-versus-foreground
+decision belongs to the client and is made before the tool body runs, and
+the protocol has no server-initiated promotion, so a call that began in the
+foreground never becomes a task (the evidence is in
+[`docs/reference/mcp-task-routing-is-requestor-driven.md`](reference/mcp-task-routing-is-requestor-driven.md)).
+The fallback is retirable **per deployment**, once no client calls a
+long-running tool without opting into tasks — observed, not scheduled. A
+hosted fleet and a locally run server can sit at different points on that
+curve indefinitely. Opting in is a session-level advertisement, not a
+per-call choice: FastMCP's own `Client` makes it on every session and
+resolves the task transparently, so the clients the fallback serves are
+those built on other SDKs, and legacy-protocol connections, where the
+advertisement is stripped. A fastmcp-based probe never exercises it.
+
+The observation is in the logs. Each side has a signature the other never
+emits:
+
+| Client | What the server logs |
+|---|---|
+| Opted into tasks | `docket.worker` announces every execution at INFO (`↪ … <tool key>`); `defer` adds `job_deferred_natively` |
+| Did not opt in; `start` / `defer` | `job_started` (INFO) |
+| Did not opt in; `run_with_deadline` past the deadline | `job_promoted` (INFO) |
+| Did not opt in; `run_with_deadline` within the deadline | `job_ran_inline` (DEBUG) |
+
+The last row is the one that decides it, and the one INFO does not show: a
+client that never negotiates tasks but whose calls always beat the deadline
+leaves no trace at the default level, and it is exactly the client that
+starts hanging on its first slow call once the fallback is gone. So run the
+deployment at `MY_APP_LOG_LEVEL=DEBUG` for a retention window
+(`docket.worker` stays readable — pvl-core caps it at INFO under DEBUG). No
+`job_ran_inline`, `job_promoted` or `job_started` over that window, while
+`docket.worker` shows executions, means every client negotiated tasks and
+the fallback was idle there. No lines on either side is absence of traffic,
+not evidence.
+
+The likely end state for a shared library is that the mechanism stays and
+the `JOBS_*` knobs become the thing nobody sets — no downstream sets one off
+its default outside a test today — so the knobs, not the store, are the
+first candidates to go. Nothing here is scheduled; #346 records the
+criterion.
+
 ## Path 2 — building your own tool on the mechanics
 
 The wrapper covers "wrap one coroutine, promote on deadline". When your
