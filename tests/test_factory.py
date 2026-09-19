@@ -7,6 +7,7 @@ import tempfile
 import pytest
 
 from fastmcp_pvl_core import (
+    ConfigurationError,
     ServerConfig,
     build_event_store,
     compute_app_domain,
@@ -29,7 +30,7 @@ class TestBuildEventStore:
         # The unified factory raises with its own message; the
         # event-store wrapper does not add a second one.
         config = ServerConfig(kv_store_url="postgres://localhost/db")
-        with pytest.raises(ValueError, match="Unsupported kv_store URL scheme"):
+        with pytest.raises(ConfigurationError, match="Unsupported kv_store URL scheme"):
             build_event_store("MY_APP", config)
 
     def test_none_url_uses_default_path(self, tmp_path, monkeypatch):

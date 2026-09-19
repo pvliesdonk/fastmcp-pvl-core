@@ -33,9 +33,10 @@ import logging
 import os
 from pathlib import Path
 from typing import TYPE_CHECKING
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import ParseResult, parse_qs, urlparse
 
 from ._config import ServerConfig
+from ._errors import ConfigurationError
 
 if TYPE_CHECKING:
     from key_value.aio.protocols.key_value import AsyncKeyValue
@@ -114,10 +115,22 @@ def build_kv_store(
         A configured ``AsyncKeyValue`` wrapped for namespace isolation.
 
     Raises:
-        ValueError: If ``namespace`` is empty, or the URL scheme is
-            unrecognised, or a ``file://`` URL is malformed.
-        ImportError: If a backend-specific extra is required but not
-            installed; the message names the extra to install.
+        ValueError: If ``namespace`` is empty. That argument is
+            supplied by the calling code as a literal, never by the
+            operator, so it stays a programming error rather than a
+            configuration one. It is the only ``ValueError`` this
+            raises: a URL that ``urlparse`` itself rejects is the
+            operator's typo and reports as ``ConfigurationError``.
+        ConfigurationError: If the operator's URL is unusable — an
+            unrecognised scheme, a malformed ``file://`` URL, a
+            ``dynamodb://`` URL with no table name — or if importing
+            the backend it selects fails; the message names the extra
+            to install and quotes the underlying import error, so the
+            hint cannot misdescribe an unrelated import failure. This
+            covers the URL-syntax and backend-import mistakes reachable
+            through ``{PREFIX}_KV_STORE_URL`` (#337). It is not every
+            possible failure: an explicit ``file://`` directory that
+            cannot be created still raises ``OSError`` from ``mkdir``.
     """
     if not namespace.strip():
         raise ValueError(
@@ -138,7 +151,7 @@ def build_kv_store(
             logger.warning(
                 "kv_store_legacy_fallback kv_store_url=<unset> "
                 "event_store_url_scheme=%r action=%s",
-                urlparse(url).scheme,
+                _scheme_for_log(url),
                 "Set <PREFIX>_KV_STORE_URL to migrate.",
             )
             _legacy_url_warned = True
@@ -220,13 +233,68 @@ def _unusable_reason(directory: Path) -> str | None:
     return None
 
 
+def _scheme_for_log(url: str) -> str:
+    """Scheme of *url* for a log line, or ``"<unparseable>"``.
+
+    The legacy-fallback warning runs before :func:`_build_backend` does
+    its own parse, so it cannot assume the URL parses. It must never
+    raise on the way to a warning, and it must never widen what is
+    logged beyond the scheme — the value may carry userinfo
+    credentials.
+    """
+    try:
+        return urlparse(url).scheme
+    except ValueError:
+        return "<unparseable>"
+
+
+def _parse_kv_url(url: str) -> ParseResult:
+    """Parse an operator-supplied store URL, or reject it as misconfigured.
+
+    ``urlparse`` rejects some malformed URLs outright — an unclosed IPv6
+    bracket, for one — with a bare :class:`ValueError`. That is the
+    operator's typo, so it reports as their error rather than as the
+    programming error a bare ``ValueError`` means everywhere else in
+    this module (#337).
+
+    Args:
+        url: The operator's store URL.
+
+    Returns:
+        The parsed URL.
+
+    Raises:
+        ConfigurationError: *url* is not parseable. The message repeats
+            neither *url* nor ``urlparse``'s own text, and suppresses
+            the cause with ``from None``: one of ``urlparse``'s two
+            failure messages embeds the raw netloc, userinfo included,
+            and a chained traceback would publish it. Same redaction
+            rule the ``file://`` guards follow.
+    """
+    try:
+        return urlparse(url)
+    except ValueError:
+        # ``from None`` with a fixed message, deliberately: ``urlparse``'s
+        # own text is not safe to repeat. ``_checknetloc`` interpolates the
+        # raw netloc — "netloc 'alice:hunter2@h...' contains invalid
+        # characters under NFKC normalization" — so both the message and a
+        # chained cause's traceback would publish userinfo credentials to
+        # logs and Sentry. The operator set this variable and does not need
+        # it read back; naming which variable is the actionable part.
+        raise ConfigurationError(
+            "kv_store URL could not be parsed. Check the store URL "
+            "variable; its value is withheld here because it may carry "
+            "credentials."
+        ) from None
+
+
 def _build_backend(url: str) -> AsyncKeyValue:
     """Dispatch a URL to its backing AsyncKeyValue store.
 
     Kept private so callers cannot bypass the namespace wrapper that
     :func:`build_kv_store` applies.
     """
-    parsed = urlparse(url)
+    parsed = _parse_kv_url(url)
     scheme = parsed.scheme
 
     if scheme == "memory":
@@ -243,27 +311,28 @@ def _build_backend(url: str) -> AsyncKeyValue:
         #
         # Error messages name the SCHEME only, never the raw URL — an
         # operator may have typed credentials into a misconfigured URL
-        # (e.g. file://user:pass@host/path), and ValueError text ends
+        # (e.g. file://user:pass@host/path), and the error text ends
         # up in process logs / Sentry alongside the legacy-warning
         # path that's already redacted.
         if parsed.netloc:
-            raise ValueError(
+            raise ConfigurationError(
                 "file:// URL has a host component. Use the three-slash "
                 "form: 'file:///absolute/path'."
             )
         if not parsed.path:
-            raise ValueError(
+            raise ConfigurationError(
                 "file:// URL is missing a path. Use 'file:///absolute/path'."
             )
         # Verify the backend is importable BEFORE creating the directory,
         # so a missing extra does not leave an orphan directory behind.
         try:
             from key_value.aio.stores.filetree import FileTreeStore
-        except ModuleNotFoundError as exc:  # pragma: no cover — fastmcp pulls this in
-            raise ImportError(
+        except ImportError as exc:  # pragma: no cover — fastmcp pulls this in
+            raise ConfigurationError(
                 "FileTreeStore requires 'py-key-value-aio[filetree]'. "
                 "fastmcp pulls this in transitively; reinstall fastmcp "
-                "or add 'py-key-value-aio[filetree]' to your dependencies."
+                "or add 'py-key-value-aio[filetree]' to your dependencies. "
+                f"The import failed with: {exc}"
             ) from exc
         directory = parsed.path
         Path(directory).mkdir(parents=True, exist_ok=True)
@@ -273,11 +342,12 @@ def _build_backend(url: str) -> AsyncKeyValue:
     if scheme == "redis":
         try:
             from key_value.aio.stores.redis import RedisStore
-        except ModuleNotFoundError as exc:
-            raise ImportError(
+        except ImportError as exc:
+            raise ConfigurationError(
                 "RedisStore requires the 'redis' extra. Install with "
                 "`pip install 'fastmcp-pvl-core[redis]'` or add "
-                "'py-key-value-aio[redis]' to your dependencies."
+                "'py-key-value-aio[redis]' to your dependencies. "
+                f"The import failed with: {exc}"
             ) from exc
         logger.info("kv_store backend=redis host=%s", parsed.hostname)
         return RedisStore(url=url)
@@ -285,18 +355,19 @@ def _build_backend(url: str) -> AsyncKeyValue:
     if scheme == "dynamodb":
         try:
             from key_value.aio.stores.dynamodb import DynamoDBStore
-        except ModuleNotFoundError as exc:
-            raise ImportError(
+        except ImportError as exc:
+            raise ConfigurationError(
                 "DynamoDBStore requires the 'dynamodb' extra. Install "
                 "with `pip install 'fastmcp-pvl-core[dynamodb]'` or "
-                "add 'py-key-value-aio[dynamodb]' to your dependencies."
+                "add 'py-key-value-aio[dynamodb]' to your dependencies. "
+                f"The import failed with: {exc}"
             ) from exc
         # DynamoDB table names live in netloc; there is no host:port
         # convention. Tolerate (and discard) a stray ":..." for URL-
         # grammar consistency rather than failing on a benign extra.
         table_name = parsed.netloc.split(":")[0]
         if not table_name:
-            raise ValueError(
+            raise ConfigurationError(
                 "dynamodb:// URL must include a table name, e.g. "
                 "'dynamodb://my-table?region=us-east-1'"
             )
@@ -313,16 +384,17 @@ def _build_backend(url: str) -> AsyncKeyValue:
     if scheme == "mongodb":
         try:
             from key_value.aio.stores.mongodb import MongoDBStore
-        except ModuleNotFoundError as exc:
-            raise ImportError(
+        except ImportError as exc:
+            raise ConfigurationError(
                 "MongoDBStore requires the 'mongodb' extra. Install "
                 "with `pip install 'fastmcp-pvl-core[mongodb]'` or add "
-                "'py-key-value-aio[mongodb]' to your dependencies."
+                "'py-key-value-aio[mongodb]' to your dependencies. "
+                f"The import failed with: {exc}"
             ) from exc
         logger.info("kv_store backend=mongodb host=%s", parsed.hostname)
         return MongoDBStore(url=url)
 
-    raise ValueError(
+    raise ConfigurationError(
         f"Unsupported kv_store URL scheme {scheme!r}. Use one of: "
         "'memory://', 'file:///path', 'redis://...', "
         "'dynamodb://<table>?region=...', 'mongodb://...'."

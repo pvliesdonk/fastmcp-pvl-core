@@ -50,9 +50,10 @@ def build_event_store(env_prefix: str, config: ServerConfig) -> EventStore:
         whose storage is namespaced under ``"events"``.
 
     Raises:
-        ValueError: If the URL scheme is unsupported.
-        ImportError: If a backend-specific extra is required but not
-            installed.
+        ConfigurationError: If the URL scheme is unsupported, the URL
+            is malformed, or importing the backend it selects fails.
+            Delegated from :func:`build_kv_store`; see its ``Raises:``
+            for the one failure this does not cover (#337).
     """
     # Local imports keep package import light for downstream that do not
     # use this helper.
