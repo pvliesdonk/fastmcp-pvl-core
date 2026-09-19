@@ -30,13 +30,13 @@ from __future__ import annotations
 import logging
 import os
 from typing import TYPE_CHECKING
-from urllib.parse import urlparse
 
 from fastmcp import FastMCP
 
 from ._config import ServerConfig
 from ._env import _resolve_key
 from ._errors import ConfigurationError
+from ._url import parse_operator_url
 
 if TYPE_CHECKING:
     from fastmcp_tasks import TasksExtension
@@ -124,7 +124,16 @@ def _resolve_url_override(
     # default*, so an explicitly-set FASTMCP_DOCKET_URL — checked
     # above — outranks it, unlike the explicit tasks_url branch.
     kv_url = config.kv_store_url or config.event_store_url
-    if kv_url and urlparse(kv_url).scheme == "redis":
+    if not kv_url:
+        return None
+    # Named for the variable actually set: the failure is in the kv URL,
+    # even though it surfaces while the task backend is being configured.
+    variable = (
+        _resolve_key(env_prefix, "KV_STORE_URL")
+        if config.kv_store_url
+        else _resolve_key(env_prefix, "EVENT_STORE_URL")
+    )
+    if parse_operator_url(kv_url, variable=variable).scheme == "redis":
         return kv_url
     return None
 
@@ -210,7 +219,12 @@ def configure_task_backend(
 
     Raises:
         ConfigurationError: If ``config.tasks_url`` is set to a URL whose
-            scheme Docket does not support.
+            scheme Docket does not support, or if any URL this reads does
+            not parse — ``tasks_url``, the ``kv_store_url`` /
+            ``event_store_url`` it may reuse, or the effective
+            ``FASTMCP_DOCKET_URL``. The last is checked after the
+            extension is registered. Messages name the variable, never
+            its value (#343).
     """
     # Validate the explicit operator value before anything can short-
     # circuit: a typo in <PREFIX>_TASKS_URL must fail fast even when
@@ -221,7 +235,9 @@ def configure_task_backend(
     # redaction rule _kv_store.py applies).
     url: str | None = None
     if config.tasks_url:
-        scheme = urlparse(config.tasks_url).scheme
+        scheme = parse_operator_url(
+            config.tasks_url, variable=_resolve_key(env_prefix, "TASKS_URL")
+        ).scheme
         if scheme not in _DOCKET_SCHEMES:
             raise ConfigurationError(
                 f"{_resolve_key(env_prefix, 'TASKS_URL')} has unsupported "
@@ -258,7 +274,12 @@ def configure_task_backend(
     mcp.add_extension(extension)
 
     effective = extension.docket_settings
-    effective_scheme = urlparse(effective.url).scheme
+    # ``effective.url`` may come from the extension's own
+    # ``FASTMCP_DOCKET_URL`` default, which is operator input pvl-core
+    # never validated.
+    effective_scheme = parse_operator_url(
+        effective.url, variable="FASTMCP_DOCKET_URL"
+    ).scheme
     if effective_scheme == "memory" and config.transport in ("http", "sse"):
         logger.info(
             "task backend=memory process_local=true lost_on_restart=true action=%s",

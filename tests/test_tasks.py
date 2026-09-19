@@ -64,6 +64,29 @@ class TestExplicitTasksUrl:
         ext = configure_task_backend(mcp, "MY_APP", config)
         assert _settings(ext).url == "memory://"
 
+    def test_unparseable_url_does_not_leak_userinfo(self, docket_installed, mcp):
+        """A URL ``urlparse`` rejects must not echo its netloc (#343).
+
+        CPython's ``_checknetloc`` puts the raw netloc — userinfo
+        included — in its ``ValueError``. Part of the sweep in
+        ``tests/test_url_redaction.py``; it lives here because the
+        entry point needs this module's fixtures.
+        """
+        import traceback
+
+        config = ServerConfig(tasks_url="redis://alice:hunter2@h\u2100st")
+        with pytest.raises(ConfigurationError) as exc_info:
+            configure_task_backend(mcp, "MY_APP", config)
+        rendered = "".join(
+            traceback.format_exception(
+                type(exc_info.value), exc_info.value, exc_info.value.__traceback__
+            )
+        )
+        for secret in ("hunter2", "alice"):
+            assert secret not in str(exc_info.value)
+            assert secret not in rendered
+        assert "MY_APP_TASKS_URL" in str(exc_info.value)
+
     @pytest.mark.parametrize("bad", ["file:///data/q", "postgres://h/db", "redis"])
     def test_unsupported_scheme_raises_naming_var(self, docket_installed, mcp, bad):
         config = ServerConfig(tasks_url=bad)

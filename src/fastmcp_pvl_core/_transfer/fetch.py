@@ -43,9 +43,11 @@ import ipaddress
 import logging
 import socket
 from dataclasses import dataclass
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import urlunparse
 
 import httpx
+
+from .._url import UNPARSEABLE, safe_netloc, try_parse_url
 
 logger = logging.getLogger(__name__)
 
@@ -212,11 +214,25 @@ def _redact_url(url: str) -> str:
     and pre-signed tokens in the query string. Every message this primitive
     itself emits — log lines and the exceptions it raises alike — passes the URL
     through here first (ADR §8).
+
+    Never raises. ``urlparse`` rejects some malformed URLs with a
+    ``ValueError`` that embeds the raw netloc, so a redactor that let that
+    escape would emit the unredacted value as its own exception message —
+    failing open on exactly the input it exists to sanitise. An
+    unparseable URL redacts to :data:`~fastmcp_pvl_core._url.UNPARSEABLE`
+    instead (#343).
     """
-    parsed = urlparse(url)
-    netloc = _bracket_host(parsed.hostname or "")
-    if parsed.port is not None:
-        netloc = f"{netloc}:{parsed.port}"
+    parsed = try_parse_url(url)
+    if parsed is None:
+        return UNPARSEABLE
+    # ``safe_netloc`` rather than ``parsed.port``: the attribute is
+    # computed on access and raises with the text it could not cast
+    # quoted, which for ``https://alice:hunter2`` is the password. An
+    # authority we cannot rebuild safely redacts to the placeholder
+    # rather than to a partial value (#343).
+    netloc = safe_netloc(parsed)
+    if netloc is None:
+        return UNPARSEABLE
     return urlunparse(parsed._replace(netloc=netloc, query="", fragment=""))
 
 
@@ -338,7 +354,12 @@ async def fetch_url(
     if timeout_s <= 0:
         raise ValueError(f"timeout_s must be positive, got {timeout_s}")
 
-    parsed = urlparse(url)
+    # ``ValueError`` matches this function's existing contract for a bad
+    # URL, but the message is ours: ``urlparse``'s own can embed the raw
+    # netloc, userinfo included (#343).
+    parsed = try_parse_url(url)
+    if parsed is None:
+        raise ValueError("The fetch URL could not be parsed.")
     if parsed.scheme not in _ALLOWED_SCHEMES:
         raise ValueError(f"Only http and https URLs are allowed, got {parsed.scheme!r}")
     hostname = parsed.hostname
@@ -349,9 +370,12 @@ async def fetch_url(
     # embedded credentials are never relayed to the origin. Everything else
     # about the request — including the address validation and the pin — is the
     # transport's job, so it also covers each redirect hop.
-    netloc = _bracket_host(hostname)
-    if parsed.port is not None:
-        netloc = f"{netloc}:{parsed.port}"
+    netloc = safe_netloc(parsed)
+    if netloc is None:
+        # Same contract as the scheme/host rejections above, but the
+        # message is ours: ``ParseResult.port`` quotes the text it could
+        # not cast, which may be a password (#343).
+        raise ValueError("The fetch URL has an invalid port.")
     request_url = urlunparse(parsed._replace(netloc=netloc))
 
     chunks: list[bytes] = []
