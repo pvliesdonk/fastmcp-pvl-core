@@ -11,7 +11,7 @@ from key_value.aio.stores.filetree import FileTreeStore
 from key_value.aio.stores.memory import MemoryStore
 from key_value.aio.wrappers.prefix_collections import PrefixCollectionsWrapper
 
-from fastmcp_pvl_core import ServerConfig, build_kv_store
+from fastmcp_pvl_core import ConfigurationError, ServerConfig, build_kv_store
 
 _IS_ROOT = hasattr(os, "geteuid") and os.geteuid() == 0
 """Root ignores directory permission bits, so the unwritable-directory
@@ -82,22 +82,22 @@ class TestBuildKvStoreFileBackend:
         # — netloc absorbs the would-be path leading segment. Reject
         # explicitly rather than silently rewriting to the default.
         config = ServerConfig(kv_store_url="file://var/state")
-        with pytest.raises(ValueError, match="host component"):
+        with pytest.raises(ConfigurationError, match="host component"):
             build_kv_store(config, namespace="ns")
 
     def test_file_url_with_empty_path_rejected(self):
         config = ServerConfig(kv_store_url="file://")
-        with pytest.raises(ValueError, match="missing a path"):
+        with pytest.raises(ConfigurationError, match="missing a path"):
             build_kv_store(config, namespace="ns")
 
-    def test_file_url_value_error_does_not_leak_credentials(self):
+    def test_file_url_error_does_not_leak_credentials(self):
         # A malformed `file://` URL with credentials in userinfo
         # (rare but possible operator misconfiguration) must not echo
-        # the raw URL into the ValueError text — that string ends up
+        # the raw URL into the error text — that string ends up
         # in process logs / Sentry. Parallel to the legacy-warning
         # credential-redaction promise.
         config = ServerConfig(kv_store_url="file://alice:hunter2@host/p")
-        with pytest.raises(ValueError) as exc_info:
+        with pytest.raises(ConfigurationError) as exc_info:
             build_kv_store(config, namespace="ns")
         msg = str(exc_info.value)
         assert "hunter2" not in msg
@@ -272,7 +272,7 @@ class TestBuildKvStoreUrlPrecedence:
         with caplog.at_level(logging.WARNING, logger="fastmcp_pvl_core._kv_store"):
             try:
                 build_kv_store(config, namespace="ns")
-            except ImportError:
+            except ConfigurationError:
                 # The redis backend may not be installed in this env;
                 # we only care about the log line emitted before
                 # backend construction is attempted.
@@ -301,11 +301,51 @@ class TestBuildKvStoreUrlPrecedence:
         assert len(legacy_warnings) == 1
 
 
+class TestBuildKvStoreBrokenBackendModule:
+    """A store module that is present but cannot provide its symbol.
+
+    Separate from :class:`TestBuildKvStoreOptionalBackends` because it
+    deliberately does not use that class's ``_hide_module`` helper —
+    the helper synthesises a ``ModuleNotFoundError``, which is the one
+    shape that cannot exercise this path.
+    """
+
+    def test_store_module_present_but_broken_is_a_configuration_error(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """The shape the other tests in this class cannot produce.
+
+        ``py-key-value-aio`` always ships the store submodules; only the
+        client libraries are extras, and each store module turns its
+        missing client into a bare ``ImportError`` rather than a
+        ``ModuleNotFoundError``. A handler narrowed to the latter lets
+        that escape, which made the one-type contract false in the most
+        common partial install. ``_hide_module`` cannot reproduce it —
+        ``sys.modules[name] = None`` synthesises a
+        ``ModuleNotFoundError``. Substituting a module object that
+        lacks the symbol does, deterministically and without depending
+        on which extras this environment happens to have.
+        """
+        import sys
+        import types
+
+        broken = types.ModuleType("key_value.aio.stores.redis")
+        monkeypatch.setitem(sys.modules, "key_value.aio.stores.redis", broken)
+        config = ServerConfig(kv_store_url="redis://localhost:6379/0")
+        with pytest.raises(ConfigurationError, match=r"fastmcp-pvl-core\[redis\]") as e:
+            build_kv_store(config, namespace="ns")
+        # The hint must not be the whole story: the real cause travels
+        # with it, so an unrelated import failure cannot be misread as
+        # "you forgot to install the extra".
+        assert "The import failed with" in str(e.value)
+        assert isinstance(e.value.__cause__, ImportError)
+
+
 class TestBuildKvStoreOptionalBackends:
     """The redis/dynamodb/mongodb backends are optional extras.
 
     When the relevant ``py-key-value-aio`` extra is not installed, the
-    factory must raise ``ImportError`` with a message that names the
+    factory must raise ``ConfigurationError`` with a message that names the
     pvl-core extra to install — not a bare ``ModuleNotFoundError`` that
     leaves the operator guessing.
 
@@ -325,35 +365,63 @@ class TestBuildKvStoreOptionalBackends:
     def test_redis_import_error_names_extra(self, monkeypatch: pytest.MonkeyPatch):
         self._hide_module(monkeypatch, "key_value.aio.stores.redis")
         config = ServerConfig(kv_store_url="redis://localhost:6379/0")
-        with pytest.raises(ImportError, match=r"fastmcp-pvl-core\[redis\]"):
+        with pytest.raises(ConfigurationError, match=r"fastmcp-pvl-core\[redis\]"):
             build_kv_store(config, namespace="ns")
 
     def test_dynamodb_import_error_names_extra(self, monkeypatch: pytest.MonkeyPatch):
         self._hide_module(monkeypatch, "key_value.aio.stores.dynamodb")
         config = ServerConfig(kv_store_url="dynamodb://my-table?region=us-east-1")
-        with pytest.raises(ImportError, match=r"fastmcp-pvl-core\[dynamodb\]"):
+        with pytest.raises(ConfigurationError, match=r"fastmcp-pvl-core\[dynamodb\]"):
             build_kv_store(config, namespace="ns")
 
     def test_mongodb_import_error_names_extra(self, monkeypatch: pytest.MonkeyPatch):
         self._hide_module(monkeypatch, "key_value.aio.stores.mongodb")
         config = ServerConfig(kv_store_url="mongodb://localhost:27017/db")
-        with pytest.raises(ImportError, match=r"fastmcp-pvl-core\[mongodb\]"):
+        with pytest.raises(ConfigurationError, match=r"fastmcp-pvl-core\[mongodb\]"):
             build_kv_store(config, namespace="ns")
+
+
+class TestBuildKvStoreUnparseableUrl:
+    def test_unparseable_url_is_a_configuration_error(self):
+        """`urlparse` rejects some URLs before any scheme dispatch.
+
+        An unclosed IPv6 bracket is the operator's typo, so it must not
+        surface as the bare ``ValueError`` that means "the calling code
+        is wrong" everywhere else in this module (#337).
+        """
+        config = ServerConfig(kv_store_url="redis://[oops")
+        with pytest.raises(ConfigurationError) as exc_info:
+            build_kv_store(config, namespace="ns")
+        assert "not a parseable URL" in str(exc_info.value)
+
+    def test_unparseable_url_error_does_not_echo_the_url(self):
+        """Same redaction promise as the ``file://`` guards.
+
+        An unparseable URL can still carry userinfo, and this message is
+        built from an exception pvl-core did not author, so the
+        no-echo guarantee is worth pinning rather than assuming.
+        """
+        config = ServerConfig(kv_store_url="redis://alice:hunter2@[oops")
+        with pytest.raises(ConfigurationError) as exc_info:
+            build_kv_store(config, namespace="ns")
+        msg = str(exc_info.value)
+        assert "hunter2" not in msg
+        assert "alice" not in msg
 
 
 class TestBuildKvStoreUnknownScheme:
     def test_unknown_scheme_raises(self):
         config = ServerConfig(kv_store_url="postgres://localhost/db")
-        with pytest.raises(ValueError, match="Unsupported kv_store URL scheme"):
+        with pytest.raises(ConfigurationError, match="Unsupported kv_store URL scheme"):
             build_kv_store(config, namespace="ns")
 
     def test_dynamodb_requires_table_name(self):
         # ``dynamodb://`` with no host portion is meaningless — bail
         # early rather than constructing a store that points at no
-        # table. Skip if the optional extra is not installed (the
-        # ImportError would fire first and a separate test covers
-        # that case).
+        # table. Skip if the optional extra is not installed: the
+        # missing-extra error would fire first, and a separate test
+        # covers that case.
         pytest.importorskip("key_value.aio.stores.dynamodb")
         config = ServerConfig(kv_store_url="dynamodb://?region=us-east-1")
-        with pytest.raises(ValueError, match="must include a table name"):
+        with pytest.raises(ConfigurationError, match="must include a table name"):
             build_kv_store(config, namespace="ns")
