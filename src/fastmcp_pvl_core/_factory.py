@@ -16,9 +16,9 @@ Two orthogonal helpers live here:
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
-from urllib.parse import urlparse
 
 from ._config import ServerConfig
+from ._url import parse_operator_url, safe_netloc
 
 if TYPE_CHECKING:
     from fastmcp.server.event_store import EventStore
@@ -73,7 +73,9 @@ def compute_app_domain(config: ServerConfig) -> str | None:
     Priority:
 
     1. ``config.app_domain`` (explicit operator override)
-    2. Host portion (``netloc``) of ``config.base_url``
+    2. Host (and port) of ``config.base_url``, with any ``user:pass@``
+       userinfo removed — this value becomes a CSP origin, so credentials
+       must not travel in it (#343)
     3. ``None`` when neither is set
 
     Projects that need a domain-specific fallback (e.g. a hash-based
@@ -87,10 +89,15 @@ def compute_app_domain(config: ServerConfig) -> str | None:
     Returns:
         The iframe domain, or ``None`` when neither override nor
         ``base_url`` host is available.
+
+    Raises:
+        ConfigurationError: ``config.base_url`` does not parse as a URL.
+            The message names the variable, never its value, which may
+            carry credentials.
     """
     if config.app_domain:
         return config.app_domain
     if config.base_url:
-        parsed = urlparse(config.base_url)
-        return parsed.netloc or None
+        parsed = parse_operator_url(config.base_url, variable="{PREFIX}_BASE_URL")
+        return safe_netloc(parsed)
     return None

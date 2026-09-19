@@ -33,10 +33,11 @@ import logging
 import os
 from pathlib import Path
 from typing import TYPE_CHECKING
-from urllib.parse import ParseResult, parse_qs, urlparse
+from urllib.parse import parse_qs
 
 from ._config import ServerConfig
 from ._errors import ConfigurationError
+from ._url import UNPARSEABLE, parse_operator_url, try_parse_url
 
 if TYPE_CHECKING:
     from key_value.aio.protocols.key_value import AsyncKeyValue
@@ -140,8 +141,10 @@ def build_kv_store(
         )
 
     url = config.kv_store_url
+    variable = "{PREFIX}_KV_STORE_URL"
     if url is None and config.event_store_url is not None:
         url = config.event_store_url
+        variable = "{PREFIX}_EVENT_STORE_URL"
         global _legacy_url_warned
         if not _legacy_url_warned:
             # Log only the scheme — operator-set URLs may carry
@@ -157,8 +160,11 @@ def build_kv_store(
             _legacy_url_warned = True
     if not url:
         url = _default_url()
+        # Generated, not operator-set: do not tell them to fix a
+        # variable they never touched.
+        variable = "the generated default store URL"
 
-    backend = _build_backend(url)
+    backend = _build_backend(url, variable=variable)
 
     from key_value.aio.wrappers.prefix_collections import PrefixCollectionsWrapper
 
@@ -242,59 +248,22 @@ def _scheme_for_log(url: str) -> str:
     logged beyond the scheme — the value may carry userinfo
     credentials.
     """
-    try:
-        return urlparse(url).scheme
-    except ValueError:
-        return "<unparseable>"
+    parsed = try_parse_url(url)
+    return parsed.scheme if parsed is not None else UNPARSEABLE
 
 
-def _parse_kv_url(url: str) -> ParseResult:
-    """Parse an operator-supplied store URL, or reject it as misconfigured.
-
-    ``urlparse`` rejects some malformed URLs outright — an unclosed IPv6
-    bracket, for one — with a bare :class:`ValueError`. That is the
-    operator's typo, so it reports as their error rather than as the
-    programming error a bare ``ValueError`` means everywhere else in
-    this module (#337).
-
-    Args:
-        url: The operator's store URL.
-
-    Returns:
-        The parsed URL.
-
-    Raises:
-        ConfigurationError: *url* is not parseable. The message repeats
-            neither *url* nor ``urlparse``'s own text, and suppresses
-            the cause with ``from None``: one of ``urlparse``'s two
-            failure messages embeds the raw netloc, userinfo included,
-            and a chained traceback would publish it. Same redaction
-            rule the ``file://`` guards follow.
-    """
-    try:
-        return urlparse(url)
-    except ValueError:
-        # ``from None`` with a fixed message, deliberately: ``urlparse``'s
-        # own text is not safe to repeat. ``_checknetloc`` interpolates the
-        # raw netloc — "netloc 'alice:hunter2@h...' contains invalid
-        # characters under NFKC normalization" — so both the message and a
-        # chained cause's traceback would publish userinfo credentials to
-        # logs and Sentry. The operator set this variable and does not need
-        # it read back; naming which variable is the actionable part.
-        raise ConfigurationError(
-            "kv_store URL could not be parsed. Check the store URL "
-            "variable; its value is withheld here because it may carry "
-            "credentials."
-        ) from None
-
-
-def _build_backend(url: str) -> AsyncKeyValue:
+def _build_backend(url: str, *, variable: str) -> AsyncKeyValue:
     """Dispatch a URL to its backing AsyncKeyValue store.
 
     Kept private so callers cannot bypass the namespace wrapper that
     :func:`build_kv_store` applies.
+
+    Args:
+        url: The resolved store URL.
+        variable: Name of the setting *url* came from, for the error
+            message if it does not parse.
     """
-    parsed = _parse_kv_url(url)
+    parsed = parse_operator_url(url, variable=variable)
     scheme = parsed.scheme
 
     if scheme == "memory":
