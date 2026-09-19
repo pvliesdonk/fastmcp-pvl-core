@@ -104,8 +104,10 @@ def safe_netloc(parsed: ParseResult) -> str | None:
         parsed: A parsed URL.
 
     Returns:
-        ``host`` or ``host:port``, IPv6 hosts bracketed, with any
-        ``user:pass@`` removed. ``None`` when the authority has no host
+        ``host`` or ``host:port``, with any ``user:pass@`` removed.
+        IPv6 hosts are bracketed: ``urlparse`` returns them unbracketed,
+        but a netloc or ``Host`` header must bracket them (``[::1]``) to
+        be well-formed. ``None`` when the authority has no host
         or its port will not cast — callers decide whether that is a
         placeholder or a rejection. Nothing derived from the offending
         text is returned, since that text is the thing that leaks.

@@ -197,16 +197,6 @@ async def _resolve_pinned_ip(hostname: str, port: int) -> str:
     return resolved[0]
 
 
-def _bracket_host(host: str) -> str:
-    """Wrap an IPv6 literal in ``[]`` for a netloc / ``Host`` header.
-
-    ``urlparse`` returns IPv6 hosts unbracketed, but a netloc or ``Host`` header
-    must bracket them (``[::1]``) to be well-formed. A domain or IPv4 literal
-    (no ``:``) is returned unchanged.
-    """
-    return f"[{host}]" if ":" in host else host
-
-
 def _redact_url(url: str) -> str:
     """Return *url* with userinfo and query/fragment stripped.
 
