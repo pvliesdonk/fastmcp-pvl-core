@@ -13,9 +13,14 @@ contract and cannot drift.
 This store is a **fallback**. It exists because most clients do not
 negotiate the SEP-2663 tasks extension yet; where one does, the native
 task already is the background mechanism and every verb here yields to
-it rather than starting a second one (#324). Mode introspection stays
-inside the verbs — path-2 authors never branch on execution mode
-themselves:
+it rather than starting a second one (#324). When the fallback can go
+is a per-deployment observation, never a pvl-core version: the client
+decides task-versus-foreground before the tool body runs and nothing
+promotes a foreground call later, so the store is idle only where every
+client negotiates tasks. ``docs/jobs.md`` ("When the fallback can go")
+records the criterion and the log lines that evidence it (#346). Mode
+introspection stays inside the verbs — path-2 authors never branch on
+execution mode themselves:
 
 - :meth:`Jobs.run_with_deadline` — native task → just run; foreground
   within the soft deadline → inline result; foreground past it → promote
@@ -280,6 +285,16 @@ class Jobs:
             {task}, timeout=self._config.soft_deadline_s
         )
         if task in done:
+            # The one fallback outcome with no INFO-level trace: a client
+            # that did not negotiate tasks, served within the deadline. The
+            # retirement criterion in ``docs/jobs.md`` needs to see exactly
+            # those clients, so the outcome is logged — at DEBUG, being
+            # per-call detail; success and inline failure alike.
+            logger.debug(
+                "job_ran_inline tool=%s elapsed_s=%s",
+                tool,
+                round(time.time() - started_at, 3),
+            )
             return task.result()  # re-raises an inline failure unchanged
 
         # Capture the subject scope NOW — the request context ends when

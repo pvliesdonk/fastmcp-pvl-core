@@ -9,6 +9,7 @@ polling contract), subject scoping, and the handle/poll payload shapes.
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Any
 
 import pytest
@@ -50,14 +51,44 @@ class TestRunWithDeadline:
 
         assert await jobs.run_with_deadline(work(), tool="t") == {"ok": True}
 
-    async def test_fast_failure_raises_inline(self):
+    async def test_fast_failure_raises_inline(self, caplog):
         jobs = _jobs()
 
         async def work() -> dict[str, Any]:
             raise ValueError("bad input")
 
-        with pytest.raises(ValueError, match="bad input"):
+        with (
+            caplog.at_level(logging.DEBUG, logger="fastmcp_pvl_core._jobs.manager"),
+            pytest.raises(ValueError, match="bad input"),
+        ):
             await jobs.run_with_deadline(work(), tool="t")
+        # An inline failure is still a foreground call the retirement
+        # criterion must see: the trace fires before the result re-raises.
+        assert any(
+            r.getMessage().startswith("job_ran_inline tool=t ")
+            for r in caplog.records
+            if r.name == "fastmcp_pvl_core._jobs.manager"
+        )
+
+    async def test_inline_completion_leaves_a_debug_trace(self, caplog):
+        # A foreground call served within the deadline is the one fallback
+        # outcome with no INFO line. The retirement criterion in docs/jobs.md
+        # reads this DEBUG line to see clients that did not negotiate tasks,
+        # so its absence would make the criterion unobservable.
+        jobs = _jobs()
+
+        async def work() -> dict[str, Any]:
+            return {"ok": True}
+
+        with caplog.at_level(logging.DEBUG, logger="fastmcp_pvl_core._jobs.manager"):
+            await jobs.run_with_deadline(work(), tool="t")
+        lines = [
+            r.getMessage()
+            for r in caplog.records
+            if r.name == "fastmcp_pvl_core._jobs.manager"
+        ]
+        assert len(lines) == 1
+        assert lines[0].startswith("job_ran_inline tool=t elapsed_s=")
 
     async def test_slow_work_promotes_to_handle(self):
         jobs = _jobs()

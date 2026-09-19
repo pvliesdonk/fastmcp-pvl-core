@@ -419,6 +419,15 @@ native path assumes PR 1's backend wiring exists.
 - The fallback promotes on the serving process only; operators needing
   durable cross-restart execution use the native path with Redis. This is
   a documented limit, not a gap to engineer around now.
+- The fallback has no version-based retirement. The task-versus-foreground
+  decision is the client's and is made before the tool body runs, and the
+  protocol has no server-initiated promotion, so a call that began in the
+  foreground never becomes a task. The store therefore goes *per
+  deployment*, once observation shows no client calling without task
+  negotiation — never on a pvl-core release. The criterion and the log
+  signatures that evidence it live in `docs/jobs.md` ("When the fallback
+  can go"); the protocol finding is in
+  `docs/reference/mcp-task-routing-is-requestor-driven.md` (#346).
 
 ## 9. Open questions for implementation time
 
