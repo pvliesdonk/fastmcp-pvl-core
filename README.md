@@ -910,8 +910,11 @@ mechanics without the wrapper — `from fastmcp_pvl_core.jobs import
 build_jobs` and use `jobs.run_with_deadline(...)` / `jobs.start(...)`
 inside its own tool. For intentional, runtime deferrals such as an
 upstream rate limit, `jobs.defer(...)` adds the client-visible reason and
-first-poll interval. The handles resolve through the same generic polling
-tool. Do not reach into `fastmcp_pvl_core._jobs` internals; the `jobs`
+first-poll interval, and those handles resolve through the same generic
+polling tool. All three verbs yield to a native SEP-2663 task when one is
+running — it already is the background mechanism — returning the work's
+own result there, with `defer` delivering its reason as the task's status
+message instead of in a handle. See [Jobs](docs/jobs.md). Do not reach into `fastmcp_pvl_core._jobs` internals; the `jobs`
 namespace is the supported seam.
 
 The downstream contract — payload shapes, inline-failure semantics,
