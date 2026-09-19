@@ -33,6 +33,14 @@ sources:
     title: "docket.worker — execution logging"
     resource: file:///.venv/lib/python3.10/site-packages/docket/worker.py
     accessed: 2026-09-19
+  - id: tasks-client
+    title: "fastmcp_tasks.client — the tasks client extension"
+    resource: file:///.venv/lib/python3.10/site-packages/fastmcp_tasks/client.py
+    accessed: 2026-09-19
+  - id: fastmcp-client
+    title: "fastmcp.client.client — internal extension fold-in"
+    resource: file:///.venv/lib/python3.10/site-packages/fastmcp/client/client.py
+    accessed: 2026-09-19
 ---
 
 # Who decides whether a tool call runs as a task
@@ -108,8 +116,42 @@ deployment can observe. The released specification and the installed
 - Therefore, for a client that did not opt in, the tool body is the only
   place a slow call can still be answered without blocking, which is what
   `Jobs.run_with_deadline`'s promotion to a pvl-core job handle provides.
-  [pins: tests/test_jobs.py::TestRegistration::test_wrapped_tool_inline_and_promoted,
-  tests/test_jobs_native_task.py::TestStartInsideANativeTask::test_start_returns_the_work_result]
+  [observed: against a server with the tasks extension registered and a
+  `TaskConfig(mode="optional")` tool, a `Client` with the internal
+  extension fold-in suppressed ran the body in the foreground and received
+  the fallback's handle; the stock `Client` ran the same call as a task and
+  blocked in `call_tool` until the gated work was released. fastmcp 4.0.0 /
+  fastmcp-tasks 4.0.0, Python 3.10.20, `memory://` backend.]
+  [pins: tests/test_jobs_native_task.py::TestFallbackPathUnchanged::test_a_client_that_does_not_negotiate_tasks_runs_in_the_foreground,
+  tests/test_jobs_native_task.py::TestStartInsideANativeTask::test_start_returns_the_work_result,
+  tests/test_jobs.py::TestRegistration::test_wrapped_tool_inline_and_promoted]
+
+### Opting in is a session-level advertisement, and FastMCP's client makes it for you
+
+- The opt-in the interceptor reads is the client's extension advertisement
+  from the handshake (`client_extension_settings(TASKS_EXTENSION_ID)`), not a
+  per-call flag; the tasks client extension "advertises no per-extension
+  settings" — its presence is the signal. [source: tasks-extension]
+  (`extension.py:249-252`) [source: tasks-client] (`client.py:339-341`)
+- `TasksClientExtension` "is registered on every FastMCP `Client`
+  automatically, so the caller opts in to nothing", and its result claim
+  polls `tasks/get` to completion "under the hood" so "the caller of
+  `call_tool` never learns the call was tasked". [source: tasks-client]
+  (`client.py:1-22`, `:325-336`)
+- The fold-in happens in the client's session setup through
+  `build_internal_client_extensions`, skipped only for a user extension with
+  the same identifier or when the client's private
+  `_auto_internal_extensions` flag is off (FastMCP's proxy client does that).
+  There is no public constructor argument to decline it. [source:
+  fastmcp-client] (`client.py:363`, `:1304-1314`)
+- "Tasks are modern-protocol only: on a legacy connection the SDK strips the
+  capability ad, the server never tasks". [source: tasks-client]
+  (`client.py:20-21`)
+- Consequence for the criterion: the population the fallback serves is
+  clients built on SDKs that do not advertise the extension, and
+  legacy-protocol connections — not FastMCP-based clients, which always opt
+  in. Any fastmcp `Client`-based probe of a family server therefore shows the
+  native path, never the fallback.
 
 ### What the native path logs
 

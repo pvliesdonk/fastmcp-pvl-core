@@ -19,7 +19,11 @@ whether the jobs fallback can ever have a version-based retirement (#346).
   tool-call interceptor only. The fallback therefore retires per deployment,
   by observation, never on a release.
 - Also recorded: Docket announces every native execution at INFO on
-  `docket.worker`, which is the native half of that observation.
+  `docket.worker`, which is the native half of that observation; and the
+  opt-in is a session-level advertisement that FastMCP's own `Client` makes
+  automatically, so a fastmcp-based probe never reaches the fallback (found
+  when a first client-level test hung on a call that had silently become a
+  task).
 
 First pass. Researched what a running FastMCP native task can tell its client, to settle
 whether `Jobs.defer` can hold to `run_with_deadline`'s every-mode guarantee

@@ -180,7 +180,11 @@ foreground never becomes a task (the evidence is in
 The fallback is retirable **per deployment**, once no client calls a
 long-running tool without opting into tasks — observed, not scheduled. A
 hosted fleet and a locally run server can sit at different points on that
-curve indefinitely.
+curve indefinitely. Opting in is a session-level advertisement, not a
+per-call choice: FastMCP's own `Client` makes it on every session and
+resolves the task transparently, so the clients the fallback serves are
+those built on other SDKs, and legacy-protocol connections, where the
+advertisement is stripped. A fastmcp-based probe never exercises it.
 
 The observation is in the logs. Each side has a signature the other never
 emits:

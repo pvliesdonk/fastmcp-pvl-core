@@ -26,6 +26,7 @@ from fastmcp import Client, FastMCP
 from fastmcp_tasks.client import call_tool_task
 
 from fastmcp_pvl_core import (
+    JOB_POLL_TOOL_NAME,
     JobLimitExceededError,
     JobsConfig,
     ServerConfig,
@@ -173,6 +174,44 @@ class TestFallbackPathUnchanged:
         assert payload["reason"] == _REASON
         assert payload["retry_after_s"] == 2.0
         assert "job_id" in payload
+
+    async def test_a_client_that_does_not_negotiate_tasks_runs_in_the_foreground(
+        self, release, monkeypatch
+    ):
+        """The routing the fallback exists for (docs/reference/mcp-task-routing-
+        is-requestor-driven.md): on a task-enabled server, a ``tools/call`` from
+        a client that never advertised the tasks extension runs the tool body
+        in the foreground and never becomes a task, so the job store answers.
+
+        FastMCP's own ``Client`` advertises the extension on every session and
+        resolves the task transparently, so it cannot play that client as-is:
+        the internal extension fold-in is suppressed here, which is what a
+        client built on another SDK, or a legacy-protocol connection, looks
+        like to the server."""
+        monkeypatch.setattr(
+            "fastmcp.client.client.build_internal_client_extensions",
+            lambda _callback: [],
+        )
+        mcp = _server(
+            release,
+            lambda jobs, coro: jobs.defer(coro, tool="probe_tool", reason=_REASON),
+        )
+        async with Client(mcp) as client:
+            handle = (await client.call_tool("probe_tool", {})).structured_content
+            assert handle["status"] == "working"
+            assert handle["reason"] == _REASON
+            release.set()
+            polled = None
+            for _ in range(60):
+                polled = (
+                    await client.call_tool(
+                        JOB_POLL_TOOL_NAME, {"job_id": handle["job_id"]}
+                    )
+                ).structured_content
+                if polled["status"] == "completed":
+                    break
+                await asyncio.sleep(0.05)
+            assert polled is not None and polled["result"] == {"answer": 42}
 
 
 @pytest.mark.asyncio
