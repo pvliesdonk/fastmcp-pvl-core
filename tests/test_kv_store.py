@@ -392,7 +392,32 @@ class TestBuildKvStoreUnparseableUrl:
         config = ServerConfig(kv_store_url="redis://[oops")
         with pytest.raises(ConfigurationError) as exc_info:
             build_kv_store(config, namespace="ns")
-        assert "not a parseable URL" in str(exc_info.value)
+        assert "could not be parsed" in str(exc_info.value)
+
+    def test_nfkc_netloc_error_does_not_leak_userinfo(self):
+        """The second ``urlparse`` failure path, which embeds the netloc.
+
+        ``_checknetloc`` raises "netloc '<raw netloc>' contains invalid
+        characters under NFKC normalization" — with userinfo intact —
+        for a host that NFKC-normalises into a delimiter (U+2100 becomes
+        ``a/c``). Interpolating that message, or chaining it as a cause,
+        publishes the password to every log and Sentry event carrying
+        the traceback. Caught post-push by the bot reviewer on PR #342
+        after a local probe covered only the IPv6-bracket path.
+        """
+        config = ServerConfig(kv_store_url="redis://alice:hunter2@h\u2100st")
+        with pytest.raises(ConfigurationError) as exc_info:
+            build_kv_store(config, namespace="ns")
+        msg = str(exc_info.value)
+        assert "hunter2" not in msg
+        assert "alice" not in msg
+        # A chained cause would print the same netloc in the traceback.
+        assert exc_info.value.__cause__ is None
+        assert (
+            exc_info.value.__context__ is None
+            or not str(exc_info.value.__context__).count("hunter2")
+            or exc_info.value.__suppress_context__
+        )
 
     def test_unparseable_url_error_does_not_echo_the_url(self):
         """Same redaction promise as the ``file://`` guards.

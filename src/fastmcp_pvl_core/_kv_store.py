@@ -264,15 +264,28 @@ def _parse_kv_url(url: str) -> ParseResult:
         The parsed URL.
 
     Raises:
-        ConfigurationError: *url* is not parseable. The message names
-            the failure shape only and never echoes *url*, which may
-            carry userinfo credentials — the same rule the ``file://``
-            guards follow.
+        ConfigurationError: *url* is not parseable. The message repeats
+            neither *url* nor ``urlparse``'s own text, and suppresses
+            the cause with ``from None``: one of ``urlparse``'s two
+            failure messages embeds the raw netloc, userinfo included,
+            and a chained traceback would publish it. Same redaction
+            rule the ``file://`` guards follow.
     """
     try:
         return urlparse(url)
-    except ValueError as exc:
-        raise ConfigurationError(f"kv_store URL is not a parseable URL: {exc}") from exc
+    except ValueError:
+        # ``from None`` with a fixed message, deliberately: ``urlparse``'s
+        # own text is not safe to repeat. ``_checknetloc`` interpolates the
+        # raw netloc — "netloc 'alice:hunter2@h...' contains invalid
+        # characters under NFKC normalization" — so both the message and a
+        # chained cause's traceback would publish userinfo credentials to
+        # logs and Sentry. The operator set this variable and does not need
+        # it read back; naming which variable is the actionable part.
+        raise ConfigurationError(
+            "kv_store URL could not be parsed. Check the store URL "
+            "variable; its value is withheld here because it may carry "
+            "credentials."
+        ) from None
 
 
 def _build_backend(url: str) -> AsyncKeyValue:
