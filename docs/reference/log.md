@@ -11,11 +11,14 @@ description: One entry per research pass, newest first.
 Fourth pass, while applying the `writing-model-facing-text` skill to the
 tools pvl-core registers (#358), on fastmcp 4.0.0.
 
-- New claim: an optional parameter defaulting to `None` drops an
+- New claim: on CPython 3.10 a parameter defaulting to `None` drops an
   `Annotated` string description and nests a `Field` one where a client
-  does not read it; a docstring `Args:` entry is the form that lands on
-  the property, including alongside an explicit `description=`. pvl-core's
-  tools take their parameter descriptions from `Args:` for that reason.
+  does not read it; a docstring `Args:` entry lands on the property on
+  every version, including alongside an explicit `description=`. First
+  attributed to fastmcp 4.0.0; a probe across fastmcp 4.0.0–4.0.5 and
+  CPython 3.10–3.13 showed the interpreter decides it, and the Python
+  docs record the `get_type_hints` change in 3.11. pvl-core supports
+  3.10, so its tools take their parameter descriptions from `Args:`.
 - Pinned the docstring-section and parameter-description claims to
   `tests/test_model_facing_text.py`, which lists every tool pvl-core
   registers through a client; the "not pinned" line under "Not covered"
