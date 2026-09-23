@@ -6,6 +6,31 @@ description: One entry per research pass, newest first.
 
 # Research log
 
+## 2026-09-23
+
+Third pass, a port rather than fresh research. Brought in
+`mcp-model-facing-text.md` from `fastmcp-server-template` (PR 651), where
+it was researched the same day against the MCP 2026-07-28 and 2025-11-25
+schemas, SEP-2640, the Claude, OpenAI, Gemini, VS Code and Cursor
+documentation, and fastmcp 4.0.5 by probe. The knowledge applies to the
+tools pvl-core registers on every downstream, so it is recorded here too.
+
+- Re-ran every FastMCP observation on the versions this repository locks
+  (fastmcp 4.0.0, mcp 2.1.1, CPython 3.10): the Args-less docstring leak,
+  the unparsed resource docstring, the prompt JSON-schema sentence
+  (including under postponed annotations), the dropped resource
+  `readOnlyHint`, instructions on legacy and modern sessions, and the
+  skills provider's listing and missing extension capability. All matched
+  4.0.5.
+- Removed the template page's section on pvl-core's instructions builder:
+  in this bundle that is pvl-core's own behaviour, recorded under
+  "Where this project departs" instead. The template's test pins were
+  dropped; the 2,048-unit claim is pinned to `tests/test_instructions.py`,
+  and the rest wait for the change that applies the
+  `writing-model-facing-text` skill to pvl-core's own descriptions.
+- Not split: the page is about 30 KB against the 25 KB guidance, as in the
+  template. The FastMCP-mapping facet is the natural second page.
+
 ## 2026-09-19
 
 Second pass. Researched who decides whether a `tools/call` runs as a task, to settle

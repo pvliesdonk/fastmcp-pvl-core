@@ -27,3 +27,10 @@ major bump makes every FastMCP reference stale regardless of its date.
   the tool body runs; nothing promotes a foreground call to a task later. Read
   by `_jobs/manager.py` and by the jobs fallback's retirement criterion. Valid
   for MCP 2025-11-25 / FastMCP 4.x.
+- [MCP model-facing text](mcp-model-facing-text.md) — who reads each
+  description field, how clients cut and index it, how FastMCP builds it
+  from a docstring, and what the vendors say it should carry; the evidence
+  behind the `writing-model-facing-text` skill. Read by the modules that
+  register tools on a downstream's server (`_server_info.py`,
+  `_jobs/register.py`, `_transfer/register.py`). Valid for MCP 2026-07-28
+  / FastMCP 4.x.
