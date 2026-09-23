@@ -234,6 +234,9 @@ only when invoked, so invoke them explicitly:
   outside this repo behaves (FastMCP internals, the MCP spec, an OAuth
   or OIDC flow, a stdlib or dependency quirk) and `docs/reference/` has
   no current page for it.
+- `writing-model-facing-text` — before writing or changing a tool,
+  parameter, resource or prompt description, a `note` hook's text, or a
+  server-instructions snippet.
 
 A new skill follows the same shape: a directory under `.agents/skills/`
 plus a relative symlink in `.claude/skills/`.
