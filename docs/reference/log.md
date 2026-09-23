@@ -8,6 +8,19 @@ description: One entry per research pass, newest first.
 
 ## 2026-09-23
 
+Fourth pass, while applying the `writing-model-facing-text` skill to the
+tools pvl-core registers (#358), on fastmcp 4.0.0.
+
+- New claim: an optional parameter defaulting to `None` drops an
+  `Annotated` string description and nests a `Field` one where a client
+  does not read it; a docstring `Args:` entry is the form that lands on
+  the property, including alongside an explicit `description=`. pvl-core's
+  tools take their parameter descriptions from `Args:` for that reason.
+- Pinned the docstring-section and parameter-description claims to
+  `tests/test_model_facing_text.py`, which lists every tool pvl-core
+  registers through a client; the "not pinned" line under "Not covered"
+  is gone.
+
 Third pass, a port rather than fresh research. Brought in
 `mcp-model-facing-text.md` from `fastmcp-server-template` (PR 651), where
 it was researched the same day against the MCP 2026-07-28 and 2025-11-25

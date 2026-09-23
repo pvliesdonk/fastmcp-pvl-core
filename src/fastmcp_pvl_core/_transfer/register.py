@@ -37,6 +37,11 @@ item 2). The standalone ingest primitives :func:`fetch_url` and
 :func:`decode_base64_capped` remain available for a server whose ingest is not a
 capability link at all.
 
+The tool descriptions, parameter descriptions and instructions snippets
+registered here reach the model on every downstream's server; how FastMCP
+builds them and how clients read them is in
+``docs/reference/mcp-model-facing-text.md``.
+
 Intra-package imports stay relative so a fold-in is a directory rename.
 """
 
@@ -93,11 +98,15 @@ _UPLOAD_ICON = _icon(_UPLOAD_SVG)
 def _describe(fn: Any, note: str | None) -> str:
     """Compose a tool description from *fn*'s docstring plus an optional *note*.
 
-    pvl-core's generic description (the function docstring) always comes first
-    and is never altered; a downstream *note* is appended after a blank line.
-    An absent note (``None`` or blank) yields the generic description unchanged.
+    pvl-core's generic description (the docstring text above its ``Args:``
+    section) always comes first and is never altered; a downstream *note* is
+    appended after a blank line. An absent note (``None`` or blank) yields the
+    generic description unchanged. The ``Args:`` entries stay out of the
+    description because FastMCP reads them into each parameter's own
+    description, where the model reads them when it fills that argument (see
+    ``docs/reference/mcp-model-facing-text.md``).
     """
-    base = inspect.cleandoc(fn.__doc__ or "")
+    base = inspect.cleandoc(fn.__doc__ or "").split("\n\nArgs:", 1)[0].rstrip()
     if note and note.strip():
         return f"{base}\n\n{note.strip()}"
     return base
@@ -345,19 +354,25 @@ def register_transfer_routes(
     # than ``@mcp.tool`` decoration so ``description=`` can be composed from each
     # function's own docstring: a nested closure cannot reference its own
     # ``__doc__`` in its decorator expression. The docstring therefore stays the
-    # single source of the generic description; a downstream note is appended.
+    # single source of the generic text: its summary becomes the description (a
+    # downstream note is appended) and its ``Args:`` entries the parameter
+    # descriptions. Both ship verbatim to the model, so they follow the
+    # ``writing-model-facing-text`` skill: no hook names, no reST markup.
     # Each closure validates the caller ``ref`` to an opaque handle, then defers
     # to the shared minter — so path 1 and path 2 mint through one code path.
     async def create_download_link(
         ref: str, ttl_s: float | None = None
     ) -> dict[str, Any]:
-        """Mint a capability link that serves the bytes for *ref* once.
+        """Create a download URL for a file; returns url and expires_in_s.
 
-        *ref* is a domain reference the ``validate`` hook resolves to an opaque
-        download handle (raising to reject). *ttl_s* is the requested lifetime in
-        seconds — omitted uses the configured default, a value over the configured
-        maximum is clamped to it, and a non-positive value is rejected. Returns
-        ``{"url", "expires_in_s"}``.
+        Use it to hand a file to the user or another program instead of
+        returning its bytes in a tool result.
+
+        Args:
+            ref: The file to serve, in this server's reference format.
+            ttl_s: Link lifetime in seconds; omit for the server's default. A
+                value above the server's maximum is capped, and zero or less
+                is rejected.
         """
         handle = await validate(ref, "download")
         return await links.mint_download(handle, ttl_s)
@@ -377,13 +392,17 @@ def register_transfer_routes(
     async def create_upload_link(
         ref: str, ttl_s: float | None = None
     ) -> dict[str, Any]:
-        """Mint a capability link that accepts one upload for *ref*.
+        """Create an upload URL for a file; returns url and expires_in_s.
 
-        *ref* is a domain reference the ``validate`` hook resolves to an opaque
-        upload handle (raising to reject). *ttl_s* is the requested lifetime in
-        seconds — omitted uses the configured default, a value over the configured
-        maximum is clamped to it, and a non-positive value is rejected. Returns
-        ``{"url", "expires_in_s"}``.
+        Use it to receive a file's bytes instead of passing them as a tool
+        argument.
+
+        Args:
+            ref: Where to store the uploaded file, in this server's reference
+                format.
+            ttl_s: Link lifetime in seconds; omit for the server's default. A
+                value above the server's maximum is capped, and zero or less
+                is rejected.
         """
         handle = await validate(ref, "upload")
         return await links.mint_upload(handle, ttl_s)

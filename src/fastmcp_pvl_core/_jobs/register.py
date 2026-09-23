@@ -21,6 +21,11 @@ decision, polling embedded in a domain tool) composes on
 :func:`~.manager.build_jobs` directly — path 2 — and returns the same
 public handle/poll shapes.
 
+The tool descriptions, parameter descriptions and instructions snippets
+registered here reach the model on every downstream's server; how FastMCP
+builds them and how clients read them is in
+``docs/reference/mcp-model-facing-text.md``.
+
 Intra-package imports stay relative so a fold-in is a directory rename.
 """
 
@@ -194,12 +199,14 @@ def register_job_tools(
         jobs: The shared :class:`Jobs` mechanics.
         note: Optional domain sentence appended to the tool description.
     """
+    # Model-facing text (the ``writing-model-facing-text`` skill): the tool
+    # description says what the call returns; the sequence that spans the
+    # long-running tool and this one lives once, in the WORKFLOWS snippet below.
     description = (
-        "Retrieve the outcome of a background job started by a "
-        "long-running tool on this server. When such a tool answers with "
-        'status "working" and a job_id, call this tool with that job_id '
-        "every few seconds until the status is terminal. Job records "
-        "expire after a while — fetch results soon after completion."
+        "Get the status of a background job started by a long-running tool on "
+        "this server; returns status (working, completed or failed) with the "
+        "result or error once it finishes. Job records expire, so fetch a "
+        "finished job's result promptly."
     )
     if note:
         description = f"{description} {note}"
@@ -220,6 +227,12 @@ def register_job_tools(
         ),
     )
     async def get_job_result(job_id: str) -> dict[str, Any]:
+        """Poll one job.
+
+        Args:
+            job_id: The job_id a long-running tool returned when it continued
+                in the background.
+        """
         try:
             return await jobs.poll(job_id)
         except JobNotFoundError as exc:

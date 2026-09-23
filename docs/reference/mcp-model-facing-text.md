@@ -372,6 +372,7 @@ wire text; the probes are the listings each marker describes, run through
   tool without `Args:` both shipped `Returns:` and `Raises:` verbatim; the
   same docstring with an `Args:` entry shipped summary and long paragraph
   only]
+  [pins: tests/test_model_facing_text.py::test_descriptions_carry_no_docstring_sections]
 - Issue 4952 reports that leak for parameterless tools; it is open, and the
   fix PRs were closed unmerged as of 2026-09-23. [source: fastmcp-4952]
 - A resource or template description is the raw docstring with no parsing
@@ -394,10 +395,24 @@ wire text; the probes are the listings each marker describes, run through
   the sentence appended with it]
 - `description=` on the decorator replaces the docstring description, and
   "docstring-derived parameter descriptions still apply". [source: fastmcp-tools]
+  [observed: fastmcp 4.0.0, a closure registered with `description=` and a
+  docstring whose `Args:` names both parameters listed both parameter
+  descriptions and the explicit description only]
+  [pins: tests/test_model_facing_text.py::test_every_parameter_has_a_description]
 - A parameter description comes from `Field(description=...)` or
   `Annotated[T, "text"]` first and from the docstring `Args:` entry only
   where the schema has none. Defaults appear as `default` and drop the
   parameter from `required`. [source: fastmcp-tools] [observed: the same listing]
+- An optional parameter defaulting to `None` does not carry an `Annotated`
+  description where a client looks for it: `Annotated[float | None, "text"]`
+  (and `Optional[float]`) lists with no `description`, and
+  `Annotated[float | None, Field(description=...)]` nests the description
+  inside an inner `anyOf`, leaving none on the property itself. A docstring
+  `Args:` entry for the same parameter lands on the property. A
+  non-optional `Annotated[float, "text"]` lands on the property too.
+  [observed: fastmcp 4.0.0 on CPython 3.10, one tool per variant listed
+  through `fastmcp.Client.list_tools()`, with and without `from __future__
+  import annotations`, the same result both ways]
 - Parameters with a `Depends()` default, and `Context` parameters, are
   removed from the schema before it is built. [source: fastmcp-tools]
   `exclude_args` is gone in FastMCP 4; `Depends` is the replacement.
@@ -527,10 +542,5 @@ wire text; the probes are the listings each marker describes, run through
   it.
 - How Claude Desktop, claude.ai and Cursor surface resources and prompts
   to the user or the model (see the [unverified] claims above).
-- A test holding the tools pvl-core registers (`get_server_info`,
-  `get_job_result`, the transfer link tools) to the FastMCP claims above.
-  The claims are observed, not pinned, in this repository; the pins come
-  with the change that applies the `writing-model-facing-text` skill to
-  pvl-core's own descriptions.
 - NumPy- and Sphinx-style docstrings: FastMCP tries those parsers too, but
   only Google style was probed.

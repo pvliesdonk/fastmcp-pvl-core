@@ -205,19 +205,20 @@ class TestDomainNotes:
     # Asserting a second-paragraph fragment (not just the opening sentence) is
     # what makes these tests catch a regression that drops the whole body or
     # truncates it to the first paragraph.
-    _BODY = "omitted uses the configured default, a value over the configured"
+    _BODY = "\n\nUse it to "
 
     async def test_download_note_appended_after_body(self) -> None:
         mcp, _, _ = _register(download_note="Refs are vault-relative paths.")
         desc = (await mcp.get_tool("create_download_link")).description
-        assert desc.startswith("Mint a capability link that serves the bytes")
+        assert desc.startswith("Create a download URL for a file")
         assert self._BODY in desc  # generic body survives in full
+        assert "Args:" not in desc  # the Args: entries became parameter text
         assert desc.endswith("\n\nRefs are vault-relative paths.")
 
     async def test_upload_note_appended_after_body(self) -> None:
         mcp, _, _ = _register(upload_note="Dest must be an allowed extension.")
         desc = (await mcp.get_tool("create_upload_link")).description
-        assert desc.startswith("Mint a capability link that accepts one upload")
+        assert desc.startswith("Create an upload URL for a file")
         assert self._BODY in desc
         assert desc.endswith("\n\nDest must be an allowed extension.")
 
@@ -235,7 +236,7 @@ class TestDomainNotes:
         # paragraph, no injected text.
         mcp, _, _ = _register()
         desc = (await mcp.get_tool("create_download_link")).description
-        assert desc.startswith("Mint a capability link that serves the bytes")
+        assert desc.startswith("Create a download URL for a file")
         assert self._BODY in desc
         assert desc == desc.strip()  # no stray leading/trailing whitespace
 
