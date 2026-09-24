@@ -6,6 +6,10 @@ service's version.  This is the one-call sanity check operators want when
 verifying that a fresh image is actually serving traffic — see issue #17
 for the motivating story (a ``docker pull`` without rebuild leaving an
 old image up).
+
+The tool's default description reaches the model on every downstream's
+server; how FastMCP builds it and how clients read it is in
+``docs/reference/mcp-model-facing-text.md``.
 """
 
 from __future__ import annotations
@@ -109,12 +113,13 @@ def register_server_info_tool(
 
     from . import __version__ as core_version
 
+    # Model-facing text: what the call returns and when to choose it, in
+    # terms the model sees in the result (``writing-model-facing-text``).
     default_description = (
-        f"Report wrapper and upstream version info for {server_name}. "
-        "Returns server_name, server_version, core_version "
-        "(fastmcp-pvl-core), and (when configured) an upstream version "
-        "block.  Useful for verifying a deployment matches the expected "
-        "build."
+        f"Report the version information of {server_name}; returns "
+        "server_name, server_version, core_version and, when configured, the "
+        "upstream service's version. Use it when asked which version or build "
+        "is running."
     )
 
     async def get_server_info() -> dict[str, Any]:

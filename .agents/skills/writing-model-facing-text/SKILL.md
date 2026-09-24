@@ -80,7 +80,9 @@ The docstring is the description. Its parts, in order:
 Then an `Args:` section with one sentence per parameter: meaning, format,
 what omitting it does. `if_match: Etag from read; omit for a new file.`
 Use `Field(description=...)` instead when the entry needs a constraint the
-schema should also carry. Set `annotations={"title": ..., "read_only_hint":
+schema should also carry, but not on a parameter defaulting to `None`
+while pvl-core supports Python 3.10: there the description falls off
+that property, so keep its entry in `Args:`. Set `annotations={"title": ..., "read_only_hint":
 ...}` on every tool.
 
 Two things FastMCP 4 does (observed on 4.0.0 and 4.0.5) that change how
