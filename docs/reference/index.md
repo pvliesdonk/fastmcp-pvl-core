@@ -34,3 +34,13 @@ major bump makes every FastMCP reference stale regardless of its date.
   register tools on a downstream's server (`_server_info.py`,
   `_jobs/register.py`, `_transfer/register.py`). Valid for MCP 2026-07-28
   / FastMCP 4.x.
+- [FastMCP tool-search transform and CodeMode](fastmcp-search-transform.md)
+  — what the search transforms change on the wire, that `always_visible`
+  fences discovery but not the proxy, that hidden task-capable tools drop
+  out of Docket registration, what the proxy preserves, and catalog sizes
+  measured on markdown-vault-mcp. Read by ADR 0004 and the catalog-mode
+  implementation it proposes. Valid for FastMCP 4.x.
+- [How MCP clients discover tools and identify themselves](mcp-client-tool-discovery.md)
+  — deferral is not observable server-side, what Claude Code, OpenCode and
+  Codex send as `clientInfo`, and what the specification lets a server do
+  with it. Read by ADR 0004. Valid for MCP 2026-07-28 / 2025-11-25.
