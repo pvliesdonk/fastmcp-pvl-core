@@ -297,10 +297,9 @@ that cost low.
 
 ## 8. Follow-ups
 
-Children of [#300], filed with this ADR (numbers in the PR that lands
-it):
+Children of [#300], filed with this ADR:
 
-- **pvl-core implementation**: `{PREFIX}_TOOL_CATALOG`, the fenced
+- **pvl-core implementation** ([#362]): `{PREFIX}_TOOL_CATALOG`, the fenced
   read-only proxy, unconditional pinning of task-capable and core tools,
   ordering after finalisation, the CAPABILITIES snippet, README and
   template docs. Tests pin: the invariant on every tool of a fixture
@@ -308,15 +307,15 @@ it):
   tool runs as a native task in `search` mode; instructions unchanged
   between modes apart from the added snippet; `_meta` and structured
   content through the proxy.
-- **Upstream, FastMCP**: `get_tasks()` applies server-level transforms, so
+- **Upstream, FastMCP** ([fastmcp#5261]): `get_tasks()` applies server-level transforms, so
   a search transform drops hidden task-capable tools from Docket and a
   direct call of such a tool fails on a modern connection; fifteen-line
   reproduction attached.
-- **Upstream, FastMCP**: the built-in proxy carries no annotations and
+- **Upstream, FastMCP** ([fastmcp#5260]): the built-in proxy carries no annotations and
   resolves pinned tools; design feedback adjacent to #4418 and the #4925
   thread, asking for a proxy fence predicate or annotation-carrying
   proxies.
-- **Downstream evaluation**: markdown-vault-mcp under OpenCode with
+- **Downstream evaluation** ([markdown-vault-mcp#1602]): markdown-vault-mcp under OpenCode with
   `search` on, measuring task success on a fixed script; the numbers in
   §2.3 are listing sizes, not task outcomes.
 
@@ -342,5 +341,9 @@ it):
 [#300]: https://github.com/pvliesdonk/fastmcp-pvl-core/issues/300
 [#294]: https://github.com/pvliesdonk/fastmcp-pvl-core/issues/294
 [#299]: https://github.com/pvliesdonk/fastmcp-pvl-core/issues/299
+[#362]: https://github.com/pvliesdonk/fastmcp-pvl-core/issues/362
+[fastmcp#5260]: https://github.com/PrefectHQ/fastmcp/issues/5260
+[fastmcp#5261]: https://github.com/PrefectHQ/fastmcp/issues/5261
+[markdown-vault-mcp#1602]: https://github.com/pvliesdonk/markdown-vault-mcp/issues/1602
 [`docs/reference/fastmcp-search-transform.md`]: ../reference/fastmcp-search-transform.md
 [`docs/reference/mcp-client-tool-discovery.md`]: ../reference/mcp-client-tool-discovery.md
