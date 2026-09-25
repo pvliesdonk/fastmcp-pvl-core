@@ -234,6 +234,10 @@ only when invoked, so invoke them explicitly:
   outside this repo behaves (FastMCP internals, the MCP spec, an OAuth
   or OIDC flow, a stdlib or dependency quirk) and `docs/reference/` has
   no current page for it.
+- `designing-tool-outcomes` — before writing or changing a tool that can
+  fail, refuse, find nothing or hit a conflict, or the request-logging
+  middleware's failure line: what the tool returns, raises and logs in
+  each case.
 - `writing-model-facing-text` — before writing or changing a tool,
   parameter, resource or prompt description, a `note` hook's text, or a
   server-instructions snippet.

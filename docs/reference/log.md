@@ -6,6 +6,32 @@ description: One entry per research pass, newest first.
 
 # Research log
 
+## 2026-09-25
+
+A port rather than fresh research. Brought in
+`mcp-tool-outcomes-and-errors.md` and its companion
+`negative-outcomes-and-faults.md` from `fastmcp-server-template` (PR 676),
+where they were researched the same day against the MCP 2026-07-28,
+2025-11-25 and 2025-06-18 specifications, fastmcp 4.0.9 and mcp 2.2.0 by
+source and probe, the Anthropic, OpenAI and Gemini documentation, four
+published servers, and (for the companion) HTTP, gRPC, OpenTelemetry,
+GraphQL, JSON-RPC and six language error models. They are the evidence
+behind the `designing-tool-outcomes` skill, which applies to the tools
+pvl-core registers and to its request-logging middleware.
+
+- Re-ran the wire-and-log probe on the versions this repository locks
+  (fastmcp 4.0.0, mcp 2.1.1, CPython 3.14): all five rows, and the masked
+  `ValueError` text, matched 4.0.9. Re-read the mcp 2.1.1 `ToolError` and
+  `UnexpectedToolError` docstrings; the quoted text is unchanged.
+- pvl-core's own middleware behaviour moved out of the claims into "Where
+  this project departs from the subject", with #363. Probed the tools
+  pvl-core registers: `get_job_result`'s unknown-job error and a
+  `validate` rejection on the transfer link tools both log ERROR in
+  FastMCP's record, the latter with a traceback; filed as #364.
+- The companion page needed no re-observation: it cites no FastMCP or
+  pvl-core behaviour. Next review: 2027-03-25 (MCP page), 2027-09-25
+  (companion).
+
 ## 2026-09-23
 
 Fourth pass, while applying the `writing-model-facing-text` skill to the
