@@ -382,8 +382,10 @@ models answer the same question is in the companion page,
 ## Where this project departs from the subject
 
 pvl-core is one of the subjects above, and its behaviour is recorded here
-rather than among the claims. None of it is a decision: each point is a
-tracked defect against the `designing-tool-outcomes` skill.
+rather than among the claims. The first two points are the 9.0.1 behaviour
+the probe observed; ADR 0005 (`docs/adr/0005-tool-boundary.md`) changed the
+second and added `tool_boundary`. The third is a tracked defect against the
+`designing-tool-outcomes` skill.
 
 - `wire_middleware_stack` installs only `RequestLoggingMiddleware`
   (`include_traceback` follows a DEBUG root logger). It wires no
@@ -394,7 +396,10 @@ tracked defect against the `designing-tool-outcomes` skill.
   A normal return logs `tool_call_completed` at INFO, and the middleware
   never inspects `is_error` on the result. [source: pvl-core-src]
   (`_logging_middleware.py`) [observed: same probe as the FastMCP table]
-  Tracked in [#363](https://github.com/pvliesdonk/fastmcp-pvl-core/issues/363).
+  Since ADR 0005 the line is logged at the exception's `log_level` when it
+  is a `FastMCPError` and at ERROR otherwise
+  ([#363](https://github.com/pvliesdonk/fastmcp-pvl-core/issues/363)),
+  pinned by `tests/test_logging_middleware.py::test_failed_line_level_follows_log_level`.
 - Two of the tools pvl-core registers report a caller-side refusal at
   ERROR in FastMCP's record: `get_job_result` raises its unknown-job
   `ToolError` without `log_level`, and the transfer link tools let the
