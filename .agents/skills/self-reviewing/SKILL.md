@@ -1,5 +1,5 @@
 ---
-name: code-review
+name: self-reviewing
 description: >-
   Use before opening a pull request, marking one ready for review, or
   pushing further commits to a branch with an open pull request — or when
@@ -8,7 +8,7 @@ description: >-
   works with any coding agent and needs no hosted model workflow.
 ---
 
-# Code review
+# Self-review
 
 This skill is the local self-review a change gets before its diff becomes
 someone else's problem: before a reviewer reads it, before a hosted bot

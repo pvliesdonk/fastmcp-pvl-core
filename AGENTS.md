@@ -226,7 +226,7 @@ Claude Code reaches them through `.claude/skills/` symlinks). They load
 only when invoked, so invoke them explicitly:
 
 - `authoring-issues-prs` — when filing an issue or opening a PR.
-- `code-review` — before opening a PR, marking one ready, or pushing
+- `self-reviewing` — before opening a PR, marking one ready, or pushing
   further commits to a branch with an open PR: self-review the
   cumulative diff.
 - `logging-standard` — before adding or changing a logging call.

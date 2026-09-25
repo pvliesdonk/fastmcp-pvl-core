@@ -19,7 +19,7 @@ found nothing.
 
 ## Local review
 
-- [ ] Ran a local code-review pass on the cumulative diff before `gh pr create`.
+- [ ] Ran a local self-review of the cumulative diff before `gh pr create`.
 - [ ] The PR title is a valid conventional commit (it becomes the squash
       subject PSR versions from), and this body has no stray
       `BREAKING CHANGE:` line.
