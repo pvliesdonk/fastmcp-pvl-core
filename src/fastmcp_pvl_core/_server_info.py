@@ -19,6 +19,8 @@ import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
+from ._url import redact_urls_in_text
+
 if TYPE_CHECKING:
     from fastmcp import FastMCP
 
@@ -68,7 +70,10 @@ def register_server_info_tool(
 
     If the upstream lookup raises, the upstream block becomes
     ``{"error": "<message>"}`` so the tool still returns the wrapper info
-    instead of failing the whole call.
+    instead of failing the whole call. The message is the exception's, with
+    every URL's userinfo, query and fragment removed: an HTTP client's
+    error quotes the request URL, and an operator's upstream URL may carry
+    credentials.
 
     Args:
         mcp: The :class:`FastMCP` instance to register on.
@@ -136,10 +141,15 @@ def register_server_info_tool(
             if inspect.isawaitable(result):
                 result = await result
         except Exception as exc:  # noqa: BLE001 — surface as structured error
+            # Redacted on both emit paths, and logged without exc_info: the
+            # rendered traceback would print the unredacted message again.
+            reason = redact_urls_in_text(str(exc))
             logger.warning(
-                "server_info_upstream_lookup_failed error=%s", exc, exc_info=True
+                "server_info_upstream_lookup_failed error_type=%s error=%s",
+                type(exc).__name__,
+                reason,
             )
-            payload[upstream_label] = {"error": str(exc)}
+            payload[upstream_label] = {"error": reason}
             return payload
 
         if isinstance(result, dict):
