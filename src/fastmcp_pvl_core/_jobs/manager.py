@@ -49,8 +49,11 @@ import math
 import time
 from typing import TYPE_CHECKING, Any
 
+from fastmcp.exceptions import FastMCPError
+
 from .._config import ServerConfig
 from .._kv_store import build_kv_store
+from .._tool_boundary import FAULT_MESSAGE
 from .config import JobsConfig
 from .records import (
     JOB_POLL_TOOL_NAME,
@@ -541,8 +544,26 @@ class Jobs:
             return
         exc = task.exception()
         if exc is not None:
-            logger.warning("job_failed job_id=%s error=%s", job_id, exc, exc_info=exc)
-            await self._store.fail(job_id=job_id, scope=scope, error=str(exc))
+            # The poll result carries the same text, and this line the same
+            # level, as the call would have produced had it failed inline
+            # (the designing-tool-outcomes skill; ADR 0005 §2.3).
+            if isinstance(exc, FastMCPError):
+                # Classified already: a ToolError the work raised on purpose,
+                # or a tool_boundary fault whose traceback is logged.
+                logger.log(exc.log_level, "job_failed job_id=%s error=%s", job_id, exc)
+                error = str(exc)
+            else:
+                # Work started with Jobs.start by a tool without a boundary:
+                # the same rule the boundary applies. Its own text can carry
+                # internals, so the poller never sees it, masked or not.
+                logger.error(
+                    "job_failed job_id=%s error_type=%s",
+                    job_id,
+                    type(exc).__name__,
+                    exc_info=exc,
+                )
+                error = FAULT_MESSAGE
+            await self._store.fail(job_id=job_id, scope=scope, error=error)
             return
         await self._store.finish(scope, job_id, _as_result_mapping(task.result()))
 

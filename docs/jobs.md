@@ -75,9 +75,14 @@ Rules of the road:
   per-tool poller; that is the divergence this subsystem exists to end.
   The optional `note=` kwarg appends one domain sentence to the generic
   tool description (it never replaces it).
-- Inline failures behave as if the wrapper were absent: an exception
-  raised before the deadline propagates to the caller unchanged. Only a
-  failure *after* promotion is reported through polling instead.
+- A failure ends the same way before and after the deadline. Raise
+  `ToolError(msg, log_level=...)` for an outcome the model can act on (not
+  found, invalid input): it reaches the caller, or the poller, with its own
+  message. Any other exception is a server fault: `tool_boundary` logs it
+  once with its traceback, and the model gets a fixed "server-side error,
+  retry later" message instead of the exception's text. Before the
+  deadline the failure is the call's error result; after promotion it is
+  reported through polling.
 
 ## What the client sees
 
@@ -109,6 +114,11 @@ and, once the work lands, one of:
 ```
 
 A non-`dict` return value is wrapped as `{"value": …}` in `result`. The
+`error` of a failed job is the message of a `ToolError` your coroutine
+raised, or, for any other exception, the fixed fault message of
+[`tool_boundary`](../README.md#tool-outcomes-tool_boundary): the exception's
+own text never reaches the poller, whether or not `mask_error_details` is
+on. The `job_failed` log line takes the `ToolError`'s `log_level`. The
 status vocabulary (`working` / `completed` / `failed` / `cancelled`) is
 the SEP-2663 task lifecycle minus `input_required`, so a later move to
 protocol-native tasks is a mechanical change for clients, not a semantic
@@ -138,7 +148,9 @@ the runtime reason:
   creation. Settling a job never extends that. After expiry the id is
   simply unknown — tell your users to fetch results promptly.
 - **Per-subject cap.** At most `JOBS_MAX_PER_SUBJECT` live records per
-  subject; promotion past the cap raises `JobLimitExceededError`.
+  subject; promotion past the cap raises `JobLimitExceededError` and
+  stops the work. A tool registered with `register_long_running_tool`
+  turns it into a `ToolError` at INFO telling the model to retry later.
 - **Process lifetime.** A *promoted* job runs on the serving process and
   dies with it. Its record then reports honestly: polls show `working`
   with a growing `running_for_s` until the record's TTL removes it —

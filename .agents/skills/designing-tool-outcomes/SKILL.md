@@ -98,13 +98,8 @@ to that line changes every downstream's log stream; see the
 
 ## Where pvl-core does not follow this yet
 
-- `get_job_result` raises its unknown-job `ToolError` at the default
-  ERROR, and the transfer link tools pass whatever the `validate` hook
-  raises straight to FastMCP
-  ([#364](https://github.com/pvliesdonk/fastmcp-pvl-core/issues/364)). Both are outcome 2.
-- A background job's failure bypasses `mask_error_details`
-  ([#369](https://github.com/pvliesdonk/fastmcp-pvl-core/issues/369)) and is logged at WARNING with a traceback whatever it
-  was ([#370](https://github.com/pvliesdonk/fastmcp-pvl-core/issues/370)).
+- The transfer link tools pass whatever the `validate` hook raises
+  straight to FastMCP ([#364](https://github.com/pvliesdonk/fastmcp-pvl-core/issues/364)): a rejection is outcome 2.
 
 ## Common mistakes
 

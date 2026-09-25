@@ -98,10 +98,18 @@ The boundary, on every path. A call can end three ways at runtime: inline
 to the background (only the jobs manager sees it), and as a native
 SEP-2663 task (only FastMCP's task machinery sees it). The boundary is the
 one place all three pass through, so the traceback is logged there, and the
-other lines are meant to stay one-line summaries. Two do not yet: the jobs
-manager's `job_failed` attaches the traceback again ([#370]), and the
-middleware attaches one when `include_traceback` is on (a DEBUG root
-logger).
+other lines stay one-line summaries. To make the boundary sit on the
+background path too, `register_long_running_tool` wraps the domain
+coroutine in its own boundary as well as the registered tool. The jobs
+manager's `job_failed` then takes the `ToolError`'s level and attaches no
+traceback ([#370]).
+
+Two lines still carry a traceback of their own. The middleware attaches one
+when `include_traceback` is on (a DEBUG root logger). And work a downstream
+started with `Jobs.start`, which no boundary wraps, is classified by the
+jobs manager with the boundary's rule: the fault message to the poller, and
+`job_failed` at ERROR with the traceback, since that line is then the only
+record of it ([#369]).
 
 ### 2.4 The middleware's failure line follows `log_level`
 
@@ -137,9 +145,10 @@ message. The boundary adds no redaction of its own.
   silence its other records, so FastMCP's line stays.
 - An outcome 2 or 3 (`ToolError` at INFO) produces INFO lines only. An
   upstream rate limit or timeout produces WARNING lines only.
-- Applying the boundary to the tools pvl-core registers, and to the jobs
-  fallback's background path, is the follow-up for [#364], [#369] and
-  [#370]. The template replaces its copied example with the import.
+- `get_job_result`, `get_server_info` and every `register_long_running_tool`
+  tool carry the boundary. The transfer link tools follow together with a
+  stricter `validate` hook contract ([#364]). The template replaces its
+  copied example with the import.
 
 [#363]: https://github.com/pvliesdonk/fastmcp-pvl-core/issues/363
 [#364]: https://github.com/pvliesdonk/fastmcp-pvl-core/issues/364

@@ -28,6 +28,7 @@ from fastmcp_pvl_core import (
     register_long_running_tool,
 )
 from fastmcp_pvl_core._jobs.manager import Jobs
+from fastmcp_pvl_core._tool_boundary import FAULT_MESSAGE
 
 _FAST_CONFIG = JobsConfig(soft_deadline_s=0.15, result_ttl_s=60.0)
 
@@ -107,7 +108,10 @@ class TestRunWithDeadline:
         assert payload["status"] == "completed"
         assert payload["result"] == {"late": True}
 
-    async def test_failure_after_promotion_reported_via_poll(self):
+    async def test_failure_after_promotion_reported_via_poll(self, caplog):
+        # An unclassified exception is a fault: the poller gets the fault
+        # message, never the exception's own text (#369), and the log line is
+        # ERROR with the traceback, as the boundary would log it (#370).
         jobs = _jobs()
 
         async def work() -> dict[str, Any]:
@@ -115,11 +119,40 @@ class TestRunWithDeadline:
             raise RuntimeError("backend exploded")
 
         handle = await jobs.run_with_deadline(work(), tool="t")
-        await _drain(jobs)
+        with caplog.at_level(logging.DEBUG, logger="fastmcp_pvl_core._jobs.manager"):
+            await _drain(jobs)
         payload = await jobs.poll(handle["job_id"])
         assert payload["status"] == "failed"
-        assert "backend exploded" in payload["error"]
+        assert payload["error"] == FAULT_MESSAGE
         assert payload["result"] is None
+        (record,) = [
+            r for r in caplog.records if r.getMessage().startswith("job_failed ")
+        ]
+        assert record.levelno == logging.ERROR
+        assert "error_type=RuntimeError" in record.getMessage()
+        assert "backend exploded" not in record.getMessage()
+        assert record.exc_info is not None
+
+    async def test_tool_error_after_promotion_keeps_its_message_and_level(self, caplog):
+        # A deliberate ToolError is the tool's own outcome: its message
+        # reaches the poller and its log_level sets the line (#370).
+        jobs = _jobs()
+
+        async def work() -> dict[str, Any]:
+            await asyncio.sleep(0.3)
+            raise ToolError("No note at 'a.md'.", log_level=logging.INFO)
+
+        handle = await jobs.run_with_deadline(work(), tool="t")
+        with caplog.at_level(logging.DEBUG, logger="fastmcp_pvl_core._jobs.manager"):
+            await _drain(jobs)
+        payload = await jobs.poll(handle["job_id"])
+        assert payload["status"] == "failed"
+        assert payload["error"] == "No note at 'a.md'."
+        (record,) = [
+            r for r in caplog.records if r.getMessage().startswith("job_failed ")
+        ]
+        assert record.levelno == logging.INFO
+        assert not record.exc_info
 
     async def test_cancelled_promoted_task_reported_cancelled(self):
         jobs = _jobs()
