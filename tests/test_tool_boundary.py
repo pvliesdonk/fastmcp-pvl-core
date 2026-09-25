@@ -14,11 +14,13 @@ import inspect
 import logging
 from typing import Any
 
+import httpx
 import pytest
 from fastmcp import Client, Context, FastMCP
 from fastmcp.exceptions import ResourceError, ToolError
 from fastmcp.utilities.tasks import TaskConfig
-from mcp.types import TextContent
+from mcp.shared.exceptions import MCPError
+from mcp.types import MISSING_REQUIRED_CLIENT_CAPABILITY, TextContent
 from pydantic import BaseModel
 
 from fastmcp_pvl_core import is_tool_boundary, tool_boundary, wire_middleware_stack
@@ -94,6 +96,80 @@ class TestContract:
 
         assert info.value is exc
         assert _records(caplog, _BOUNDARY_LOGGER) == []
+
+    async def test_missing_client_capability_passes_through(self, caplog):
+        # SEP-2575 needs it on the wire as JSON-RPC -32021, not as a result.
+        exc = MCPError(MISSING_REQUIRED_CLIENT_CAPABILITY, "needs elicitation")
+
+        @tool_boundary
+        async def tool() -> str:
+            raise exc
+
+        with caplog.at_level(logging.DEBUG, logger=_BOUNDARY_LOGGER):
+            with pytest.raises(MCPError) as info:
+                await tool()
+        assert info.value is exc
+        assert _records(caplog, _BOUNDARY_LOGGER) == []
+
+    async def test_other_protocol_errors_are_faults(self):
+        @tool_boundary
+        async def tool() -> str:
+            raise MCPError(-32603, "internal")
+
+        with pytest.raises(ToolError) as info:
+            await tool()
+        assert str(info.value) == FAULT_MESSAGE
+
+    @pytest.mark.parametrize(
+        ("exc", "message"),
+        [
+            (
+                httpx.HTTPStatusError(
+                    "429 from https://user:pw@upstream.example/api",
+                    request=httpx.Request("GET", "https://upstream.example/api"),
+                    response=httpx.Response(429),
+                ),
+                "Rate limited by upstream API, please retry later",
+            ),
+            (
+                httpx.ReadTimeout("timed out reading https://user:pw@up.example"),
+                "Upstream request timed out, please retry",
+            ),
+        ],
+        ids=["rate-limited", "timeout"],
+    )
+    async def test_transient_upstream_faults_are_warnings(self, caplog, exc, message):
+        @tool_boundary
+        async def tool() -> str:
+            raise exc
+
+        with caplog.at_level(logging.DEBUG, logger=_BOUNDARY_LOGGER):
+            with pytest.raises(ToolError) as info:
+                await tool()
+
+        assert str(info.value) == message
+        assert info.value.log_level == logging.WARNING
+        (record,) = _records(caplog, _BOUNDARY_LOGGER)
+        assert record.levelno == logging.WARNING
+        assert record.exc_info is None
+        # Only the type is logged: the exception's text quotes the URL.
+        assert "pw" not in record.getMessage()
+
+    async def test_other_http_status_errors_are_faults(self, caplog):
+        @tool_boundary
+        async def tool() -> str:
+            raise httpx.HTTPStatusError(
+                "500",
+                request=httpx.Request("GET", "https://upstream.example/api"),
+                response=httpx.Response(500),
+            )
+
+        with caplog.at_level(logging.DEBUG, logger=_BOUNDARY_LOGGER):
+            with pytest.raises(ToolError) as info:
+                await tool()
+        assert str(info.value) == FAULT_MESSAGE
+        (record,) = _records(caplog, _BOUNDARY_LOGGER)
+        assert record.levelno == logging.ERROR
 
     async def test_cancellation_passes_through(self, caplog):
         @tool_boundary

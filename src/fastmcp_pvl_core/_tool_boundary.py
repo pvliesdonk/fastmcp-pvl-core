@@ -22,6 +22,9 @@ from collections.abc import Callable
 from typing import Any, TypeVar
 
 from fastmcp.exceptions import FastMCPError, ToolError
+from fastmcp.utilities.exceptions import get_http_status_code, is_timeout_error
+from mcp.shared.exceptions import MCPError
+from mcp.types import MISSING_REQUIRED_CLIENT_CAPABILITY
 
 logger = logging.getLogger(__name__)
 
@@ -35,16 +38,45 @@ FAULT_MESSAGE = (
 )
 """What the model reads for outcome 4: the request was fine, and what to do."""
 
+# FastMCP's own wording for the two faults it already singles out as
+# transient, kept so a wrapped tool tells the model no less than a bare one.
+_RATE_LIMITED_MESSAGE = "Rate limited by upstream API, please retry later"
+_TIMED_OUT_MESSAGE = "Upstream request timed out, please retry"
+
+
+def _passes_through(exc: Exception) -> bool:
+    """Whether *exc* is a deliberate outcome the boundary must not reclassify.
+
+    A ``FastMCPError`` carries the tool's own message and ``log_level``. A
+    missing-client-capability ``MCPError`` must reach the wire as JSON-RPC
+    error -32021 (SEP-2575); FastMCP re-raises it for the same reason, and
+    turning it into a result would tell the client the call went through.
+    """
+    if isinstance(exc, FastMCPError):
+        return True
+    return (
+        isinstance(exc, MCPError)
+        and exc.error.code == MISSING_REQUIRED_CLIENT_CAPABILITY
+    )
+
 
 def _fault(fn: Callable[..., Any], exc: Exception) -> ToolError:
     # Called inside the ``except`` block, so ``logger.exception`` attaches the
     # traceback of *exc*. This is the one traceback the fault gets: the
-    # ToolError below is raised ``from None`` so no later handler prints it
-    # again (ADR 0005 §2.2).
-    logger.exception(
-        "tool_failed function=%s error_type=%s", fn.__name__, type(exc).__name__
-    )
-    return ToolError(FAULT_MESSAGE)
+    # ToolError is raised ``from None`` so no later handler prints it again
+    # (ADR 0005 §2.2).
+    name, error_type = fn.__name__, type(exc).__name__
+    # A rate limit or a timeout heals itself: WARNING, no traceback, and the
+    # message FastMCP would have sent for it.
+    if get_http_status_code(exc) == 429:
+        message = _RATE_LIMITED_MESSAGE
+    elif is_timeout_error(exc):
+        message = _TIMED_OUT_MESSAGE
+    else:
+        logger.exception("tool_failed function=%s error_type=%s", name, error_type)
+        return ToolError(FAULT_MESSAGE)
+    logger.warning("tool_failed function=%s error_type=%s", name, error_type)
+    return ToolError(message, log_level=logging.WARNING)
 
 
 def tool_boundary(fn: _F) -> _F:
@@ -66,10 +98,14 @@ def tool_boundary(fn: _F) -> _F:
 
     A ``FastMCPError`` (``ToolError``, ``ResourceError``, ...) passes through
     unchanged: the tool raised it on purpose, with its own message and
-    ``log_level``. Any other ``Exception`` is logged once at ERROR with its
-    traceback as ``tool_failed`` and replaced by a ``ToolError`` carrying
-    :data:`FAULT_MESSAGE`, so the model never sees the exception's own text,
-    with or without ``mask_error_details``. Cancellation and other
+    ``log_level``. So does an ``MCPError`` for a missing client capability,
+    which must reach the wire as a protocol error. Any other ``Exception`` is
+    logged once at ERROR with its traceback as ``tool_failed`` and replaced
+    by a ``ToolError`` carrying :data:`FAULT_MESSAGE`, so the model never
+    sees the exception's own text, with or without ``mask_error_details``.
+    An upstream rate limit (HTTP 429) or timeout heals itself: it is logged
+    at WARNING without a traceback and the ``ToolError`` says to retry, in
+    the words FastMCP uses for the same cases. Cancellation and other
     ``BaseException`` subclasses pass through.
 
     ``functools.wraps`` keeps the signature and annotations, so the input and
@@ -91,9 +127,9 @@ def tool_boundary(fn: _F) -> _F:
         async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
             try:
                 return await fn(*args, **kwargs)
-            except FastMCPError:
-                raise
             except Exception as exc:
+                if _passes_through(exc):
+                    raise
                 raise _fault(fn, exc) from None
 
         wrapper = async_wrapper
@@ -103,9 +139,9 @@ def tool_boundary(fn: _F) -> _F:
         def sync_wrapper(*args: Any, **kwargs: Any) -> Any:
             try:
                 return fn(*args, **kwargs)
-            except FastMCPError:
-                raise
             except Exception as exc:
+                if _passes_through(exc):
+                    raise
                 raise _fault(fn, exc) from None
 
         wrapper = sync_wrapper

@@ -131,11 +131,12 @@ class RequestLoggingMiddleware(Middleware):
             result = await call_next(context)
         except Exception as exc:
             # The level follows how the call ended, as the rest of the stack
-            # classifies it: a FastMCPError carries the level its raiser chose
-            # (FastMCP logs its own record at the same level), anything else is
-            # ERROR. For tools/call FastMCP has already turned every exception
-            # into a ToolError, so the ERROR default matters only for other
-            # messages (ADR 0005 §2.4).
+            # classifies it: a FastMCPError carries the level its raiser chose,
+            # anything else is ERROR. An exception from a tool's own body
+            # arrives as a ToolError (FastMCP converts it), so a tool picks
+            # the level of this line; a failure FastMCP raises before the body
+            # runs (an unknown tool name, arguments that fail the schema) keeps
+            # its own type and level (ADR 0005 §2.4).
             level = exc.log_level if isinstance(exc, FastMCPError) else logging.ERROR
             self._emit(
                 event_base + "_failed",

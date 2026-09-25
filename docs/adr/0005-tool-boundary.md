@@ -64,7 +64,17 @@ keeps an unexpected exception from reaching FastMCP's catch-all.
 - A `FastMCPError` (`ToolError`, `ResourceError`, …) passes through
   unchanged. It is already a deliberate outcome, with its own message and
   `log_level`.
-- Any other `Exception` is outcome 4. The boundary logs
+- An `MCPError` for a missing client capability (-32021) passes through
+  too. SEP-2575 requires it on the wire as a JSON-RPC error, and FastMCP's
+  own handler re-raises it for that reason; turning it into a result would
+  tell the client the call went through.
+- An upstream rate limit (an HTTP 429 status error) or timeout is outcome 4
+  that heals itself: WARNING without a traceback, and a `ToolError` at
+  WARNING carrying the message FastMCP's handler uses for the same two
+  cases, so a wrapped tool tells the model no less than a bare one. Only the
+  exception's type is logged; its text quotes the request URL.
+- Any other `Exception`, including any other `MCPError`, is outcome 4.
+  The boundary logs
   `tool_failed function=<name> error_type=<type>` at ERROR **with the
   traceback** on `fastmcp_pvl_core._tool_boundary`, then raises a
   `ToolError` with a fixed message that tells the model the request was
@@ -87,21 +97,29 @@ The boundary, on every path. A call can end three ways at runtime: inline
 (the request-logging middleware sees it), after the jobs fallback moved it
 to the background (only the jobs manager sees it), and as a native
 SEP-2663 task (only FastMCP's task machinery sees it). The boundary is the
-one place all three pass through, so the traceback is logged there once,
-and the other lines stay one-line summaries.
+one place all three pass through, so the traceback is logged there, and the
+other lines are meant to stay one-line summaries. Two do not yet: the jobs
+manager's `job_failed` attaches the traceback again ([#370]), and the
+middleware attaches one when `include_traceback` is on (a DEBUG root
+logger).
 
 ### 2.4 The middleware's failure line follows `log_level`
 
 `RequestLoggingMiddleware` logs `*_failed` at the exception's `log_level`
 when it is a `FastMCPError`, and at ERROR otherwise. The event name, field
-order and logger are unchanged. For `tools/call` FastMCP converts every
-exception to `ToolError` before the middleware sees it, so the ERROR
-default only matters for other messages; for a tool, the level is whatever
-the tool (or its boundary) chose, which is also the level of FastMCP's own
-record for the call.
+order and logger are unchanged. FastMCP converts an exception from a tool's
+own body into a `ToolError` before the middleware sees it, so for that
+case the level is whatever the tool (or its boundary) chose, which is also
+the level of FastMCP's own record for the call, and `error_type` is
+`ToolError`; the cause's type is on the boundary's `tool_failed` line.
 
-`error_type` on a tool call is therefore always `ToolError`, as it already
-was. The cause's type is on the boundary's `tool_failed` line.
+A failure FastMCP raises before the body runs keeps its own type:
+`NotFoundError` for an unknown tool name (not a `FastMCPError`, so ERROR),
+FastMCP's `ValidationError` for arguments that fail the schema (a
+`FastMCPError` at its default ERROR, although FastMCP logs its own record
+at WARNING), and the -32021 `MCPError`. Those are caller-side outcomes the
+middleware still records at ERROR; classifying them is not this ADR's
+change.
 
 ### 2.5 The traceback is an operator-facing emit path
 
@@ -117,7 +135,8 @@ message. The boundary adds no redaction of its own.
   the middleware's `tool_call_failed`. pvl-core adjusts third-party loggers
   only by level policy, and silencing `fastmcp.server.server` would also
   silence its other records, so FastMCP's line stays.
-- An outcome 2 or 3 (`ToolError` at INFO) produces INFO lines only.
+- An outcome 2 or 3 (`ToolError` at INFO) produces INFO lines only. An
+  upstream rate limit or timeout produces WARNING lines only.
 - Applying the boundary to the tools pvl-core registers, and to the jobs
   fallback's background path, is the follow-up for [#364], [#369] and
   [#370]. The template replaces its copied example with the import.

@@ -78,10 +78,12 @@ def read_note(path: str) -> dict:
     return {"text": note.text, "version": note.version}
 ```
 
-Put `@mcp.tool` above `@tool_boundary`. It passes a FastMCP error through
-unchanged. Anything else it logs once as `tool_failed` at ERROR with the
-traceback and replaces with a fixed message: the request was fine, retry
-later, tell the user if it keeps failing. The wrapper keeps the signature,
+Put `@mcp.tool` above `@tool_boundary`. It passes a FastMCP error, and a
+missing-client-capability protocol error, through unchanged. An upstream
+rate limit or timeout becomes a WARNING and a "retry" message. Anything
+else it logs once as `tool_failed` at ERROR with the traceback and replaces
+with a fixed message: the request was fine, retry later, tell the user if
+it keeps failing. The wrapper keeps the signature,
 so the input and output schemas, `Context` injection and `task=`
 registration are unchanged. A server-side condition the model can name more
 precisely than the generic message, such as "the index is rebuilding, retry

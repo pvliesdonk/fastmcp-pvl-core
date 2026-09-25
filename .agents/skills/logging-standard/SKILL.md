@@ -100,8 +100,9 @@ already covers, and anything a loop emits on every iteration, goes to
   can name as a `ToolError` with that `log_level`; `tool_boundary`
   (`_tool_boundary.py`) logs everything else once as `tool_failed` at
   ERROR with the traceback.
-  The middleware's `*_failed` line takes its level from the `ToolError`,
-  so it never needs its own classification.
+  The middleware's `*_failed` line takes its level from that `ToolError`.
+  A failure FastMCP raises before the tool body runs (unknown tool,
+  invalid arguments) keeps its own type and is still recorded at ERROR.
 - A traceback is an emit path the boundary cannot redact: it does not know
   which exception carries a secret. The site that handles a
   credential-bearing value re-raises `from None` with its own message

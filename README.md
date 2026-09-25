@@ -280,11 +280,13 @@ async def read_note(path: str) -> dict[str, str]:
     return {"text": note.text}
 ```
 
-A FastMCP error raised by the tool passes through unchanged. Any other
-exception is logged once as `tool_failed function=<name> error_type=<type>`
-at `ERROR` with its traceback, and the model receives a fixed message
-saying the request was fine and to retry later or tell the user, whether or
-not `mask_error_details` is on. Put `@mcp.tool` above `@tool_boundary`;
+A FastMCP error raised by the tool passes through unchanged, and so does a
+missing-client-capability protocol error. An upstream rate limit or timeout
+is logged at `WARNING` and tells the model to retry. Any other exception is
+logged once as `tool_failed function=<name> error_type=<type>` at `ERROR`
+with its traceback, and the model receives a fixed message saying the
+request was fine and to retry later or tell the user, whether or not
+`mask_error_details` is on. Put `@mcp.tool` above `@tool_boundary`;
 the wrapper keeps the signature, so schemas, `Context` injection and
 `task=` registration are unaffected. `is_tool_boundary(fn)` reports whether
 a function carries it, for a test that enumerates registered tools.
@@ -497,10 +499,10 @@ tool_call_failed    tool=read duration_ms=109.84 error_type=ToolError error="Sec
 `*_failed` is logged at the exception's `log_level` when it is a FastMCP
 error (`ToolError`, `ResourceError`, ...), and at `ERROR` otherwise, so a
 tool that raises `ToolError(msg, log_level=logging.INFO)` for a request the
-model has to change produces no `ERROR` line. For a tool call FastMCP has
-already turned every exception into a `ToolError`, so `error_type` is
-`ToolError`; the original type of a server fault is on the `tool_failed`
-line of [`tool_boundary`](#tool-outcomes-tool_boundary).
+model has to change produces no `ERROR` line. FastMCP turns an exception
+from a tool's own body into a `ToolError`, so `error_type` is `ToolError`
+there; the original type of a server fault is on the `tool_failed` line of
+[`tool_boundary`](#tool-outcomes-tool_boundary).
 
 Non-tool messages use a generic `request_*` / `notification_*` vocabulary
 keyed by `method=`. Rendering is process-wide — see [Output
