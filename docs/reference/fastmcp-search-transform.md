@@ -2,7 +2,7 @@
 type: Reference
 title: FastMCP tool-search transform and CodeMode
 description: What FastMCP's search transforms change on the wire, what they leave reachable, what they break for task-capable tools, and where CodeMode stands.
-subject_version: "FastMCP 4.0.0 (this repository's lock) and 4.0.5; fastmcp-tasks 4.0.0; mcp 2.1.1"
+subject_version: "FastMCP 4.0.0 (this repository's lock), 4.0.5 and 4.0.9 (latest release); main at edc991e (4.0.10.dev2, after PR 5262) and the PR 5263 branch at cf970fb; fastmcp-tasks 4.0.0; mcp 2.1.1"
 valid_for: "FastMCP 4.x"
 generated:
   by: process:researching-references
@@ -11,6 +11,8 @@ stale_after: 2027-03-24
 verified:
   - by: process:researching-references-refute
     at: 2026-09-24
+  - by: process:researching-references
+    at: 2026-09-25
 status: stable
 sources:
   - id: fastmcp-tool-search
@@ -57,6 +59,18 @@ sources:
     title: FastMCP issue 5152, BM25 search returns an old input schema after a newer tool version
     resource: https://github.com/PrefectHQ/fastmcp/issues/5152
     accessed: 2026-09-24
+  - id: fastmcp-pr-5262
+    title: FastMCP PR 5262, tasks — register task tools hidden by search and CodeMode (merged 2026-09-24, closes 5261)
+    resource: https://github.com/PrefectHQ/fastmcp/pull/5262
+    accessed: 2026-09-25
+  - id: fastmcp-pr-5263
+    title: FastMCP PR 5263, search — fence call_tool to searchable tools and annotate it (open, closes 5260)
+    resource: https://github.com/PrefectHQ/fastmcp/pull/5263
+    accessed: 2026-09-25
+  - id: fastmcp-5267
+    title: FastMCP issue 5267, call_tool proxy of a task-enabled tool returns an empty result when the client declares tasks
+    resource: https://github.com/PrefectHQ/fastmcp/issues/5267
+    accessed: 2026-09-25
   - id: ha-mcp-categorized
     title: ha-mcp, src/ha_mcp/transforms/categorized_search.py
     resource: https://github.com/homeassistant-ai/ha-mcp/blob/master/src/ha_mcp/transforms/categorized_search.py
@@ -82,7 +96,11 @@ and again on fastmcp 4.0.5 under CPython 3.11.14 (markdown-vault-mcp's
 environment); the first pass also ran on 4.0.0 under CPython 3.14.5. Every
 behaviour agreed across all runs. One number did not: the proxy's listing
 size, because of the 3.10 `Annotated` loss recorded in
-[`mcp-model-facing-text.md`](mcp-model-facing-text.md).
+[`mcp-model-facing-text.md`](mcp-model-facing-text.md). On 2026-09-25,
+after the two upstream issues this page led to were answered, the same
+probes ran on FastMCP `main` at edc991e (which contains PR 5262) and on
+the PR 5263 branch at cf970fb, under CPython 3.11.14; claims that changed
+say so and name the version they hold for.
 
 ## Scope
 
@@ -158,16 +176,41 @@ size, because of the 3.10 `Annotated` loss recorded in
 
 ### What `always_visible` fences, and what it does not
 
-- `always_visible` fences **discovery only**. The `call_tool` proxy checks
-  the requested name against `get_tool_catalog(ctx)`, which is the full
-  auth-filtered catalog with the transform bypassed, pinned tools included;
-  a pinned destructive tool is therefore reachable through the proxy with
-  the proxy's (absent) annotations. [source: fastmcp-search-base]
-  [source: fastmcp-catalog] [observed: `probe_e.py`, both pairs and both
-  protocol eras: with `always_visible=["delete_thing"]`,
-  `call_tool(name="delete_thing")` returned "deleted k"]
-- The proxy refuses only its own two synthetic names and names absent from
-  the catalog. [source: fastmcp-search-base]
+- Through v4.0.9, `always_visible` fences **discovery only**. The
+  `call_tool` proxy checks the requested name against
+  `get_tool_catalog(ctx)`, which is the full auth-filtered catalog with the
+  transform bypassed, pinned tools included; a pinned destructive tool is
+  therefore reachable through the proxy with the proxy's (absent)
+  annotations. [source: fastmcp-search-base] [source: fastmcp-catalog]
+  [observed: `probe_e.py`, both pairs and both protocol eras: with
+  `always_visible=["delete_thing"]`, `call_tool(name="delete_thing")`
+  returned "deleted k"]
+- Through v4.0.9 the proxy refuses only its own two synthetic names and
+  names absent from the catalog. [source: fastmcp-search-base]
+- PR 5263 (open as of 2026-09-25, closes issue 5260) changes both: the
+  proxy refuses pinned names ("listed directly; call it directly rather
+  than through call_tool") so it "reaches exactly the tools search can
+  return", and it carries annotations that are "the least permissive value
+  of each hint" over the non-pinned, model-visible tools; "one unannotated
+  tool is enough to make the proxy a destructive write". The PR's docs
+  add: add the search transform after any transform that renames or adds
+  tools. [source: fastmcp-pr-5263] [observed: `probe_e.py`, `probe_a3.py`,
+  `probe_g.py` on the branch at cf970fb, both eras: the pinned
+  `delete_thing` was refused with that message while a hidden read-only
+  tool ran through the proxy; with only `readOnlyHint: true` tools hidden
+  the proxy listed `{"readOnlyHint": true, "openWorldHint": true}`; with
+  one unannotated hidden tool it listed `{"readOnlyHint": false,
+  "destructiveHint": true, "idempotentHint": false, "openWorldHint":
+  true}`; `search_tools` still listed with no annotations]
+- On that branch the hints are computed **before** the enabled filter: a
+  write tool disabled with `mcp.disable(names=...)` and not pinned still
+  makes the proxy destructive, and pinning the disabled tool by name
+  restores `readOnlyHint: true`. The PR's notes say the catalog "still
+  includes disabled, auth-gated, and older-version tools, so the hints can
+  be stricter than what a given caller can reach but never looser".
+  [source: fastmcp-pr-5263] [observed: `probe_g.py` on the branch: the
+  three combinations above] A pin set that wants a read-only proxy is
+  therefore computed over registered tools, not listed ones.
 - The catalog the proxy and the search see excludes tools the model may not
   see (`is_model_visible`, the MCP Apps `visibility=["app"]` tools) and is
   deduplicated to the highest version. [source: fastmcp-catalog]
@@ -199,19 +242,24 @@ size, because of the 3.10 `Annotated` loss recorded in
   result (`structured_content={}`, text `{}`) where the direct call returns
   the tool's value. [observed: `probe_d.py`, both pairs: `slow_thing`
   registered through pvl-core's `register_long_running_tool`, pinned, called
-  via `call_tool` returned `{}`; called directly returned `{"n": 1}`] The
-  mechanism is [unverified]: the likely cause is the tasks extension's
-  `tools/call` interceptor treating the inner dispatch as a task submission,
-  and reading `fastmcp_tasks/extension.py` against a trace would settle it.
-  The consequence does not depend on the cause: a task-capable tool must
-  not be reachable through the proxy.
+  via `call_tool` returned `{}`; called directly returned `{"n": 1}`;
+  `repro_proxy_task_empty.py` on `main` at edc991e without pvl-core, a
+  hidden `task=TaskConfig(mode="optional")` tool: `{}` through the proxy on
+  a modern connection, `{"n": 2}` on a legacy one, and a non-task tool
+  `{"n": 3}` through the proxy on both] Filed as issue 5267; PR 5262 does
+  not change it. [source: fastmcp-5267] The mechanism is [unverified]: the
+  likely cause is the tasks extension's `tools/call` interceptor treating
+  the inner dispatch as a task submission, and reading
+  `fastmcp_tasks/extension.py` against a trace would settle it. The
+  consequence does not depend on the cause: a task-capable tool must not
+  be reachable through the proxy.
 - A task-augmented call of the proxy itself never runs as a task, because
   the proxy is a plain tool. [observed: `probe_b2.py`, both pairs: "Tool
   'call_tool' did not run as a task"]
 
-### What the transform breaks: task registration
+### What the transform breaks: task registration (through v4.0.9)
 
-- `FastMCP.get_tasks()` applies every server-level transform's
+- Through v4.0.9, `FastMCP.get_tasks()` applies every server-level transform's
   `list_tools()` to the task-eligible components before returning them.
   [source: fastmcp-server] The tasks extension's lifespan collects
   `server.get_tasks()`, re-filters "by the actual task config" because
@@ -235,6 +283,16 @@ size, because of the 3.10 `Annotated` loss recorded in
   legacy connection returned `{"status": "working", ...}`] The fastmcp
   in-memory client did not run a native task on a legacy connection even
   without a transform, so the legacy native path is [unverified] here.
+- PR 5262 (merged 2026-09-24, closes issue 5261, not in v4.0.9) fixes
+  it: task registration "keeps a catalog transform's output *plus* the
+  components it hid", through one `Provider._apply_task_transforms`
+  helper shared by server-level, provider-level and mounted providers,
+  and `FastMCP.get_tasks()` now filters by `supports_tasks()` itself.
+  [source: fastmcp-pr-5262] [observed: `probe_f.py` and `probe_b2.py` on
+  `main` at edc991e: `get_tasks()` returned `["slow_thing"]` with the
+  transform installed; the hidden tool ran on a plain direct call
+  (`{"n": 1}`) and as a native task (`working`) on a modern connection,
+  unpinned]
 
 ### Interaction with pvl-core's instruction finalisation
 
@@ -305,13 +363,16 @@ size, because of the 3.10 `Annotated` loss recorded in
 
 ## Where pvl-core departs from the subject
 
-- FastMCP's proxy reaches every catalog tool, pinned or not, and carries no
-  annotations. ADR 0004 decides that pvl-core's catalog mode owns its own
-  proxy, fenced to the hidden read-only set and annotated `readOnlyHint:
-  true`, and never uses the built-in `call_tool` as shipped.
-- FastMCP applies transforms inside `get_tasks()`. ADR 0004 decides that
-  every task-capable tool is pinned unconditionally, so the transform never
-  sees one to hide.
+- Through v4.0.9 FastMCP's proxy reaches every catalog tool, pinned or
+  not, and carries no annotations, and `get_tasks()` drops hidden
+  task-capable tools. ADR 0004 decides that pvl-core's catalog mode ships
+  only against a FastMCP release that contains PR 5262 and PR 5263, and
+  then uses the built-in transform with a pvl-core pin policy computed
+  over registered tools.
+- FastMCP's proxy can still reach a hidden task-capable tool, and on a
+  modern connection returns `{}` for it (issue 5267). ADR 0004 decides
+  that every task-capable tool is pinned unconditionally, so the proxy
+  refuses it and the model calls it by name.
 
 ## Not covered
 

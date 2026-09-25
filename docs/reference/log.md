@@ -6,6 +6,26 @@ description: One entry per research pass, newest first.
 
 # Research log
 
+## 2026-09-25
+
+Sixth pass, one day after the fifth: FastMCP answered both upstream
+issues. Re-ran the search-transform probes on `main` at edc991e (PR
+5262 merged, closes fastmcp#5261) and on the PR 5263 branch at cf970fb
+(closes fastmcp#5260), CPython 3.11.14.
+
+- `fastmcp-search-transform.md`: `get_tasks()` now keeps hidden
+  components of a catalog transform; a hidden task-capable tool runs
+  plain and as a native task on `main`. On the 5263 branch the proxy
+  refuses pinned names and carries least-permissive hints computed before
+  the enabled filter, so a disabled write tool must be pinned by name to
+  keep the proxy read-only. The empty proxy result for a task-capable
+  tool on a modern connection reproduces on `main` without pvl-core and
+  is filed as fastmcp#5267. Every "through v4.0.9" qualifier dates from
+  this pass.
+- ADR 0004 amended (§2.5): pvl-core no longer owns a proxy subclass; the
+  mode depends on the FastMCP release carrying both PRs, with a pin set
+  computed over registered tools.
+
 ## 2026-09-24
 
 Fifth pass, the study for #300 (server-side tool discovery for eager

@@ -2,7 +2,8 @@
 
 - **Status:** Proposed (study for [#300]; recommendation with no-go
   conditions; implementation tracked in the follow-ups below)
-- **Date:** 2026-09-24
+- **Date:** 2026-09-24; amended 2026-09-25 after FastMCP answered the two
+  upstream issues (§2.5)
 - **Deciders:** pvl-core maintainers
 - **Relates to:** [#300] (the study request), [#294] and [#299] (the
   instruction-visibility and instruction-role work this must not undo),
@@ -82,25 +83,27 @@ configuration, an environment variable, on pvl-core's operator axis.
 
 ### 2.2 FastMCP's search transform: what it preserves and what it breaks
 
-- `always_visible` fences **discovery, not access**. The built-in
-  `call_tool` proxy resolves any name in the full catalog, pinned tools
-  included, and carries no annotations at all. A pinned `delete` tool is
-  reachable through a proxy the client reads as an unannotated generic
-  call. This is exactly the path [#300] forbids.
+- Through v4.0.9, `always_visible` fences **discovery, not access**. The
+  built-in `call_tool` proxy resolves any name in the full catalog, pinned
+  tools included, and carries no annotations at all. A pinned `delete`
+  tool is reachable through a proxy the client reads as an unannotated
+  generic call. This is exactly the path [#300] forbids. PR 5263 (open)
+  closes both gaps; see §2.5.
 - Hidden tools remain directly callable by name, as documented.
 - On a legacy connection the proxy passes structured content, `_meta`, an
   elicitation round-trip and pvl-core's job handle through unchanged.
-- `FastMCP.get_tasks()` applies server-level transforms. With a search
-  transform installed, every **hidden** task-capable tool disappears from
-  Docket registration. On a modern connection such a tool then fails even
-  when called directly ("Background tasks require a running tasks
-  extension"); on a legacy connection it silently loses the native task
-  path and falls back to pvl-core's job store. Pinning the tool restores
-  both. This contradicts FastMCP's "remain fully functional" and is an
-  upstream defect (follow-up below).
+- Through v4.0.9, `FastMCP.get_tasks()` applies server-level transforms.
+  With a search transform installed, every **hidden** task-capable tool
+  disappears from Docket registration. On a modern connection such a tool
+  then fails even when called directly ("Background tasks require a
+  running tasks extension"); on a legacy connection it silently loses the
+  native task path and falls back to pvl-core's job store. Pinning the
+  tool restores both. This contradicted FastMCP's "remain fully
+  functional"; PR 5262 fixed it on `main` (§2.5).
 - On a modern connection with a tasks-negotiating client, proxying a
   task-capable tool returns an empty result where the direct call returns
-  the value.
+  the value. This persists on `main` after PR 5262 and is filed as
+  fastmcp#5267.
 - `finalize_instructions` sees the transformed listing: with the transform
   installed before finalisation, every snippet naming a hidden tool is
   pruned. Installed after, the snippets survive, and the Claude Code trace
@@ -132,6 +135,31 @@ whose defaults are 30 s, 100 MB and 50 tool calls per `execute`, and has
 no supported way to keep a tool direct (PrefectHQ/fastmcp#4925, open; the
 proposal on it is a contributor's). Everything §2.2 says about annotations, tasks and the
 proxy applies with a sandbox on top. It is not evaluated further here.
+
+### 2.5 Upstream response, 2026-09-25
+
+Both issues this study filed were answered within a day, by the same
+maintainer, in two PRs re-run against the study's probes:
+
+- **PR 5262, merged** (closes fastmcp#5261; after v4.0.9, unreleased as
+  of 2026-09-25): `get_tasks()` keeps the components a catalog transform
+  hides. On `main` a hidden task-capable tool is registered, runs on a
+  plain direct call and as a native task on a modern connection, unpinned.
+- **PR 5263, open** (closes fastmcp#5260): the proxy refuses pinned
+  names and carries the least-permissive hints over the tools it can
+  reach. With only read-only tools hidden it lists `readOnlyHint: true`;
+  one unannotated hidden tool makes it destructive. The hints are computed
+  before the enabled filter, so a write tool hidden by `TOOLS_DENY` still
+  counts unless it is also pinned by name; a pin set that wants a
+  read-only proxy is computed over registered tools. `search_tools` is
+  still unannotated.
+- **Still open**: the empty proxy result for a task-capable tool on a
+  modern connection reproduces on `main` without pvl-core; filed as
+  fastmcp#5267.
+
+The decision below was rewritten for this: pvl-core no longer needs its
+own proxy, and instead depends on the FastMCP release that carries both
+PRs.
 
 ## 3. Decision
 
@@ -170,10 +198,12 @@ Consequences that follow, each answering one of [#300]'s requirements:
   auto-approves reads and gates writes keeps that policy intact. Approval
   boundaries and audit names for writes are unchanged because writes are
   direct.
-- **Task-capable tools are pinned unconditionally**, so `get_tasks()`
-  never sees one to hide, native tasks keep working, and the modern-era
-  empty-result case cannot occur. This is not a preference; §2.2 makes it
-  a correctness requirement.
+- **Task-capable tools are pinned unconditionally.** Through v4.0.9 that
+  is what keeps them registered with Docket; on every version it is what
+  keeps the modern-era empty result (fastmcp#5267) unreachable, since a
+  pinned tool is refused by the proxy and a proxied call can never run as
+  a native task. This is not a preference; §2.2 and §2.5 make it a
+  correctness requirement.
 - **The transfer link tools follow their annotations**: `create_upload_link`
   is not read-only and stays direct; `create_download_link` is read-only,
   is hidden, and the transfer workflow snippet still names it.
@@ -188,17 +218,23 @@ Consequences that follow, each answering one of [#300]'s requirements:
 - **Structured results and `_meta`** pass through unchanged; the study
   observed both.
 
-**pvl-core owns the proxy.** The built-in `call_tool` is not used as
-shipped: it reaches pinned tools and carries no annotations. pvl-core
-subclasses `BM25SearchTransform`, overrides the proxy factory so the
-proxy resolves names only against the hidden set (the same set the search
-indexes), and annotates it. Its parameter descriptions come from a docstring `Args:`
-section, as pvl-core's other tools do, because an `Annotated` description
-on an optional parameter is lost on CPython 3.10 (FastMCP's own proxy
-ships without one there). The search tool keeps FastMCP's name
-`search_tools`; the proxy keeps `call_tool`. Search results use the
-markdown serialiser (about a quarter of the JSON size); the schema a
-model needs to construct a call is in it.
+**The proxy is FastMCP's; the pin set is pvl-core's.** The mode ships
+only against a FastMCP release that contains PR 5262 and PR 5263 (both
+after v4.0.9); pvl-core raises its lower bound rather than subclassing
+the transform. With that release, `BM25SearchTransform(always_visible=
+<pin set>)` is used as shipped: its proxy refuses pinned names and, with
+only read-only tools left hidden, lists as `readOnlyHint: true`. pvl-core
+computes the pin set over every **registered** tool, not the effective
+listing, because the proxy's hints count disabled tools (§2.5): a write
+tool hidden by `TOOLS_DENY` is pinned by name too, which changes nothing
+for the listing and keeps the proxy read-only. The search tool keeps
+FastMCP's name `search_tools`; the proxy keeps `call_tool`. Search
+results use the markdown serialiser (about a quarter of the JSON size);
+the schema a model needs to construct a call is in it. Two accepted
+costs: `search_tools` carries no annotations upstream, and on CPython
+3.10 the proxy's `arguments` parameter lists without a description (the
+`Annotated` loss recorded in `mcp-model-facing-text.md`); both are
+FastMCP's to change, and neither touches the invariant.
 
 **Ordering.** The transform is applied *after* `finalize_instructions`
 and after `apply_tool_visibility`. Instructions therefore keep naming
@@ -231,9 +267,12 @@ Any of these blocks shipping or keeping the mode:
   (PrefectHQ/fastmcp#4925), annotation-preserving discovery, and the
   family accepts `pydantic-monty` in its dependency set; then a separate
   study.
-- A change in FastMCP that makes `get_tool_catalog()` or `always_visible`
-  behave differently from §2.2 without the implementation's tests
-  catching it: the tests are the contract, and a FastMCP major bump
+- A FastMCP lower bound that does not contain PR 5262 and PR 5263: on
+  v4.0.9 and earlier the built-in proxy reaches pinned tools and hidden
+  task tools lose Docket registration.
+- A change in FastMCP that makes the proxy's fence or its derived
+  annotations behave differently from §2.5 without the implementation's
+  tests catching it: the tests are the contract, and a FastMCP major bump
   re-opens this ADR.
 
 ## 5. Alternatives rejected
@@ -247,8 +286,13 @@ Any of these blocks shipping or keeping the mode:
   assumes a stable shape per server name, and because it would make the
   catalog per-session state on a server the modern spec wants stateless.
   If a mixed-client HTTP deployment ever needs it, this is the mechanism.
-- **Use FastMCP's transform as shipped.** Rejected: unannotated proxy
-  reaching pinned destructive tools; hidden task tools unregistered.
+- **Use FastMCP's transform as shipped at v4.0.9.** Rejected: unannotated
+  proxy reaching pinned destructive tools; hidden task tools unregistered.
+  Superseded on 2026-09-25: with PR 5262 and PR 5263 the transform is used
+  as shipped (§3), and the subclass this ADR first proposed is not built.
+- **A pvl-core-owned proxy subclass.** The first version of this ADR
+  decided it. Dropped once upstream fenced and annotated the built-in
+  proxy: a subclass would duplicate that and drift from it.
 - **Pin nothing and hide everything** (the 1.2 kB listing). Rejected:
   every write becomes a generic call, and the task defect bites every
   dual-mode tool.
@@ -283,8 +327,9 @@ that cost low.
 
 ## 7. Consequences
 
-- pvl-core gains one env var, one helper, one transform subclass and one
-  instruction snippet. Nothing changes for existing deployments.
+- pvl-core gains one env var, one helper, one instruction snippet and a
+  FastMCP lower-bound bump to the release carrying PR 5262 and PR 5263.
+  Nothing changes for existing deployments.
 - The `writing-model-facing-text` skill gains a paragraph on descriptions
   that must survive being read through a search result (the first
   sentence carries the choice; BM25 sees names, descriptions and
@@ -299,22 +344,26 @@ that cost low.
 
 Children of [#300], filed with this ADR:
 
-- **pvl-core implementation** ([#362]): `{PREFIX}_TOOL_CATALOG`, the fenced
-  read-only proxy, unconditional pinning of task-capable and core tools,
-  ordering after finalisation, the CAPABILITIES snippet, README and
-  template docs. Tests pin: the invariant on every tool of a fixture
-  server; `TOOLS_DENY` unreachable through search and proxy; a task-capable
-  tool runs as a native task in `search` mode; instructions unchanged
-  between modes apart from the added snippet; `_meta` and structured
-  content through the proxy.
-- **Upstream, FastMCP** ([fastmcp#5261]): `get_tasks()` applies server-level transforms, so
-  a search transform drops hidden task-capable tools from Docket and a
-  direct call of such a tool fails on a modern connection; fifteen-line
-  reproduction attached.
-- **Upstream, FastMCP** ([fastmcp#5260]): the built-in proxy carries no annotations and
-  resolves pinned tools; design feedback adjacent to #4418 and the #4925
-  thread, asking for a proxy fence predicate or annotation-carrying
-  proxies.
+- **pvl-core implementation** ([#362]): `{PREFIX}_TOOL_CATALOG`, the pin
+  set computed over registered tools (not read-only, task-capable, the
+  two core tools), ordering after finalisation, the CAPABILITIES snippet,
+  the FastMCP lower-bound bump, README and template docs. Tests pin: the
+  invariant on every tool of a fixture server, including that the proxy
+  lists `readOnlyHint: true`; `TOOLS_DENY` unreachable through search and
+  proxy and not loosening the proxy's hints; a task-capable tool runs as a
+  native task in `search` mode and is refused by the proxy; instructions
+  unchanged between modes apart from the added snippet; `_meta` and
+  structured content through the proxy. Blocked on the FastMCP release.
+- **Upstream, FastMCP** ([fastmcp#5261], closed by [fastmcp-pr-5262],
+  merged 2026-09-24): `get_tasks()` applied server-level transforms, so a
+  search transform dropped hidden task-capable tools from Docket.
+- **Upstream, FastMCP** ([fastmcp#5260], closed by [fastmcp-pr-5263],
+  open as of 2026-09-25): the built-in proxy carried no annotations and
+  resolved pinned tools.
+- **Upstream, FastMCP** ([fastmcp#5267], open): the proxy of a
+  task-capable tool returns `{}` on a modern connection with a
+  tasks-declaring client; the unconditional pin keeps pvl-core clear of it
+  either way.
 - **Downstream evaluation** ([markdown-vault-mcp#1602]): markdown-vault-mcp under OpenCode with
   `search` on, measuring task success on a fixed script; the numbers in
   §2.3 are listing sizes, not task outcomes.
@@ -327,8 +376,10 @@ Children of [#300], filed with this ADR:
   their connect behaviour is observed. Claude Desktop and claude.ai were
   not run.
 - FastMCP probes ran on fastmcp 4.0.0 under CPython 3.10.20 and 3.14.5
-  and on fastmcp 4.0.5 under CPython 3.11.14. Behaviour agreed on all
-  three; the proxy's listing size differs on 3.10 (recorded). The client
+  and on fastmcp 4.0.5 under CPython 3.11.14; the 2026-09-25 re-runs on
+  `main` at edc991e and the PR 5263 branch at cf970fb were under CPython
+  3.11.14 only. Behaviour agreed on all; the proxy's listing size differs
+  on 3.10 (recorded). The client
   identity probe (`idserver.py`) and the in-transform identity probe
   (`probe_a.py`) ran on 4.0.0 only.
 - Elicitation through the proxy on a modern connection is unverified
@@ -344,6 +395,9 @@ Children of [#300], filed with this ADR:
 [#362]: https://github.com/pvliesdonk/fastmcp-pvl-core/issues/362
 [fastmcp#5260]: https://github.com/PrefectHQ/fastmcp/issues/5260
 [fastmcp#5261]: https://github.com/PrefectHQ/fastmcp/issues/5261
+[fastmcp#5267]: https://github.com/PrefectHQ/fastmcp/issues/5267
+[fastmcp-pr-5262]: https://github.com/PrefectHQ/fastmcp/pull/5262
+[fastmcp-pr-5263]: https://github.com/PrefectHQ/fastmcp/pull/5263
 [markdown-vault-mcp#1602]: https://github.com/pvliesdonk/markdown-vault-mcp/issues/1602
 [`docs/reference/fastmcp-search-transform.md`]: ../reference/fastmcp-search-transform.md
 [`docs/reference/mcp-client-tool-discovery.md`]: ../reference/mcp-client-tool-discovery.md

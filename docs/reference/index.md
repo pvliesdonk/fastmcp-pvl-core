@@ -36,9 +36,10 @@ major bump makes every FastMCP reference stale regardless of its date.
   / FastMCP 4.x.
 - [FastMCP tool-search transform and CodeMode](fastmcp-search-transform.md)
   — what the search transforms change on the wire, that `always_visible`
-  fences discovery but not the proxy, that hidden task-capable tools drop
-  out of Docket registration, what the proxy preserves, and catalog sizes
-  measured on markdown-vault-mcp. Read by ADR 0004 and the catalog-mode
+  fenced discovery but not the proxy through v4.0.9 (PR 5263 fences and
+  annotates it), that hidden task-capable tools dropped out of Docket
+  registration through v4.0.9 (PR 5262 fixes it), what the proxy
+  preserves, and catalog sizes measured on markdown-vault-mcp. Read by ADR 0004 and the catalog-mode
   implementation it proposes. Valid for FastMCP 4.x.
 - [How MCP clients discover tools and identify themselves](mcp-client-tool-discovery.md)
   — deferral is not observable server-side, what Claude Code, OpenCode and
