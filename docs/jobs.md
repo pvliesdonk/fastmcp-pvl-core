@@ -75,9 +75,14 @@ Rules of the road:
   per-tool poller; that is the divergence this subsystem exists to end.
   The optional `note=` kwarg appends one domain sentence to the generic
   tool description (it never replaces it).
-- Inline failures behave as if the wrapper were absent: an exception
-  raised before the deadline propagates to the caller unchanged. Only a
-  failure *after* promotion is reported through polling instead.
+- A failure ends the same way before and after the deadline. Raise
+  `ToolError(msg, log_level=...)` for an outcome the model can act on (not
+  found, invalid input): it reaches the caller, or the poller, with its own
+  message. Any other exception is a server fault: `tool_boundary` logs it
+  once with its traceback, and the model gets a fixed "server-side error,
+  retry later" message instead of the exception's text. Before the
+  deadline the failure is the call's error result; after promotion it is
+  reported through polling.
 
 ## What the client sees
 

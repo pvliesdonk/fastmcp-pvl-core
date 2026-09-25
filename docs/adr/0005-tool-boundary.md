@@ -98,14 +98,18 @@ The boundary, on every path. A call can end three ways at runtime: inline
 to the background (only the jobs manager sees it), and as a native
 SEP-2663 task (only FastMCP's task machinery sees it). The boundary is the
 one place all three pass through, so the traceback is logged there, and the
-other lines stay one-line summaries: the jobs manager's `job_failed` takes
-the `ToolError`'s level and attaches no traceback ([#370]). The exception
-is the middleware, which attaches one when `include_traceback` is on (a
-DEBUG root logger). For that, `register_long_running_tool` wraps the domain
-coroutine in its own boundary as well as the registered tool, and the jobs
-manager applies the boundary's rule to work a downstream started with
-`Jobs.start` without one: the fault message to the poller, ERROR with the
-traceback in the log ([#369]).
+other lines stay one-line summaries. To make the boundary sit on the
+background path too, `register_long_running_tool` wraps the domain
+coroutine in its own boundary as well as the registered tool. The jobs
+manager's `job_failed` then takes the `ToolError`'s level and attaches no
+traceback ([#370]).
+
+Two lines still carry a traceback of their own. The middleware attaches one
+when `include_traceback` is on (a DEBUG root logger). And work a downstream
+started with `Jobs.start`, which no boundary wraps, is classified by the
+jobs manager with the boundary's rule: the fault message to the poller, and
+`job_failed` at ERROR with the traceback, since that line is then the only
+record of it ([#369]).
 
 ### 2.4 The middleware's failure line follows `log_level`
 
@@ -141,9 +145,10 @@ message. The boundary adds no redaction of its own.
   silence its other records, so FastMCP's line stays.
 - An outcome 2 or 3 (`ToolError` at INFO) produces INFO lines only. An
   upstream rate limit or timeout produces WARNING lines only.
-- The tools pvl-core registers carry the boundary. The transfer link tools'
-  `validate` hook contract is settled separately ([#364]). The template
-  replaces its copied example with the import.
+- `get_job_result`, `get_server_info` and every `register_long_running_tool`
+  tool carry the boundary. The transfer link tools follow together with a
+  stricter `validate` hook contract ([#364]). The template replaces its
+  copied example with the import.
 
 [#363]: https://github.com/pvliesdonk/fastmcp-pvl-core/issues/363
 [#364]: https://github.com/pvliesdonk/fastmcp-pvl-core/issues/364

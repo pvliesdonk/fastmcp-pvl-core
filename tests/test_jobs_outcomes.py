@@ -118,7 +118,23 @@ async def test_unknown_job_id_is_a_request_to_change(caplog):
     assert loud == []
 
 
-async def test_fault_before_the_deadline_is_the_fault_message(caplog):
+@pytest.fixture(params=["native", "inline"])
+def call_path(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> str:
+    """Run a test on both paths a call can end on before the deadline.
+
+    ``native``: FastMCP's client negotiates tasks, so the tool runs as a
+    SEP-2663 task. ``inline``: a client without the tasks extension, so the
+    fallback runs the work in the foreground.
+    """
+    if request.param == "inline":
+        monkeypatch.setattr(
+            "fastmcp.client.client.build_internal_client_extensions",
+            lambda _callback: [],
+        )
+    return str(request.param)
+
+
+async def test_fault_before_the_deadline_is_the_fault_message(call_path, caplog):
     async with Client(_server()) as client:
         with caplog.at_level(logging.DEBUG):
             result = await client.call_tool_mcp("fast_crash", {})
@@ -175,7 +191,7 @@ async def test_job_cap_is_a_request_to_retry_later(non_task_client, caplog):
     assert loud == []
 
 
-async def test_domain_tool_error_passes_through_inline():
+async def test_domain_tool_error_passes_through(call_path):
     config = ServerConfig(kv_store_url="memory://")
     mcp = FastMCP("t")
     configure_task_backend(mcp, "APP", config)
