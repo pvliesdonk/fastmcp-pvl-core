@@ -7,6 +7,7 @@ import logging
 import re
 
 import pytest
+from fastmcp.exceptions import ResourceError, ToolError
 from fastmcp.server.middleware.middleware import MiddlewareContext
 
 from fastmcp_pvl_core._log_render import JsonFormatter, bind_record, render_rich
@@ -104,6 +105,43 @@ async def test_failed_error_value_unquoted_when_no_whitespace(caplog):
         with pytest.raises(ValueError):
             await mw.on_message(ctx, _failing_call_next(ValueError("oneword")))
     assert "error=oneword" in caplog.records[-1].getMessage()
+
+
+@pytest.mark.parametrize(
+    ("exc", "level"),
+    [
+        # A request the model must change: the raiser chose INFO (#363).
+        (ToolError("no note at a.md", log_level=logging.INFO), logging.INFO),
+        (ToolError("index rebuilding", log_level=logging.WARNING), logging.WARNING),
+        # FastMCPError's default level is ERROR.
+        (ToolError("server fault"), logging.ERROR),
+        (ResourceError("gone", log_level=logging.INFO), logging.INFO),
+        # Not a FastMCPError: no level to read, so ERROR.
+        (ValueError("boom"), logging.ERROR),
+    ],
+    ids=["tool-info", "tool-warning", "tool-default", "resource-info", "other"],
+)
+async def test_failed_line_level_follows_log_level(caplog, exc, level):
+    mw = RequestLoggingMiddleware()
+    ctx = _context(method="tools/call", message=_ToolParams("read"))
+    with caplog.at_level(logging.DEBUG, logger=_LOGGER_NAME):
+        with pytest.raises(type(exc)):
+            await mw.on_message(ctx, _failing_call_next(exc))
+    failed = caplog.records[-1]
+    assert failed.getMessage().startswith("tool_call_failed ")
+    assert failed.levelno == level
+
+
+async def test_failed_line_level_applies_to_non_tool_messages(caplog):
+    mw = RequestLoggingMiddleware()
+    ctx = _context(method="resources/read")
+    exc = ResourceError("gone", log_level=logging.INFO)
+    with caplog.at_level(logging.DEBUG, logger=_LOGGER_NAME):
+        with pytest.raises(ResourceError):
+            await mw.on_message(ctx, _failing_call_next(exc))
+    failed = caplog.records[-1]
+    assert failed.getMessage().startswith("request_failed ")
+    assert failed.levelno == logging.INFO
 
 
 async def test_include_traceback_attaches_exc_info(caplog):

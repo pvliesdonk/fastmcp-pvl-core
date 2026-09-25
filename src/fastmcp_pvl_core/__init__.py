@@ -84,6 +84,7 @@ from ._server_info import (
 )
 from ._subject import get_claims, get_current_auth_mode, get_subject
 from ._tasks import configure_task_backend
+from ._tool_boundary import is_tool_boundary, tool_boundary
 from ._transfer import (
     FetchResult,
     TransferBadGatewayError,
@@ -182,6 +183,7 @@ __all__ = [
     "get_current_auth_mode",
     "get_subject",
     "instructions_for",
+    "is_tool_boundary",
     "load_acl",
     "make_acl_check",
     "make_claims_check",
@@ -203,6 +205,7 @@ __all__ = [
     "run_http",
     "server_config_env_suffixes",
     "server_config_surface",
+    "tool_boundary",
     "utf16_code_units",
     "wire_middleware_stack",
 ]

@@ -16,6 +16,7 @@ import sys
 import time
 from typing import Any
 
+from fastmcp.exceptions import FastMCPError
 from fastmcp.server.middleware.middleware import (
     CallNext,
     Middleware,
@@ -78,6 +79,11 @@ class RequestLoggingMiddleware(Middleware):
     and carry ``tool=<name>``; every other message uses ``request_*`` or
     ``notification_*`` keyed by ``method=``.
 
+    ``*_completed`` is INFO. ``*_failed`` is logged at the exception's
+    ``log_level`` when it is a ``FastMCPError`` and at ERROR otherwise, so a
+    ``ToolError(msg, log_level=logging.INFO)`` for a request the model must
+    change is not recorded as a server fault.
+
     Every record is logged through the shared log-call grammar — one
     template built from the event name and field names, with the field
     values passed as ``args`` — rather than rendered here. The root
@@ -124,6 +130,13 @@ class RequestLoggingMiddleware(Middleware):
         try:
             result = await call_next(context)
         except Exception as exc:
+            # The level follows how the call ended, as the rest of the stack
+            # classifies it: a FastMCPError carries the level its raiser chose
+            # (FastMCP logs its own record at the same level), anything else is
+            # ERROR. For tools/call FastMCP has already turned every exception
+            # into a ToolError, so the ERROR default matters only for other
+            # messages (ADR 0005 §2.4).
+            level = exc.log_level if isinstance(exc, FastMCPError) else logging.ERROR
             self._emit(
                 event_base + "_failed",
                 {
@@ -132,7 +145,7 @@ class RequestLoggingMiddleware(Middleware):
                     "error_type": type(exc).__name__,
                     "error": str(exc),
                 },
-                logging.ERROR,
+                level,
                 exc_info=self.include_traceback,
             )
             raise

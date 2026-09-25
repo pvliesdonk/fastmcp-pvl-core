@@ -250,6 +250,48 @@ from fastmcp_pvl_core import apply_tool_visibility
 apply_tool_visibility(mcp, config)   # config: ServerConfig.from_env("MY_APP")
 ```
 
+### Tool outcomes (`tool_boundary`)
+
+A tool call ends in one of four ways: it returns its result; the model has
+to change the request (not found, invalid input); the model has to refresh
+and retry (a stale version); or the server failed. The first three are the
+tool's to decide: return the value, or raise
+`ToolError(msg, log_level=logging.INFO)` with a message that says what to
+do next. `tool_boundary` handles the fourth, so no exception reaches
+FastMCP's own handler:
+
+```python
+import logging
+
+from fastmcp.exceptions import ToolError
+from fastmcp_pvl_core import tool_boundary
+
+@mcp.tool
+@tool_boundary
+async def read_note(path: str) -> dict[str, str]:
+    """Return a note's text; look paths up with search_notes first."""
+    try:
+        note = await store.read(path)
+    except FileNotFoundError:
+        raise ToolError(
+            f"No note at '{path}'. Find the path with search_notes.",
+            log_level=logging.INFO,
+        ) from None
+    return {"text": note.text}
+```
+
+A FastMCP error raised by the tool passes through unchanged. Any other
+exception is logged once as `tool_failed function=<name> error_type=<type>`
+at `ERROR` with its traceback, and the model receives a fixed message
+saying the request was fine and to retry later or tell the user, whether or
+not `mask_error_details` is on. Put `@mcp.tool` above `@tool_boundary`;
+the wrapper keeps the signature, so schemas, `Context` injection and
+`task=` registration are unaffected. `is_tool_boundary(fn)` reports whether
+a function carries it, for a test that enumerates registered tools.
+
+The decision and its trade-offs are in
+[ADR 0005](docs/adr/0005-tool-boundary.md).
+
 ### Logging
 
 `configure_logging_from_env(env_prefix, *, verbose=False)` is pvl-core's
@@ -449,8 +491,16 @@ followed by `key=value` pairs, with request timing carried inline:
 ```
 tool_call_started   tool=read method=tools/call source=client
 tool_call_completed tool=read duration_ms=68.57
-tool_call_failed    tool=read duration_ms=109.84 error_type=ValueError error="Section '1.3' not found"
+tool_call_failed    tool=read duration_ms=109.84 error_type=ToolError error="Section '1.3' not found"
 ```
+
+`*_failed` is logged at the exception's `log_level` when it is a FastMCP
+error (`ToolError`, `ResourceError`, ...), and at `ERROR` otherwise, so a
+tool that raises `ToolError(msg, log_level=logging.INFO)` for a request the
+model has to change produces no `ERROR` line. For a tool call FastMCP has
+already turned every exception into a `ToolError`, so `error_type` is
+`ToolError`; the original type of a server fault is on the `tool_failed`
+line of [`tool_boundary`](#tool-outcomes-tool_boundary).
 
 Non-tool messages use a generic `request_*` / `notification_*` vocabulary
 keyed by `method=`. Rendering is process-wide — see [Output

@@ -96,7 +96,16 @@ already covers, and anything a loop emits on every iteration, goes to
   its result comes from the `designing-tool-outcomes` skill: INFO when only
   the model has to act (an unknown job id, a rejected `ref`), WARNING or
   ERROR for a server fault. The rows of the table above are not a
-  substitute for that classification.
+  substitute for that classification. The tool raises every outcome it
+  can name as a `ToolError` with that `log_level`; `tool_boundary`
+  (`_tool_boundary.py`) logs everything else once as `tool_failed` at
+  ERROR with the traceback.
+  The middleware's `*_failed` line takes its level from the `ToolError`,
+  so it never needs its own classification.
+- A traceback is an emit path the boundary cannot redact: it does not know
+  which exception carries a secret. The site that handles a
+  credential-bearing value re-raises `from None` with its own message
+  before the exception can reach a boundary (ADR 0005 §2.5).
 - Re-raise with `from exc` to keep the cause, or `from None` when the
   cause's message would carry a secret (see redaction below).
 
