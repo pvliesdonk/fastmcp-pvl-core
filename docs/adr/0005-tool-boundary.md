@@ -145,10 +145,15 @@ message. The boundary adds no redaction of its own.
   silence its other records, so FastMCP's line stays.
 - An outcome 2 or 3 (`ToolError` at INFO) produces INFO lines only. An
   upstream rate limit or timeout produces WARNING lines only.
-- `get_job_result`, `get_server_info` and every `register_long_running_tool`
-  tool carry the boundary. The transfer link tools follow together with a
-  stricter `validate` hook contract ([#364]). The template replaces its
-  copied example with the import.
+- Every tool pvl-core registers carries the boundary: `get_job_result`,
+  `get_server_info`, every `register_long_running_tool` tool, and the two
+  transfer link tools. The template replaces its copied example with the
+  import.
+- A domain hook that runs inside one of those tools rejects with a
+  `ToolError`. For the transfer `validate` hook this narrows "raises to
+  reject" ([#364]): a `ValueError` rejection, which downstreams used, is now
+  a server fault, so the change is breaking and those downstreams migrate.
+  A non-positive `ttl_s` is rejected by the link tools themselves, at INFO.
 
 [#363]: https://github.com/pvliesdonk/fastmcp-pvl-core/issues/363
 [#364]: https://github.com/pvliesdonk/fastmcp-pvl-core/issues/364

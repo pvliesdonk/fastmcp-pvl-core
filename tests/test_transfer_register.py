@@ -22,6 +22,7 @@ routes layer (``test_transfer_store``, ``test_transfer_routes``):
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping
 from contextlib import asynccontextmanager
 from typing import Any
@@ -30,6 +31,7 @@ import httpx
 import pytest
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
+from fastmcp.tools import FunctionTool
 from starlette.routing import Route
 
 from fastmcp_pvl_core import (
@@ -42,9 +44,11 @@ from fastmcp_pvl_core import (
     build_transfer_links,
     finalize_instructions,
     instructions_for,
+    is_tool_boundary,
     register_transfer_routes,
 )
 from fastmcp_pvl_core._errors import ConfigurationError
+from fastmcp_pvl_core._tool_boundary import FAULT_MESSAGE
 
 
 class _RecordingSink:
@@ -66,9 +70,11 @@ class _RecordingSink:
 class _RecordingValidator:
     """Records (ref, kind) calls; encodes the kind into the returned handle.
 
-    A ``ref`` of ``"bad"`` raises, exercising the rejection path. The handle
-    embeds the kind so a downstream sink assertion can prove which kind was
-    minted.
+    A ``ref`` of ``"bad"`` rejects the way the contract asks, with a
+    ``ToolError`` at INFO. ``"value-error"`` rejects the way hooks used to,
+    and ``"boom"`` is a bug in the hook: both are server faults now. The
+    handle embeds the kind so a downstream sink assertion can prove which kind
+    was minted.
     """
 
     def __init__(self) -> None:
@@ -77,7 +83,14 @@ class _RecordingValidator:
     async def __call__(self, ref: str, kind: str) -> str:
         self.calls.append((ref, kind))
         if ref == "bad":
+            raise ToolError(
+                "No file at 'bad'. Pass the path of an existing file.",
+                log_level=logging.INFO,
+            )
+        if ref == "value-error":
             raise ValueError("validator rejected ref")
+        if ref == "boom":
+            raise RuntimeError("internal detail /srv/secret")
         return f"handle:{ref}:{kind}"
 
 
@@ -286,20 +299,57 @@ class TestTtlClamp:
         res = await mcp.call_tool("create_download_link", {"ref": "doc", "ttl_s": 150})
         assert res.structured_content["expires_in_s"] == 150.0
 
-    async def test_non_positive_ttl_is_rejected(self) -> None:
+    @pytest.mark.parametrize("tool", ["create_download_link", "create_upload_link"])
+    @pytest.mark.parametrize("ttl_s", [0, -5])
+    async def test_non_positive_ttl_is_a_request_to_change(
+        self, tool: str, ttl_s: float
+    ) -> None:
         # The clamp only bounds the ceiling; a non-positive request would mint a
-        # dead link, so store.mint rejects it (ValueError -> ToolError) rather
-        # than the clamp. Pins that the request fails loudly, not silently.
-        mcp, _, _ = _register()
-        with pytest.raises(ToolError):
-            await mcp.call_tool("create_download_link", {"ref": "doc", "ttl_s": 0})
+        # dead link. The tool rejects it before validating, as a request the
+        # model must change (INFO), naming the argument to fix.
+        mcp, _, validate = _register()
+        with pytest.raises(ToolError) as info:
+            await mcp.call_tool(tool, {"ref": "doc", "ttl_s": ttl_s})
+        assert str(info.value) == (
+            "ttl_s must be greater than 0; omit it to use the server's default "
+            "link lifetime."
+        )
+        assert info.value.log_level == logging.INFO
+        assert validate.calls == []
 
 
 class TestValidatorRejection:
-    async def test_rejection_surfaces_from_tool(self) -> None:
+    """The ``validate`` hook's contract (ADR 0005, #364)."""
+
+    @pytest.mark.parametrize("tool", ["create_download_link", "create_upload_link"])
+    async def test_tool_error_is_the_rejection(self, tool: str, caplog) -> None:
         mcp, _, _ = _register()
-        with pytest.raises(ToolError, match="validator rejected ref"):
-            await mcp.call_tool("create_download_link", {"ref": "bad"})
+        with caplog.at_level(logging.DEBUG, logger="fastmcp_pvl_core"):
+            with pytest.raises(ToolError) as info:
+                await mcp.call_tool(tool, {"ref": "bad"})
+        assert str(info.value) == (
+            "No file at 'bad'. Pass the path of an existing file."
+        )
+        assert info.value.log_level == logging.INFO
+        assert [r for r in caplog.records if r.name.endswith("_tool_boundary")] == []
+
+    @pytest.mark.parametrize("ref", ["value-error", "boom"])
+    async def test_any_other_exception_is_a_fault(self, ref: str, caplog) -> None:
+        mcp, _, _ = _register()
+        with caplog.at_level(logging.DEBUG, logger="fastmcp_pvl_core"):
+            with pytest.raises(ToolError) as info:
+                await mcp.call_tool("create_download_link", {"ref": ref})
+        assert str(info.value) == FAULT_MESSAGE
+        (record,) = [r for r in caplog.records if r.name.endswith("_tool_boundary")]
+        assert record.levelno == logging.ERROR
+        assert record.exc_info is not None
+
+    @pytest.mark.parametrize("tool", ["create_download_link", "create_upload_link"])
+    async def test_link_tools_carry_the_boundary(self, tool: str) -> None:
+        mcp, _, _ = _register()
+        registered = await mcp.get_tool(tool)
+        assert isinstance(registered, FunctionTool)
+        assert is_tool_boundary(registered.fn)
 
 
 @asynccontextmanager
