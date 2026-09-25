@@ -139,7 +139,7 @@ jobs:
           # scopes), `gh pr comment` for posting a summary comment, the gh
           # pr/run read commands (pr diff/view, run view/list), scoped `uv run`
           # gate tools for targeted investigation, plus Skill (launch the
-          # /code-review skill) and Task (dispatch its review subagents —
+          # /code-review plugin) and Task (dispatch its review subagents —
           # synchronous under the pinned 2.1.197; issue #258). contents: read
           # above keeps the reviewer from committing — it only reads and comments.
           # Subagents inherit this same set — delegation, not new capability.
