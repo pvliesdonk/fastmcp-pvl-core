@@ -66,10 +66,10 @@ TransferValidator = Callable[[str, TransferKind], Awaitable[str]]
 To reject a ref (bad extension, missing file, wrong kind, …) raise
 ``fastmcp.exceptions.ToolError(msg, log_level=logging.INFO)``. The message
 reaches the model as the link tool's error, so say what was wrong and what to
-pass instead. Any other exception is a server fault: the link tool's
-``tool_boundary`` logs it with its traceback and the model is told the request
-was fine and to retry later, so a rejection raised as ``ValueError`` would be
-reported as a fault (ADR 0005). It is invoked at
+pass instead. Any other exception goes to the link tool's ``tool_boundary``
+(see its docstring), which treats it as a server fault: the model is told the
+request was fine and to retry later, so a rejection raised as ``ValueError``
+would be reported as a fault (ADR 0005). It is invoked at
 **link creation** by the link tools — not by the route handler — because
 content validation is *"what bytes are acceptable,"* a domain question pvl-core
 cannot answer for a downstream. ``kind`` lets a validator apply different rules
