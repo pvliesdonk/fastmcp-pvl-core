@@ -385,7 +385,7 @@ pvl-core is one of the subjects above, and its behaviour is recorded here
 rather than among the claims. The first two points are the 9.0.1 behaviour
 the probe observed; ADR 0005 (`docs/adr/0005-tool-boundary.md`) changed the
 second and added `tool_boundary`. The third is a tracked defect against the
-`designing-tool-outcomes` skill.
+`designing-tool-outcomes` skill, partly fixed since.
 
 - `wire_middleware_stack` installs only `RequestLoggingMiddleware`
   (`include_traceback` follows a DEBUG root logger). It wires no
@@ -409,6 +409,9 @@ second and added `tool_boundary`. The third is a tracked defect against the
   `_transfer/register.py`) [observed: in-memory server on FastMCP 4.0.0
   with a `validate` hook raising `ValueError`, 2026-09-25] Tracked in
   [#364](https://github.com/pvliesdonk/fastmcp-pvl-core/issues/364).
+  Since ADR 0005 `get_job_result` raises it at INFO, pinned by
+  `tests/test_jobs_outcomes.py::test_unknown_job_id_is_a_request_to_change`;
+  the transfer case remains.
 
 ## Not covered
 

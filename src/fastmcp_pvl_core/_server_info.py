@@ -19,6 +19,7 @@ import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
+from ._tool_boundary import tool_boundary
 from ._url import redact_urls_in_text
 
 if TYPE_CHECKING:
@@ -172,4 +173,4 @@ def register_server_info_tool(
             read_only_hint=True,
             title="Server Info" if title is None else title,
         ),
-    )(get_server_info)
+    )(tool_boundary(get_server_info))

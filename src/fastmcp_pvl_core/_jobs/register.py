@@ -33,14 +33,16 @@ from __future__ import annotations
 
 import base64
 import functools
+import logging
 from typing import TYPE_CHECKING, Any
 
 from fastmcp.exceptions import ToolError
 from mcp.types import Icon, ToolAnnotations
 
 from .._instructions import InstructionRole, instructions_for
+from .._tool_boundary import tool_boundary
 from .manager import Jobs
-from .records import JOB_POLL_TOOL_NAME, JobNotFoundError
+from .records import JOB_POLL_TOOL_NAME, JobLimitExceededError, JobNotFoundError
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -98,9 +100,7 @@ def register_long_running_tool(
       native background-task execution; Docket owns lifecycle and
       results.
     - **plain request, finishes within the soft deadline** → the
-      coroutine's own result, inline, exactly as if unwrapped — and an
-      exception raised within the deadline propagates to the caller
-      unchanged.
+      coroutine's own result, inline, exactly as if unwrapped.
     - **plain request, deadline expires** → the work continues in the
       background and the caller immediately receives a
       :class:`~.records.JobHandle` payload
@@ -108,6 +108,15 @@ def register_long_running_tool(
       "get_job_result", "retry_after_s": 5.0, "message": ...}``),
       retrievable via the generic polling tool until the record's TTL. A
       failure *after* promotion is reported through polling, not raised.
+
+    Both the coroutine and the registered tool carry
+    :func:`~fastmcp_pvl_core.tool_boundary`, so a failure ends the same way
+    on every path: a ``ToolError`` the coroutine raises reaches the caller
+    (or the poller) with its own message and ``log_level``, and any other
+    exception becomes the boundary's fault message, logged once with its
+    traceback. If the caller is at its live-job cap when the call would be
+    promoted, the work is stopped and the caller gets a ``ToolError`` at
+    INFO saying to retry later.
 
     Because the caller receives either your result *or* a handle — both
     JSON objects — annotate the coroutine's return type as
@@ -150,10 +159,30 @@ def register_long_running_tool(
 
     def decorator(fn: Callable[..., Any]) -> Any:
         tool_name = tool_kwargs.get("name") or fn.__name__
+        # The domain coroutine gets its own boundary so a fault is classified
+        # the same way on every path it can end on: inline, native task, and
+        # after promotion, where only the jobs manager sees it and stores the
+        # boundary's message instead of the raw exception text (ADR 0005
+        # §2.3). The outer boundary covers pvl-core's own code around it.
+        work = tool_boundary(fn)
 
+        @tool_boundary
         @functools.wraps(fn)
         async def wrapper(*args: Any, **kwargs: Any) -> Any:
-            return await jobs.run_with_deadline(fn(*args, **kwargs), tool=tool_name)
+            try:
+                return await jobs.run_with_deadline(
+                    work(*args, **kwargs), tool=tool_name
+                )
+            except JobLimitExceededError:
+                # The caller is at its cap of live job records; they count
+                # until they expire, so waiting is the only way out.
+                raise ToolError(
+                    f"{tool_name} ran past its foreground time limit, and this "
+                    "caller already has the maximum number of background jobs, "
+                    "so it was stopped. Retry it later, once older jobs have "
+                    "expired.",
+                    log_level=logging.INFO,
+                ) from None
 
         return mcp.tool(task=TaskConfig(mode="optional"), **tool_kwargs)(wrapper)
 
@@ -226,6 +255,7 @@ def register_job_tools(
             open_world_hint=False,
         ),
     )
+    @tool_boundary
     async def get_job_result(job_id: str) -> dict[str, Any]:
         """Poll one job.
 
@@ -235,8 +265,16 @@ def register_job_tools(
         """
         try:
             return await jobs.poll(job_id)
-        except JobNotFoundError as exc:
-            raise ToolError(str(exc)) from exc
+        except JobNotFoundError:
+            # A request the model must change (designing-tool-outcomes,
+            # outcome 2). The message says the same for another caller's id
+            # as for an unknown one, so ids are not probeable across tenants.
+            raise ToolError(
+                f"No job {job_id!r} for this caller: the id is unknown, has "
+                "expired, or belongs to another caller. Run the original tool "
+                "again if you still need its result.",
+                log_level=logging.INFO,
+            ) from None
 
     instructions_for(mcp).add(
         "A long-running tool returns a job id when this client cannot run it "
