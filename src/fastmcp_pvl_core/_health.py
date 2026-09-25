@@ -32,7 +32,6 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
-import re
 from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, Any
 
@@ -41,6 +40,7 @@ from starlette.responses import JSONResponse
 
 from ._cli import normalise_http_path
 from ._kv_store import build_kv_store
+from ._url import redact_urls_in_text
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
@@ -77,48 +77,6 @@ _PROBE_TTL_S = 60.0
 _CHECK_TIMEOUT_S = 5.0
 """Per-check ceiling. Generous for a probe, and short enough that a
 readiness answer arrives inside a normal orchestrator interval."""
-
-_URL_RE = re.compile(r"\b[a-zA-Z][a-zA-Z0-9+.-]*://\S+")
-_USERINFO_RE = re.compile(r"://[^/\s]*@")
-_QUERY_RE = re.compile(r"[?#]")
-
-
-def _redact_reason(text: str) -> str:
-    """Strip userinfo and query/fragment from any URL inside *text*.
-
-    Backend URLs reach this module through exception messages, and in this
-    codebase they carry credentials in ``user:pass@`` userinfo and tokens
-    in the query string. ``full`` detail is documented as trusted-network
-    only, but "trusted" is not a reason to hand out a password.
-
-    The userinfo pattern is greedy up to the last ``@`` before the path,
-    and every occurrence is replaced. A password may itself contain
-    ``@``, and one whitespace-free token may carry more than one URL; a
-    single non-greedy substitution leaked the tail of both.
-
-    Known limit: the pattern stops at ``/``, so a password carrying a raw
-    ``/`` is left unredacted. RFC 3986 requires that character to be
-    percent-encoded in userinfo, and widening the pattern to cross ``/``
-    would swallow everything between two URLs in one message. Stated
-    rather than fixed — ``full`` is documented as trusted-network only,
-    and this is one more reason it is.
-
-    Deliberately textual rather than parsed. ``urlsplit(...).port`` raises
-    ``ValueError`` on authorities this codebase actually supports — a
-    ``mongodb://`` seed list such as ``h1:27017,h2:27017`` is the case
-    that bit — and a redactor that can raise would turn a readiness
-    failure into an unhandled 500, losing the diagnostic it exists to
-    provide.
-
-    ``_transfer.fetch`` redacts a URL it holds as a URL; this one has to
-    find URLs inside free text, so the two are not the same function.
-    """
-
-    def _strip(match: re.Match[str]) -> str:
-        url = _USERINFO_RE.sub("://", match.group(0))
-        return _QUERY_RE.split(url, maxsplit=1)[0]
-
-    return _URL_RE.sub(_strip, text)
 
 
 def _resolve_detail(env_prefix: str) -> str:
@@ -323,7 +281,7 @@ def register_health_routes(
             body["errors"] = {
                 name: {
                     "type": type(exc).__name__,
-                    "detail": _redact_reason(str(exc)),
+                    "detail": redact_urls_in_text(str(exc)),
                 }
                 for name, exc in failures.items()
             }

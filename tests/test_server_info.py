@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 import pytest
 from fastmcp import FastMCP
 
@@ -126,6 +128,46 @@ class TestRegisterServerInfoTool:
         payload = await _call(mcp)
         assert payload["server_name"] == "my-mcp"
         assert payload["up"] == {"error": "async upstream on fire"}
+
+    async def test_upstream_failure_redacts_url_credentials(self, caplog):
+        """An HTTP client's error quotes its URL; userinfo reaches neither path.
+
+        Both emit paths are checked: the payload the model reads, and the
+        log record, including the absence of a traceback, which would render
+        the unredacted message again (#371).
+        """
+
+        def boom():
+            raise RuntimeError(
+                "GET https://user:hunter2@upstream.example/api?token=abc failed"
+            )
+
+        mcp = FastMCP("t")
+        register_server_info_tool(
+            mcp,
+            server_version="1.0.0",
+            server_name="my-mcp",
+            upstream_version=boom,
+        )
+        with caplog.at_level(logging.WARNING, logger="fastmcp_pvl_core"):
+            payload = await _call(mcp)
+
+        assert payload["upstream"] == {
+            "error": "GET https://upstream.example/api failed"
+        }
+        records = [
+            r for r in caplog.records if r.name == "fastmcp_pvl_core._server_info"
+        ]
+        assert len(records) == 1
+        record = records[0]
+        assert record.getMessage() == (
+            "server_info_upstream_lookup_failed error_type=RuntimeError "
+            "error=GET https://upstream.example/api failed"
+        )
+        assert record.exc_info is None
+        for secret in ("hunter2", "token=abc"):
+            assert secret not in record.getMessage()
+            assert secret not in str(payload)
 
     async def test_upstream_returns_none(self):
         mcp = FastMCP("t")

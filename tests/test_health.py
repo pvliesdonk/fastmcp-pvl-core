@@ -25,9 +25,9 @@ from fastmcp_pvl_core import (
 )
 from fastmcp_pvl_core._health import (
     _health_prefix,
-    _redact_reason,
     _resolve_detail,
 )
+from fastmcp_pvl_core._url import redact_urls_in_text
 
 _ENV_PREFIX = "APP"
 _HEALTH_LOGGER = "fastmcp_pvl_core._health"
@@ -334,7 +334,7 @@ class TestPublicSurface:
     def test_internals_stay_private(self):
         import fastmcp_pvl_core
 
-        for name in ("_resolve_detail", "_health_prefix", "_redact_reason"):
+        for name in ("_resolve_detail", "_health_prefix", "redact_urls_in_text"):
             assert name not in fastmcp_pvl_core.__all__
 
 
@@ -429,19 +429,19 @@ class TestRedactionRobustness:
     )
     def test_exotic_authorities_do_not_raise(self, url):
         """A redactor that can raise turns a 503 into an unhandled 500."""
-        out = _redact_reason(f"cannot reach {url}")
+        out = redact_urls_in_text(f"cannot reach {url}")
         assert "pw" not in out
         assert out.startswith("cannot reach ")
 
     def test_every_url_in_one_token_is_stripped_not_just_the_first(self):
         """A single non-greedy substitution left the second credential."""
-        out = _redact_reason("redis://u1:p1@h1/0,redis://u2:secret2@h2/0")
+        out = redact_urls_in_text("redis://u1:p1@h1/0,redis://u2:secret2@h2/0")
         assert "secret2" not in out
         assert "p1" not in out
         assert out == "redis://h1/0,redis://h2/0"
 
     def test_a_password_containing_an_at_sign_is_fully_stripped(self):
         """Stopping at the first ``@`` left the rest of the password."""
-        out = _redact_reason("redis://user:p@ss@cache.internal:6379/0")
+        out = redact_urls_in_text("redis://user:p@ss@cache.internal:6379/0")
         assert "ss@" not in out
         assert out == "redis://cache.internal:6379/0"
