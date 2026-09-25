@@ -59,7 +59,7 @@ Every sentence passes both or moves.
 | A value that must come from an earlier call (an etag from `read`) | that parameter's description, one sentence |
 | A sequence that spans tools, or what this server is for | an instructions snippet, `WORKFLOWS` or `CAPABILITIES` role |
 | A fact about this deployment (read-only, which instance) | instructions `INSTANCE` role, driven by config, never hand-written prose |
-| What to do after the call given its outcome (index stale, task queued) | the result or the error text of that call |
+| What to do after the call given its outcome (index stale, task queued) | the result or the error text of that call; which of the two, and what the error text says, is the `designing-tool-outcomes` skill |
 | Side effects: read-only, destructive, idempotent | `annotations=`; plus one clause in the description only when it changes the choice |
 | Operator configuration, env vars, CLI commands, limits | `README.md`'s environment-variable reference and the feature guides under `docs/` (a downstream's `docs/configuration.md`) |
 | How it is implemented, links to framework docs, `Returns:`, `Raises:` | a `#` comment, or a docstring section FastMCP strips |

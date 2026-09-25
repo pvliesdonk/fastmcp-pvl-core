@@ -34,3 +34,13 @@ major bump makes every FastMCP reference stale regardless of its date.
   register tools on a downstream's server (`_server_info.py`,
   `_jobs/register.py`, `_transfer/register.py`). Valid for MCP 2026-07-28
   / FastMCP 4.x.
+- [MCP tool outcomes and errors](mcp-tool-outcomes-and-errors.md) — what
+  the MCP spec, FastMCP, the Python SDK, model vendors and published servers
+  say and do about a tool's negative outcome versus a tool error, on the
+  wire (`isError`) and in the logs; the evidence behind the
+  `designing-tool-outcomes` skill. Read by `_logging_middleware.py` and the
+  modules that register tools on a downstream's server. Valid for MCP
+  2026-07-28 / FastMCP 4.x.
+- [Negative outcomes and faults outside MCP](negative-outcomes-and-faults.md)
+  — how HTTP, gRPC, OpenTelemetry, GraphQL, JSON-RPC and six language error
+  models separate a valid "no" from a fault; the companion to the MCP page.

@@ -89,7 +89,14 @@ already covers, and anything a loop emits on every iteration, goes to
   (the existing `# noqa: BLE001 — <reason>` form) and a log call carrying
   `exc_info=True`.
 - Optional enrichment failures: catch, log at `DEBUG` with
-  `exc_info=True`, continue.
+  `exc_info=True`, continue. This holds inside a tool too: a failed
+  optional extra is not an outcome of the call.
+- Inside a tool pvl-core registers, and in the request-logging
+  middleware's `*_failed` line, the level of a call that could not return
+  its result comes from the `designing-tool-outcomes` skill: INFO when only
+  the model has to act (an unknown job id, a rejected `ref`), WARNING or
+  ERROR for a server fault. The rows of the table above are not a
+  substitute for that classification.
 - Re-raise with `from exc` to keep the cause, or `from None` when the
   cause's message would carry a secret (see redaction below).
 
