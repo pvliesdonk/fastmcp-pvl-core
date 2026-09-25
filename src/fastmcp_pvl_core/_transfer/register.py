@@ -49,14 +49,17 @@ from __future__ import annotations
 
 import base64
 import inspect
+import logging
 from typing import Any
 
 from fastmcp import FastMCP
+from fastmcp.exceptions import ToolError
 from mcp.types import Icon, ToolAnnotations
 
 from .._config import ServerConfig
 from .._errors import ConfigurationError
 from .._instructions import InstructionRole, instructions_for
+from .._tool_boundary import tool_boundary
 from .config import TransferConfig
 from .routes import make_transfer_handler
 from .sink import TransferKind, TransferSink, TransferValidator
@@ -306,6 +309,21 @@ def build_transfer_links(
     return TransferLinks(store, base_url=base, transfer_config=transfer_config)
 
 
+def _check_ttl(ttl_s: float | None) -> None:
+    """Reject a non-positive ``ttl_s`` as a request the model must change.
+
+    The token store rejects it too, but with a ``ValueError`` that would reach
+    the tool boundary as a server fault. The tool descriptions say zero or less
+    is rejected, so the model is told which argument to fix.
+    """
+    if ttl_s is not None and not ttl_s > 0:
+        raise ToolError(
+            "ttl_s must be greater than 0; omit it to use the server's default "
+            "link lifetime.",
+            log_level=logging.INFO,
+        )
+
+
 def register_transfer_routes(
     mcp: FastMCP,
     config: ServerConfig,
@@ -327,7 +345,10 @@ def register_transfer_routes(
             lease, upload cap).
         sink: Domain hook — where bytes are read from / written to.
         validate: Domain hook — maps a caller ref + kind to a validated opaque
-            ``sink_handle`` (raises to reject); invoked at link creation.
+            ``sink_handle``; invoked at link creation. It rejects a ref by
+            raising ``ToolError(msg, log_level=logging.INFO)``, whose message
+            the model reads; any other exception is a server fault (see
+            :data:`TransferValidator`).
         download_note: Domain hook (optional) — a domain-specific sentence
             appended to ``create_download_link``'s description. pvl-core's
             generic description always comes first and is never replaced; this
@@ -374,6 +395,7 @@ def register_transfer_routes(
                 value above the server's maximum is capped, and zero or less
                 is rejected.
         """
+        _check_ttl(ttl_s)
         handle = await validate(ref, "download")
         return await links.mint_download(handle, ttl_s)
 
@@ -387,7 +409,7 @@ def register_transfer_routes(
             idempotent_hint=False,
         ),
         icons=[_DOWNLOAD_ICON],
-    )(create_download_link)
+    )(tool_boundary(create_download_link))
 
     async def create_upload_link(
         ref: str, ttl_s: float | None = None
@@ -404,6 +426,7 @@ def register_transfer_routes(
                 value above the server's maximum is capped, and zero or less
                 is rejected.
         """
+        _check_ttl(ttl_s)
         handle = await validate(ref, "upload")
         return await links.mint_upload(handle, ttl_s)
 
@@ -418,7 +441,7 @@ def register_transfer_routes(
         ),
         icons=[_UPLOAD_ICON],
         tags={"write"},
-    )(create_upload_link)
+    )(tool_boundary(create_upload_link))
 
     add_transfer_workflow(
         mcp, upload_tool="create_upload_link", download_tool="create_download_link"

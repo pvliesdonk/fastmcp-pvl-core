@@ -96,10 +96,13 @@ The request-logging middleware logs `tool_call_failed` at the `ToolError`'s
 to that line changes every downstream's log stream; see the
 `logging-standard` skill.
 
-## Where pvl-core does not follow this yet
+## Hooks that end a pvl-core tool
 
-- The transfer link tools pass whatever the `validate` hook raises
-  straight to FastMCP ([#364](https://github.com/pvliesdonk/fastmcp-pvl-core/issues/364)): a rejection is outcome 2.
+A domain hook that runs inside a tool pvl-core registers follows the same
+rule: raise `ToolError(msg, log_level=logging.INFO)` for an outcome the
+model can act on, and let anything else be a fault. The transfer
+`validate` hook rejects a ref this way; a `ValueError` from it is reported
+to the model as a server-side error.
 
 ## Common mistakes
 

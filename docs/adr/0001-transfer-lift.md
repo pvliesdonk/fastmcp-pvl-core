@@ -125,7 +125,8 @@ class TransferSink(Protocol):
         """Commit an uploaded/ingested body; return the tool's result payload."""
 
 
-# Caller-facing ref → validated OPAQUE handle. Raises to reject.
+# Caller-facing ref → validated OPAQUE handle. Raises to reject; since
+# ADR 0005 a rejection is a ToolError at INFO, anything else a server fault.
 # `kind` lets a validator apply different rules to upload vs. download
 # (e.g. existence check on download, extension allowlist on upload).
 TransferValidator = Callable[
