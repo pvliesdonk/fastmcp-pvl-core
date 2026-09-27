@@ -955,7 +955,10 @@ class DomainEnvVar:
 
     default: object
     """The field's declared default (a ``default_factory`` field reports the
-    built value). ``None`` when :attr:`name` is ``None``."""
+    built value). ``None`` when :attr:`name` is ``None``, and when ``from_env``
+    reads the var with a literal ``required=True``: a field default that exists
+    only to satisfy dataclass ordering is not an operator default (see
+    :attr:`required`)."""
 
     help: str
     """The field's ``metadata["help"]``. Empty when undocumented or unresolved."""
