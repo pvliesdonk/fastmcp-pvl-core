@@ -754,6 +754,25 @@ def server_config_surface() -> tuple[ConfigField, ...]:
 _ENV_READ_FUNCS = frozenset({"env", "env_int", "env_float"})
 
 
+def _literal_env_read(n: ast.AST) -> tuple[str, ast.Call] | None:
+    """``(suffix, call)`` when *n* is a literal env read, else ``None``.
+
+    A literal env read is an unqualified ``env``/``env_int``/``env_float`` call
+    whose suffix argument is a string literal — the one predicate
+    :func:`_literal_env_reads` and :func:`_required_literal_reads` share.
+    """
+    if (
+        isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Name)
+        and n.func.id in _ENV_READ_FUNCS
+        and len(n.args) >= 2
+        and isinstance(n.args[1], ast.Constant)
+        and isinstance(n.args[1].value, str)
+    ):
+        return n.args[1].value, n
+    return None
+
+
 def _literal_env_reads(node: ast.AST) -> list[tuple[str, int, int]]:
     """Return ``(suffix, lineno, col)`` for each literal env read under *node*.
 
@@ -766,16 +785,33 @@ def _literal_env_reads(node: ast.AST) -> list[tuple[str, int, int]]:
     """
     out: list[tuple[str, int, int]] = []
     for n in ast.walk(node):
-        if (
-            isinstance(n, ast.Call)
-            and isinstance(n.func, ast.Name)
-            and n.func.id in _ENV_READ_FUNCS
-            and len(n.args) >= 2
-            and isinstance(n.args[1], ast.Constant)
-            and isinstance(n.args[1].value, str)
-        ):
-            out.append((n.args[1].value, n.lineno, n.col_offset))
+        read = _literal_env_read(n)
+        if read is not None:
+            suffix, call = read
+            out.append((suffix, call.lineno, call.col_offset))
     return out
+
+
+def _required_literal_reads(node: ast.AST) -> frozenset[str]:
+    """Suffixes of the literal env reads under *node* that pass ``required=True``.
+
+    Only the literal keyword counts: ``required=flag`` is invisible here, as a
+    variable-form suffix is to :func:`_literal_env_reads`.
+    """
+    out: set[str] = set()
+    for n in ast.walk(node):
+        read = _literal_env_read(n)
+        if read is None:
+            continue
+        suffix, call = read
+        if any(
+            kw.arg == "required"
+            and isinstance(kw.value, ast.Constant)
+            and kw.value.value is True
+            for kw in call.keywords
+        ):
+            out.add(suffix)
+    return frozenset(out)
 
 
 def domain_env_suffixes(config_cls: type) -> frozenset[str]:
@@ -936,13 +972,20 @@ class DomainEnvVar:
     vars."""
 
     required: bool
-    """True when the field has no default, so an operator must set the var.
-    ``False`` when :attr:`name` is ``None`` — required-ness is a field property
-    and is unknown for a read that maps to no field."""
+    """True when an operator must set the var: its field has no default, or
+    ``from_env`` reads it with a literal ``required=True`` (see :func:`env`).
+    For a ``required=True`` read :attr:`default` is ``None`` — a field default
+    that exists only to satisfy dataclass ordering is not an operator default.
+    A read that maps to no field (:attr:`name` ``None``) is required only
+    through ``required=True``."""
 
 
 def _domain_env_var_from(
-    source: type, suffix: str, f: dataclasses.Field[Any] | None
+    source: type,
+    suffix: str,
+    f: dataclasses.Field[Any] | None,
+    *,
+    required_by_read: bool = False,
 ) -> DomainEnvVar:
     """Build one :class:`DomainEnvVar`.
 
@@ -952,6 +995,11 @@ def _domain_env_var_from(
     the field's metadata is extracted via :func:`_config_field_from` — the same
     reader ``server_config_surface`` uses, so help/tags/wizard parsing (and its
     validation) live in one place.
+
+    ``required_by_read`` is true when ``from_env`` reads *suffix* with a literal
+    ``required=True``: the record is then required whatever the field declares,
+    and its default is ``None`` — a default that exists only to satisfy
+    dataclass field ordering is not an operator default.
     """
     if f is None:
         return DomainEnvVar(
@@ -964,10 +1012,10 @@ def _domain_env_var_from(
             tags=(),
             inferred=False,
             wizard={},
-            required=False,
+            required=required_by_read,
         )
     cf = _config_field_from(f)
-    required = (
+    no_default = (
         f.default is dataclasses.MISSING and f.default_factory is dataclasses.MISSING
     )
     return DomainEnvVar(
@@ -975,12 +1023,12 @@ def _domain_env_var_from(
         source=source.__qualname__,
         name=cf.name,
         type_name=cf.type_name,
-        default=cf.default,
+        default=None if required_by_read else cf.default,
         help=cf.help,
         tags=cf.tags,
         inferred=cf.inferred,
         wizard=cf.wizard,
-        required=required,
+        required=no_default or required_by_read,
     )
 
 
@@ -1026,6 +1074,11 @@ def domain_env_surface(config_cls: type) -> tuple[DomainEnvVar, ...]:
     produces byte-stable output, as :func:`server_config_surface` does.
     ``{v.suffix for v in domain_env_surface(cls)}`` equals
     ``domain_env_suffixes(cls)``.
+
+    **Required-ness** comes from the field (no default at all) or from the read:
+    a literal ``required=True`` keyword on the ``env``/``env_int``/``env_float``
+    call makes the record required with default ``None``, even for a read that
+    maps to no field.
 
     Args:
         config_cls: The domain config dataclass; its ``from_env`` classmethod
@@ -1092,6 +1145,7 @@ def domain_env_surface(config_cls: type) -> tuple[DomainEnvVar, ...]:
             ) from exc
         tree = ast.parse(src)
         field_of = _field_by_suffix(tree, cls)
+        required_reads = _required_literal_reads(tree)
         fields_by_name = {f.name: f for f in dataclasses.fields(cls)}
         # Field-name fallback: a field's env var is ``{PREFIX}_{NAME.upper()}``
         # by convention, so a read this class does not tie to a constructor
@@ -1116,7 +1170,11 @@ def domain_env_surface(config_cls: type) -> tuple[DomainEnvVar, ...]:
                 f = fields_by_name.get(fname)
             else:
                 f = fields_by_suffix.get(suffix)
-            records.append(_domain_env_var_from(cls, suffix, f))
+            records.append(
+                _domain_env_var_from(
+                    cls, suffix, f, required_by_read=suffix in required_reads
+                )
+            )
 
     def _visit(cls: type) -> None:
         if cls in visited or cls is ServerConfig or not dataclasses.is_dataclass(cls):
