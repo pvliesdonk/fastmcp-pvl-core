@@ -34,7 +34,9 @@ def _missing(key: str) -> ConfigurationError:
 
 
 @overload
-def env(prefix: str, name: str, *, required: Literal[True]) -> str: ...
+def env(
+    prefix: str, name: str, default: None = ..., *, required: Literal[True]
+) -> str: ...
 @overload
 def env(prefix: str, name: str, *, required: Literal[False] = ...) -> str | None: ...
 @overload
@@ -45,6 +47,10 @@ def env(
 def env(
     prefix: str, name: str, default: str, *, required: Literal[False] = ...
 ) -> str: ...
+@overload
+def env(
+    prefix: str, name: str, default: None = ..., *, required: bool
+) -> str | None: ...
 def env(
     prefix: str, name: str, default: str | None = None, *, required: bool = False
 ) -> str | None:
@@ -132,6 +138,7 @@ def _check_bounds(
 def env_int(
     prefix: str,
     name: str,
+    default: None = ...,
     *,
     required: Literal[True],
     strict: bool = ...,
@@ -166,6 +173,17 @@ def env_int(
     default: None,
     *,
     required: Literal[False] = ...,
+    strict: bool = ...,
+    minimum: int | None = ...,
+    maximum: int | None = ...,
+) -> int | None: ...
+@overload
+def env_int(
+    prefix: str,
+    name: str,
+    default: None = ...,
+    *,
+    required: bool,
     strict: bool = ...,
     minimum: int | None = ...,
     maximum: int | None = ...,
@@ -244,6 +262,7 @@ def env_int(
 def env_float(
     prefix: str,
     name: str,
+    default: None = ...,
     *,
     required: Literal[True],
     strict: bool = ...,
@@ -278,6 +297,17 @@ def env_float(
     default: None,
     *,
     required: Literal[False] = ...,
+    strict: bool = ...,
+    minimum: float | None = ...,
+    maximum: float | None = ...,
+) -> float | None: ...
+@overload
+def env_float(
+    prefix: str,
+    name: str,
+    default: None = ...,
+    *,
+    required: bool,
     strict: bool = ...,
     minimum: float | None = ...,
     maximum: float | None = ...,
