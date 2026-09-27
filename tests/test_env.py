@@ -363,3 +363,76 @@ class TestParseScopes:
 
     def test_mixed(self):
         assert parse_scopes("read, write profile") == ["read", "write", "profile"]
+
+
+class TestRequired:
+    @pytest.mark.parametrize("reader", [env, env_int, env_float])
+    def test_unset_raises_naming_the_key(
+        self, monkeypatch: pytest.MonkeyPatch, reader
+    ) -> None:
+        monkeypatch.delenv("MYAPP_FOO", raising=False)
+        with pytest.raises(
+            ConfigurationError, match=r"^MYAPP_FOO is required but not set$"
+        ):
+            reader("MYAPP", "FOO", required=True)
+
+    @pytest.mark.parametrize("raw", ["", "   "])
+    @pytest.mark.parametrize("reader", [env, env_int, env_float])
+    def test_blank_counts_as_unset(
+        self, monkeypatch: pytest.MonkeyPatch, reader, raw: str
+    ) -> None:
+        monkeypatch.setenv("MYAPP_FOO", raw)
+        with pytest.raises(
+            ConfigurationError, match="MYAPP_FOO is required but not set"
+        ):
+            reader("MYAPP", "FOO", required=True)
+
+    def test_env_returns_the_value_when_set(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("MYAPP_FOO", "  hello ")
+        assert env("MYAPP", "FOO", required=True) == "hello"
+
+    def test_env_int_returns_the_value_when_set(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("MYAPP_FOO", "42")
+        assert env_int("MYAPP", "FOO", required=True) == 42
+
+    def test_env_float_returns_the_value_when_set(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("MYAPP_FOO", "2.5")
+        assert env_float("MYAPP", "FOO", required=True) == 2.5
+
+    @pytest.mark.parametrize("reader", [env_int, env_float])
+    def test_required_implies_strict_for_a_malformed_value(
+        self, monkeypatch: pytest.MonkeyPatch, reader
+    ) -> None:
+        monkeypatch.setenv("MYAPP_FOO", "not-a-number")
+        with pytest.raises(ConfigurationError, match="MYAPP_FOO must be"):
+            reader("MYAPP", "FOO", required=True)
+
+    def test_required_implies_strict_for_an_out_of_range_value(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("MYAPP_FOO", "0")
+        with pytest.raises(ConfigurationError, match="MYAPP_FOO must be >= 1"):
+            env_int("MYAPP", "FOO", required=True, minimum=1)
+
+    @pytest.mark.parametrize(
+        ("reader", "default"), [(env, "x"), (env_int, 1), (env_float, 1.0)]
+    )
+    def test_required_with_a_default_is_a_type_error(self, reader, default) -> None:
+        with pytest.raises(
+            TypeError, match="required=True cannot be combined with a default"
+        ):
+            reader("MYAPP", "FOO", default, required=True)
+
+    def test_explicit_required_false_matches_omitting_it(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("MYAPP_FOO", raising=False)
+        assert env("MYAPP", "FOO", required=False) is None
+        assert env("MYAPP", "FOO", "d", required=False) == "d"
+        assert env_int("MYAPP", "FOO", 3, required=False) == 3
