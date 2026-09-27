@@ -195,6 +195,37 @@ class _MetaComposed:
 
 
 @dataclass(frozen=True)
+class _ReqReadSec:
+    token: str = field(default="", metadata={"help": "Section token."})
+
+    @classmethod
+    def from_env(cls, prefix: str = "X") -> _ReqReadSec:
+        return cls(token=env(prefix, "RR_SEC_TOKEN", required=True))
+
+
+@dataclass(frozen=True)
+class _ReqRead:
+    """A top-level ``required=True`` read, a section one, an unmapped one, and
+    two reads without it (a defaulted ``env_int`` and an explicit
+    ``required=False``) as controls."""
+
+    api_token: str = field(default="", metadata={"help": "API token."})
+    retries: int = 3
+    label: str = ""
+    sec: _ReqReadSec = field(default_factory=_ReqReadSec)
+
+    @classmethod
+    def from_env(cls, prefix: str = "X") -> _ReqRead:
+        _ = env(prefix, "RR_UNMAPPED", required=True)
+        return cls(
+            api_token=env(prefix, "RR_API_TOKEN", required=True),
+            retries=env_int(prefix, "RR_RETRIES", 3),
+            label=env(prefix, "RR_LABEL", required=False) or "",
+            sec=_ReqReadSec.from_env(prefix),
+        )
+
+
+@dataclass(frozen=True)
 class _ReqSec:
     endpoint: str  # no default -> a required var
 
@@ -693,7 +724,16 @@ class TestDomainEnvSuffixes:
 class TestDomainEnvSurface:
     @pytest.mark.parametrize(
         "cls",
-        [_Flat, _Composed, _OptComposed, _CycA, _TwoFields, _HasPlain, _ListTypedField],
+        [
+            _Flat,
+            _Composed,
+            _OptComposed,
+            _CycA,
+            _TwoFields,
+            _HasPlain,
+            _ListTypedField,
+            _ReqRead,
+        ],
     )
     def test_suffixes_match_the_frozenset_gate(self, cls: type) -> None:
         """The surface never drops or adds a suffix the flat frozenset carries."""
@@ -738,6 +778,38 @@ class TestDomainEnvSurface:
         )
         assert endpoint.name == "endpoint"
         assert endpoint.required is True
+
+    @staticmethod
+    def _req_read(suffix: str) -> DomainEnvVar:
+        return next(v for v in domain_env_surface(_ReqRead) if v.suffix == suffix)
+
+    def test_required_read_marks_its_field_required(self) -> None:
+        """A literal ``required=True`` read is required, with no default shown."""
+        token = self._req_read("RR_API_TOKEN")
+        assert token.name == "api_token"
+        assert token.help == "API token."
+        assert token.required is True
+        assert token.default is None
+
+    def test_required_read_in_a_section_is_required(self) -> None:
+        token = self._req_read("RR_SEC_TOKEN")
+        assert token.source == "_ReqReadSec"
+        assert token.name == "token"
+        assert token.required is True
+        assert token.default is None
+
+    def test_unmapped_required_read_is_required(self) -> None:
+        unmapped = self._req_read("RR_UNMAPPED")
+        assert unmapped.name is None
+        assert unmapped.required is True
+
+    def test_reads_without_required_true_are_unchanged(self) -> None:
+        retries = self._req_read("RR_RETRIES")
+        assert retries.required is False
+        assert retries.default == 3
+        label = self._req_read("RR_LABEL")
+        assert label.required is False
+        assert label.default == ""
 
     def test_throwaway_read_yields_placeholder_record(self) -> None:
         """A read not tied to a constructor field is still emitted, with name=None."""

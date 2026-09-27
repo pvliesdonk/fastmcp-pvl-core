@@ -176,6 +176,26 @@ apply_tool_visibility(mcp, config)
 finalize_instructions(mcp, config, env_prefix="MY_APP")
 ```
 
+### Reading environment variables
+
+`env(prefix, name, default=None)` reads `{PREFIX}_{NAME}`, stripped; a blank
+value counts as unset. `env_int` and `env_float` parse it, with optional
+inclusive `minimum` / `maximum`, and `strict=True` to raise on a bad value
+instead of warning and falling back.
+
+Pass `required=True` for a variable the server cannot run without:
+
+```python
+api_token=env(prefix, "API_TOKEN", required=True),
+```
+
+An unset or blank variable then raises
+`ConfigurationError("MY_APP_API_TOKEN is required but not set")`, which a
+`serve` command reports as one line. `required=True` cannot be combined with a
+default, and on `env_int` / `env_float` it also makes a malformed value raise.
+Written as a literal keyword inside a domain config's `from_env`, it is also
+what `domain_env_surface` reports as `DomainEnvVar.required`.
+
 ### Instructions (model-facing guidance)
 
 Instructions carry what no single tool description can carry: identity, a

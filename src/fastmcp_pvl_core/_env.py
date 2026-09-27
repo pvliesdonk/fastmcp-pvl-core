@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 import math
 import os
-from typing import TypeVar, overload
+from typing import Literal, TypeVar, overload
 
 from ._errors import ConfigurationError
 
@@ -23,29 +23,68 @@ def _resolve_key(prefix: str, name: str) -> str:
     return f"{prefix.rstrip('_')}_{name}"
 
 
+def _required_with_default(func: str) -> TypeError:
+    """The error for ``required=True`` combined with a default — a caller bug."""
+    return TypeError(f"{func}: required=True cannot be combined with a default")
+
+
+def _missing(key: str) -> ConfigurationError:
+    """The error for a ``required=True`` var that is unset or blank."""
+    return ConfigurationError(f"{key} is required but not set")
+
+
 @overload
-def env(prefix: str, name: str) -> str | None: ...
+def env(
+    prefix: str, name: str, default: None = ..., *, required: Literal[True]
+) -> str: ...
 @overload
-def env(prefix: str, name: str, default: None) -> str | None: ...
+def env(prefix: str, name: str, *, required: Literal[False] = ...) -> str | None: ...
 @overload
-def env(prefix: str, name: str, default: str) -> str: ...
-def env(prefix: str, name: str, default: str | None = None) -> str | None:
+def env(
+    prefix: str, name: str, default: None, *, required: Literal[False] = ...
+) -> str | None: ...
+@overload
+def env(
+    prefix: str, name: str, default: str, *, required: Literal[False] = ...
+) -> str: ...
+@overload
+def env(
+    prefix: str, name: str, default: None = ..., *, required: bool
+) -> str | None: ...
+def env(
+    prefix: str, name: str, default: str | None = None, *, required: bool = False
+) -> str | None:
     """Read ``{PREFIX}_{NAME}`` from the environment.
 
     Args:
         prefix: Env var prefix (trailing underscore optional).
         name: Variable name (without prefix).
         default: Value to return if unset or empty after strip.
+        required: When ``True``, an unset or blank var raises
+            :class:`ConfigurationError` (``"{KEY} is required but not set"``)
+            instead of returning a default.  Keyword-only, and exclusive with
+            *default*.  A literal ``required=True`` in a domain config's
+            ``from_env`` is also what :func:`domain_env_surface` reports as
+            :attr:`DomainEnvVar.required`, so generated docs mark the var
+            required.
 
     Returns:
         The env var value stripped of whitespace, or ``default``.
+
+    Raises:
+        ConfigurationError: ``required=True`` and the var is unset or blank.
+        TypeError: ``required=True`` together with a non-``None`` *default*.
     """
+    if required and default is not None:
+        raise _required_with_default("env")
     key = _resolve_key(prefix, name)
     raw = os.environ.get(key)
-    if raw is None:
-        return default
-    value = raw.strip()
-    return value or default
+    value = raw.strip() if raw is not None else ""
+    if value:
+        return value
+    if required:
+        raise _missing(key)
+    return default
 
 
 def _reject(
@@ -99,7 +138,19 @@ def _check_bounds(
 def env_int(
     prefix: str,
     name: str,
+    default: None = ...,
     *,
+    required: Literal[True],
+    strict: bool = ...,
+    minimum: int | None = ...,
+    maximum: int | None = ...,
+) -> int: ...
+@overload
+def env_int(
+    prefix: str,
+    name: str,
+    *,
+    required: Literal[False] = ...,
     strict: bool = ...,
     minimum: int | None = ...,
     maximum: int | None = ...,
@@ -110,6 +161,7 @@ def env_int(
     name: str,
     default: int,
     *,
+    required: Literal[False] = ...,
     strict: bool = ...,
     minimum: int | None = ...,
     maximum: int | None = ...,
@@ -120,6 +172,18 @@ def env_int(
     name: str,
     default: None,
     *,
+    required: Literal[False] = ...,
+    strict: bool = ...,
+    minimum: int | None = ...,
+    maximum: int | None = ...,
+) -> int | None: ...
+@overload
+def env_int(
+    prefix: str,
+    name: str,
+    default: None = ...,
+    *,
+    required: bool,
     strict: bool = ...,
     minimum: int | None = ...,
     maximum: int | None = ...,
@@ -129,6 +193,7 @@ def env_int(
     name: str,
     default: int | None = None,
     *,
+    required: bool = False,
     strict: bool = False,
     minimum: int | None = None,
     maximum: int | None = None,
@@ -149,6 +214,11 @@ def env_int(
             when the value is invalid or out of range.  ``minimum``/``maximum``
             validate the operator's env value, not this developer-supplied
             default.
+        required: When ``True``, an unset or blank var raises
+            :class:`ConfigurationError` (``"{KEY} is required but not set"``),
+            and an invalid or out-of-range value raises as if ``strict=True``
+            — there is no default to fall back to.  Keyword-only, and
+            exclusive with *default*.
         strict: When ``True``, an invalid or out-of-range value raises
             :class:`ConfigurationError` naming the var.  When ``False`` (the
             default), it logs a ``WARNING`` and returns *default* — which is
@@ -162,10 +232,20 @@ def env_int(
         The parsed integer, or *default* when unset/blank (or, in soft mode,
         when the value is invalid or out of range).  An unset var never warns
         or raises.
+
+    Raises:
+        ConfigurationError: ``required=True`` and the var is unset or blank,
+            or ``strict``/``required`` and the value is invalid or out of range.
+        TypeError: ``required=True`` together with a non-``None`` *default*.
     """
+    if required and default is not None:
+        raise _required_with_default("env_int")
     raw = env(prefix, name)
     if raw is None:
+        if required:
+            raise _missing(_resolve_key(prefix, name))
         return default
+    strict = strict or required
     key = _resolve_key(prefix, name)
     try:
         value = int(raw)
@@ -182,7 +262,19 @@ def env_int(
 def env_float(
     prefix: str,
     name: str,
+    default: None = ...,
     *,
+    required: Literal[True],
+    strict: bool = ...,
+    minimum: float | None = ...,
+    maximum: float | None = ...,
+) -> float: ...
+@overload
+def env_float(
+    prefix: str,
+    name: str,
+    *,
+    required: Literal[False] = ...,
     strict: bool = ...,
     minimum: float | None = ...,
     maximum: float | None = ...,
@@ -193,6 +285,7 @@ def env_float(
     name: str,
     default: float,
     *,
+    required: Literal[False] = ...,
     strict: bool = ...,
     minimum: float | None = ...,
     maximum: float | None = ...,
@@ -203,6 +296,18 @@ def env_float(
     name: str,
     default: None,
     *,
+    required: Literal[False] = ...,
+    strict: bool = ...,
+    minimum: float | None = ...,
+    maximum: float | None = ...,
+) -> float | None: ...
+@overload
+def env_float(
+    prefix: str,
+    name: str,
+    default: None = ...,
+    *,
+    required: bool,
     strict: bool = ...,
     minimum: float | None = ...,
     maximum: float | None = ...,
@@ -212,6 +317,7 @@ def env_float(
     name: str,
     default: float | None = None,
     *,
+    required: bool = False,
     strict: bool = False,
     minimum: float | None = None,
     maximum: float | None = None,
@@ -232,6 +338,11 @@ def env_float(
             when the value is invalid or out of range.  ``minimum``/``maximum``
             validate the operator's env value, not this developer-supplied
             default.
+        required: When ``True``, an unset or blank var raises
+            :class:`ConfigurationError` (``"{KEY} is required but not set"``),
+            and an invalid or out-of-range value raises as if ``strict=True``
+            — there is no default to fall back to.  Keyword-only, and
+            exclusive with *default*.
         strict: When ``True``, an invalid or out-of-range value raises
             :class:`ConfigurationError` naming the var.  When ``False`` (the
             default), it logs a ``WARNING`` and returns *default* — which is
@@ -245,10 +356,20 @@ def env_float(
         The parsed float, or *default* when unset/blank (or, in soft mode,
         when the value is invalid or out of range).  An unset var never warns
         or raises.
+
+    Raises:
+        ConfigurationError: ``required=True`` and the var is unset or blank,
+            or ``strict``/``required`` and the value is invalid or out of range.
+        TypeError: ``required=True`` together with a non-``None`` *default*.
     """
+    if required and default is not None:
+        raise _required_with_default("env_float")
     raw = env(prefix, name)
     if raw is None:
+        if required:
+            raise _missing(_resolve_key(prefix, name))
         return default
+    strict = strict or required
     key = _resolve_key(prefix, name)
     try:
         value = float(raw)
