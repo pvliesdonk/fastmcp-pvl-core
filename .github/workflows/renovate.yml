@@ -1,0 +1,35 @@
+name: Renovate
+
+# Self-hosted Renovate, the same setup fastmcp-server-template and the
+# downstream servers run. Configuration lives in .github/renovate.json: it
+# keeps uv.lock current (merging patch/minor bumps once CI is green) and
+# bumps the SHA-pinned GitHub Actions, which here are pvl-core's own rather
+# than arriving through a template update.
+
+on:
+  schedule:
+    # Every 4 hours, 7 minutes past to sidestep GitHub's top-of-hour delay.
+    # The 00:07 Monday run lands inside lockFileMaintenance's
+    # "before 4am on monday" window.
+    - cron: "7 */4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  renovate:
+    name: Renovate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+
+      - name: Run Renovate
+        # renovatebot/github-action publishes no floating major tag; Renovate
+        # moves this pin itself.
+        uses: renovatebot/github-action@f3a31a786096ba6b40d0f0ffe11a494ef73bfa7c  # v46.3.4
+        with:
+          configurationFile: .github/renovate.json
+          token: ${{ secrets.RELEASE_TOKEN }}
+        env:
+          RENOVATE_REPOSITORIES: ${{ github.repository }}

@@ -1,0 +1,36 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "description": "Every PR comes out as chore(deps), which cuts no release: config:recommended's semantic-prefix rule gives fix(deps) only to npm/composer-style depTypes, never pep621's or github-actions'. That rule is resolved after packageRules here, so a semanticCommitType set below would have no effect. With update-lockfile a routine bump touches only uv.lock, which is not in the wheel; retitle a major that moves a pyproject.toml floor by hand if it should release.",
+  "extends": [
+    "config:recommended",
+    ":dependencyDashboard",
+    "helpers:pinGitHubActionDigests"
+  ],
+  "labels": ["dependencies"],
+  "enabledManagers": ["pep621", "github-actions"],
+  "semanticCommits": "enabled",
+  "rangeStrategy": "update-lockfile",
+  "platformAutomerge": false,
+  "lockFileMaintenance": {
+    "enabled": true,
+    "schedule": ["before 4am on monday"],
+    "automerge": true
+  },
+  "packageRules": [
+    {
+      "description": "Routine Python bumps ride one grouped PR that Renovate merges itself once every check is green; majors wait for a human. The group is scoped to pep621 here instead of via group:allNonMajor, which would also pull non-major action bumps into it: Renovate resolves that preset's rule after these, so it cannot be overridden from here.",
+      "matchManagers": ["pep621"],
+      "matchUpdateTypes": ["patch", "minor"],
+      "groupName": "all non-major dependencies",
+      "groupSlug": "all-minor-patch",
+      "automerge": true
+    },
+    {
+      "description": "Action pins (SHA plus `# vX` comment, SonarCloud githubactions:S7637) get their own group and never merge themselves, as in the template: a workflow change runs with repository secrets.",
+      "matchManagers": ["github-actions"],
+      "groupName": "github-actions",
+      "groupSlug": "github-actions",
+      "automerge": false
+    }
+  ]
+}
