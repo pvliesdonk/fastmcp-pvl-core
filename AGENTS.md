@@ -275,7 +275,9 @@ uv run ruff check .
 uv run mypy src
 ```
 
-CI runs the same checks on Python 3.10 through 3.13.
+CI runs the same checks on Python 3.10 through 3.13, then combines
+the coverage from all four interpreters and scans it with SonarQube Cloud
+(`sonar-project.properties`); coverage is not a local gate.
 
 These checks are also wired into `.pre-commit-config.yaml`, which runs
 them through `uv run` so the tool versions match CI's. Install the hooks

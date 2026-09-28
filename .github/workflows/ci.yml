@@ -28,4 +28,46 @@ jobs:
       - name: Type check
         run: uv run mypy src/
       - name: Test
-        run: uv run pytest -x -q --cov=fastmcp_pvl_core --cov-report=xml
+        env:
+          COVERAGE_FILE: .coverage.py${{ matrix.python-version }}
+        run: uv run pytest -x -q --cov=fastmcp_pvl_core
+      - name: Upload coverage data
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-data-py${{ matrix.python-version }}
+          path: .coverage.py${{ matrix.python-version }}
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 1
+
+  sonar:
+    # Combines every matrix leg's coverage (src/ branches on sys.version_info)
+    # and runs the SonarQube Cloud scan. Fork PRs get no SONAR_TOKEN, so they
+    # skip the job instead of failing it.
+    needs: test
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history for SCM blame and new-code detection.
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+      - name: Install deps
+        # coverage.py at the lockfile's version, same as the test legs.
+        run: uv sync --all-extras
+      - name: Download coverage data
+        uses: actions/download-artifact@v4
+        with:
+          pattern: coverage-data-*
+          merge-multiple: true
+      - name: Combine coverage
+        run: |
+          uv run coverage combine
+          uv run coverage xml
+      - name: SonarQube Cloud scan
+        uses: SonarSource/sonarqube-scan-action@v8
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
