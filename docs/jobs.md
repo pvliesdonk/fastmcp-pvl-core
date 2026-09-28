@@ -44,17 +44,19 @@ from fastmcp_pvl_core import (
 )
 
 config = ServerConfig.from_env("MY_APP")
-jobs_config = JobsConfig.from_env("MY_APP")     # MY_APP_JOBS_* knobs
+jobs_config = JobsConfig.from_env("MY_APP")  # MY_APP_JOBS_* knobs
 
-configure_task_backend(mcp, "MY_APP", config)   # native-path backend (ADR §4)
-jobs = build_jobs(config, jobs_config)          # one Jobs object per server
+configure_task_backend(mcp, "MY_APP", config)  # native-path backend (ADR §4)
+jobs = build_jobs(config, jobs_config)  # one Jobs object per server
+
 
 @register_long_running_tool(mcp, jobs, tags={"reports"})
 async def build_report(paths: list[str], focus: str | None = None) -> dict:
     """Build a report over *paths*.  May take minutes."""
     ...  # your domain work — a plain async function
 
-register_job_tools(mcp, jobs)                   # the generic polling tool
+
+register_job_tools(mcp, jobs)  # the generic polling tool
 ```
 
 Rules of the road:
@@ -238,11 +240,15 @@ from fastmcp_pvl_core.jobs import build_jobs
 
 jobs = build_jobs(config, jobs_config)
 
+
 @mcp.tool
 async def rebuild_index(scope: str) -> dict:
     """Rebuild the index for *scope*.  Always long-running."""
+
     async def work() -> dict:
-        ...  # minutes of work
+        # Minutes of work.
+        ...
+
     return await jobs.start(work(), tool="rebuild_index")
 ```
 
@@ -323,8 +329,10 @@ If your server carries a bespoke job store and its own polling tool
 instead of sleeping for real:
 
 ```python
-jobs = build_jobs(ServerConfig(kv_store_url="memory://"),
-                  JobsConfig(soft_deadline_s=0.05, result_ttl_s=60.0))
+jobs = build_jobs(
+    ServerConfig(kv_store_url="memory://"),
+    JobsConfig(soft_deadline_s=0.05, result_ttl_s=60.0),
+)
 ```
 
 Call your tool through `mcp.call_tool`, assert on the handle payload,

@@ -14,6 +14,9 @@ coverage.xml
 .claude/*
 !.claude/skills/
 .superpowers/
+# Working plans and specs the superpowers skills write. Session scratch, not
+# project documentation: decisions that last go in docs/adr/ or code comments.
+docs/superpowers/
 
 # Local codebase-intelligence tooling: regenerated index cache and a
 # machine-specific MCP server registration (absolute checkout path).

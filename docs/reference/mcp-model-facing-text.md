@@ -540,8 +540,8 @@ wire text; the probes are the listings each marker describes, run through
 - The spec sets no length limit on instructions, and Claude Code cuts
   them at 2,048 units. pvl-core's instructions builder never truncates:
   it warns when generated snippets cross a 1,536-unit family target and
-  when the final text crosses 2,048 (decided in
-  `docs/superpowers/specs/2026-08-31-instruction-roles-budget-design.md`;
+  when the final text crosses 2,048 (decided in the
+  [instruction roles and budget design](https://github.com/pvliesdonk/fastmcp-pvl-core/blob/ea6741640fdd2ace32072f71766b39476f2a2201/docs/superpowers/specs/2026-08-31-instruction-roles-budget-design.md);
   implemented in `src/fastmcp_pvl_core/_instructions.py`).
 
 ## Not covered

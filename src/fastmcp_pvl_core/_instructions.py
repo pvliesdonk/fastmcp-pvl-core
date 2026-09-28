@@ -7,7 +7,8 @@ add snippets to the one builder per server; :func:`finalize_instructions`
 prunes snippets whose tools are absent or operator-hidden, serialises by
 semantic role, applies the env contract, and sets ``FastMCP.instructions``.
 
-Design: ``docs/superpowers/specs/2026-08-31-instruction-roles-budget-design.md``.
+Design (removed from the tree, read at this commit):
+https://github.com/pvliesdonk/fastmcp-pvl-core/blob/ea6741640fdd2ace32072f71766b39476f2a2201/docs/superpowers/specs/2026-08-31-instruction-roles-budget-design.md
 
 Intra-package imports stay relative so a fold-in is a directory rename.
 """
