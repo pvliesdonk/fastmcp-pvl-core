@@ -1,0 +1,13 @@
+# Version updates for the GitHub Actions the workflows use. Every action is
+# pinned to a commit SHA with its tag in a trailing `# vX` comment (SonarCloud
+# githubactions:S7637); Dependabot bumps the digest and the comment together,
+# so the pins do not go stale. Python dependency security updates are enabled
+# in the repository settings and need no entry here.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: ci
