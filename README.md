@@ -156,8 +156,13 @@ See `src/fastmcp_pvl_core/` for the full surface. Typical usage:
 ```python
 from fastmcp import FastMCP
 from fastmcp_pvl_core import (
-    InstructionRole, ServerConfig, apply_tool_visibility, build_auth,
-    finalize_instructions, instructions_for, wire_middleware_stack,
+    InstructionRole,
+    ServerConfig,
+    apply_tool_visibility,
+    build_auth,
+    finalize_instructions,
+    instructions_for,
+    wire_middleware_stack,
 )
 
 config = ServerConfig.from_env("MY_APP")
@@ -186,7 +191,7 @@ instead of warning and falling back.
 Pass `required=True` for a variable the server cannot run without:
 
 ```python
-api_token=env(prefix, "API_TOKEN", required=True),
+api_token = env(prefix, "API_TOKEN", required=True)
 ```
 
 An unset or blank variable then raises
@@ -267,7 +272,7 @@ own so the operator's lists win:
 ```python
 from fastmcp_pvl_core import apply_tool_visibility
 
-apply_tool_visibility(mcp, config)   # config: ServerConfig.from_env("MY_APP")
+apply_tool_visibility(mcp, config)  # config: ServerConfig.from_env("MY_APP")
 ```
 
 ### Tool outcomes (`tool_boundary`)
@@ -285,6 +290,7 @@ import logging
 
 from fastmcp.exceptions import ToolError
 from fastmcp_pvl_core import tool_boundary
+
 
 @mcp.tool
 @tool_boundary
@@ -840,11 +846,12 @@ answers `401` while these answer normally.
 from fastmcp_pvl_core import register_health_routes
 
 register_health_routes(
-    mcp, config,
-    server_version=__version__,        # the name comes from mcp.name
-    http_path=args.http_path,          # the same value passed to mcp.run
+    mcp,
+    config,
+    server_version=__version__,  # the name comes from mcp.name
+    http_path=args.http_path,  # the same value passed to mcp.run
     env_prefix="MY_APP",
-    checks={"upstream_key": lambda: keepalive.last_ok},   # optional
+    checks={"upstream_key": lambda: keepalive.last_ok},  # optional
 )
 ```
 
@@ -956,15 +963,21 @@ promotion to a pollable background job otherwise:
 
 ```python
 from fastmcp_pvl_core import (
-    JobsConfig, build_jobs, register_job_tools, register_long_running_tool,
+    JobsConfig,
+    build_jobs,
+    register_job_tools,
+    register_long_running_tool,
 )
 
-jobs_config = JobsConfig.from_env("MY_APP")   # MY_APP_JOBS_* knobs
+jobs_config = JobsConfig.from_env("MY_APP")  # MY_APP_JOBS_* knobs
 jobs = build_jobs(config, jobs_config)
+
 
 @register_long_running_tool(mcp, jobs, tags={"reports"})
 async def build_report(paths: list[str]) -> dict:
-    ...  # domain work; may take minutes
+    # Domain work; may take minutes.
+    ...
+
 
 register_job_tools(mcp, jobs)  # the one generic get_job_result tool
 ```
@@ -1074,6 +1087,7 @@ request without knowing which auth mode is active:
 ```python
 from fastmcp_pvl_core import get_subject
 
+
 @mcp.tool
 def whoami() -> str:
     subject = get_subject()
@@ -1105,7 +1119,7 @@ from fastmcp_pvl_core import build_auth, get_current_auth_mode
 
 auth = build_auth(config)
 mcp = FastMCP(name="my-app", auth=auth)
-mode = get_current_auth_mode()   # e.g. "oidc-proxy"
+mode = get_current_auth_mode()  # e.g. "oidc-proxy"
 ```
 
 It reports the mode that was **resolved**, which is not the same question as
@@ -1200,6 +1214,7 @@ the same per-app prefix the server uses for the rest of its config:
 
 ```python
 from fastmcp_pvl_core import configure_logging_from_env, maybe_start_debugpy
+
 
 def main() -> None:
     configure_logging_from_env("MY_APP")
