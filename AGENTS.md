@@ -282,11 +282,12 @@ it, run `uv run --python 3.14 pytest --cov=fastmcp_pvl_core --cov-report=xml`.
 
 SonarQube Cloud also scans `.github/`, so workflow edits must follow the
 hardened shape the existing ones use. Pin every action to a commit SHA
-with a `# vX` comment; Dependabot bumps both. Run `uv` after the one
-install step as `uv run --no-sync --no-build`. Download with
+with a `# vX` comment. Run `uv` after the one install step as
+`uv run --no-sync --no-build`. Download with
 `curl --proto '=https' --tlsv1.2` and verify a checksum rather than
 piping into a shell. Each `# NOSONAR(rule): reason` names the rule and
-says why the line is safe.
+says why the line is safe. SonarCloud honours it only on a single-line
+`run:`, not inside a `run: |` block.
 
 These checks are also wired into `.pre-commit-config.yaml`, which runs
 them through `uv run` so the tool versions match CI's. Install the hooks
