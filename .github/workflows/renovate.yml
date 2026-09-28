@@ -27,7 +27,7 @@ jobs:
       - name: Run Renovate
         # renovatebot/github-action publishes no floating major tag; Renovate
         # moves this pin itself.
-        uses: renovatebot/github-action@f3a31a786096ba6b40d0f0ffe11a494ef73bfa7c  # v46.3.4
+        uses: renovatebot/github-action@1cd96b855fee0da6f230617e89dbff0e06ea393a  # v46.3.5
         with:
           configurationFile: .github/renovate.json
           token: ${{ secrets.RELEASE_TOKEN }}
