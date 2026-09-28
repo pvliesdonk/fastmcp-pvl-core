@@ -13,32 +13,37 @@ jobs:
       matrix:
         python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v3
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+      - uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39  # v3
         with:
           enable-cache: true
       - name: Set up Python
         run: uv python install ${{ matrix.python-version }}
       - name: Install deps
-        run: uv sync --all-extras
+        # `--frozen` installs exactly what uv.lock pins and never re-resolves.
+        # Not `--locked`: the release commit PSR pushes runs CI with the lock's
+        # own version entry one behind until release.yml's follow-up sync
+        # commit, and `--locked` would fail it. The later steps run with
+        # `--no-sync --no-build`, so nothing resolves or builds after this.
+        run: uv sync --all-extras --frozen  # NOSONAR(githubactions:S8541,S8544): installs this project, which --no-build refuses; versions come from uv.lock via --frozen
       - name: Lint
         run: |
-          uv run ruff check .
-          uv run ruff format --check .
+          uv run --no-sync --no-build ruff check .
+          uv run --no-sync --no-build ruff format --check .
       - name: Type check
-        run: uv run mypy src/
+        run: uv run --no-sync --no-build mypy src/
       - name: Test
         if: matrix.python-version != '3.14'
-        run: uv run pytest -x -q --durations=20
+        run: uv run --no-sync --no-build pytest -x -q --durations=20
       - name: Test with coverage
         # Only this required interpreter supplies coverage to the sonar job;
         # branch instrumentation on the other entries would cost their budget
         # for a result nothing reads.
         if: matrix.python-version == '3.14'
-        run: uv run pytest -x -q --cov=fastmcp_pvl_core --cov-report=xml --durations=20
+        run: uv run --no-sync --no-build pytest -x -q --cov=fastmcp_pvl_core --cov-report=xml --durations=20
       - name: Upload coverage report
         if: matrix.python-version == '3.14'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         with:
           name: coverage-report
           path: coverage.xml
@@ -52,15 +57,15 @@ jobs:
     if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
         with:
           # Full history for SCM blame and new-code detection.
           fetch-depth: 0
       - name: Download coverage report
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
         with:
           name: coverage-report
       - name: SonarQube Cloud scan
-        uses: SonarSource/sonarqube-scan-action@v8
+        uses: SonarSource/sonarqube-scan-action@ba9859eae8dd6bd29e412f25ddbbef3d032000f4  # v8
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
