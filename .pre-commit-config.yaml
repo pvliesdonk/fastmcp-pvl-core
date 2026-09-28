@@ -19,8 +19,8 @@
 # below. Fast checks (lint, format, type) run only at the `pre-commit`
 # stage; the slower test suite runs only at the `pre-push` stage — gated
 # before code leaves the machine, but not re-run on every commit. The
-# pytest hook omits CI's `--cov` flags: coverage XML is a CI upload
-# artifact, not a local pass/fail gate.
+# pytest hook omits CI's `--cov` flag: coverage is collected in CI and
+# reported to SonarQube Cloud, not a local pass/fail gate.
 #
 # Install once per clone:  uv run pre-commit install
 default_install_hook_types: [pre-commit, pre-push]

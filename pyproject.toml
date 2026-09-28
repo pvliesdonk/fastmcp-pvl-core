@@ -106,6 +106,12 @@ asyncio_mode = "auto"
 addopts = "-ra"
 testpaths = ["tests"]
 
+[tool.coverage.run]
+# Branch data feeds SonarQube's condition coverage. Relative paths keep the
+# XML report independent of the checkout location that produced it.
+branch = true
+relative_files = true
+
 [tool.pyright]
 venvPath = "."
 venv = ".venv"
