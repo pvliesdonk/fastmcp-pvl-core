@@ -1,0 +1,81 @@
+name: Bootstrap repo
+
+# Applies the repository settings that make Renovate's auto-merge safe, the
+# same way fastmcp-server-template's bootstrap.yml does for every downstream:
+# "Allow auto-merge" plus the checked-in rulesets (`.github/rulesets/*.json`),
+# which require a PR and the `CI Success` check on main and protect `v*` tags
+# from deletion and force-push. Without a required check, enabling auto-merge
+# on a PR merges it immediately; the gate is what holds the merge until CI is
+# green. The template's label, security and About-block jobs are not ported.
+#
+# Idempotent: the settings call is a PATCH and the ruleset apply upserts by
+# name (PUT onto the existing id, POST otherwise), so every run converges to
+# the checked-in state. A push to main touching this workflow or a ruleset
+# file re-applies; `workflow_dispatch` re-applies on demand.
+#
+# Auth: these calls need `administration:write`, which the default
+# GITHUB_TOKEN lacks, so they use RELEASE_TOKEN.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/bootstrap.yml
+      - .github/rulesets/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  settings:
+    name: Enable auto-merge + repository rulesets
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+
+      - name: Allow auto-merge
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: gh api -X PATCH "repos/${REPO}" -F allow_auto_merge=true
+
+      - name: Apply repository rulesets
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          # Upsert every checked-in ruleset by name: PUT onto the existing
+          # ruleset id when one matches, POST otherwise. The rules require PRs
+          # with ZERO approvals (a solo account has no second reviewer, and
+          # requiring one would deadlock Renovate's auto-merge) plus the single
+          # drift-proof CI Success context. The repository-admin bypass entry
+          # keeps release.yml's RELEASE_TOKEN pushes working: PSR's release
+          # commit and tag, and the follow-up uv.lock sync commit, all go
+          # straight to main.
+          #
+          # DESTRUCTIVE-IDEMPOTENT: each PUT replaces the whole ruleset with
+          # the checked-in state. This workflow OWNS these rulesets; edits made
+          # in the GitHub UI are reset on the next run. Change the JSON files
+          # instead. Rulesets with other names are left alone.
+          #
+          # includes_parents=false keeps org-level rulesets out of the name
+          # match, so one that happens to share a name never receives a
+          # repo-level PUT.
+          existing=$(gh api \
+            "repos/${REPO}/rulesets?per_page=100&includes_parents=false")
+          for file in .github/rulesets/*.json; do
+            name=$(jq -r '.name' "$file")
+            id=$(jq -r --arg name "$name" \
+              'map(select(.name == $name)) | first | .id // empty' \
+              <<<"$existing")
+            if [ -n "$id" ]; then
+              echo "Updating ruleset '${name}' (id ${id}) from ${file}"
+              gh api -X PUT "repos/${REPO}/rulesets/${id}" \
+                --input "$file" >/dev/null
+            else
+              echo "Creating ruleset '${name}' from ${file}"
+              gh api -X POST "repos/${REPO}/rulesets" \
+                --input "$file" >/dev/null
+            fi
+          done

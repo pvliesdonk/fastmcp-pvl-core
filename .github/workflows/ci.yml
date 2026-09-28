@@ -69,3 +69,32 @@ jobs:
         uses: SonarSource/sonarqube-scan-action@ba9859eae8dd6bd29e412f25ddbbef3d032000f4  # v8
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
+  ci-success:
+    name: CI Success
+    # Single aggregate gate that the protect-main ruleset requires and that
+    # auto-merge waits for. Succeeds only if every upstream job succeeded or
+    # was skipped (`sonar` skips on fork PRs); fails if any failed or was
+    # cancelled. Requiring this ONE context is drift-proof: renaming or adding
+    # a job here never silently disables the gate, as long as it is listed
+    # under `needs`. The context string is this job's `name`, so renaming it
+    # means changing .github/rulesets/protect-main.json in the same PR.
+    needs:
+      - test
+      - sonar
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Verify all required jobs passed
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "Upstream job results: $RESULTS"
+          for result in $RESULTS; do
+            if [ "$result" != "success" ] && [ "$result" != "skipped" ]; then
+              echo "::error::A required job did not pass (result: $result)"
+              exit 1
+            fi
+          done
+          echo "All required jobs passed."
