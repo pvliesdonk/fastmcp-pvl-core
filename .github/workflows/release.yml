@@ -110,9 +110,9 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ steps.release.outputs.tag }}
-        run: |
-          set -euo pipefail
-          uv tool run --no-build --from "$PSR_SPEC" --with "$PSR_GITPYTHON_PIN" semantic-release -v publish --tag "$TAG"  # NOSONAR(githubactions:S8544): PSR is an exact == pin in PSR_SPEC
+        # A single-line `run:`: SonarCloud honours the trailing NOSONAR there,
+        # not inside a `run: |` block. The default bash shell is `-eo pipefail`.
+        run: uv tool run --no-build --from "$PSR_SPEC" --with "$PSR_GITPYTHON_PIN" semantic-release -v publish --tag "$TAG"  # NOSONAR(githubactions:S8544): PSR is an exact == pin in PSR_SPEC
 
       - name: Upload build artifacts
         if: steps.release.outputs.released == 'true'
