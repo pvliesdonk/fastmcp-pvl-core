@@ -10,7 +10,6 @@
   "enabledManagers": ["pep621", "github-actions"],
   "semanticCommits": "enabled",
   "rangeStrategy": "update-lockfile",
-  "platformAutomerge": false,
   "lockFileMaintenance": {
     "enabled": true,
     "schedule": ["before 4am on monday"],
@@ -18,7 +17,7 @@
   },
   "packageRules": [
     {
-      "description": "Routine Python bumps ride one grouped PR that Renovate merges itself once every check is green; majors wait for a human. The group is scoped to pep621 here instead of via group:allNonMajor, which would also pull non-major action bumps into it: Renovate resolves that preset's rule after these, so it cannot be overridden from here.",
+      "description": "Routine Python bumps ride one grouped PR, merged by GitHub-native auto-merge once the CI Success check that .github/rulesets/protect-main.json requires passes; majors wait for a human. The SonarCloud quality gate is deliberately not required: its conditions cover new code only, which a lock bump never adds. The group is scoped to pep621 here instead of via group:allNonMajor, which would also pull non-major action bumps into it: Renovate resolves that preset's rule after these, so it cannot be overridden from here.",
       "matchManagers": ["pep621"],
       "matchUpdateTypes": ["patch", "minor"],
       "groupName": "all non-major dependencies",
