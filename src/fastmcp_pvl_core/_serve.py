@@ -75,7 +75,7 @@ def _run_server(built: uvicorn.Config) -> None:
     specifically to make fatal — would exit 0 instead of signalling failure.
     """
     import uvicorn
-    from uvicorn.main import STARTUP_FAILURE
+    from uvicorn.config import STARTUP_FAILURE
 
     server = uvicorn.Server(built)
     # Ctrl-C is how an operator stops a foreground server, so it is a normal
