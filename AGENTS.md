@@ -289,6 +289,13 @@ piping into a shell. Each `# NOSONAR(rule): reason` names the rule and
 says why the line is safe. SonarCloud honours it only on a single-line
 `run:`, not inside a `run: |` block.
 
+Branch and tag protection lives in `.github/rulesets/*.json`, which
+`bootstrap.yml` applies on every push to `main` that touches them. `main`
+requires a PR and the `CI Success` check, the aggregate job at the end of
+`ci.yml`. A new job in `ci.yml` gates merges only once it is added to that
+job's `needs:`. Never change protection in the GitHub UI: the next
+bootstrap run resets it. Change the JSON instead.
+
 These checks are also wired into `.pre-commit-config.yaml`, which runs
 them through `uv run` so the tool versions match CI's. Install the hooks
 once per clone so they fire automatically:
