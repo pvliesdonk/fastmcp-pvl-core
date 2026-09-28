@@ -107,8 +107,8 @@ addopts = "-ra"
 testpaths = ["tests"]
 
 [tool.coverage.run]
-# Branch data feeds SonarQube's condition coverage. Relative paths let CI
-# combine the per-Python data files from each matrix leg into one report.
+# Branch data feeds SonarQube's condition coverage. Relative paths keep the
+# XML report independent of the checkout location that produced it.
 branch = true
 relative_files = true
 

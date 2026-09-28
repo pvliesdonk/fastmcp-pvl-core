@@ -80,10 +80,10 @@ sees — never "since my last push".
   Read committed content at its revision (`git show <rev>:<path>`), not
   from the working tree.
 - **Don't reproduce CI.** CI already runs `ruff check`, `ruff format
-  --check`, `mypy src/`, the pytest suite on Python 3.10 through 3.13, and
+  --check`, `mypy src/`, the pytest suite on Python 3.10 through 3.14, and
   CodeQL. Report nothing those checks catch and re-run none of them; read
   their results instead. Version-dependent behaviour is the exception
-  worth one targeted run: local runs use one interpreter, CI uses four.
+  worth one targeted run: local runs use one interpreter, CI uses five.
 - **Diff-introduced only.** Pre-existing problems on lines the diff did
   not touch are not findings. Decay worth tracking gets a Decay issue
   (`.github/ISSUE_TEMPLATE/decay.yml`), not a review comment.

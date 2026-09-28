@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ["3.10", "3.11", "3.12", "3.13"]
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v3
@@ -28,22 +28,26 @@ jobs:
       - name: Type check
         run: uv run mypy src/
       - name: Test
-        env:
-          COVERAGE_FILE: .coverage.py${{ matrix.python-version }}
-        run: uv run pytest -x -q --cov=fastmcp_pvl_core
-      - name: Upload coverage data
+        if: matrix.python-version != '3.14'
+        run: uv run pytest -x -q --durations=20
+      - name: Test with coverage
+        # Only this required interpreter supplies coverage to the sonar job;
+        # branch instrumentation on the other entries would cost their budget
+        # for a result nothing reads.
+        if: matrix.python-version == '3.14'
+        run: uv run pytest -x -q --cov=fastmcp_pvl_core --cov-report=xml --durations=20
+      - name: Upload coverage report
+        if: matrix.python-version == '3.14'
         uses: actions/upload-artifact@v4
         with:
-          name: coverage-data-py${{ matrix.python-version }}
-          path: .coverage.py${{ matrix.python-version }}
-          include-hidden-files: true
+          name: coverage-report
+          path: coverage.xml
           if-no-files-found: error
           retention-days: 1
 
   sonar:
-    # Combines every matrix leg's coverage (src/ branches on sys.version_info)
-    # and runs the SonarQube Cloud scan. Fork PRs get no SONAR_TOKEN, so they
-    # skip the job instead of failing it.
+    # Runs the SonarQube Cloud scan on the Python 3.14 coverage report. Fork
+    # PRs get no SONAR_TOKEN, so they skip the job instead of failing it.
     needs: test
     if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
@@ -52,21 +56,10 @@ jobs:
         with:
           # Full history for SCM blame and new-code detection.
           fetch-depth: 0
-      - uses: astral-sh/setup-uv@v3
-        with:
-          enable-cache: true
-      - name: Install deps
-        # coverage.py at the lockfile's version, same as the test legs.
-        run: uv sync --all-extras
-      - name: Download coverage data
+      - name: Download coverage report
         uses: actions/download-artifact@v4
         with:
-          pattern: coverage-data-*
-          merge-multiple: true
-      - name: Combine coverage
-        run: |
-          uv run coverage combine
-          uv run coverage xml
+          name: coverage-report
       - name: SonarQube Cloud scan
         uses: SonarSource/sonarqube-scan-action@v8
         env:

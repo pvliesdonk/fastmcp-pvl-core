@@ -164,7 +164,7 @@ is fork-side work documented in `docs/forking.md`, never done in pvl-core.
 
 ## Conventions
 
-- Python 3.10+ (CI runs 3.10 through 3.13); `uv` for packaging,
+- Python 3.10+ (CI runs 3.10 through 3.14); `uv` for packaging,
   `hatchling` build backend.
 - `ruff` for lint and format (line length 88), `mypy --strict` on
   `src/`, Google-style docstrings on every public symbol.
@@ -275,9 +275,10 @@ uv run ruff check .
 uv run mypy src
 ```
 
-CI runs the same checks on Python 3.10 through 3.13, then combines
-the coverage from all four interpreters and scans it with SonarQube Cloud
-(`sonar-project.properties`); coverage is not a local gate.
+CI runs the same checks on Python 3.10 through 3.14, all required. Only
+the 3.14 job collects branch coverage, which SonarQube Cloud scans
+(`sonar-project.properties`). Coverage is not a local gate; to reproduce
+it, run `uv run --python 3.14 pytest --cov=fastmcp_pvl_core --cov-report=xml`.
 
 These checks are also wired into `.pre-commit-config.yaml`, which runs
 them through `uv run` so the tool versions match CI's. Install the hooks
