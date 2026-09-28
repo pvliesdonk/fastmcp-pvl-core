@@ -585,13 +585,12 @@ class SecretMaskFilter(logging.Filter):
         # through _or_fallback (see its docstring for why the catch is
         # broad) rather than a local try/except.
         original = _or_fallback(record.getMessage, lambda: None)
-        if original is None:
-            return True
-        masked = self._PATTERN.sub(r"\1\2 ***", original)
-        if masked != original:
-            # Replace the formatted message and clear args so subsequent
-            # ``getMessage()`` calls return the masked text rather than
-            # re-expanding the original args.
-            record.msg = masked
-            record.args = ()
+        if original is not None:
+            masked = self._PATTERN.sub(r"\1\2 ***", original)
+            if masked != original:
+                # Replace the formatted message and clear args so subsequent
+                # ``getMessage()`` calls return the masked text rather than
+                # re-expanding the original args.
+                record.msg = masked
+                record.args = ()
         return True
