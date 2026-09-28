@@ -450,3 +450,29 @@ class TestBuildKvStoreUnknownScheme:
         config = ServerConfig(kv_store_url="dynamodb://?region=us-east-1")
         with pytest.raises(ConfigurationError, match="must include a table name"):
             build_kv_store(config, namespace="ns")
+
+    def test_dynamodb_url_parts_reach_the_store(self, monkeypatch: pytest.MonkeyPatch):
+        # The table comes from the netloc (a stray ``:port`` is dropped),
+        # region and endpoint from the query. The real store builds an
+        # aiobotocore client on construction, so a recorder stands in.
+        dynamodb = pytest.importorskip("key_value.aio.stores.dynamodb")
+        calls: list[dict[str, object]] = []
+
+        def _record(**kwargs: object) -> MemoryStore:
+            calls.append(kwargs)
+            return MemoryStore()
+
+        monkeypatch.setattr(dynamodb, "DynamoDBStore", _record)
+        config = ServerConfig(
+            kv_store_url=(
+                "dynamodb://my-table:1?region=eu-west-1&endpoint=http://localhost:8000"
+            )
+        )
+        build_kv_store(config, namespace="ns")
+        assert calls == [
+            {
+                "table_name": "my-table",
+                "region_name": "eu-west-1",
+                "endpoint_url": "http://localhost:8000",
+            }
+        ]

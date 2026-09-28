@@ -19,7 +19,7 @@ import functools
 import inspect
 import logging
 from collections.abc import Callable
-from typing import Any, TypeVar
+from typing import Any, NoReturn, TypeVar
 
 from fastmcp.exceptions import FastMCPError, ToolError
 from fastmcp.utilities.exceptions import get_http_status_code, is_timeout_error
@@ -79,6 +79,17 @@ def _fault(fn: Callable[..., Any], exc: Exception) -> ToolError:
     return ToolError(message, log_level=logging.WARNING)
 
 
+def _raise_classified(fn: Callable[..., Any], exc: Exception) -> NoReturn:
+    """Re-raise *exc* if it passes through the boundary, else raise its fault.
+
+    Shared by the sync and async wrappers, which call it from their
+    ``except`` block.
+    """
+    if _passes_through(exc):
+        raise exc
+    raise _fault(fn, exc) from None
+
+
 def tool_boundary(fn: _F) -> _F:
     """Turn any exception from *fn* that is not a ``FastMCPError`` into a fault.
 
@@ -128,9 +139,7 @@ def tool_boundary(fn: _F) -> _F:
             try:
                 return await fn(*args, **kwargs)
             except Exception as exc:
-                if _passes_through(exc):
-                    raise
-                raise _fault(fn, exc) from None
+                _raise_classified(fn, exc)
 
         wrapper = async_wrapper
     else:
@@ -140,9 +149,7 @@ def tool_boundary(fn: _F) -> _F:
             try:
                 return fn(*args, **kwargs)
             except Exception as exc:
-                if _passes_through(exc):
-                    raise
-                raise _fault(fn, exc) from None
+                _raise_classified(fn, exc)
 
         wrapper = sync_wrapper
 

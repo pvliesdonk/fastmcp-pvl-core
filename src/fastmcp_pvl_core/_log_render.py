@@ -322,6 +322,43 @@ def render_rich(record: logging.LogRecord) -> str:
     return line if line is not None else _safe_message(record)
 
 
+def _conforming_body(event: str, fields: tuple[_BoundField, ...]) -> dict[str, object]:
+    """The JSON body of a conforming record: its ``event`` and typed fields.
+
+    Raises whatever ``str()`` of an unrenderable field value raises; the
+    caller, :meth:`JsonFormatter._body`, falls back to the message then.
+    """
+    conforming: dict[str, object] = {"event": event}
+    # Every name the call carries, so a rename can dodge a name
+    # that has not been placed yet — ``level`` is renamed before
+    # a later ``field_level`` exists, and checking only what is
+    # already in the dict would miss it.
+    taken = {field.name for field in fields} | {"event"}
+    for field in fields:
+        value = field.value
+        name = field.name
+        if name in _RESERVED_ENVELOPE_KEYS:
+            # A field named e.g. ``level`` would otherwise
+            # overwrite the record's real severity — either
+            # right here (a field named ``event``, colliding
+            # with the entry this dict literal just set) or
+            # later, when JsonFormatter.format merges this
+            # dict into the envelope. Prefixed, not dropped:
+            # the value still reaches the consumer, just not
+            # under the name that would shadow pvl-core's own.
+            name = f"field_{name}"
+            # Prefixing can collide in turn, if the same call
+            # also carries a field literally named
+            # ``field_level``. Keep prefixing until the name is
+            # free: losing one of two caller-supplied values
+            # silently is worse than an ugly key.
+            while name in taken:
+                name = f"field_{name}"
+            taken.add(name)
+        conforming[name] = value if isinstance(value, _JSON_NATIVE) else str(value)
+    return conforming
+
+
 class JsonFormatter(logging.Formatter):
     """One JSON object per record, for log aggregators.
 
@@ -401,41 +438,9 @@ class JsonFormatter(logging.Formatter):
         bound = bind_record(record)
         if bound is not None:
             event, fields = bound
-
-            def _conforming() -> dict[str, object]:
-                conforming: dict[str, object] = {"event": event}
-                # Every name the call carries, so a rename can dodge a name
-                # that has not been placed yet — ``level`` is renamed before
-                # a later ``field_level`` exists, and checking only what is
-                # already in the dict would miss it.
-                taken = {field.name for field in fields} | {"event"}
-                for field in fields:
-                    value = field.value
-                    name = field.name
-                    if name in _RESERVED_ENVELOPE_KEYS:
-                        # A field named e.g. ``level`` would otherwise
-                        # overwrite the record's real severity — either
-                        # right here (a field named ``event``, colliding
-                        # with the entry this dict literal just set) or
-                        # later, when JsonFormatter.format merges this
-                        # dict into the envelope. Prefixed, not dropped:
-                        # the value still reaches the consumer, just not
-                        # under the name that would shadow pvl-core's own.
-                        name = f"field_{name}"
-                        # Prefixing can collide in turn, if the same call
-                        # also carries a field literally named
-                        # ``field_level``. Keep prefixing until the name is
-                        # free: losing one of two caller-supplied values
-                        # silently is worse than an ugly key.
-                        while name in taken:
-                            name = f"field_{name}"
-                        taken.add(name)
-                    conforming[name] = (
-                        value if isinstance(value, _JSON_NATIVE) else str(value)
-                    )
-                return conforming
-
-            conforming = _or_fallback(_conforming, lambda: None)
+            conforming = _or_fallback(
+                lambda: _conforming_body(event, fields), lambda: None
+            )
             if conforming is not None:
                 return conforming
 

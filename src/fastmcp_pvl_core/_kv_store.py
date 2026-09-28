@@ -33,7 +33,7 @@ import logging
 import os
 from pathlib import Path
 from typing import TYPE_CHECKING
-from urllib.parse import parse_qs
+from urllib.parse import ParseResult, parse_qs
 
 from ._config import ServerConfig
 from ._errors import ConfigurationError
@@ -252,6 +252,75 @@ def _scheme_for_log(url: str) -> str:
     return parsed.scheme if parsed is not None else UNPARSEABLE
 
 
+def _file_store(parsed: ParseResult) -> AsyncKeyValue:
+    """Build the ``file://`` backend for :func:`_build_backend`."""
+    # `file://host/path` (non-empty netloc) is technically valid URL
+    # syntax but operators almost always meant the three-slash form;
+    # reject explicitly rather than silently routing the netloc-as-
+    # host away from the intended path.
+    #
+    # Error messages name the SCHEME only, never the raw URL — an
+    # operator may have typed credentials into a misconfigured URL
+    # (e.g. file://user:pass@host/path), and the error text ends
+    # up in process logs / Sentry alongside the legacy-warning
+    # path that's already redacted.
+    if parsed.netloc:
+        raise ConfigurationError(
+            "file:// URL has a host component. Use the three-slash "
+            "form: 'file:///absolute/path'."
+        )
+    if not parsed.path:
+        raise ConfigurationError(
+            "file:// URL is missing a path. Use 'file:///absolute/path'."
+        )
+    # Verify the backend is importable BEFORE creating the directory,
+    # so a missing extra does not leave an orphan directory behind.
+    try:
+        from key_value.aio.stores.filetree import FileTreeStore
+    except ImportError as exc:  # pragma: no cover — fastmcp pulls this in
+        raise ConfigurationError(
+            "FileTreeStore requires 'py-key-value-aio[filetree]'. "
+            "fastmcp pulls this in transitively; reinstall fastmcp "
+            "or add 'py-key-value-aio[filetree]' to your dependencies. "
+            f"The import failed with: {exc}"
+        ) from exc
+    directory = parsed.path
+    Path(directory).mkdir(parents=True, exist_ok=True)
+    logger.info("kv_store backend=file directory=%s", directory)
+    return FileTreeStore(data_directory=directory)
+
+
+def _dynamodb_store(parsed: ParseResult) -> AsyncKeyValue:
+    """Build the ``dynamodb://`` backend for :func:`_build_backend`."""
+    try:
+        from key_value.aio.stores.dynamodb import DynamoDBStore
+    except ImportError as exc:
+        raise ConfigurationError(
+            "DynamoDBStore requires the 'dynamodb' extra. Install "
+            "with `pip install 'fastmcp-pvl-core[dynamodb]'` or "
+            "add 'py-key-value-aio[dynamodb]' to your dependencies. "
+            f"The import failed with: {exc}"
+        ) from exc
+    # DynamoDB table names live in netloc; there is no host:port
+    # convention. Tolerate (and discard) a stray ":..." for URL-
+    # grammar consistency rather than failing on a benign extra.
+    table_name = parsed.netloc.split(":")[0]
+    if not table_name:
+        raise ConfigurationError(
+            "dynamodb:// URL must include a table name, e.g. "
+            "'dynamodb://my-table?region=us-east-1'"
+        )
+    query = parse_qs(parsed.query)
+    region_name = query.get("region", [None])[0]
+    endpoint_url = query.get("endpoint", [None])[0]
+    logger.info("kv_store backend=dynamodb table=%s", table_name)
+    return DynamoDBStore(
+        table_name=table_name,
+        region_name=region_name,
+        endpoint_url=endpoint_url,
+    )
+
+
 def _build_backend(url: str, *, variable: str) -> AsyncKeyValue:
     """Dispatch a URL to its backing AsyncKeyValue store.
 
@@ -273,40 +342,7 @@ def _build_backend(url: str, *, variable: str) -> AsyncKeyValue:
         return MemoryStore()
 
     if scheme == "file":
-        # `file://host/path` (non-empty netloc) is technically valid URL
-        # syntax but operators almost always meant the three-slash form;
-        # reject explicitly rather than silently routing the netloc-as-
-        # host away from the intended path.
-        #
-        # Error messages name the SCHEME only, never the raw URL — an
-        # operator may have typed credentials into a misconfigured URL
-        # (e.g. file://user:pass@host/path), and the error text ends
-        # up in process logs / Sentry alongside the legacy-warning
-        # path that's already redacted.
-        if parsed.netloc:
-            raise ConfigurationError(
-                "file:// URL has a host component. Use the three-slash "
-                "form: 'file:///absolute/path'."
-            )
-        if not parsed.path:
-            raise ConfigurationError(
-                "file:// URL is missing a path. Use 'file:///absolute/path'."
-            )
-        # Verify the backend is importable BEFORE creating the directory,
-        # so a missing extra does not leave an orphan directory behind.
-        try:
-            from key_value.aio.stores.filetree import FileTreeStore
-        except ImportError as exc:  # pragma: no cover — fastmcp pulls this in
-            raise ConfigurationError(
-                "FileTreeStore requires 'py-key-value-aio[filetree]'. "
-                "fastmcp pulls this in transitively; reinstall fastmcp "
-                "or add 'py-key-value-aio[filetree]' to your dependencies. "
-                f"The import failed with: {exc}"
-            ) from exc
-        directory = parsed.path
-        Path(directory).mkdir(parents=True, exist_ok=True)
-        logger.info("kv_store backend=file directory=%s", directory)
-        return FileTreeStore(data_directory=directory)
+        return _file_store(parsed)
 
     if scheme == "redis":
         try:
@@ -322,33 +358,7 @@ def _build_backend(url: str, *, variable: str) -> AsyncKeyValue:
         return RedisStore(url=url)
 
     if scheme == "dynamodb":
-        try:
-            from key_value.aio.stores.dynamodb import DynamoDBStore
-        except ImportError as exc:
-            raise ConfigurationError(
-                "DynamoDBStore requires the 'dynamodb' extra. Install "
-                "with `pip install 'fastmcp-pvl-core[dynamodb]'` or "
-                "add 'py-key-value-aio[dynamodb]' to your dependencies. "
-                f"The import failed with: {exc}"
-            ) from exc
-        # DynamoDB table names live in netloc; there is no host:port
-        # convention. Tolerate (and discard) a stray ":..." for URL-
-        # grammar consistency rather than failing on a benign extra.
-        table_name = parsed.netloc.split(":")[0]
-        if not table_name:
-            raise ConfigurationError(
-                "dynamodb:// URL must include a table name, e.g. "
-                "'dynamodb://my-table?region=us-east-1'"
-            )
-        query = parse_qs(parsed.query)
-        region_name = query.get("region", [None])[0]
-        endpoint_url = query.get("endpoint", [None])[0]
-        logger.info("kv_store backend=dynamodb table=%s", table_name)
-        return DynamoDBStore(
-            table_name=table_name,
-            region_name=region_name,
-            endpoint_url=endpoint_url,
-        )
+        return _dynamodb_store(parsed)
 
     if scheme == "mongodb":
         try:

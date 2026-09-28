@@ -47,6 +47,33 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
+def _clean_scopes(scopes: list[object], *, where: str) -> frozenset[str]:
+    """Validate a grant's scope list and return its stripped scopes.
+
+    Shared by :func:`load_acl` and :func:`parse_claim_grants`, which check
+    that the value is a list themselves.
+
+    Args:
+        scopes: The grant's scope list, as parsed.
+        where: Error-message prefix naming the grant, e.g.
+            ``"claim grants: 'admins'"``.
+
+    Raises:
+        ConfigurationError: A scope is not a string, or is empty or
+            whitespace-only.
+    """
+    cleaned: set[str] = set()
+    for scope in scopes:
+        if not isinstance(scope, str):
+            raise ConfigurationError(
+                f"{where}: scope must be a string; got {type(scope).__name__}"
+            )
+        if not scope.strip():
+            raise ConfigurationError(f"{where}: scope is empty or whitespace-only")
+        cleaned.add(scope.strip())
+    return frozenset(cleaned)
+
+
 def load_acl(path: Path) -> dict[str, frozenset[str]]:
     """Load an ACL TOML file into a ``{subject: frozenset[scope]}`` dict.
 
@@ -113,20 +140,9 @@ def load_acl(path: Path) -> dict[str, frozenset[str]]:
                 f"ACL file at {path}: subject {subject!r} value must be an "
                 f"array of scope strings; got {type(scopes).__name__}"
             )
-        cleaned: set[str] = set()
-        for scope in scopes:
-            if not isinstance(scope, str):
-                raise ConfigurationError(
-                    f"ACL file at {path}: subject {subject!r}: scope must "
-                    f"be a string; got {type(scope).__name__}"
-                )
-            if not scope.strip():
-                raise ConfigurationError(
-                    f"ACL file at {path}: subject {subject!r}: scope is "
-                    "empty or whitespace-only"
-                )
-            cleaned.add(scope.strip())
-        result[subject] = frozenset(cleaned)
+        result[subject] = _clean_scopes(
+            scopes, where=f"ACL file at {path}: subject {subject!r}"
+        )
     return result
 
 
@@ -205,6 +221,26 @@ def _extract_claim_values(claims: object, claim: str) -> set[str]:
     return set()
 
 
+def _granted_scopes(
+    values: set[str], grants: Mapping[str, AbstractSet[str]] | None
+) -> set[str]:
+    """Map a caller's claim values to the scopes they grant.
+
+    With ``grants=None`` (identity mode) the claim values are the granted
+    scopes, minus ``"*"`` so an untrusted claim value cannot trigger the
+    wildcard. Otherwise each value is looked up in ``grants`` and the
+    results are unioned.
+    """
+    if grants is None:
+        return {v for v in values if v != "*"}
+    granted: set[str] = set()
+    for value in values:
+        mapped = grants.get(value)
+        if mapped is not None:
+            granted |= set(mapped)
+    return granted
+
+
 def make_claims_check(
     claim: str,
     grants: Mapping[str, AbstractSet[str]] | None = None,
@@ -247,16 +283,7 @@ def make_claims_check(
         if token is None:
             return False
         values = _extract_claim_values(getattr(token, "claims", None), claim)
-        if grants is None:
-            # Identity mode: claim values are the granted scopes. Exclude
-            # "*" so an untrusted claim value cannot trigger the wildcard.
-            granted: set[str] = {v for v in values if v != "*"}
-        else:
-            granted = set()
-            for value in values:
-                mapped = grants.get(value)
-                if mapped is not None:
-                    granted |= set(mapped)
+        granted = _granted_scopes(values, grants)
         return "*" in granted or scope in granted
 
     return check
@@ -298,19 +325,7 @@ def parse_claim_grants(raw: str) -> dict[str, frozenset[str]]:
                 f"claim grants: value for {key!r} must be an array of scope "
                 f"strings; got {type(scopes).__name__}"
             )
-        cleaned: set[str] = set()
-        for scope in scopes:
-            if not isinstance(scope, str):
-                raise ConfigurationError(
-                    f"claim grants: {key!r}: scope must be a string; got "
-                    f"{type(scope).__name__}"
-                )
-            if not scope.strip():
-                raise ConfigurationError(
-                    f"claim grants: {key!r}: scope is empty or whitespace-only"
-                )
-            cleaned.add(scope.strip())
-        result[key] = frozenset(cleaned)
+        result[key] = _clean_scopes(scopes, where=f"claim grants: {key!r}")
     return result
 
 

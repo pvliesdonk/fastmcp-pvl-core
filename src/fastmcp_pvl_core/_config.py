@@ -11,7 +11,7 @@ from __future__ import annotations
 import ast
 import dataclasses
 import typing
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal, NamedTuple
@@ -814,6 +814,80 @@ def _required_literal_reads(node: ast.AST) -> frozenset[str]:
     return frozenset(out)
 
 
+def _from_env_tree(cls: type, *, caller: str) -> ast.Module:
+    """Parse the source of ``cls.from_env`` for an env-read scan.
+
+    Args:
+        cls: A config dataclass exposing a ``from_env`` classmethod.
+        caller: The public scan function, named in the error message.
+
+    Returns:
+        The parsed module holding the dedented ``from_env`` source.
+
+    Raises:
+        OSError: If the source cannot be read.
+        TypeError: If ``from_env`` is not a Python function.
+    """
+    import inspect
+    import textwrap
+
+    try:
+        src = textwrap.dedent(inspect.getsource(cls.from_env))  # type: ignore[attr-defined]
+    except (OSError, TypeError) as exc:  # source unreadable / not a Python function
+        # Re-raise preserving the original type (OSError vs TypeError) with
+        # class context, so a type error isn't masqueraded as I/O.
+        raise type(exc)(
+            f"{caller}: cannot read source for {cls.__qualname__}.from_env: {exc}"
+        ) from exc
+    return ast.parse(src)
+
+
+def _iter_env_configs(cls: type, visited: set[type], *, caller: str) -> Iterator[type]:
+    """Yield *cls* and the sub-configs it composes that expose ``from_env``.
+
+    The config-tree walk shared by :func:`domain_env_suffixes` and
+    :func:`domain_env_surface`: depth-first, a class before its sub-configs,
+    each class once (tracked in *visited*), skipping :class:`ServerConfig` and
+    non-dataclass types. A class is yielded before its type hints are
+    resolved, so a caller scanning each yielded class hits an unreadable
+    ``from_env`` before a broken annotation.
+
+    Args:
+        cls: The config dataclass to walk from.
+        visited: Classes already walked; updated in place.
+        caller: The public scan function, named in the error message.
+
+    Yields:
+        Each config class in the tree that exposes ``from_env``.
+
+    Raises:
+        NameError: If a field annotation cannot be resolved.
+    """
+    if cls in visited or cls is ServerConfig or not dataclasses.is_dataclass(cls):
+        return
+    visited.add(cls)
+    if hasattr(cls, "from_env"):
+        yield cls
+    try:
+        hints = typing.get_type_hints(cls)
+    except NameError as exc:
+        raise NameError(
+            f"{caller}: cannot resolve type hints for "
+            f"{cls.__qualname__} — annotations must be importable at module "
+            f"scope: {exc}"
+        ) from exc
+    for f in dataclasses.fields(cls):
+        resolved = hints.get(f.name, f.type)
+        for candidate in (resolved, *typing.get_args(resolved)):
+            if (
+                isinstance(candidate, type)
+                and dataclasses.is_dataclass(candidate)
+                and candidate is not ServerConfig
+                and hasattr(candidate, "from_env")
+            ):
+                yield from _iter_env_configs(candidate, visited, caller=caller)
+
+
 def domain_env_suffixes(config_cls: type) -> frozenset[str]:
     """Return the ``{PREFIX}_``-stripped env suffixes a domain config reads.
 
@@ -858,9 +932,6 @@ def domain_env_suffixes(config_cls: type) -> frozenset[str]:
             is not defined at module scope, or contains a broken forward
             reference.
     """
-    import inspect
-    import textwrap
-
     # ``is_dataclass`` is true for instances too; require the class itself so a
     # mistakenly-passed instance fails loudly rather than silently scanning.
     if not isinstance(config_cls, type) or not dataclasses.is_dataclass(config_cls):
@@ -868,48 +939,11 @@ def domain_env_suffixes(config_cls: type) -> frozenset[str]:
             f"domain_env_suffixes: expected a dataclass type, got {config_cls!r}"
         )
 
+    caller = "domain_env_suffixes"
     found: set[str] = set()
-    visited: set[type] = set()
-
-    def _literals_in(cls: type) -> None:
-        try:
-            src = textwrap.dedent(inspect.getsource(cls.from_env))  # type: ignore[attr-defined]
-        except (OSError, TypeError) as exc:  # source unreadable / not a Python function
-            # Re-raise preserving the original type (OSError vs TypeError) with
-            # class context, so a type error isn't masqueraded as I/O.
-            raise type(exc)(
-                f"domain_env_suffixes: cannot read source for "
-                f"{cls.__qualname__}.from_env: {exc}"
-            ) from exc
-        for suffix, _lineno, _col in _literal_env_reads(ast.parse(src)):
-            found.add(suffix)
-
-    def _visit(cls: type) -> None:
-        if cls in visited or cls is ServerConfig or not dataclasses.is_dataclass(cls):
-            return
-        visited.add(cls)
-        if hasattr(cls, "from_env"):
-            _literals_in(cls)
-        try:
-            hints = typing.get_type_hints(cls)
-        except NameError as exc:
-            raise NameError(
-                f"domain_env_suffixes: cannot resolve type hints for "
-                f"{cls.__qualname__} — annotations must be importable at module "
-                f"scope: {exc}"
-            ) from exc
-        for f in dataclasses.fields(cls):
-            resolved = hints.get(f.name, f.type)
-            for candidate in (resolved, *typing.get_args(resolved)):
-                if (
-                    isinstance(candidate, type)
-                    and dataclasses.is_dataclass(candidate)
-                    and candidate is not ServerConfig
-                    and hasattr(candidate, "from_env")
-                ):
-                    _visit(candidate)
-
-    _visit(config_cls)
+    for cls in _iter_env_configs(config_cls, set(), caller=caller):
+        tree = _from_env_tree(cls, caller=caller)
+        found.update(suffix for suffix, _lineno, _col in _literal_env_reads(tree))
     return frozenset(found)
 
 
@@ -1035,6 +1069,84 @@ def _domain_env_var_from(
     )
 
 
+def _keyword_env_read(kw: ast.keyword) -> tuple[str, str] | None:
+    """Return ``(suffix, field)`` if *kw* reads exactly one literal env suffix.
+
+    ``None`` for a ``**kwargs`` splat (no field name) and for a value with
+    zero or several literal reads, which is ambiguous.
+    """
+    if kw.arg is None:
+        return None
+    literals = {lit for lit, _, _ in _literal_env_reads(kw.value)}
+    if len(literals) != 1:
+        return None
+    return next(iter(literals)), kw.arg
+
+
+def _ctor_field_by_suffix(tree: ast.AST, cls: type) -> dict[str, str]:
+    """Map a literal suffix to the ``cls(...)`` keyword it is read into.
+
+    Only a keyword whose value expression contains exactly one literal env
+    read is mapped; zero or several is ambiguous and left unmapped. If the
+    same suffix appears in two keywords (unusual — a section's suffixes are
+    distinct), the first in source order wins and the later field goes
+    unmapped, matching the frozenset's de-duplication of that suffix.
+    """
+    ctor_names = {"cls", cls.__name__}
+    mapping: dict[str, str] = {}
+    for n in ast.walk(tree):
+        if not (
+            isinstance(n, ast.Call)
+            and isinstance(n.func, ast.Name)
+            and n.func.id in ctor_names
+        ):
+            continue
+        for kw in n.keywords:
+            pair = _keyword_env_read(kw)
+            if pair is not None:
+                mapping.setdefault(*pair)
+    return mapping
+
+
+def _class_env_reads(
+    tree: ast.AST, cls: type
+) -> list[tuple[str, dataclasses.Field[Any] | None, bool]]:
+    """Resolve each literal env read in *cls*'s ``from_env`` to its field.
+
+    Args:
+        tree: The parsed ``from_env`` source of *cls*.
+        cls: The config dataclass that source belongs to.
+
+    Returns:
+        One ``(suffix, field, required_by_read)`` per distinct suffix, in
+        source order of its first read. ``field`` is ``None`` when neither
+        resolution tier of :func:`domain_env_surface` ties the read to one.
+    """
+    field_of = _ctor_field_by_suffix(tree, cls)
+    required_reads = _required_literal_reads(tree)
+    fields_by_name = {f.name: f for f in dataclasses.fields(cls)}
+    # Field-name fallback: a field's env var is ``{PREFIX}_{NAME.upper()}``
+    # by convention, so a read this class does not tie to a constructor
+    # keyword (consumed via a local, or assembled from several reads) still
+    # resolves to the field whose ``name.upper()`` equals the suffix.
+    fields_by_suffix = {f.name.upper(): f for f in dataclasses.fields(cls)}
+    reads: list[tuple[str, dataclasses.Field[Any] | None, bool]] = []
+    local_seen: set[str] = set()
+    for suffix, _lineno, _col in sorted(
+        _literal_env_reads(tree), key=lambda t: (t[1], t[2])
+    ):
+        if suffix in local_seen:
+            continue
+        local_seen.add(suffix)
+        fname = field_of.get(suffix)
+        if fname is not None:
+            f = fields_by_name.get(fname)
+        else:
+            f = fields_by_suffix.get(suffix)
+        reads.append((suffix, f, suffix in required_reads))
+    return reads
+
+
 def domain_env_surface(config_cls: type) -> tuple[DomainEnvVar, ...]:
     """Return :class:`DomainEnvVar` records for the env vars a domain config reads.
 
@@ -1100,109 +1212,22 @@ def domain_env_surface(config_cls: type) -> tuple[DomainEnvVar, ...]:
         ValueError: If a resolved field's ``metadata["wizard"]`` is malformed
             (see :func:`_config_field_from`).
     """
-    import inspect
-    import textwrap
-
     if not isinstance(config_cls, type) or not dataclasses.is_dataclass(config_cls):
         raise TypeError(
             f"domain_env_surface: expected a dataclass type, got {config_cls!r}"
         )
 
+    caller = "domain_env_surface"
     records: list[DomainEnvVar] = []
-    visited: set[type] = set()
     seen: set[tuple[str, str]] = set()
-
-    def _field_by_suffix(tree: ast.AST, cls: type) -> dict[str, str]:
-        """Map a literal suffix to the ``cls(...)`` keyword it is read into.
-
-        Only a keyword whose value expression contains exactly one literal env
-        read is mapped; zero or several is ambiguous and left unmapped. If the
-        same suffix appears in two keywords (unusual — a section's suffixes are
-        distinct), the first in source order wins and the later field goes
-        unmapped, matching the frozenset's de-duplication of that suffix.
-        """
-        ctor_names = {"cls", cls.__name__}
-        mapping: dict[str, str] = {}
-        for n in ast.walk(tree):
-            if not (
-                isinstance(n, ast.Call)
-                and isinstance(n.func, ast.Name)
-                and n.func.id in ctor_names
-            ):
-                continue
-            for kw in n.keywords:
-                if kw.arg is None:  # ``**kwargs`` splat — no field name
-                    continue
-                literals = {lit for lit, _, _ in _literal_env_reads(kw.value)}
-                if len(literals) == 1:
-                    mapping.setdefault(next(iter(literals)), kw.arg)
-        return mapping
-
-    def _scan(cls: type) -> None:
-        try:
-            src = textwrap.dedent(inspect.getsource(cls.from_env))  # type: ignore[attr-defined]
-        except (OSError, TypeError) as exc:  # source unreadable / not a function
-            raise type(exc)(
-                f"domain_env_surface: cannot read source for "
-                f"{cls.__qualname__}.from_env: {exc}"
-            ) from exc
-        tree = ast.parse(src)
-        field_of = _field_by_suffix(tree, cls)
-        required_reads = _required_literal_reads(tree)
-        fields_by_name = {f.name: f for f in dataclasses.fields(cls)}
-        # Field-name fallback: a field's env var is ``{PREFIX}_{NAME.upper()}``
-        # by convention, so a read this class does not tie to a constructor
-        # keyword (consumed via a local, or assembled from several reads) still
-        # resolves to the field whose ``name.upper()`` equals the suffix.
-        fields_by_suffix = {f.name.upper(): f for f in dataclasses.fields(cls)}
-        ordered: list[str] = []
-        local_seen: set[str] = set()
-        for suffix, _lineno, _col in sorted(
-            _literal_env_reads(tree), key=lambda t: (t[1], t[2])
-        ):
-            if suffix not in local_seen:
-                local_seen.add(suffix)
-                ordered.append(suffix)
-        for suffix in ordered:
+    for cls in _iter_env_configs(config_cls, set(), caller=caller):
+        tree = _from_env_tree(cls, caller=caller)
+        for suffix, f, required_by_read in _class_env_reads(tree, cls):
             key = (cls.__qualname__, suffix)
             if key in seen:
                 continue
             seen.add(key)
-            fname = field_of.get(suffix)
-            if fname is not None:
-                f = fields_by_name.get(fname)
-            else:
-                f = fields_by_suffix.get(suffix)
             records.append(
-                _domain_env_var_from(
-                    cls, suffix, f, required_by_read=suffix in required_reads
-                )
+                _domain_env_var_from(cls, suffix, f, required_by_read=required_by_read)
             )
-
-    def _visit(cls: type) -> None:
-        if cls in visited or cls is ServerConfig or not dataclasses.is_dataclass(cls):
-            return
-        visited.add(cls)
-        if hasattr(cls, "from_env"):
-            _scan(cls)
-        try:
-            hints = typing.get_type_hints(cls)
-        except NameError as exc:
-            raise NameError(
-                f"domain_env_surface: cannot resolve type hints for "
-                f"{cls.__qualname__} — annotations must be importable at module "
-                f"scope: {exc}"
-            ) from exc
-        for f in dataclasses.fields(cls):
-            resolved = hints.get(f.name, f.type)
-            for candidate in (resolved, *typing.get_args(resolved)):
-                if (
-                    isinstance(candidate, type)
-                    and dataclasses.is_dataclass(candidate)
-                    and candidate is not ServerConfig
-                    and hasattr(candidate, "from_env")
-                ):
-                    _visit(candidate)
-
-    _visit(config_cls)
     return tuple(records)
