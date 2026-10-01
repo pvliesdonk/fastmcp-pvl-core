@@ -997,7 +997,7 @@ wheels = [
 
 [[package]]
 name = "cyclopts"
-version = "5.1.0"
+version = "5.1.1"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
     "python_full_version >= '3.15' and sys_platform == 'emscripten'",
@@ -1013,9 +1013,9 @@ dependencies = [
     { name = "rich" },
     { name = "rich-rst" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/1b/61/efe6e31020ee4312318b702696dd7add1b0a15b205b04590f984972c3488/cyclopts-5.1.0.tar.gz", hash = "sha256:c51aa364e746285c24eaa5c3b425ead59cc8bdb71b98c11f0343baddcb0a9c80", size = 237747, upload-time = "2026-09-29T19:02:25.122Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/85/8c/7a7f5a3af1845cb6b9c28bf2a6db1bc510a6b9661109138c70ab6d8d650a/cyclopts-5.1.1.tar.gz", hash = "sha256:252fe37b01a80f10933f91c312db551e4e86ffd87bee401ab2ed091769135426", size = 237903, upload-time = "2026-10-01T00:00:02.762Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/28/1a/105abe8a0a1e8181df870ad8117d95a89c5a39f6aaf96509c8f04ff2aba9/cyclopts-5.1.0-py3-none-any.whl", hash = "sha256:adcddef2e86cf63383fb798aaa0767933961f499ced53f8db43a63e393c1b4ae", size = 279365, upload-time = "2026-09-29T19:02:23.499Z" },
+    { url = "https://files.pythonhosted.org/packages/2a/37/1afff6923395f2f0ce730bae8851371b7418be17dc44d90ba80f72799240/cyclopts-5.1.1-py3-none-any.whl", hash = "sha256:ff0da67b2d2d8fe716d20ab82c698277ef30a8fb75d24e9b38a06f56c44931fd", size = 279527, upload-time = "2026-10-01T00:00:00.485Z" },
 ]
 
 [[package]]
@@ -1236,7 +1236,7 @@ client = [
 server = [
     { name = "authlib" },
     { name = "cyclopts", version = "4.25.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
-    { name = "cyclopts", version = "5.1.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+    { name = "cyclopts", version = "5.1.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "exceptiongroup" },
     { name = "griffelib" },
     { name = "httpx2" },
@@ -2889,11 +2889,11 @@ wheels = [
 
 [[package]]
 name = "python-dotenv"
-version = "1.2.3"
+version = "1.2.4"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/6a/53/ed9d74092561d4b01a2ef1349d52cdbc135e526c245f366b089cfca6de49/python_dotenv-1.2.3.tar.gz", hash = "sha256:a20a594dabeaa385725aa239d5244871c143ecb356add8a20fcf23773a6c3a35", size = 58945, upload-time = "2026-08-16T16:54:54.067Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/74/26/2fbeedb218a787a5eea551c7532cac4e009f83d689dd2faa0d0353473f86/python_dotenv-1.2.4.tar.gz", hash = "sha256:f0d53e69935a851c0dcc78f3ab7aaccd8cabef0b92382b576b824212902873c0", size = 60824, upload-time = "2026-10-01T05:36:10Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/0d/17/c5c6b53ddc18f297992099b3d9ec16c855c0ccc83263a21fe4d1c625ec6c/python_dotenv-1.2.3-py3-none-any.whl", hash = "sha256:904552145e8bfed22162c09dab1c2b9b54fefa7b23ba780f4f26ca0316b0f0d9", size = 22780, upload-time = "2026-08-16T16:54:52.473Z" },
+    { url = "https://files.pythonhosted.org/packages/60/d1/38f3a3405989a89ac18390803e70c6ad7c7760da4f9b83cbeca0c44a0c72/python_dotenv-1.2.4-py3-none-any.whl", hash = "sha256:42269a8a5b3fd54ffa6f3d84b18abed50064717576b4ecf03dc4a55d8aa04fdc", size = 23266, upload-time = "2026-10-01T05:36:08.633Z" },
 ]
 
 [[package]]
@@ -3508,14 +3508,14 @@ wheels = [
 
 [[package]]
 name = "types-aiobotocore-dynamodb"
-version = "3.9.1"
+version = "3.9.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "typing-extensions", marker = "python_full_version < '3.12'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/ef/9e/d6c55193ef6afc9230cdbab62d6b9194d9314a755ff93ffd3d810d0751cd/types_aiobotocore_dynamodb-3.9.1.tar.gz", hash = "sha256:3b0170f96d3537f268773512a416167bd9189b41bf7de08a049a4c5c4c3c0969", size = 50525, upload-time = "2026-09-08T03:34:53.789Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/19/5b/c2ab0e33e2cd38ccd1b7959495b702a29cb689315b8876ff492f3d7b8653/types_aiobotocore_dynamodb-3.9.2.tar.gz", hash = "sha256:bdf223e21f247df7086614f4b6714dbf56be1ea53b710e0d73d4fb91861f28cf", size = 50697, upload-time = "2026-10-01T04:39:24.733Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/f2/6c/754736edff40a6db24b2099199419a239d61203addd1e33aeed9b7e4b5b6/types_aiobotocore_dynamodb-3.9.1-py3-none-any.whl", hash = "sha256:f6a2789bc361563b73f65d77a809cc8a3eee66adc03f797cd62c63d01e87742d", size = 61323, upload-time = "2026-09-08T03:34:52.298Z" },
+    { url = "https://files.pythonhosted.org/packages/4d/d7/cf31e64da7bd22cb6339f868c52617e54e3dd76b46ea3c641e3c8cd0bf3c/types_aiobotocore_dynamodb-3.9.2-py3-none-any.whl", hash = "sha256:1c43ca331d71acaf6eb905b607009f3899c958224e7a06902f2bb6a3f5bff801", size = 61569, upload-time = "2026-10-01T04:39:22.22Z" },
 ]
 
 [[package]]
