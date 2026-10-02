@@ -549,7 +549,9 @@ wire text; the probes are the listings each marker describes, run through
 - Whether a client that keeps only tool names at session start (Claude Code
   with tool search) needs a larger instructions "discovery seed" than the
   1,536-unit target; only an evaluation against such a client would settle
-  it.
+  it. One trace in [`mcp-client-tool-discovery.md`](mcp-client-tool-discovery.md)
+  shows such a client calling a hidden tool by the name the instructions
+  gave it.
 - How Claude Desktop, claude.ai and Cursor surface resources and prompts
   to the user or the model (see the [unverified] claims above).
 - NumPy- and Sphinx-style docstrings: FastMCP tries those parsers too, but

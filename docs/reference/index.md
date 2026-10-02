@@ -44,3 +44,14 @@ major bump makes every FastMCP reference stale regardless of its date.
 - [Negative outcomes and faults outside MCP](negative-outcomes-and-faults.md)
   — how HTTP, gRPC, OpenTelemetry, GraphQL, JSON-RPC and six language error
   models separate a valid "no" from a fault; the companion to the MCP page.
+- [FastMCP tool-search transform and CodeMode](fastmcp-search-transform.md)
+  — what the search transforms change on the wire, that `always_visible`
+  fenced discovery but not the proxy through v4.0.9 (PR 5263 fences and
+  annotates it), that hidden task-capable tools dropped out of Docket
+  registration through v4.0.9 (fixed in v4.0.10), what the proxy
+  preserves, and catalog sizes measured on markdown-vault-mcp. Read by ADR 0004 and the catalog-mode
+  implementation it proposes. Valid for FastMCP 4.x.
+- [How MCP clients discover tools and identify themselves](mcp-client-tool-discovery.md)
+  — deferral is not observable server-side, what Claude Code, OpenCode and
+  Codex send as `clientInfo`, and what the specification lets a server do
+  with it. Read by ADR 0004. Valid for MCP 2026-07-28 / 2025-11-25.
