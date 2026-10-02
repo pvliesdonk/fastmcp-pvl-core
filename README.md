@@ -517,7 +517,7 @@ middleware. Every line it emits starts with a bare snake_case event name,
 followed by `key=value` pairs, with request timing carried inline:
 
 ```
-tool_call_started   tool=read method=tools/call source=client
+tool_call_started   tool=read method=tools/call source=client protocol_version=2026-07-28 client_name=example-client client_version=1.0.0
 tool_call_completed tool=read duration_ms=68.57
 tool_call_failed    tool=read duration_ms=109.84 error_type=ToolError error="Section '1.3' not found"
 ```
@@ -529,6 +529,16 @@ model has to change produces no `ERROR` line. FastMCP turns an exception
 from a tool's own body into a `ToolError`, so `error_type` is `ToolError`
 there; the original type of a server fault is on the `tool_failed` line of
 [`tool_boundary`](#tool-outcomes-tool_boundary).
+
+The `*_started` line names the MCP protocol revision the message arrived
+over (`protocol_version`) and the client's self-reported `client_name` and
+`client_version`. Each is omitted when the request does not establish it: a
+`2026-07-28` client may leave its identity out of the request, and the
+`initialize` line precedes negotiation, so the values first appear on the
+`notifications/initialized` line after it. `get_server_info` reports the same
+for the connection it is called over, in a `protocol` block alongside the
+revisions the server supports; `protocol` is therefore a reserved
+`upstream_label`.
 
 Non-tool messages use a generic `request_*` / `notification_*` vocabulary
 keyed by `method=`. Rendering is process-wide — see [Output

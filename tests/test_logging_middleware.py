@@ -441,3 +441,103 @@ async def test_inbound_traceparent_correlates_without_an_sdk(caplog):
     started = _records(caplog)[0].getMessage()
     assert "trace_id=4bf92f3577b34da6a3ce929d0e0e4736" in started
     assert "span_id=00f067aa0ba902b7" in started
+
+
+# --- protocol revision and client identity (#419) ----------------------------
+
+
+def _bound_fields(record) -> dict[str, object]:
+    bound = bind_record(record)
+    assert bound is not None
+    return {field.name: field.value for field in bound[1]}
+
+
+async def _client_records(caplog, mode: str, client_info=None) -> list:
+    """Run one ``tools/call`` from a real client on *mode*'s era."""
+    from fastmcp import Client, FastMCP
+
+    mcp = FastMCP("t")
+    mcp.add_middleware(RequestLoggingMiddleware())
+
+    @mcp.tool
+    def echo() -> str:
+        return "ok"
+
+    with caplog.at_level(logging.INFO, logger=_LOGGER_NAME):
+        async with Client(mcp, mode=mode, client_info=client_info) as client:
+            await client.call_tool("echo", {})
+    return [r for r in caplog.records if r.name == _LOGGER_NAME]
+
+
+@pytest.mark.parametrize(
+    ("mode", "version"), [("legacy", "2025-11-25"), ("2026-07-28", "2026-07-28")]
+)
+async def test_started_line_carries_protocol_and_client(caplog, mode, version):
+    import mcp.types as mt
+
+    info = mt.Implementation(name="probe client", version="9.9")
+    records = await _client_records(caplog, mode, info)
+    started = next(r for r in records if r.getMessage().startswith("tool_call_started"))
+    fields = _bound_fields(started)
+    assert list(fields) == [
+        "tool",
+        "method",
+        "source",
+        "protocol_version",
+        "client_name",
+        "client_version",
+    ]
+    assert fields["protocol_version"] == version
+    assert fields["client_name"] == "probe client"
+    assert fields["client_version"] == "9.9"
+
+
+async def test_terminal_lines_do_not_repeat_connection_fields(caplog):
+    records = await _client_records(caplog, "2026-07-28")
+    completed = next(
+        r for r in records if r.getMessage().startswith("tool_call_completed")
+    )
+    assert "protocol_version" not in _bound_fields(completed)
+
+
+async def test_initialize_line_carries_no_connection_fields(caplog):
+    """``initialize`` precedes negotiation: the SDK's value then is a seed."""
+    records = await _client_records(caplog, "legacy")
+    started = next(
+        r
+        for r in records
+        if r.getMessage().startswith("request_started method=initialize")
+    )
+    assert set(_bound_fields(started)) == {"method", "source"}
+
+
+async def test_no_connection_fields_without_request_context(caplog):
+    mw = RequestLoggingMiddleware()
+    with caplog.at_level(logging.INFO, logger=_LOGGER_NAME):
+        await mw.on_message(_context(method="tools/list"), _ok_call_next)
+    assert set(_bound_fields(caplog.records[0])) == {"method", "source"}
+
+
+async def test_unidentified_client_gets_protocol_version_only(caplog):
+    """A modern client may omit its identity; the line says nothing about it
+    rather than inventing a value."""
+    from types import SimpleNamespace
+
+    rc = SimpleNamespace(
+        protocol_version="2026-07-28",
+        session=SimpleNamespace(client_params=None),
+        meta={},
+    )
+    context = MiddlewareContext(
+        message=None,
+        method="tools/list",
+        fastmcp_context=SimpleNamespace(request_context=rc),  # type: ignore[arg-type]
+    )
+    mw = RequestLoggingMiddleware()
+    with caplog.at_level(logging.INFO, logger=_LOGGER_NAME):
+        await mw.on_message(context, _ok_call_next)
+    assert _bound_fields(caplog.records[0]) == {
+        "method": "tools/list",
+        "source": "client",
+        "protocol_version": "2026-07-28",
+    }

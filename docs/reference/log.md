@@ -6,6 +6,20 @@ description: One entry per research pass, newest first.
 
 # Research log
 
+## 2026-10-02
+
+Wrote `mcp-protocol-era-identity.md` for #419 (protocol revision and client
+identity in the request log and `get_server_info`). Read `ServerSession`,
+`Connection.from_envelope` / `for_loop`, the runner's `initialize` and
+`server/discover` handling and `mcp_types.version` in mcp 2.2.0, and
+`FastMCPRequestContext` in fastmcp 4.0.10. Probed reachability from
+`on_message` with an in-process client in legacy, `2026-07-28` and auto
+modes, which settles the issue's `[unverified]` question: every inbound
+message type sees a request context, and only `initialize` lacks client
+params. The `_meta` fallback for client info is load-bearing: the SDK builds
+`client_params` on a modern connection only when the client sent both
+client info and capabilities.
+
 ## 2026-09-25
 
 A port rather than fresh research. Brought in

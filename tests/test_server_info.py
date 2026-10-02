@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import logging
 
+import mcp.types as mt
 import pytest
-from fastmcp import FastMCP
+from fastmcp import Client, FastMCP
+from mcp.types.version import HANDSHAKE_PROTOCOL_VERSIONS, MODERN_PROTOCOL_VERSIONS
 
 from fastmcp_pvl_core import __version__ as core_version
 from fastmcp_pvl_core import register_server_info_tool
@@ -29,6 +31,15 @@ class TestRegisterServerInfoTool:
             "server_name": "my-mcp",
             "server_version": "1.2.3",
             "core_version": core_version,
+            "protocol": {
+                "supported_versions": [
+                    *HANDSHAKE_PROTOCOL_VERSIONS,
+                    *MODERN_PROTOCOL_VERSIONS,
+                ],
+                # An in-process call has no connection to report.
+                "version": None,
+                "client": None,
+            },
         }
 
     async def test_no_upstream_block_when_provider_omitted(self):
@@ -294,7 +305,9 @@ class TestRegisterServerInfoTool:
         # default-description boilerplate.
         assert not target.description or "Report wrapper" not in target.description
 
-    @pytest.mark.parametrize("label", ["server_name", "server_version", "core_version"])
+    @pytest.mark.parametrize(
+        "label", ["server_name", "server_version", "core_version", "protocol"]
+    )
     def test_upstream_label_collision_with_reserved_key_raises(self, label):
         with pytest.raises(ValueError, match="reserved"):
             register_server_info_tool(
@@ -328,3 +341,19 @@ async def test_upstream_non_string_non_dict_coerced_to_str(upstream_value):
     )
     result = await mcp.call_tool("get_server_info", {})
     assert result.structured_content["up"] == {"version": str(upstream_value)}
+
+
+@pytest.mark.parametrize(
+    ("mode", "version"), [("legacy", "2025-11-25"), ("2026-07-28", "2026-07-28")]
+)
+async def test_protocol_block_reports_the_calling_connection(mode, version):
+    """#419: the revision and client of the connection the call came over."""
+    mcp = FastMCP("t")
+    register_server_info_tool(mcp, server_version="1.0.0", server_name="my-mcp")
+    info = mt.Implementation(name="probe client", version="9.9")
+    async with Client(mcp, mode=mode, client_info=info) as client:
+        result = await client.call_tool("get_server_info", {})
+    protocol = result.structured_content["protocol"]
+    assert protocol["version"] == version
+    assert protocol["client"] == {"name": "probe client", "version": "9.9"}
+    assert version in protocol["supported_versions"]

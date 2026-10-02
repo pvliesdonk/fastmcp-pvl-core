@@ -44,3 +44,8 @@ major bump makes every FastMCP reference stale regardless of its date.
 - [Negative outcomes and faults outside MCP](negative-outcomes-and-faults.md)
   — how HTTP, gRPC, OpenTelemetry, GraphQL, JSON-RPC and six language error
   models separate a valid "no" from a fault; the companion to the MCP page.
+- [Where a request's protocol revision and client identity come from](mcp-protocol-era-identity.md)
+  — where the MCP SDK and FastMCP expose the negotiated revision and the
+  client's name and version per request, on a handshake-era connection and
+  on a `2026-07-28` one, and which revisions the SDK serves. Read by
+  `_connection.py`. Valid for MCP 2026-07-28 / FastMCP 4.x / mcp 2.x.
