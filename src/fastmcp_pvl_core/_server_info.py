@@ -50,6 +50,27 @@ _RESERVED_KEYS = frozenset(
 """Keys that ``upstream_label`` must not collide with."""
 
 
+def _protocol_block(ctx: Context) -> dict[str, Any]:
+    """The ``protocol`` block of the payload, for the connection *ctx* is on."""
+    # Imported lazily, like the helper's own mcp imports below.
+    from mcp.types.version import (
+        HANDSHAKE_PROTOCOL_VERSIONS,
+        MODERN_PROTOCOL_VERSIONS,
+    )
+
+    identity = connection_identity(ctx)
+    client = None
+    if identity.client_name is not None or identity.client_version is not None:
+        client = {"name": identity.client_name, "version": identity.client_version}
+    return {
+        # The SDK negotiates a handshake-era revision through ``initialize``
+        # and a modern one per request; the server accepts the union of both.
+        "supported_versions": [*HANDSHAKE_PROTOCOL_VERSIONS, *MODERN_PROTOCOL_VERSIONS],
+        "version": identity.protocol_version,
+        "client": client,
+    }
+
+
 def register_server_info_tool(
     mcp: FastMCP,
     *,
@@ -136,10 +157,6 @@ def register_server_info_tool(
     # for the mcp.types import.
     from fastmcp.server.dependencies import get_context
     from mcp.types import ToolAnnotations
-    from mcp.types.version import (
-        HANDSHAKE_PROTOCOL_VERSIONS,
-        MODERN_PROTOCOL_VERSIONS,
-    )
 
     from . import __version__ as core_version
 
@@ -152,21 +169,6 @@ def register_server_info_tool(
         "configured, the upstream service's version. Use it when asked which "
         "version or build is running or which protocol revision is in use."
     )
-
-    # The SDK negotiates a handshake-era revision through ``initialize`` and
-    # a modern one per request; the server accepts the union of both.
-    supported_versions = (*HANDSHAKE_PROTOCOL_VERSIONS, *MODERN_PROTOCOL_VERSIONS)
-
-    def _protocol_block(ctx: Context) -> dict[str, Any]:
-        identity = connection_identity(ctx)
-        client = None
-        if identity.client_name is not None or identity.client_version is not None:
-            client = {"name": identity.client_name, "version": identity.client_version}
-        return {
-            "supported_versions": list(supported_versions),
-            "version": identity.protocol_version,
-            "client": client,
-        }
 
     async def get_server_info() -> dict[str, Any]:
         payload: dict[str, Any] = {
