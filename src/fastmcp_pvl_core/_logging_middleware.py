@@ -24,6 +24,8 @@ from fastmcp.server.middleware.middleware import (
 )
 from opentelemetry import trace
 
+from ._connection import connection_identity
+
 _DEFAULT_LOGGER_NAME = "fastmcp.middleware.requests"
 
 
@@ -62,6 +64,26 @@ def _trace_fields() -> dict[str, object]:
     }
 
 
+def _connection_fields(context: MiddlewareContext[Any]) -> dict[str, object]:
+    """Return ``protocol_version`` / ``client_name`` / ``client_version`` when known.
+
+    Each field is present only when the request establishes it, so an
+    absent field means "not known", never a placeholder. ``initialize`` gets
+    none: while it is in flight the SDK holds a pre-handshake seed, not the
+    negotiated revision, and no client params yet. The next message on the
+    connection (``notifications/initialized``) carries the negotiated values.
+    """
+    if context.method == "initialize":
+        return {}
+    identity = connection_identity(context.fastmcp_context)
+    fields = {
+        "protocol_version": identity.protocol_version,
+        "client_name": identity.client_name,
+        "client_version": identity.client_version,
+    }
+    return {name: value for name, value in fields.items() if value is not None}
+
+
 def _duration_ms(start: float) -> float:
     """Elapsed wall-clock milliseconds since *start*, rounded to 2 dp."""
     return round((time.perf_counter() - start) * 1000, 2)
@@ -78,6 +100,11 @@ class RequestLoggingMiddleware(Middleware):
     Tool calls (``tools/call``) use the ``tool_call_*`` event vocabulary
     and carry ``tool=<name>``; every other message uses ``request_*`` or
     ``notification_*`` keyed by ``method=``.
+
+    The ``*_started`` line also carries ``protocol_version``,
+    ``client_name`` and ``client_version`` for the connection the message
+    arrived over, each only when known: a modern (2026-07-28) client may
+    leave its identity out, and ``initialize`` precedes negotiation.
 
     ``*_completed`` is INFO. ``*_failed`` is logged at the exception's
     ``log_level`` when it is a ``FastMCPError`` and at ERROR otherwise, so a
@@ -124,6 +151,7 @@ class RequestLoggingMiddleware(Middleware):
         if is_tool_call:
             started_fields["method"] = "tools/call"
         started_fields["source"] = context.source
+        started_fields.update(_connection_fields(context))
         self._emit(event_base + "_started", started_fields, logging.INFO)
 
         start = time.perf_counter()
@@ -184,8 +212,9 @@ class RequestLoggingMiddleware(Middleware):
         # unchanged for servers that do have tracing configured.
         fields = {**fields, **_trace_fields()}
         # Field names come from this middleware's own fixed vocabulary
-        # (tool, method, source, duration_ms, error_type, error, trace_id,
-        # span_id), never from caller-controlled data, so none of them can
+        # (tool, method, source, protocol_version, client_name,
+        # client_version, duration_ms, error_type, error, trace_id, span_id),
+        # never from caller-controlled data, so none of them can
         # ever contain a "%" or a space — either of which would break the
         # template below.
         #

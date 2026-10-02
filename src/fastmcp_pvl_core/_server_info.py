@@ -19,11 +19,12 @@ import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
+from ._connection import connection_identity
 from ._tool_boundary import tool_boundary
 from ._url import redact_urls_in_text
 
 if TYPE_CHECKING:
-    from fastmcp import FastMCP
+    from fastmcp import Context, FastMCP
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +44,9 @@ result, if a coroutine is returned) is interpreted per
 :data:`UpstreamResult`."""
 
 
-_RESERVED_KEYS = frozenset({"server_name", "server_version", "core_version"})
+_RESERVED_KEYS = frozenset(
+    {"server_name", "server_version", "core_version", "protocol"}
+)
 """Keys that ``upstream_label`` must not collide with."""
 
 
@@ -66,8 +69,23 @@ def register_server_info_tool(
           "server_name": "<server_name>",
           "server_version": "<server_version>",
           "core_version": "<fastmcp_pvl_core.__version__>",
+          "protocol": {
+            "supported_versions": ["2024-11-05", ..., "2026-07-28"],
+            "version": "<revision of this connection>" | None,
+            "client": {"name": "...", "version": "..."} | None
+          },
           "<upstream_label>": {"version": "..."}   # only when upstream_version set
         }
+
+    ``protocol`` describes the connection the call arrived over.
+    ``supported_versions`` lists every revision the installed MCP SDK
+    negotiates, oldest first. ``version`` is the revision this connection
+    speaks, ``None`` when the call has no request context (an in-process
+    ``call_tool``). ``client`` is the client's self-reported name and
+    version — from ``initialize`` on a handshake-era connection, from the
+    request's ``_meta`` on a 2026-07-28 one — and ``None`` when the client
+    did not identify itself; each of its two fields is ``None`` when that
+    one was missing.
 
     If the upstream lookup raises, the upstream block becomes
     ``{"error": "<message>"}`` so the tool still returns the wrapper info
@@ -88,8 +106,8 @@ def register_server_info_tool(
             ``{"version": "<str>"}``).
         upstream_label: Key under which the upstream block appears in the
             response.  Defaults to ``"upstream"``.  Must not collide with
-            the reserved keys ``server_name``, ``server_version``, or
-            ``core_version``; this is validated eagerly at registration
+            the reserved keys ``server_name``, ``server_version``,
+            ``core_version`` or ``protocol``; this is validated eagerly at registration
             time, even when ``upstream_version`` is ``None``.  When no
             provider is configured the label is otherwise unused — no
             block keyed under it appears in the payload.
@@ -105,7 +123,8 @@ def register_server_info_tool(
 
     Raises:
         ValueError: If ``upstream_label`` collides with a reserved payload
-            key (``server_name``, ``server_version``, ``core_version``).
+            key (``server_name``, ``server_version``, ``core_version``,
+            ``protocol``).
     """
     if upstream_label in _RESERVED_KEYS:
         raise ValueError(
@@ -115,7 +134,12 @@ def register_server_info_tool(
 
     # Imported lazily so callers that never use this helper don't pay
     # for the mcp.types import.
+    from fastmcp.server.dependencies import get_context
     from mcp.types import ToolAnnotations
+    from mcp.types.version import (
+        HANDSHAKE_PROTOCOL_VERSIONS,
+        MODERN_PROTOCOL_VERSIONS,
+    )
 
     from . import __version__ as core_version
 
@@ -123,16 +147,33 @@ def register_server_info_tool(
     # terms the model sees in the result (``writing-model-facing-text``).
     default_description = (
         f"Report the version information of {server_name}; returns "
-        "server_name, server_version, core_version and, when configured, the "
-        "upstream service's version. Use it when asked which version or build "
-        "is running."
+        "server_name, server_version, core_version, the MCP protocol revisions "
+        "supported and the revision and client of this connection, and, when "
+        "configured, the upstream service's version. Use it when asked which "
+        "version or build is running or which protocol revision is in use."
     )
+
+    # The SDK negotiates a handshake-era revision through ``initialize`` and
+    # a modern one per request; the server accepts the union of both.
+    supported_versions = (*HANDSHAKE_PROTOCOL_VERSIONS, *MODERN_PROTOCOL_VERSIONS)
+
+    def _protocol_block(ctx: Context) -> dict[str, Any]:
+        identity = connection_identity(ctx)
+        client = None
+        if identity.client_name is not None or identity.client_version is not None:
+            client = {"name": identity.client_name, "version": identity.client_version}
+        return {
+            "supported_versions": list(supported_versions),
+            "version": identity.protocol_version,
+            "client": client,
+        }
 
     async def get_server_info() -> dict[str, Any]:
         payload: dict[str, Any] = {
             "server_name": server_name,
             "server_version": server_version,
             "core_version": core_version,
+            "protocol": _protocol_block(get_context()),
         }
         if upstream_version is None:
             return payload

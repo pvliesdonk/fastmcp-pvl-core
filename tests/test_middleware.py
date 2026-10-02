@@ -112,9 +112,13 @@ async def test_legacy_era_negotiation_traffic_logs_conforming_pairs(caplog):
         m.startswith("request_completed method=initialize duration_ms=")
         for m in messages
     )
-    assert (
-        "notification_started method=notifications/initialized source=client"
-        in messages
+    # The connection fields join from the first message after the handshake.
+    assert any(
+        m.startswith(
+            "notification_started method=notifications/initialized source=client "
+            "protocol_version=2025-11-25 client_name="
+        )
+        for m in messages
     )
     assert any(
         m.startswith(
@@ -132,7 +136,13 @@ async def test_auto_negotiation_reaches_sessionless_discover_pair(caplog):
     wire_middleware_stack(mcp)
 
     messages = await _era_messages(mcp, caplog, None)
-    assert "request_started method=server/discover source=client" in messages
+    assert any(
+        m.startswith(
+            "request_started method=server/discover source=client "
+            "protocol_version=2026-07-28"
+        )
+        for m in messages
+    )
     assert any(
         m.startswith("request_completed method=server/discover duration_ms=")
         for m in messages
