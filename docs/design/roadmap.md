@@ -35,29 +35,29 @@ part."
 - #550 tool bridge;
 - #551 client auth.
 
-Their bodies name more implementation detail than direction resolution
-supports. Trimming them is proposed under *Revisions*.
+Their bodies were trimmed to outcomes on 4 November 2026; the
+implementation notes stay on the 3 November design comment on #543.
 
-### One record per tool-call outcome (proposed epic, not filed)
+### One record per tool-call outcome: [#559](https://github.com/pvliesdonk/fastmcp-pvl-core/issues/559)
 
 `derived`: A refusal is logged twice, a caller's mistake is logged as a
 server fault, and under masking the log keeps only the masked text.
 Members today: #373, #380, #355.
 
-Proposed "Done when": every tool-call outcome produces one log record, at
+"Done when", as frozen on the epic: every tool-call outcome produces one log record, at
 the level its cause deserves, naming the real exception type even when the
 client sees a masked message.
 
 Unknown: none that changes the order. #355 must land before the template
 masks error details by default (template #646).
 
-### pvl-core's own tools have one shape (proposed epic, not filed)
+### pvl-core's own tools have one shape: [#560](https://github.com/pvliesdonk/fastmcp-pvl-core/issues/560)
 
 `derived`: The tools pvl-core registers on a downstream can be overridden
 silently, still carry override kwargs, and report one upstream only.
 Members today: #356, #348, #321.
 
-Proposed "Done when": the tools pvl-core registers keep one fixed shape, a
+"Done when", as frozen on the epic: the tools pvl-core registers keep one fixed shape, a
 downstream tool that reuses one of their names fails loudly, and the
 server-info payload can report every upstream.
 
@@ -70,14 +70,14 @@ Unknowns:
 
 This epic carries the first foreseen major (#356 removes public kwargs).
 
-### Operators on mainstream identity providers (proposed epic, not filed)
+### Operators on mainstream identity providers: [#561](https://github.com/pvliesdonk/fastmcp-pvl-core/issues/561)
 
 `derived`: Machine callers under `oidc-proxy` have only static tokens,
 claim checks cannot read nested or map claims, scope-gated components
 cannot step up, and OAuth discovery under a subpath depends on upstream.
 Members today: #354, #352, #353, #196.
 
-Proposed "Done when": an operator on a mainstream identity provider admits
+"Done when", as frozen on the epic: an operator on a mainstream identity provider admits
 machine callers with expiring tokens, authorises on nested or map claims,
 and serves OAuth discovery under a subpath.
 
@@ -85,17 +85,17 @@ Unknowns:
 
 - The claim-path syntax for #352, which also decides whether it is a
   major. Resolved by #352's design.
-- #196 may already work on the current FastMCP. Resolved by a probe during
-  refinement; it is cheap.
+- `evidenced` (4 November 2026, probe recorded on #196): subpath OAuth
+  discovery works since fastmcp 4.0.0, pvl-core's floor, so #196 closed.
 - #353 waits on upstream; nothing here resolves it.
 
-### Interaction primitives across protocol eras (proposed epic, not filed)
+### Interaction primitives across protocol eras: [#562](https://github.com/pvliesdonk/fastmcp-pvl-core/issues/562)
 
 `derived`: Each server builds its own elicitation, request state lives
 per process, and completion ignores component visibility. Members today:
 #349, #350, #351.
 
-Proposed "Done when": a family tool asks the user for input the same way
+"Done when", as frozen on the epic: a family tool asks the user for input the same way
 on either protocol era, its state survives restarts and replicas, and
 completion respects the visibility listing already applies.
 
@@ -113,7 +113,7 @@ Unknowns:
 - #340, a prose lint over the config help text;
 - #362, the search tool catalog, blocked upstream. Its study, #300, has an
   ADR stranded on a branch.
-- structural housekeeping: #230, #231, #232, #60.
+- structural housekeeping: #230, #231.
 
 ## Packages
 
@@ -124,7 +124,7 @@ gate.
 
 | Package | Kind | Argument |
 |---|---|---|
-| `005 downstream-fixes` (proposed, not created) | patch | First: #527 fails a downstream's CI today, and #355 must precede the template's `030` (template #646). It would also carry #373 and #380. |
+| `005 downstream-fixes` | patch | First: #527 fails a downstream's CI today, and #355 must precede the template's `030` (template #646). It also carries #373 and #380. |
 | [`010 light-import`](https://github.com/pvliesdonk/fastmcp-pvl-core/milestone/3) | minor | Independent of every other decision, and it removes an import cost downstreams pay today. It also carries #354, the service-case prerequisite of #551. |
 | [`020 client-package`](https://github.com/pvliesdonk/fastmcp-pvl-core/milestone/4) | minor | After the template's `050 workspace-roles` proves lockstep in a real release. Its first PR settles this repository's lockstep tooling, which the HTTP epics inherit. |
 | [`030 http-composition`](https://github.com/pvliesdonk/fastmcp-pvl-core/milestone/5) | minor | Research #555 first: it is the largest technical unknown here and decides the bridge's mechanism. |
@@ -159,3 +159,20 @@ corrections and proposals:
 - **Proposals awaiting the account holder.** Four epics above are
   proposed, not filed, and so is package `005`. The milestone wording in
   `CONTRIBUTING.md` changes with this index.
+
+### 4 November 2026: epics filed, triage applied
+
+`stated` (4 November 2026): "file the epics and create 005, apply the
+rest".
+
+- **Epics filed.** The four proposed epics are #559 to #562, with
+  refinement issues #563 to #566. Their existing issues are linked as
+  sub-issues.
+- **Package `005`.** Approved, carrying #527, #355, #373 and #380.
+- **Trims.** The bodies of #549, #550 and #551 were trimmed to outcomes;
+  their implementation notes stay on the 3 November design comment on
+  #543.
+- **Triage applied.** #196 closed after a probe, #232 and #60 closed,
+  #230 and #231 retyped to `decay` and #231 retargeted, #300 retyped to
+  `research` (its ADR still needs landing), and #321's trigger flagged
+  for refinement.
