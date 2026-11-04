@@ -256,6 +256,9 @@ docs is incomplete.
 - **Docstrings** — every public symbol, and the category (hook /
   config / shape) of every kwarg on a `register_*` helper, `Build*`
   factory, or middleware constructor.
+- **`docs/design/roadmap.md`** — the argument for direction and order;
+  cross-repository dependencies live in the template's index, which it
+  links. GitHub holds membership and progress.
 - **`docs/adr/`** — architecture decisions and their rationale.
 - **`docs/specs/`** — wire format only (see above).
 - **`docs/reference/`** — how *external* things behave, with sources

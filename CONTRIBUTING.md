@@ -89,10 +89,13 @@ server author. File one with the Epic form and:
 - **If the epic ships atomically** (no release may be cut mid-epic), apply
   the **`ships-atomically` label** to the epic and its children. The form's
   yes/no field records intent; only the label is what a release decision
-  can query. Milestones in this repo group work by **theme**, not by
-  release: PSR derives the version number at dispatch time, so there is no
-  release name to commit to in advance. A theme milestone says nothing
-  about atomicity either way.
+  can query. Milestones in this repo are **packages**, one per intended
+  release cut, titled `NNN content-name`: an ordinal with gaps, never a
+  version, because PSR derives the version at dispatch time. The lowest
+  open ordinal is the current package, and an issue with no milestone is
+  backlog. PSR reads no milestone, so a package is a planning commitment,
+  not a release gate, and it says nothing about atomicity either way. The
+  argument for direction and order lives in `docs/design/roadmap.md`.
 
 Existing epics tracked as hand-written checklists need no migration.
 

@@ -113,9 +113,11 @@ gh issue edit "$epic" --repo "$repo" --add-label ships-atomically
 gh issue edit "$child" --repo "$child_repo" --add-label ships-atomically
 ```
 
-Do not assign a release milestone: milestones in this repo are themes, not
-releases, and neither carry nor replace the atomicity signal. Assigning a
-theme milestone is a separate triage call.
+Leave the milestone off at filing: milestones in this repo are packages,
+one per intended release cut (`CONTRIBUTING.md`, "Epics"), and committing
+an issue to one is a separate planning call. A package neither carries nor
+replaces the atomicity signal. Epics carry no package unless the whole
+epic ships in one cut.
 
 Working through the GitHub MCP server instead: `sub_issue_write` (method
 `add`) performs the same link, and `issue_read` returns `has_parent` /
