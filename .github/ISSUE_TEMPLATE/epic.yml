@@ -86,5 +86,5 @@ body:
            API. This makes the grouping queryable (`has_parent`,
            `sub_issues_summary`) instead of prose to pattern-match.
         2. **If the epic ships atomically**, apply the `ships-atomically`
-           label to the epic and its children. Milestones here are themes,
-           not releases, and do not carry this signal.
+           label to the epic and its children. Milestones here are packages,
+           one per release cut, and do not carry this signal.
