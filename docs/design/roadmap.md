@@ -124,7 +124,7 @@ gate.
 
 | Package | Kind | Argument |
 |---|---|---|
-| `005 downstream-fixes` | patch | First: #527 fails a downstream's CI today, and #355 must precede the template's `030` (template #646). It also carries #373 and #380. |
+| [`005 downstream-fixes`](https://github.com/pvliesdonk/fastmcp-pvl-core/milestone/6) | patch | First: #527 fails a downstream's CI today, and #355 must precede the template's `030` (template #646). It also carries #373 and #380. |
 | [`010 light-import`](https://github.com/pvliesdonk/fastmcp-pvl-core/milestone/3) | minor | Independent of every other decision, and it removes an import cost downstreams pay today. It also carries #354, the service-case prerequisite of #551. |
 | [`020 client-package`](https://github.com/pvliesdonk/fastmcp-pvl-core/milestone/4) | minor | After the template's `050 workspace-roles` proves lockstep in a real release. Its first PR settles this repository's lockstep tooling, which the HTTP epics inherit. |
 | [`030 http-composition`](https://github.com/pvliesdonk/fastmcp-pvl-core/milestone/5) | minor | Research #555 first: it is the largest technical unknown here and decides the bridge's mechanism. |
