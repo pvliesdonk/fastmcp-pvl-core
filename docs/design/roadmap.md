@@ -44,9 +44,9 @@ implementation notes stay on the 3 November design comment on #543.
 server fault, and under masking the log keeps only the masked text.
 Members today: #373, #380, #355.
 
-"Done when", as frozen on the epic: every tool-call outcome produces one log record, at
-the level its cause deserves, naming the real exception type even when the
-client sees a masked message.
+"Done when", as frozen on the epic: "Every tool-call outcome produces one
+log record, at the level its cause deserves, naming the real exception
+type even when the client sees a masked message."
 
 Unknown: none that changes the order. #355 must land before the template
 masks error details by default (template #646).
@@ -57,9 +57,9 @@ masks error details by default (template #646).
 silently, still carry override kwargs, and report one upstream only.
 Members today: #356, #348, #321.
 
-"Done when", as frozen on the epic: the tools pvl-core registers keep one fixed shape, a
-downstream tool that reuses one of their names fails loudly, and the
-server-info payload can report every upstream.
+"Done when", as frozen on the epic: "The tools pvl-core registers keep one
+fixed shape, a downstream tool that reuses one of their names fails
+loudly, and the server-info payload can report every upstream."
 
 Unknowns:
 
@@ -77,9 +77,9 @@ claim checks cannot read nested or map claims, scope-gated components
 cannot step up, and OAuth discovery under a subpath depends on upstream.
 Members today: #354, #352, #353, #196.
 
-"Done when", as frozen on the epic: an operator on a mainstream identity provider admits
-machine callers with expiring tokens, authorises on nested or map claims,
-and serves OAuth discovery under a subpath.
+"Done when", as frozen on the epic: "An operator on a mainstream identity
+provider admits machine callers with expiring tokens, authorises on nested
+or map claims, and serves OAuth discovery under a subpath."
 
 Unknowns:
 
@@ -95,9 +95,9 @@ Unknowns:
 per process, and completion ignores component visibility. Members today:
 #349, #350, #351.
 
-"Done when", as frozen on the epic: a family tool asks the user for input the same way
-on either protocol era, its state survives restarts and replicas, and
-completion respects the visibility listing already applies.
+"Done when", as frozen on the epic: "A family tool asks the user for input
+the same way on either protocol era, its state survives restarts and
+replicas, and completion respects the visibility listing already applies."
 
 Unknowns:
 
