@@ -611,8 +611,9 @@ executor has the same grace period to drain, with a one-second minimum. If
 it does not drain, the process exits immediately with status 1 for the
 restart policy. Executor jobs still running then can be interrupted; put
 durable writes in lifespan shutdown and increase the grace if needed. This
-deadline does not bound lifespan shutdown, custom executors, or native code
-that holds the GIL. Worker-thread servers do not start the watchdog.
+deadline does not bound lifespan shutdown, custom executors, other
+non-daemon threads, or native code that holds the GIL. Worker-thread servers
+do not start the watchdog.
 
 `host` and `port` come from `config` (itself `{PREFIX}_HOST` /
 `{PREFIX}_PORT`, defaulting to `127.0.0.1` / `8000`) unless the caller

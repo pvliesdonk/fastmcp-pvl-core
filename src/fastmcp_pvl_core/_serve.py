@@ -107,19 +107,19 @@ def _run_server(built: uvicorn.Config) -> None:
         original_serve = server.serve
 
         async def serve(*args: Any, **kwargs: Any) -> None:
-            loop = asyncio.get_running_loop()
-            original_shutdown = loop.shutdown_default_executor
-
-            async def shutdown(*_args: Any, **_kwargs: Any) -> None:
-                # Ignore the runner's timeout: returning means an actual drain.
-                await original_shutdown()
-                drained_event.set()
-
-            loop.shutdown_default_executor = shutdown  # type: ignore[method-assign]
             try:
                 await original_serve(*args, **kwargs)
             finally:
                 armed_event.set()
+                loop = asyncio.get_running_loop()
+                original_shutdown = loop.shutdown_default_executor
+
+                async def shutdown(*_args: Any, **_kwargs: Any) -> None:
+                    # Ignore the runner's timeout: returning means a real drain.
+                    await original_shutdown()
+                    drained_event.set()
+
+                loop.shutdown_default_executor = shutdown  # type: ignore[method-assign]
 
         server.serve = serve  # type: ignore[method-assign]
 

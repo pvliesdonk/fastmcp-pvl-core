@@ -55,7 +55,7 @@ This reference covers executor shutdown after HTTP serving, as used by `_serve.p
 - Executor shutdown starts a helper thread; Python 3.10 waits indefinitely, while 3.14 warns on timeout and calls `shutdown(wait=False)`. Omitting the 3.14 timeout waits indefinitely. [source: py310] [source: base314] [pins: tests/test_shutdown.py::test_start_failure]
 - At interpreter exit, the thread executor joins its workers without a timeout even after `shutdown(wait=False)`. [source: threads] [pins: tests/test_shutdown.py::test_stuck_executor]
 - Uvicorn restores signal handlers and re-raises captured signals after serving; signal handlers are installed only on the main thread. [source: uvicorn]
-- uvloop exposes a Python `Loop` subclass, and its executor shutdown accepts a timeout defaulting to `None`. [source: uvloop-class] [source: uvloop] [pins: tests/test_shutdown.py::test_uvloop]
+- uvloop exposes a Python `Loop` subclass, and its executor shutdown accepts a timeout defaulting to `None`; version 0.22.1 awaits the shutdown future before its timed thread join, so that timeout does not bound a stuck worker. [source: uvloop-class] [source: uvloop] [pins: tests/test_shutdown.py::test_uvloop, tests/test_shutdown.py::test_application_executor_timeout_is_preserved]
 
 ## Where pvl-core departs
 
