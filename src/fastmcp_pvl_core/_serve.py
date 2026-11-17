@@ -87,23 +87,16 @@ def _run_server(built: uvicorn.Config) -> None:
     server = uvicorn.Server(built)
     # Uvicorn owns signals only on the main thread. An embedded worker-thread
     # server must not gain process-wide termination behavior.
-    armed: threading.Event | None = None
-    drained: threading.Event | None = None
+    armed = threading.Event()
+    done = threading.Event()
+    drained = False
     guard: threading.Thread | None = None
-    done: threading.Event | None = None
     if threading.current_thread() is threading.main_thread():
-        armed = threading.Event()
-        drained = threading.Event()
-        done = threading.Event()
-        done_event = done
-        owner = threading.current_thread()
-        armed_event = armed
-        drained_event = drained
         budget = max(built.timeout_graceful_shutdown or 0, 1)
 
         def watchdog() -> None:
-            armed_event.wait()
-            if not done_event.wait(budget):
+            armed.wait()
+            if not done.wait(budget):
                 # No logging or writes: a blocked handler must not block exit.
                 os._exit(1)
 
@@ -115,18 +108,19 @@ def _run_server(built: uvicorn.Config) -> None:
             try:
                 await original_serve(*args, **kwargs)
             finally:
-                armed_event.set()
+                armed.set()
                 loop = asyncio.get_running_loop()
                 original_shutdown = loop.shutdown_default_executor
 
                 async def drain() -> None:
+                    nonlocal drained
                     # Ignore the runner's timeout: returning means a real drain.
                     await original_shutdown()
-                    drained_event.set()
+                    drained = True
 
                 def shutdown(*args: Any, **kwargs: Any) -> Any:
                     # The runner creates its coroutine while this loop is stopped.
-                    if loop.is_running() or threading.current_thread() is not owner:
+                    if loop.is_running():
                         return original_shutdown(*args, **kwargs)
                     return drain()
 
@@ -141,12 +135,11 @@ def _run_server(built: uvicorn.Config) -> None:
         with contextlib.suppress(KeyboardInterrupt):
             server.run()
     finally:
-        if armed is not None and drained is not None and guard is not None:
-            assert done is not None
+        if guard is not None:
             if not armed.is_set():
                 done.set()
                 armed.set()
-            elif drained.is_set():
+            elif drained:
                 done.set()
             if done.is_set():
                 guard.join()
