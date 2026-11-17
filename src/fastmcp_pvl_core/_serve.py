@@ -74,12 +74,12 @@ def _run_server(built: uvicorn.Config) -> None:
     Reproduces the epilogue ``uvicorn.run(...)`` wraps ``server.run()`` in,
     rather than delegating to ``uvicorn.run`` itself, because pvl-core builds
     the ``Config`` here so tests can assert it (see :func:`_build_uvicorn_config`)
-    without binding a socket. A main-thread watchdog bounds post-serve
-    cleanup and disarms after the runner finishes and its executor drains
-    (or if never armed).
-    Without this epilogue a failed startup —
+    without binding a socket. Without this epilogue a failed startup —
     including FastMCP's own lifespan hooks, which ``lifespan="on"`` pins
     specifically to make fatal — would exit 0 instead of signalling failure.
+
+    A main-thread watchdog bounds post-serve cleanup and disarms after the
+    runner finishes and its executor drains (or if never armed).
     """
     import uvicorn
     from uvicorn.config import STARTUP_FAILURE

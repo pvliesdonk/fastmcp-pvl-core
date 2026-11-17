@@ -260,7 +260,6 @@ class TestRunServerEpilogue:
             _run_server(self._built())
         assert fake.run_called
         assert exc_info.value.code == 3
-        assert not any(t.name == "shutdown-watchdog" for t in threading.enumerate())
 
     def test_exits_with_startup_failure_when_server_never_started(self, monkeypatch):
         fake = self._FakeServer(started=False)
@@ -321,10 +320,18 @@ def test_wrapper_routes_by_loop_state(monkeypatch):
             finally:
                 loop.close()
 
+    exited = threading.Event()
     monkeypatch.setattr(uvicorn, "Server", Server)
-    _run_server(
-        _build_uvicorn_config(_app, host="127.0.0.1", port=0, shutdown_grace_s=1)
-    )
+    monkeypatch.setattr("fastmcp_pvl_core._serve.os._exit", lambda code: exited.set())
+    try:
+        _run_server(
+            _build_uvicorn_config(_app, host="127.0.0.1", port=0, shutdown_grace_s=1)
+        )
+    finally:
+        for thread in threading.enumerate():
+            if thread.name == "shutdown-watchdog":
+                thread.join(timeout=2)
+    assert not exited.is_set()
     assert calls == [
         ((0.05,), {}),
         ((), {"timeout": 0.1}),
@@ -366,11 +373,14 @@ def test_watchdog_after_runner_raises(monkeypatch, drain_first):
         _run_server(
             _build_uvicorn_config(_app, host="127.0.0.1", port=0, shutdown_grace_s=1)
         )
-    if drain_first:
-        assert not any(t.name == "shutdown-watchdog" for t in threading.enumerate())
-        assert not exited.is_set()
-    else:
+    if not drain_first:
         assert exited.wait(3)
+    for thread in threading.enumerate():
+        if thread.name == "shutdown-watchdog":
+            thread.join(timeout=2)
+    assert not any(t.name == "shutdown-watchdog" for t in threading.enumerate())
+    if drain_first:
+        assert not exited.is_set()
 
 
 def test_worker_thread_server_starts_no_watchdog(monkeypatch):
