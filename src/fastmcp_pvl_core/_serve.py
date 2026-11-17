@@ -68,6 +68,30 @@ def _build_uvicorn_config(
     )
 
 
+def _start_watchdog(
+    armed: threading.Event, done: threading.Event, budget: int
+) -> threading.Thread:
+    """Start the post-serve watchdog, exiting at once if it cannot start.
+
+    Once *armed* is set it hard-exits unless *done* is set within *budget*
+    seconds. A process that cannot start it must not serve: a stuck
+    non-daemon thread would then hang its exit with nothing to bound it.
+    """
+
+    def watchdog() -> None:
+        armed.wait()
+        if not done.wait(budget):
+            # No logging or writes: a blocked handler must not block exit.
+            os._exit(1)
+
+    guard = threading.Thread(target=watchdog, name="shutdown-watchdog", daemon=True)
+    try:
+        guard.start()
+    except RuntimeError:
+        os._exit(1)  # No logging or writes, for the same reason.
+    return guard
+
+
 def _run_server(built: uvicorn.Config) -> None:
     """Run a server to completion. Seam for tests that must not bind.
 
@@ -92,16 +116,9 @@ def _run_server(built: uvicorn.Config) -> None:
     drained = False
     guard: threading.Thread | None = None
     if threading.current_thread() is threading.main_thread():
-        budget = max(built.timeout_graceful_shutdown or 0, 1)
-
-        def watchdog() -> None:
-            armed.wait()
-            if not done.wait(budget):
-                # No logging or writes: a blocked handler must not block exit.
-                os._exit(1)
-
-        guard = threading.Thread(target=watchdog, name="shutdown-watchdog", daemon=True)
-        guard.start()
+        guard = _start_watchdog(
+            armed, done, max(built.timeout_graceful_shutdown or 0, 1)
+        )
         original_serve = server.serve
 
         async def serve(*args: Any, **kwargs: Any) -> None:
