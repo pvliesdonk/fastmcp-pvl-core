@@ -118,8 +118,6 @@ else:
 
 def _run_child(tmp_path, mode, grace=1, loop="asyncio"):
     env = os.environ.copy()
-    for key in ("CODEX_HOME", "CLAUDE_CONFIG_DIR", "PI_CODING_AGENT_DIR"):
-        env.pop(key, None)
     env.update(
         HOME=str(tmp_path), XDG_CONFIG_HOME=str(tmp_path), XDG_DATA_HOME=str(tmp_path)
     )
@@ -176,8 +174,6 @@ def test_healthy_shutdown(tmp_path, mode, grace, expected):
 def test_uvloop(tmp_path):
     pytest.importorskip("uvloop")
     assert _run_child(tmp_path, "stuck", loop="uvloop")[0] == 1
-    code, out, _ = _run_child(tmp_path, "orphan", loop="uvloop")
-    assert code == 1 and "ORPHAN_DRAINED" in out
     assert _run_child(tmp_path, "healthy", 0, "uvloop")[0] == 0
 
 

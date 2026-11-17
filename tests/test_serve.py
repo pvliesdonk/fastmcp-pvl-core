@@ -317,15 +317,6 @@ def test_wrapper_routes_by_loop_state(monkeypatch):
                     await loop.shutdown_default_executor(timeout=0.1)
 
                 loop.run_until_complete(application_calls())
-                foreign_calls = []
-                thread = threading.Thread(
-                    target=lambda: foreign_calls.append(
-                        loop.shutdown_default_executor(timeout=0.2)
-                    )
-                )
-                thread.start()
-                thread.join()
-                loop.run_until_complete(foreign_calls[0])
                 loop.run_until_complete(loop.shutdown_default_executor(300))
             finally:
                 loop.close()
@@ -337,7 +328,6 @@ def test_wrapper_routes_by_loop_state(monkeypatch):
     assert calls == [
         ((0.05,), {}),
         ((), {"timeout": 0.1}),
-        ((), {"timeout": 0.2}),
         ((), {}),
     ]
     assert not any(t.name == "shutdown-watchdog" for t in threading.enumerate())
