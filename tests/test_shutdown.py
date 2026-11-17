@@ -21,6 +21,22 @@ from fastmcp_pvl_core._serve import _run_server
 mode, loop, grace = __import__('sys').argv[1:]
 release = threading.Event()
 finished = threading.Event()
+if mode in ('preexisting_worker', 'watchdog_start_failure'):
+    ready = threading.Event()
+    def preexisting_worker():
+        ready.set()
+        release.wait()
+    threading.Thread(target=preexisting_worker).start()
+    ready.wait()
+    print('WORKER_READY', flush=True)
+    if mode == 'watchdog_start_failure':
+        original_start = threading.Thread.start
+        def fail_watchdog(thread):
+            if thread.name == 'shutdown-watchdog':
+                print('WATCHDOG_START_FAILED', flush=True)
+                raise RuntimeError('fixture EAGAIN')
+            return original_start(thread)
+        threading.Thread.start = fail_watchdog
 original_server = uvicorn.Server
 class Server(original_server):
     async def serve(self, sockets=None):
@@ -83,6 +99,8 @@ async def app(scope, receive, send):
                 return
             await send({'type': 'lifespan.startup.complete'})
         else:
+            if mode == 'preexisting_worker':
+                release.set()
             if mode == 'app_timeout':
                 running_loop = asyncio.get_running_loop()
                 method = running_loop.shutdown_default_executor
@@ -190,3 +208,12 @@ def test_cancelled_task_keeps_own_executor_timeout(tmp_path):
     code, out, _ = _run_child(tmp_path, "orphan_timeout", grace=3)
     assert code == 0
     assert "TIMEOUT_RETURNED" in out
+
+
+def test_watchdog_start_failure_with_existing_worker(tmp_path):
+    code, out, _ = _run_child(tmp_path, "preexisting_worker")
+    assert code == 0 and "WORKER_READY" in out and "SHUTDOWN" in out
+
+    code, out, _ = _run_child(tmp_path, "watchdog_start_failure")
+    assert "WORKER_READY" in out and "WATCHDOG_START_FAILED" in out
+    assert code != 0

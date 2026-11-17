@@ -8,7 +8,10 @@ description: One entry per research pass, newest first.
 
 ## 2026-11-16
 
-Researched uvicorn 0.54.0, CPython 3.10.22 and 3.14.8 shutdown source, and uvloop 0.22.1 source for the bounded shutdown change.
+Researched uvicorn 0.54.0, CPython 3.10.22 and 3.14.8 shutdown source,
+and uvloop 0.22.1 source for the bounded shutdown change. After the dev lock
+selected uvloop 0.23.0, checked its installed and version-tagged `loop.pyx`
+and public `Loop` class: the shutdown and class claims also hold on 0.23.0.
 
 ## 2026-10-02
 

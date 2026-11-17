@@ -2,8 +2,8 @@
 type: Reference
 title: Uvicorn and asyncio shutdown
 description: Shutdown ordering and default executor teardown.
-subject_version: "CPython 3.10.22 and 3.14.8; uvicorn 0.54.0; uvloop 0.22.1"
-valid_for: "CPython 3.10–3.14, uvicorn 0.54, uvloop 0.22"
+subject_version: "CPython 3.10.22 and 3.14.8; uvicorn 0.54.0; uvloop 0.22.1 and 0.23.0"
+valid_for: "CPython 3.10–3.14, uvicorn 0.54, uvloop 0.22–0.23"
 generated:
   by: process:researching-references
   at: 2026-11-16
@@ -45,6 +45,14 @@ sources:
     title: uvloop public Loop class
     resource: https://github.com/MagicStack/uvloop/blob/v0.22.1/uvloop/__init__.py
     accessed: 2026-11-16
+  - id: uvloop-023
+    title: uvloop 0.23.0 executor shutdown
+    resource: https://github.com/MagicStack/uvloop/blob/v0.23.0/uvloop/loop.pyx
+    accessed: 2026-11-16
+  - id: uvloop-class-023
+    title: uvloop 0.23.0 public Loop class
+    resource: https://github.com/MagicStack/uvloop/blob/v0.23.0/uvloop/__init__.py
+    accessed: 2026-11-16
 ---
 
 # Uvicorn and asyncio shutdown
@@ -58,11 +66,11 @@ This reference covers executor shutdown after HTTP serving, as used by `_serve.p
 - Executor shutdown starts a helper thread; Python 3.10 waits indefinitely, while 3.14 warns on timeout and calls `shutdown(wait=False)`. Omitting the 3.14 timeout waits indefinitely. [source: py310] [source: base314] [pins: tests/test_shutdown.py::test_start_failure]
 - At interpreter exit, the thread executor joins its workers without a timeout even after `shutdown(wait=False)`. [source: threads] [pins: tests/test_shutdown.py::test_stuck_executor]
 - Uvicorn restores signal handlers and re-raises captured signals after serving; signal handlers are installed only on the main thread. [source: uvicorn]
-- uvloop exposes a Python `Loop` subclass, and its executor shutdown accepts a timeout defaulting to `None`; version 0.22.1 awaits the shutdown future before its timed thread join, so that timeout does not bound a stuck worker. [source: uvloop-class] [source: uvloop] [pins: tests/test_shutdown.py::test_uvloop]
+- uvloop exposes a Python `Loop` subclass, and its executor shutdown accepts a timeout defaulting to `None`; versions 0.22.1 and 0.23.0 await the shutdown future before its timed thread join, so that timeout does not bound a stuck worker. [source: uvloop-class] [source: uvloop] [source: uvloop-class-023] [source: uvloop-023] [pins: tests/test_shutdown.py::test_uvloop]
 
 ## Where pvl-core departs
 
-On the main thread pvl-core supplies one post-serve deadline shared by runner task cancellation, async-generator close and default-executor drainage; ASGI lifespan shutdown precedes it. Application executor-shutdown calls keep their arguments and cannot disarm the watchdog; it disarms only after the runner ends and its own drain succeeds, or if never armed. A failed drain keeps it armed. [pins: tests/test_shutdown.py::test_start_failure, tests/test_shutdown.py::test_runner_cancellation_cleanup_is_bounded, tests/test_serve.py::test_wrapper_routes_by_loop_state]
+On the main thread pvl-core supplies one post-serve deadline shared by runner task cancellation, async-generator close and default-executor drainage; ASGI lifespan shutdown precedes it. Application executor-shutdown calls keep their arguments and cannot disarm the watchdog; it disarms only after the runner ends and its own drain succeeds, or if never armed. A failed drain keeps it armed; failure to start the watchdog exits with status 1 before serving. [pins: tests/test_shutdown.py::test_watchdog_start_failure_with_existing_worker, tests/test_shutdown.py::test_start_failure, tests/test_shutdown.py::test_runner_cancellation_cleanup_is_bounded, tests/test_serve.py::test_wrapper_routes_by_loop_state]
 
 ## Not covered
 
