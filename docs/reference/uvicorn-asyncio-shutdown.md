@@ -9,6 +9,9 @@ generated:
   at: 2026-11-16
 stale_after: 2027-05-16
 status: stable
+verified:
+  - by: process:researching-references
+    at: 2026-11-16
 sources:
   - id: py310
     title: CPython 3.10 asyncio event loop
@@ -59,7 +62,7 @@ This reference covers executor shutdown after HTTP serving, as used by `_serve.p
 
 ## Where pvl-core departs
 
-On the main thread pvl-core supplies its own post-serve deadline and waits for actual executor drainage; a failed drain keeps the watchdog armed. [pins: tests/test_shutdown.py::test_start_failure]
+On the main thread pvl-core supplies one post-serve deadline shared by runner task cancellation, async-generator close and default-executor drainage; ASGI lifespan shutdown precedes it. A failed drain keeps the watchdog armed. [pins: tests/test_shutdown.py::test_start_failure]
 
 ## Not covered
 

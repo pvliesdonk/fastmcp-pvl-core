@@ -151,7 +151,11 @@ def run_http(
 
     Call this instead of ``uvicorn.run(...)``. The caller builds the ASGI
     app — typically ``server.http_app(path=..., event_store=...)`` — and
-    pvl-core owns the invocation.
+    pvl-core owns the invocation. On the main thread, once serving ends,
+    a shared ``max(config.shutdown_grace_s, 1)``-second deadline covers
+    runner task cancellation, async-generator close and default-executor
+    drain. Exceeding it exits the process immediately with status 1. ASGI
+    lifespan shutdown happens before this deadline and is not bounded by it.
 
     Args:
         app: Domain hook — the ASGI application to serve. pvl-core cannot

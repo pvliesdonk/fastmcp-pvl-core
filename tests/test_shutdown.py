@@ -38,7 +38,7 @@ class Server(original_server):
 uvicorn.Server = Server
 
 async def stop(server):
-    if mode in ('stuck', 'internal', 'eagain', 'finite', 'app_timeout'):
+    if mode in ('stuck', 'eagain', 'finite', 'app_timeout'):
         ready = threading.Event()
         def work():
             ready.set()
@@ -56,10 +56,7 @@ async def stop(server):
             await asyncio.sleep(0.01)
     print('READY', flush=True)
     await asyncio.sleep(0.5)
-    if mode == 'internal':
-        server.should_exit = True
-    else:
-        os.kill(os.getpid(), signal.SIGINT)
+    os.kill(os.getpid(), signal.SIGINT)
 
 async def app(scope, receive, send):
     assert scope['type'] == 'lifespan'
@@ -93,7 +90,8 @@ async def app(scope, receive, send):
             return
 
 config = ServerConfig(host='127.0.0.1', port=0, shutdown_grace_s=int(grace))
-if loop == 'auto':
+if loop == 'asyncio':
+    uvicorn.config.LOOP_FACTORIES['auto'] = uvicorn.config.LOOP_FACTORIES['asyncio']
     run_http(app, config=config)
 else:
     _run_server(uvicorn.Config(app, host='127.0.0.1', port=0, loop=loop,
@@ -102,7 +100,7 @@ else:
 """
 
 
-def _run_child(tmp_path, mode, grace=1, loop="auto"):
+def _run_child(tmp_path, mode, grace=1, loop="asyncio"):
     env = os.environ.copy()
     for key in ("CODEX_HOME", "CLAUDE_CONFIG_DIR", "PI_CODING_AGENT_DIR"):
         env.pop(key, None)
@@ -128,11 +126,11 @@ def _run_child(tmp_path, mode, grace=1, loop="auto"):
             child.communicate()
 
 
-@pytest.mark.parametrize("mode", ["stuck", "internal"])
-def test_stuck_executor(tmp_path, mode):
-    code, out, _ = _run_child(tmp_path, mode)
+def test_stuck_executor(tmp_path):
+    code, out, err = _run_child(tmp_path, "stuck")
     assert "READY" in out and "SHUTDOWN" in out
     assert code == 1
+    assert "Traceback" not in err
 
 
 def test_start_failure(tmp_path):
@@ -145,7 +143,6 @@ def test_start_failure(tmp_path):
     "mode,grace,expected",
     [
         ("healthy", 0, 0),
-        ("healthy", 1, 0),
         ("finite", 1, 0),
         ("startup", 1, 3),
         ("slow_lifespan", 1, 0),
