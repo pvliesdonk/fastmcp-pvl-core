@@ -606,6 +606,14 @@ the orchestrator's own termination grace period (Kubernetes'
 just means the orchestrator does the killing instead of uvicorn doing the
 draining.
 
+When run on the main thread, after ASGI shutdown finishes, the default
+executor has the same grace period to drain, with a one-second minimum. If
+it does not drain, the process exits immediately with status 1 for the
+restart policy. Executor jobs still running then can be interrupted; put
+durable writes in lifespan shutdown and increase the grace if needed. This
+deadline does not bound lifespan shutdown, custom executors, or native code
+that holds the GIL. Worker-thread servers do not start the watchdog.
+
 `host` and `port` come from `config` (itself `{PREFIX}_HOST` /
 `{PREFIX}_PORT`, defaulting to `127.0.0.1` / `8000`) unless the caller
 passes an explicit override — typically a `--host`/`--port` CLI flag that

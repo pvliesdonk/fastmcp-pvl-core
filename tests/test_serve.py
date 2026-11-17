@@ -235,6 +235,9 @@ class TestRunServerEpilogue:
             self._raise_keyboard_interrupt = raise_keyboard_interrupt
             self.run_called = False
 
+        async def serve(self, sockets=None):
+            pass
+
         def run(self):
             self.run_called = True
             if self._raise_keyboard_interrupt:
@@ -279,3 +282,119 @@ class TestRunServerEpilogue:
         self._patch_server(monkeypatch, fake)
 
         self._expect_startup_failure(fake)
+
+
+def test_watchdog_wrapper_waits_for_real_drain(monkeypatch):
+    import asyncio
+
+    import uvicorn
+
+    calls = []
+
+    class Server:
+        started = True
+
+        def __init__(self, config):
+            pass
+
+        async def serve(self, sockets=None):
+            pass
+
+        def run(self):
+            loop = asyncio.new_event_loop()
+            try:
+
+                async def original():
+                    calls.append("drained")
+
+                loop.shutdown_default_executor = original
+                loop.run_until_complete(self.serve())
+                loop.run_until_complete(loop.shutdown_default_executor(300))
+            finally:
+                loop.close()
+
+    monkeypatch.setattr(uvicorn, "Server", Server)
+    for _ in range(3):
+        _run_server(
+            _build_uvicorn_config(_app, host="127.0.0.1", port=0, shutdown_grace_s=1)
+        )
+    assert calls == ["drained"] * 3
+    assert not any(t.name == "shutdown-watchdog" for t in threading.enumerate())
+
+
+def test_watchdog_remains_armed_when_drain_raises(monkeypatch):
+    import asyncio
+
+    import uvicorn
+
+    exited = threading.Event()
+
+    class Server:
+        started = True
+
+        def __init__(self, config):
+            pass
+
+        async def serve(self, sockets=None):
+            pass
+
+        def run(self):
+            loop = asyncio.new_event_loop()
+            try:
+
+                async def original():
+                    raise RuntimeError("drain failed")
+
+                loop.shutdown_default_executor = original
+                loop.run_until_complete(self.serve())
+                loop.run_until_complete(loop.shutdown_default_executor(300))
+            finally:
+                loop.close()
+
+    monkeypatch.setattr(uvicorn, "Server", Server)
+    monkeypatch.setattr("fastmcp_pvl_core._serve.os._exit", lambda code: exited.set())
+    with pytest.raises(RuntimeError, match="drain failed"):
+        _run_server(
+            _build_uvicorn_config(_app, host="127.0.0.1", port=0, shutdown_grace_s=0)
+        )
+    assert exited.wait(3)
+
+
+def test_watchdog_released_when_run_never_serves(monkeypatch):
+    import uvicorn
+
+    class Server:
+        started = False
+
+        def __init__(self, config):
+            pass
+
+        async def serve(self, sockets=None):
+            pass
+
+        def run(self):
+            raise SystemExit(3)
+
+    monkeypatch.setattr(uvicorn, "Server", Server)
+    with pytest.raises(SystemExit, match="3"):
+        _run_server(
+            _build_uvicorn_config(_app, host="127.0.0.1", port=0, shutdown_grace_s=1)
+        )
+    assert not any(t.name == "shutdown-watchdog" for t in threading.enumerate())
+
+
+def test_worker_thread_server_starts_no_watchdog(monkeypatch):
+    started = []
+    original = threading.Thread.start
+
+    def capture(thread):
+        started.append(thread.name)
+        return original(thread)
+
+    monkeypatch.setattr(threading.Thread, "start", capture)
+    monkeypatch.setattr(
+        "fastmcp_pvl_core._serve.os._exit", lambda code: pytest.fail("exit")
+    )
+    with _running_server_via_run_http(monkeypatch):
+        pass
+    assert "shutdown-watchdog" not in started

@@ -13,12 +13,16 @@ server; what depends on the deployment comes from :class:`.ServerConfig`.
 ``uvicorn`` is imported inside the functions rather than at module import:
 this keeps the module importable independently of what the dependency
 tree does next, and matches how the downstream CLIs call uvicorn.
+See docs/reference/uvicorn-asyncio-shutdown.md for runner teardown behavior.
 """
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
+import os
 import sys
+import threading
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -70,7 +74,9 @@ def _run_server(built: uvicorn.Config) -> None:
     Reproduces the epilogue ``uvicorn.run(...)`` wraps ``server.run()`` in,
     rather than delegating to ``uvicorn.run`` itself, because pvl-core builds
     the ``Config`` here so tests can assert it (see :func:`_build_uvicorn_config`)
-    without binding a socket. Without this epilogue a failed startup —
+    without binding a socket. A main-thread watchdog bounds post-serve
+    cleanup and disarms only after executor drainage (or if never armed).
+    Without this epilogue a failed startup —
     including FastMCP's own lifespan hooks, which ``lifespan="on"`` pins
     specifically to make fatal — would exit 0 instead of signalling failure.
     """
@@ -78,11 +84,58 @@ def _run_server(built: uvicorn.Config) -> None:
     from uvicorn.config import STARTUP_FAILURE
 
     server = uvicorn.Server(built)
+    # Uvicorn owns signals only on the main thread. An embedded worker-thread
+    # server must not gain process-wide termination behavior.
+    armed: threading.Event | None = None
+    drained: threading.Event | None = None
+    guard: threading.Thread | None = None
+    if threading.current_thread() is threading.main_thread():
+        armed = threading.Event()
+        drained = threading.Event()
+        armed_event = armed
+        drained_event = drained
+        budget = max(built.timeout_graceful_shutdown or 0, 1)
+
+        def watchdog() -> None:
+            armed_event.wait()
+            if not drained_event.wait(budget):
+                # No logging or writes: a blocked handler must not block exit.
+                os._exit(1)
+
+        guard = threading.Thread(target=watchdog, name="shutdown-watchdog", daemon=True)
+        guard.start()
+        original_serve = server.serve
+
+        async def serve(*args: Any, **kwargs: Any) -> None:
+            loop = asyncio.get_running_loop()
+            original_shutdown = loop.shutdown_default_executor
+
+            async def shutdown(*_args: Any, **_kwargs: Any) -> None:
+                # Ignore the runner's timeout: returning means an actual drain.
+                await original_shutdown()
+                drained_event.set()
+
+            loop.shutdown_default_executor = shutdown  # type: ignore[method-assign]
+            try:
+                await original_serve(*args, **kwargs)
+            finally:
+                armed_event.set()
+
+        server.serve = serve  # type: ignore[method-assign]
+
     # Ctrl-C is how an operator stops a foreground server, so it is a normal
     # exit rather than a crash — ``uvicorn.run()`` suppresses it for the same
     # reason, and a traceback here would be noise at the end of every session.
-    with contextlib.suppress(KeyboardInterrupt):
-        server.run()
+    try:
+        with contextlib.suppress(KeyboardInterrupt):
+            server.run()
+    finally:
+        if armed is not None and drained is not None and guard is not None:
+            if not armed.is_set():
+                drained.set()
+                armed.set()
+            if drained.is_set():
+                guard.join()
     if not server.started:
         sys.exit(STARTUP_FAILURE)
 

@@ -19,6 +19,8 @@ major bump makes every FastMCP reference stale regardless of its date.
 
 ## Pages
 
+- [Uvicorn and asyncio shutdown](uvicorn-asyncio-shutdown.md) — runner teardown and executor joining; read by `_serve.py`.
+
 - [What a FastMCP native task can tell its client while it runs](fastmcp-native-task-signals.md)
   — which SEP-2663 task fields a running tool can influence, and which are
   fixed at submission. Read by `_jobs/manager.py`. Valid for FastMCP 4.x.

@@ -6,6 +6,10 @@ description: One entry per research pass, newest first.
 
 # Research log
 
+## 2026-11-16
+
+Researched uvicorn 0.54.0, CPython 3.10.22 and 3.14.8 shutdown source, and uvloop 0.22.1 source for the bounded shutdown change.
+
 ## 2026-10-02
 
 Wrote `mcp-protocol-era-identity.md` for #419 (protocol revision and client
