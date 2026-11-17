@@ -75,7 +75,8 @@ def _run_server(built: uvicorn.Config) -> None:
     rather than delegating to ``uvicorn.run`` itself, because pvl-core builds
     the ``Config`` here so tests can assert it (see :func:`_build_uvicorn_config`)
     without binding a socket. A main-thread watchdog bounds post-serve
-    cleanup and disarms only after executor drainage (or if never armed).
+    cleanup and disarms after the runner finishes and its executor drains
+    (or if never armed).
     Without this epilogue a failed startup —
     including FastMCP's own lifespan hooks, which ``lifespan="on"`` pins
     specifically to make fatal — would exit 0 instead of signalling failure.
@@ -89,16 +90,20 @@ def _run_server(built: uvicorn.Config) -> None:
     armed: threading.Event | None = None
     drained: threading.Event | None = None
     guard: threading.Thread | None = None
+    done: threading.Event | None = None
     if threading.current_thread() is threading.main_thread():
         armed = threading.Event()
         drained = threading.Event()
+        done = threading.Event()
+        done_event = done
+        owner = threading.current_thread()
         armed_event = armed
         drained_event = drained
         budget = max(built.timeout_graceful_shutdown or 0, 1)
 
         def watchdog() -> None:
             armed_event.wait()
-            if not drained_event.wait(budget):
+            if not done_event.wait(budget):
                 # No logging or writes: a blocked handler must not block exit.
                 os._exit(1)
 
@@ -114,10 +119,16 @@ def _run_server(built: uvicorn.Config) -> None:
                 loop = asyncio.get_running_loop()
                 original_shutdown = loop.shutdown_default_executor
 
-                async def shutdown(*_args: Any, **_kwargs: Any) -> None:
+                async def drain() -> None:
                     # Ignore the runner's timeout: returning means a real drain.
                     await original_shutdown()
                     drained_event.set()
+
+                def shutdown(*args: Any, **kwargs: Any) -> Any:
+                    # The runner creates its coroutine while this loop is stopped.
+                    if loop.is_running() or threading.current_thread() is not owner:
+                        return original_shutdown(*args, **kwargs)
+                    return drain()
 
                 loop.shutdown_default_executor = shutdown  # type: ignore[method-assign]
 
@@ -131,10 +142,13 @@ def _run_server(built: uvicorn.Config) -> None:
             server.run()
     finally:
         if armed is not None and drained is not None and guard is not None:
+            assert done is not None
             if not armed.is_set():
-                drained.set()
+                done.set()
                 armed.set()
-            if drained.is_set():
+            elif drained.is_set():
+                done.set()
+            if done.is_set():
                 guard.join()
     if not server.started:
         sys.exit(STARTUP_FAILURE)
@@ -156,6 +170,8 @@ def run_http(
     runner task cancellation, async-generator close and default-executor
     drain. Exceeding it exits the process immediately with status 1. ASGI
     lifespan shutdown happens before this deadline and is not bounded by it.
+    The watchdog disarms after the runner finishes and its own executor drain
+    succeeds; application executor shutdown calls keep their arguments.
 
     Args:
         app: Domain hook — the ASGI application to serve. pvl-core cannot

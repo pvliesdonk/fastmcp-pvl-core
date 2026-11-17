@@ -38,7 +38,7 @@ class Server(original_server):
 uvicorn.Server = Server
 
 async def stop(server):
-    if mode in ('stuck', 'eagain', 'finite', 'app_timeout'):
+    if mode in ('stuck', 'eagain', 'finite', 'app_timeout', 'orphan_timeout'):
         ready = threading.Event()
         def work():
             ready.set()
@@ -47,13 +47,29 @@ async def stop(server):
                 time.sleep(0.2)
                 finished.set()
                 print('WORK_DONE', flush=True)
-            elif mode == 'app_timeout':
+            elif mode in ('app_timeout', 'orphan_timeout'):
                 release.wait(1.5)
             else:
                 threading.Event().wait()
         asyncio.get_running_loop().run_in_executor(None, work)
         while not ready.is_set():
             await asyncio.sleep(0.01)
+    if mode in ('orphan', 'orphan_timeout'):
+        async def orphan():
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                if mode == 'orphan_timeout':
+                    started = time.monotonic()
+                    loop = asyncio.get_running_loop()
+                    await loop.shutdown_default_executor(timeout=0.05)
+                    print('ORPHAN_ELAPSED', time.monotonic() - started, flush=True)
+                    release.set()
+                else:
+                    await asyncio.get_running_loop().shutdown_default_executor()
+                    print('ORPHAN_DRAINED', flush=True)
+                    await asyncio.Event().wait()
+        asyncio.create_task(orphan())
     print('READY', flush=True)
     await asyncio.sleep(0.5)
     os.kill(os.getpid(), signal.SIGINT)
@@ -160,6 +176,8 @@ def test_healthy_shutdown(tmp_path, mode, grace, expected):
 def test_uvloop(tmp_path):
     pytest.importorskip("uvloop")
     assert _run_child(tmp_path, "stuck", loop="uvloop")[0] == 1
+    code, out, _ = _run_child(tmp_path, "orphan", loop="uvloop")
+    assert code == 1 and "ORPHAN_DRAINED" in out
     assert _run_child(tmp_path, "healthy", 0, "uvloop")[0] == 0
 
 
@@ -174,3 +192,18 @@ def test_application_executor_timeout_is_preserved(tmp_path, loop):
     if loop == "asyncio":
         elapsed = float(out.split("TIMEOUT_ELAPSED ")[1].splitlines()[0])
         assert elapsed < 1
+
+
+def test_cancelled_task_cannot_disarm_watchdog(tmp_path):
+    code, out, err = _run_child(tmp_path, "orphan")
+    assert "SHUTDOWN" in out and "ORPHAN_DRAINED" in out
+    assert code == 1
+    assert "Traceback" not in err
+
+
+@pytest.mark.skipif(sys.version_info < (3, 12), reason="executor timeout added in 3.12")
+def test_cancelled_task_keeps_own_executor_timeout(tmp_path):
+    code, out, _ = _run_child(tmp_path, "orphan_timeout", grace=3)
+    assert code == 0
+    elapsed = float(out.split("ORPHAN_ELAPSED ")[1].splitlines()[0])
+    assert elapsed < 0.3

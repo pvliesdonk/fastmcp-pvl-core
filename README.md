@@ -607,7 +607,9 @@ of remaining tasks, async-generator close, and default-executor drain. If that
 cleanup exceeds the budget, the process exits immediately with status 1 for
 the restart policy. Cleanup in runner-cancelled tasks and executor jobs can be
 interrupted; put durable writes in lifespan shutdown and increase the grace
-if needed.
+if needed. The watchdog disarms only after the runner finishes and its own
+default-executor drain succeeds. Application calls to shut down the executor
+keep their arguments and do not disarm the watchdog.
 
 Allow the orchestrator's termination period headroom for both the request
 drain and post-serve budgets (roughly twice the configured grace), plus

@@ -54,7 +54,7 @@ This reference covers executor shutdown after HTTP serving, as used by `_serve.p
 ## Claims
 
 - Uvicorn runs `serve` inside an asyncio runner; its graceful request timeout precedes lifespan shutdown and does not bound runner teardown. [source: uvicorn] [source: compat] [pins: tests/test_shutdown.py::test_stuck_executor]
-- The runner cancels tasks, shuts down async generators, and then shuts down the default executor. Python 3.10 calls it without a timeout; Python 3.14 passes 300 seconds. [source: compat] [source: py314] [pins: tests/test_shutdown.py::test_stuck_executor]
+- The runner cancels tasks, shuts down async generators, and then calls default-executor shutdown while the loop is stopped, before running the returned coroutine. Python 3.10 calls it without a timeout; Python 3.14 passes 300 seconds. [source: compat] [source: py314] [pins: tests/test_shutdown.py::test_stuck_executor]
 - Executor shutdown starts a helper thread; Python 3.10 waits indefinitely, while 3.14 warns on timeout and calls `shutdown(wait=False)`. Omitting the 3.14 timeout waits indefinitely. [source: py310] [source: base314] [pins: tests/test_shutdown.py::test_start_failure]
 - At interpreter exit, the thread executor joins its workers without a timeout even after `shutdown(wait=False)`. [source: threads] [pins: tests/test_shutdown.py::test_stuck_executor]
 - Uvicorn restores signal handlers and re-raises captured signals after serving; signal handlers are installed only on the main thread. [source: uvicorn]
@@ -62,7 +62,7 @@ This reference covers executor shutdown after HTTP serving, as used by `_serve.p
 
 ## Where pvl-core departs
 
-On the main thread pvl-core supplies one post-serve deadline shared by runner task cancellation, async-generator close and default-executor drainage; ASGI lifespan shutdown precedes it. A failed drain keeps the watchdog armed. [pins: tests/test_shutdown.py::test_start_failure]
+On the main thread pvl-core supplies one post-serve deadline shared by runner task cancellation, async-generator close and default-executor drainage; ASGI lifespan shutdown precedes it. Application executor-shutdown calls keep their arguments and cannot disarm the watchdog; it disarms only after the runner ends and its own drain succeeds, or if never armed. A failed drain keeps it armed. [pins: tests/test_shutdown.py::test_start_failure, tests/test_shutdown.py::test_cancelled_task_cannot_disarm_watchdog, tests/test_serve.py::test_wrapper_routes_by_loop_state]
 
 ## Not covered
 
