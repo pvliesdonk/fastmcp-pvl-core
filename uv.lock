@@ -463,16 +463,16 @@ wheels = [
 
 [[package]]
 name = "authlib"
-version = "1.9.9"
+version = "1.9.10"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "cryptography" },
     { name = "joserfc", version = "1.7.7", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "joserfc", version = "1.8.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/73/69/0215a1818edb1fb6b9dd59b8a3870601f11603b6db1f830ff3f3ea62612f/authlib-1.9.9.tar.gz", hash = "sha256:cca3dffa51c8d80d6df19aee2279e47219dc996f5a527c06ac2e39d0757c99ef", size = 184173, upload-time = "2026-11-17T20:35:21.058Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/a9/7c/e1963d10d1d7203ca913a20e377893ec27489db27f5115f25ff50ef7b5bd/authlib-1.9.10.tar.gz", hash = "sha256:f7453c4a3f5975f94cc55223c4d48ff9c7d8d3b4e3d727ed2549edaeb9b85d50", size = 184323, upload-time = "2026-11-20T09:31:59.097Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/ba/a5/e79946bc081bfd2e8c0c6125b5a6ae90f8d1541bb224cd7f16ccbb8e71d8/authlib-1.9.9-py2.py3-none-any.whl", hash = "sha256:0199649865fefb4304fc57683eaebb15614523073e41e09d98c72f3268ce5cbc", size = 267584, upload-time = "2026-11-17T20:35:19.249Z" },
+    { url = "https://files.pythonhosted.org/packages/b9/93/a93953ac475b32552eed564d40632ff0ce1db4241a52d9cdcb16ae0480b7/authlib-1.9.10-py2.py3-none-any.whl", hash = "sha256:c62d10e1b23945c6d4c578a16170bfefe4879bd23d4be62edea494993dce70aa", size = 267693, upload-time = "2026-11-20T09:31:57.716Z" },
 ]
 
 [[package]]
@@ -1639,7 +1639,7 @@ resolution-markers = [
 ]
 dependencies = [
     { name = "mcp-types" },
-    { name = "platformdirs", version = "4.14.7", source = { registry = "https://pypi.org/simple" } },
+    { name = "platformdirs", version = "4.14.8", source = { registry = "https://pypi.org/simple" } },
     { name = "pydantic", extra = ["email"] },
     { name = "pydantic-settings", version = "2.16.3", source = { registry = "https://pypi.org/simple" } },
     { name = "python-dotenv" },
@@ -1721,7 +1721,7 @@ resolution-markers = [
 dependencies = [
     { name = "cryptography" },
     { name = "fastmcp-slim", version = "4.2.3", source = { registry = "https://pypi.org/simple" }, extra = ["server"] },
-    { name = "pydocket", version = "0.29.1", source = { registry = "https://pypi.org/simple" } },
+    { name = "pydocket", version = "0.30.0", source = { registry = "https://pypi.org/simple" } },
     { name = "redis" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/12/bb/a0adb3bdedb27e119838275822b6eeede9fb388a1f4b29e6ff64424a98da/fastmcp_tasks-4.2.3.tar.gz", hash = "sha256:c3d60ed5b9330513349c01aac81e037deba842581b90d0dcb3940ee212989e53", size = 57976, upload-time = "2026-11-20T04:17:09.388Z" }
@@ -3028,7 +3028,7 @@ wheels = [
 
 [[package]]
 name = "platformdirs"
-version = "4.14.7"
+version = "4.14.8"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
     "python_full_version >= '3.15'",
@@ -3037,9 +3037,9 @@ resolution-markers = [
     "python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform == 'emscripten'",
     "python_full_version == '3.11.*' or (python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform != 'emscripten')",
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/a6/2c/ec57eede0db493e61443c76ac7b4d24e94a24050afb3d598bf3678487f75/platformdirs-4.14.7.tar.gz", hash = "sha256:5472257c1cf97a14658af52997011c7e59e4aebf3a24950b973c11b579e1b074", size = 75132, upload-time = "2026-11-17T20:03:32.656Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/71/18/0b0d99f5bf164f04a7a9534c3dbdbe4d5fd2b382667685ad40c192c4d3d1/platformdirs-4.14.8.tar.gz", hash = "sha256:96893d686e84e9e6f358a9ea41a8de544df66dbf2ba6cda250e7dc73acf85b9b", size = 87203, upload-time = "2026-11-20T08:14:52.63Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/f8/46/3737af9f971f3934794103256d7f1ed6200a62be0c7b7ff09ac4cf6b3422/platformdirs-4.14.7-py3-none-any.whl", hash = "sha256:391513b74707c42335fff3ea17eaac657a7ee9ffcadd809634d34ea594d0122c", size = 89658, upload-time = "2026-11-17T20:03:31.16Z" },
+    { url = "https://files.pythonhosted.org/packages/5b/be/373cc7341f53bfd3acba3e5db62433fd960a45fcf73ad64a5f4d27e74910/platformdirs-4.14.8-py3-none-any.whl", hash = "sha256:1e34af590de4d978631b751eb2202f2fee4497537a17c1720b12fcf57b331392", size = 94267, upload-time = "2026-11-20T08:14:51.306Z" },
 ]
 
 [[package]]
@@ -3589,7 +3589,7 @@ wheels = [
 
 [[package]]
 name = "pydocket"
-version = "0.29.1"
+version = "0.30.0"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
     "python_full_version >= '3.15'",
@@ -3613,9 +3613,9 @@ dependencies = [
     { name = "tzdata", marker = "sys_platform == 'win32'" },
     { name = "uncalled-for", version = "0.6.2", source = { registry = "https://pypi.org/simple" } },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/b4/e0/9c582614ceb099d15b23829c1499059312d9846ad4b405f1132c64cd768d/pydocket-0.29.1.tar.gz", hash = "sha256:d02ab943d9616aea44295011f5a21345f78f08c11ef5c819ab19fe8224f62791", size = 342486, upload-time = "2026-11-18T23:38:25.332Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/e9/2e/75215ad71af3c680c66306162734ff9a6779fa16c81f637d66f19c71abfd/pydocket-0.30.0.tar.gz", hash = "sha256:14bf759ad57f8bc11757cf01e359e2ce51ddc154e7148fa378f822b408c94c36", size = 345143, upload-time = "2026-11-20T16:22:29.325Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/1e/37/5bf4de96fd7a2effd9cdd3e68f6a372f49d398940982063060ae24871d8b/pydocket-0.29.1-py3-none-any.whl", hash = "sha256:aac1b26d3e993314f6b92c9957b09c3dd9bfa1d942ef46dbe6c906757b2cc94d", size = 157757, upload-time = "2026-11-18T23:38:23.204Z" },
+    { url = "https://files.pythonhosted.org/packages/dd/28/e31178d91b118487c0ec95f8c4ce1bed1c428a72884d3f05ce905a496013/pydocket-0.30.0-py3-none-any.whl", hash = "sha256:100cc18688f76842d83269a9f2b11f8548931d2962f0d98a5f0ca13b40581348", size = 158384, upload-time = "2026-11-20T16:22:27.537Z" },
 ]
 
 [[package]]
@@ -4726,7 +4726,7 @@ dependencies = [
     { name = "filelock", version = "4.2.12", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "packaging" },
     { name = "platformdirs", version = "4.12.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
-    { name = "platformdirs", version = "4.14.7", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+    { name = "platformdirs", version = "4.14.8", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "python-discovery" },
     { name = "typing-extensions", marker = "python_full_version < '3.11'" },
 ]
