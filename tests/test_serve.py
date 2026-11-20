@@ -235,6 +235,9 @@ class TestRunServerEpilogue:
             self._raise_keyboard_interrupt = raise_keyboard_interrupt
             self.run_called = False
 
+        async def serve(self, sockets=None):
+            pass
+
         def run(self):
             self.run_called = True
             if self._raise_keyboard_interrupt:
@@ -272,6 +275,7 @@ class TestRunServerEpilogue:
         _run_server(self._built())  # must not raise
 
         assert fake.run_called
+        assert not any(t.name == "shutdown-watchdog" for t in threading.enumerate())
 
     def test_keyboard_interrupt_before_startup_still_signals_failure(self, monkeypatch):
         """Ctrl-C before the server ever started: still a startup failure."""
@@ -279,3 +283,115 @@ class TestRunServerEpilogue:
         self._patch_server(monkeypatch, fake)
 
         self._expect_startup_failure(fake)
+
+
+def test_wrapper_routes_by_loop_state(monkeypatch):
+    import asyncio
+
+    import uvicorn
+
+    calls = []
+
+    class Server:
+        started = True
+
+        def __init__(self, config):
+            pass
+
+        async def serve(self, sockets=None):
+            pass
+
+        def run(self):
+            loop = asyncio.new_event_loop()
+            try:
+
+                async def original(*args, **kwargs):
+                    calls.append((args, kwargs))
+
+                loop.shutdown_default_executor = original
+                loop.run_until_complete(self.serve())
+
+                async def application_calls():
+                    await loop.shutdown_default_executor(0.05)
+                    await loop.shutdown_default_executor(timeout=0.1)
+
+                loop.run_until_complete(application_calls())
+                loop.run_until_complete(loop.shutdown_default_executor(300))
+            finally:
+                loop.close()
+
+    exited = threading.Event()
+    monkeypatch.setattr(uvicorn, "Server", Server)
+    monkeypatch.setattr("fastmcp_pvl_core._serve.os._exit", lambda code: exited.set())
+    try:
+        _run_server(
+            _build_uvicorn_config(_app, host="127.0.0.1", port=0, shutdown_grace_s=1)
+        )
+    finally:
+        for thread in threading.enumerate():
+            if thread.name == "shutdown-watchdog":
+                thread.join(timeout=2)
+    assert not exited.is_set()
+    assert calls == [
+        ((0.05,), {}),
+        ((), {"timeout": 0.1}),
+        ((), {}),
+    ]
+    assert not any(t.name == "shutdown-watchdog" for t in threading.enumerate())
+
+
+@pytest.mark.parametrize("drain_first", [True, False])
+def test_watchdog_after_runner_raises(monkeypatch, drain_first):
+    import asyncio
+
+    import uvicorn
+
+    exited = threading.Event()
+
+    class Server:
+        started = True
+
+        def __init__(self, config):
+            pass
+
+        async def serve(self, sockets=None):
+            pass
+
+        def run(self):
+            loop = asyncio.new_event_loop()
+            try:
+                loop.run_until_complete(self.serve())
+                if drain_first:
+                    loop.run_until_complete(loop.shutdown_default_executor(300))
+                raise RuntimeError("runner failure")
+            finally:
+                loop.close()
+
+    monkeypatch.setattr(uvicorn, "Server", Server)
+    monkeypatch.setattr("fastmcp_pvl_core._serve.os._exit", lambda code: exited.set())
+    with pytest.raises(RuntimeError, match="runner failure"):
+        _run_server(
+            _build_uvicorn_config(_app, host="127.0.0.1", port=0, shutdown_grace_s=1)
+        )
+    if not drain_first:
+        assert exited.wait(3)
+    for thread in threading.enumerate():
+        if thread.name == "shutdown-watchdog":
+            thread.join(timeout=2)
+    assert not any(t.name == "shutdown-watchdog" for t in threading.enumerate())
+    if drain_first:
+        assert not exited.is_set()
+
+
+def test_worker_thread_server_starts_no_watchdog(monkeypatch):
+    started = []
+    original = threading.Thread.start
+
+    def capture(thread):
+        started.append(thread.name)
+        return original(thread)
+
+    monkeypatch.setattr(threading.Thread, "start", capture)
+    with _running_server_via_run_http(monkeypatch):
+        pass
+    assert "shutdown-watchdog" not in started
