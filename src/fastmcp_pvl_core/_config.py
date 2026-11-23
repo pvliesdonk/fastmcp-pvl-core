@@ -215,10 +215,11 @@ class ServerConfig:
         default=3,
         metadata={
             "help": (
-                "Seconds SIGTERM may spend draining in-flight requests "
-                "before the HTTP server exits. Keep it at or below the "
-                "termination grace period the orchestrator allows. ``0`` "
-                "drops in-flight requests immediately."
+                "Seconds allowed to drain in-flight requests; ``0`` drops "
+                "them immediately. On the main thread, post-serve runner "
+                "cleanup shares a separate budget of max(grace, 1) seconds. "
+                "Lifespan shutdown is unbounded. Allow orchestrator headroom "
+                "for both budgets, lifespan and other shutdown overhead."
             ),
             "tags": ("server",),
             "wizard": {"group": "Server", "when": "server"},

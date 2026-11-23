@@ -82,6 +82,7 @@ dev = [
   # valid context needs an SDK TracerProvider. Never shipped — pvl-core owns
   # no SDK/exporter wiring (ADR 0003).
   "opentelemetry-sdk",
+  "uvloop>=0.22 ; (implementation_name == 'cpython' and sys_platform == 'darwin') or (implementation_name == 'cpython' and sys_platform == 'linux')",
 ]
 
 [tool.hatch.build.targets.wheel]

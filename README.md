@@ -598,13 +598,27 @@ Three settings are pvl-core's to pin, not the operator's or the caller's:
   express. That decision is made by the `_AccessLogFilter` installed on
   `uvicorn.access` instead — see [Logging](#logging).
 
-`{PREFIX}_SHUTDOWN_GRACE_S` (default `3`, minimum `0`) sets
-`timeout_graceful_shutdown`: how long, in seconds, a SIGTERM may spend
-draining in-flight requests before the server exits. Set it no higher than
-the orchestrator's own termination grace period (Kubernetes'
-`terminationGracePeriodSeconds` or equivalent) — a value that exceeds it
-just means the orchestrator does the killing instead of uvicorn doing the
-draining.
+`{PREFIX}_SHUTDOWN_GRACE_S` (default `3`, minimum `0`) sets the seconds
+uvicorn allows for draining in-flight requests. ASGI lifespan shutdown runs
+after that and is not bounded by this setting. When `run_http` runs on the
+main thread, a separate post-serve cleanup budget starts when serving ends:
+the same grace period, with a one-second minimum, is shared by cancellation
+of remaining tasks, async-generator close, and default-executor drain. If that
+cleanup exceeds the budget, the process exits immediately with status 1 for
+the restart policy. Cleanup in runner-cancelled tasks and executor jobs can be
+interrupted; put durable writes in lifespan shutdown and increase the grace
+if needed. The watchdog disarms only after the runner finishes and its own
+default-executor drain succeeds. Application calls to shut down the executor
+keep their arguments and do not disarm the watchdog. If the watchdog thread
+cannot start on the main thread, the process exits immediately with status 1
+before serving.
+
+Allow the orchestrator's termination period headroom for both the request
+drain and post-serve budgets (roughly twice the configured grace), plus
+lifespan shutdown and other shutdown overhead. Lifespan shutdown has no
+bound here, so this is not a total shutdown guarantee. The post-serve deadline
+also does not bound custom executors, other non-daemon threads, or native code
+that holds the GIL. Worker-thread servers do not start the watchdog.
 
 `host` and `port` come from `config` (itself `{PREFIX}_HOST` /
 `{PREFIX}_PORT`, defaulting to `127.0.0.1` / `8000`) unless the caller
