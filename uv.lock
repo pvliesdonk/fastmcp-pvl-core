@@ -1504,7 +1504,8 @@ dependencies = [
     { name = "opentelemetry-api" },
     { name = "tomli", marker = "python_full_version < '3.11'" },
     { name = "typing-extensions", marker = "python_full_version < '3.11'" },
-    { name = "uvicorn" },
+    { name = "uvicorn", version = "0.54.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "uvicorn", version = "0.55.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
 ]
 
 [package.optional-dependencies]
@@ -1620,7 +1621,7 @@ server = [
     { name = "pyyaml" },
     { name = "starlette", version = "1.7.0", source = { registry = "https://pypi.org/simple" } },
     { name = "uncalled-for", version = "0.5.0", source = { registry = "https://pypi.org/simple" } },
-    { name = "uvicorn" },
+    { name = "uvicorn", version = "0.54.0", source = { registry = "https://pypi.org/simple" } },
     { name = "watchfiles" },
     { name = "websockets", version = "16.1.1", source = { registry = "https://pypi.org/simple" } },
 ]
@@ -1681,7 +1682,7 @@ server = [
     { name = "pyyaml" },
     { name = "starlette", version = "1.10.0", source = { registry = "https://pypi.org/simple" } },
     { name = "uncalled-for", version = "0.6.2", source = { registry = "https://pypi.org/simple" } },
-    { name = "uvicorn" },
+    { name = "uvicorn", version = "0.55.0", source = { registry = "https://pypi.org/simple" } },
     { name = "watchfiles" },
     { name = "websockets", version = "17.4", source = { registry = "https://pypi.org/simple" } },
 ]
@@ -2470,7 +2471,8 @@ dependencies = [
     { name = "starlette", version = "1.10.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "typing-extensions" },
     { name = "typing-inspection" },
-    { name = "uvicorn", marker = "sys_platform != 'emscripten'" },
+    { name = "uvicorn", version = "0.54.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11' and sys_platform != 'emscripten'" },
+    { name = "uvicorn", version = "0.55.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11' and sys_platform != 'emscripten'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/9d/8d/e0d339616f4810e9051d4aba6887afab289ab1f81875fe908b606cdfd0e3/mcp-2.3.0.tar.gz", hash = "sha256:8b147a50441cf059dc88c684e0aeed3687f0aa0f39c6cde7b90330effd2b34d8", size = 4171955, upload-time = "2026-10-02T22:06:56.091Z" }
 wheels = [
@@ -4744,14 +4746,37 @@ wheels = [
 name = "uvicorn"
 version = "0.54.0"
 source = { registry = "https://pypi.org/simple" }
+resolution-markers = [
+    "python_full_version < '3.11'",
+]
 dependencies = [
     { name = "click" },
     { name = "h11" },
-    { name = "typing-extensions", marker = "python_full_version < '3.11'" },
+    { name = "typing-extensions" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/da/34/30e9280707135d2cfc589dfff3cb796bd07a3aeb1a3e415ba09dd89d7bb4/uvicorn-0.54.0.tar.gz", hash = "sha256:a2e33cbfaa0306f8e6b0c13e0cb89d7d7a2da3e62b90c66e18c33d9807b28620", size = 112283, upload-time = "2026-09-25T06:52:37.601Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/38/0c/b54a4fdd7f90a3af8b02ebc9ce6712c2c208b7926a2f7bad95c33ebbe943/uvicorn-0.54.0-py3-none-any.whl", hash = "sha256:505bdb0f318731d45f1f712071fc781a8981f6847a31c902c9f5e652d4f67faf", size = 87427, upload-time = "2026-09-25T06:52:35.829Z" },
+]
+
+[[package]]
+name = "uvicorn"
+version = "0.55.0"
+source = { registry = "https://pypi.org/simple" }
+resolution-markers = [
+    "python_full_version >= '3.15'",
+    "python_full_version == '3.14.*' and sys_platform == 'emscripten'",
+    "python_full_version == '3.14.*' and sys_platform != 'emscripten'",
+    "python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform == 'emscripten'",
+    "python_full_version == '3.11.*' or (python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform != 'emscripten')",
+]
+dependencies = [
+    { name = "click" },
+    { name = "h11" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/60/32/ed1b49f4eca183639f1048bc48494c8e24386c865dce1357cd108d5871ea/uvicorn-0.55.0.tar.gz", hash = "sha256:b65ae5f0f30cdcbc26a104b93d7d19723aa5f46fec3915a6c247d5795449331c", size = 114540, upload-time = "2026-11-28T13:03:51.048Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/d2/05/3f8e143f2180eb21ed5e28b3c319143960c797c68852744c4d9116480928/uvicorn-0.55.0-py3-none-any.whl", hash = "sha256:bee604c5af6e15fb0584913c632b222c09db1048c26fc05053203207c4b9e37d", size = 87457, upload-time = "2026-11-28T13:03:49.635Z" },
 ]
 
 [[package]]
